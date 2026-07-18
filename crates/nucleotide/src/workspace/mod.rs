@@ -10407,6 +10407,48 @@ impl Workspace {
                 self.show_file_tree = !self.show_file_tree;
                 cx.notify();
             }
+            crate::Update::SemanticShortcut(intent) => {
+                use crate::types::SemanticShortcutIntent as Intent;
+                match intent {
+                    Intent::Quit => {
+                        let handle = self.handle.clone();
+                        quit(self.core.clone(), handle, cx);
+                        cx.quit();
+                    }
+                    Intent::OpenFile | Intent::ShowFileFinder => open(
+                        self.core.clone(),
+                        self.handle.clone(),
+                        self.overlay.clone(),
+                        cx,
+                    ),
+                    Intent::OpenDirectory => {
+                        open_directory(self.core.clone(), self.handle.clone(), cx)
+                    }
+                    Intent::Save => self.execute_raw_command("write", cx),
+                    Intent::CloseFile => self.close_active_tab_document(cx),
+                    Intent::NewFile => self.execute_raw_command("new", cx),
+                    Intent::ShowCommandPrompt => self.show_command_prompt(cx),
+                    Intent::ShowBufferPicker => show_buffer_picker(
+                        self.core.clone(),
+                        self.handle.clone(),
+                        self.overlay.clone(),
+                        cx,
+                    ),
+                    Intent::ShowCodeActions => {
+                        show_code_actions(self.core.clone(), self.handle.clone(), cx)
+                    }
+                    Intent::IncreaseFontSize => self.adjust_font_size(1.0, cx),
+                    Intent::DecreaseFontSize => self.adjust_font_size(-1.0, cx),
+                    Intent::ShowRunnables => self.show_runnables(cx),
+                    Intent::RunNearest => self.run_nearest(cx),
+                    Intent::RunLast => self.run_last(cx),
+                    Intent::RunFileTests => self.run_file_tests(cx),
+                    Intent::ToggleFileTree => {
+                        self.show_file_tree = !self.show_file_tree;
+                        cx.notify();
+                    }
+                }
+            }
             crate::Update::Info(_info) => {
                 // Helix autoinfo is rendered by the dedicated native key-hint
                 // popup. Avoid also showing the generic info box for the same
