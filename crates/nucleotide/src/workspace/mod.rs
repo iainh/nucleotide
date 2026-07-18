@@ -10927,7 +10927,7 @@ impl Workspace {
             tab_bar
                 .start_child(
                     Button::icon_only("tab-nav-back", "icons/arrow-left.svg")
-                        .variant(ButtonVariant::Ghost)
+                        .variant(ButtonVariant::Secondary)
                         .size(ButtonSize::Small)
                         .tooltip("Go Back")
                         .activate_on_mouse_down()
@@ -10944,7 +10944,7 @@ impl Workspace {
                 )
                 .start_child(
                     Button::icon_only("tab-nav-forward", "icons/arrow-right.svg")
-                        .variant(ButtonVariant::Ghost)
+                        .variant(ButtonVariant::Secondary)
                         .size(ButtonSize::Small)
                         .tooltip("Go Forward")
                         .activate_on_mouse_down()
@@ -10964,7 +10964,7 @@ impl Workspace {
             tab_bar
                 .end_child(
                     Button::icon_only("tab-new-file", "icons/plus.svg")
-                        .variant(ButtonVariant::Ghost)
+                        .variant(ButtonVariant::Secondary)
                         .size(ButtonSize::Small)
                         .tooltip("New File")
                         .activate_on_mouse_down()
@@ -10984,7 +10984,7 @@ impl Workspace {
                         .relative()
                         .child(
                             Button::icon_only("tab-split-menu", "icons/columns-2.svg")
-                                .variant(ButtonVariant::Ghost)
+                                .variant(ButtonVariant::Secondary)
                                 .size(ButtonSize::Small)
                                 .tooltip("Split Pane")
                                 .activate_on_mouse_down()
