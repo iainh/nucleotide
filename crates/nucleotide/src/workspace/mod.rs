@@ -455,11 +455,8 @@ impl EnvironmentBadge {
     }
 }
 
-fn titlebar_filename(filename: Option<&str>) -> String {
-    filename
-        .filter(|name| !name.is_empty())
-        .unwrap_or("Nucleotide")
-        .to_string()
+fn titlebar_filename(_filename: Option<&str>) -> String {
+    "Nucleotide".to_string()
 }
 
 fn shorten_statusbar_text(text: &str, max_chars: usize) -> String {
@@ -17693,7 +17690,7 @@ mod tests {
 
     #[test]
     fn titlebar_filename_uses_focused_file_or_app_name() {
-        assert_eq!(titlebar_filename(Some("main.rs")), "main.rs");
+        assert_eq!(titlebar_filename(Some("main.rs")), "Nucleotide");
         assert_eq!(titlebar_filename(Some("")), "Nucleotide");
         assert_eq!(titlebar_filename(None), "Nucleotide");
     }

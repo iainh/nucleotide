@@ -588,9 +588,9 @@ impl From<DirectWriteRenderingMode> for gpui::DirectWriteRenderingMode {
 #[serde(rename_all = "lowercase")]
 pub enum TabCloseButtonVisibility {
     /// Always render close buttons on unpinned tabs.
+    #[default]
     Always,
     /// Render close buttons on unpinned tabs only while hovering over the tab.
-    #[default]
     Hover,
     /// Do not render close buttons on unpinned tabs.
     Hidden,
@@ -700,7 +700,7 @@ impl Default for TabsConfig {
             activate_on_close: TabActivateOnClose::History,
             file_icons: true,
             show_diagnostics: TabDiagnosticsVisibility::Off,
-            show_close_button: TabCloseButtonVisibility::Hover,
+            show_close_button: TabCloseButtonVisibility::Always,
         }
     }
 }
@@ -2225,7 +2225,7 @@ startup_timeout_ms = 3000
         assert!(!config.tab_bar.show_pinned_tabs_in_separate_row);
         assert_eq!(
             config.tabs.show_close_button,
-            TabCloseButtonVisibility::Hover
+            TabCloseButtonVisibility::Always
         );
         assert_eq!(config.tabs.close_position, TabClosePosition::Right);
         assert_eq!(config.tabs.activate_on_close, TabActivateOnClose::History);
