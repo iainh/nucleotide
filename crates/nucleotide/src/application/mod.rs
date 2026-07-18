@@ -5136,7 +5136,8 @@ impl Application {
                     || outcome.picker_requested.is_some()
                     || outcome.prompt_requested.is_some()
                     || outcome.lsp_navigation_requested.is_some()
-                    || outcome.workspace_requested.is_some();
+                    || outcome.workspace_requested.is_some()
+                    || outcome.semantic_shortcut_requested.is_some();
                 let selection_or_viewport_updated = outcome.selection_changed
                     || outcome.viewport_scroll_requested.is_some()
                     || outcome.viewport_cursor_requested.is_some();
@@ -5196,6 +5197,10 @@ impl Application {
                             }
                         }
                     }
+                }
+
+                if let Some(request) = outcome.semantic_shortcut_requested {
+                    cx.emit(crate::Update::SemanticShortcut(request));
                 }
 
                 if let Some(request) = outcome.viewport_scroll_requested {

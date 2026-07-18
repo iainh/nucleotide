@@ -45,6 +45,7 @@ pub struct EditorInputOutcome {
     pub prompt_requested: Option<NativePromptRequest>,
     pub lsp_navigation_requested: Option<NativeLspNavigationRequest>,
     pub workspace_requested: Option<NativeWorkspaceRequest>,
+    pub semantic_shortcut_requested: Option<crate::types::SemanticShortcutIntent>,
     pub viewport_scroll_requested: Option<nucleotide_editor::EditorViewportScrollRequest>,
     pub viewport_cursor_requested: Option<nucleotide_editor::EditorViewportCursorRequest>,
 }
@@ -118,6 +119,25 @@ pub struct EditorInputBridge {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TargetPlatform {
+    MacOS,
+    Windows,
+    Linux,
+}
+
+impl TargetPlatform {
+    fn current() -> Self {
+        if cfg!(target_os = "macos") {
+            Self::MacOS
+        } else if cfg!(target_os = "windows") {
+            Self::Windows
+        } else {
+            Self::Linux
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct SelectionSnapshot {
     cursor: usize,
     line: usize,
@@ -126,7 +146,10 @@ struct SelectionSnapshot {
 impl EditorInputBridge {
     pub fn new(native_keymaps: Keymaps) -> Self {
         Self {
-            native_commands: NativeCommandInput::new(native_keymaps),
+            native_commands: NativeCommandInput::new_for_platform(
+                native_keymaps,
+                TargetPlatform::current(),
+            ),
         }
     }
 
@@ -164,6 +187,7 @@ impl EditorInputBridge {
         let mut prompt_requested = None;
         let mut lsp_navigation_requested = None;
         let mut workspace_requested = None;
+        let mut semantic_shortcut_requested = None;
         let mut viewport_scroll_requested = None;
         let mut viewport_cursor_requested = None;
         let native_input_result = self
@@ -189,6 +213,10 @@ impl EditorInputBridge {
             NativeInputResult::RequestWorkspace(request) => {
                 handled_by_native_command = true;
                 workspace_requested = Some(request);
+            }
+            NativeInputResult::RequestSemanticShortcut(request) => {
+                handled_by_native_command = true;
+                semantic_shortcut_requested = Some(request);
             }
             NativeInputResult::RequestViewportScroll(request) => {
                 handled_by_native_command = true;
@@ -247,6 +275,7 @@ impl EditorInputBridge {
             prompt_requested,
             lsp_navigation_requested,
             workspace_requested,
+            semantic_shortcut_requested,
             viewport_scroll_requested,
             viewport_cursor_requested,
         }
@@ -255,6 +284,7 @@ impl EditorInputBridge {
 
 struct NativeCommandInput {
     keymaps: Keymaps,
+    target_platform: TargetPlatform,
     on_next_key: Option<(OnKeyCallback, OnKeyCallbackKind)>,
     current_insert_replay: InsertReplay,
     last_insert_replay: Option<InsertReplay>,
@@ -269,6 +299,7 @@ enum NativeInputResult {
     },
     RequestLspNavigation(NativeLspNavigationRequest),
     RequestWorkspace(NativeWorkspaceRequest),
+    RequestSemanticShortcut(crate::types::SemanticShortcutIntent),
     RequestViewportScroll(nucleotide_editor::EditorViewportScrollRequest),
     RequestViewportCursor(nucleotide_editor::EditorViewportCursorRequest),
     Unhandled {
@@ -306,6 +337,7 @@ enum NativeCommandResult {
         callbacks: Vec<compositor::Callback>,
         request: NativeWorkspaceRequest,
     },
+    RequestSemanticShortcut(crate::types::SemanticShortcutIntent),
     RequestViewportScroll {
         callbacks: Vec<compositor::Callback>,
         request: nucleotide_editor::EditorViewportScrollRequest,
@@ -342,9 +374,15 @@ impl InsertReplay {
 }
 
 impl NativeCommandInput {
+    #[cfg(test)]
     fn new(keymaps: Keymaps) -> Self {
+        Self::new_for_platform(keymaps, TargetPlatform::current())
+    }
+
+    fn new_for_platform(keymaps: Keymaps, target_platform: TargetPlatform) -> Self {
         Self {
             keymaps,
+            target_platform,
             on_next_key: None,
             current_insert_replay: InsertReplay::default(),
             last_insert_replay: None,
@@ -438,6 +476,10 @@ impl NativeCommandInput {
                 self.finish_insert_replay_if_needed(mode_before, editor.mode());
                 NativeInputResult::RequestWorkspace(request)
             }
+            NativeCommandResult::RequestSemanticShortcut(request) => {
+                self.finish_insert_replay_if_needed(mode_before, editor.mode());
+                NativeInputResult::RequestSemanticShortcut(request)
+            }
             NativeCommandResult::RequestViewportScroll { callbacks, request } => {
                 finalize_native_command(editor, jobs, compositor, callbacks);
                 self.finish_insert_replay_if_needed(mode_before, editor.mode());
@@ -459,6 +501,9 @@ impl NativeCommandInput {
                             NativeInputResult::RequestWorkspace(request) => {
                                 return NativeInputResult::RequestWorkspace(request);
                             }
+                            NativeInputResult::RequestSemanticShortcut(request) => {
+                                return NativeInputResult::RequestSemanticShortcut(request);
+                            }
                             NativeInputResult::RequestViewportScroll(request) => {
                                 return NativeInputResult::RequestViewportScroll(request);
                             }
@@ -478,6 +523,13 @@ impl NativeCommandInput {
                 }
             }
             NativeCommandResult::Unhandled { keys, disposition } => {
+                if disposition == UnhandledDisposition::RootNotFound {
+                    if let Some(request) =
+                        resolve_fallback_shortcut(mode_before, key, self.target_platform)
+                    {
+                        return NativeInputResult::RequestSemanticShortcut(request);
+                    }
+                }
                 self.discard_insert_replay_if_needed(mode_before);
                 NativeInputResult::Unhandled { keys, disposition }
             }
@@ -590,6 +642,23 @@ impl NativeCommandInput {
                     execute_native_command(command, context, &mut last_mode);
                     self.current_insert_replay.keys.push(key);
                     return NativeCommandResult::Handled(Vec::new());
+                }
+
+                if is_custom_completion_shortcut(mode, key) {
+                    self.current_insert_replay.keys.push(key);
+                    return NativeCommandResult::RequestCompletion {
+                        callbacks: Vec::new(),
+                        request: completion_request(context),
+                    };
+                }
+                if is_custom_code_actions_shortcut(key) {
+                    return NativeCommandResult::RequestPicker {
+                        callbacks: Vec::new(),
+                        request: NativePickerRequest::CodeActions,
+                    };
+                }
+                if let Some(request) = resolve_fallback_shortcut(mode, key, self.target_platform) {
+                    return NativeCommandResult::RequestSemanticShortcut(request);
                 }
 
                 if let Some(ch) = key.char() {
@@ -1819,9 +1888,96 @@ fn native_insert_shortcut_command(key: KeyEvent) -> Option<&'static MappableComm
 }
 
 fn canonicalize_key(key: &mut KeyEvent) {
-    if matches!(key.code, KeyCode::Char(_)) {
+    if matches!(key.code, KeyCode::Char(_))
+        && !key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER)
+    {
         key.modifiers.remove(KeyModifiers::SHIFT);
     }
+}
+
+fn key_is(key: KeyEvent, ch: char, modifiers: KeyModifiers) -> bool {
+    let KeyCode::Char(actual) = key.code else {
+        return false;
+    };
+    let mut actual_modifiers = key.modifiers;
+    if actual.is_ascii_uppercase() || actual == '+' {
+        actual_modifiers.insert(KeyModifiers::SHIFT);
+    }
+    actual.eq_ignore_ascii_case(&ch) && actual_modifiers == modifiers
+}
+
+fn is_custom_completion_shortcut(mode: Mode, key: KeyEvent) -> bool {
+    mode == Mode::Insert && key_is(key, ' ', KeyModifiers::CONTROL)
+}
+
+fn is_custom_code_actions_shortcut(key: KeyEvent) -> bool {
+    key_is(key, '.', KeyModifiers::CONTROL)
+}
+
+pub fn resolve_fallback_shortcut(
+    _mode: Mode,
+    key: KeyEvent,
+    platform: TargetPlatform,
+) -> Option<crate::types::SemanticShortcutIntent> {
+    use crate::types::SemanticShortcutIntent as Intent;
+
+    let custom = [
+        ('r', KeyModifiers::CONTROL, Intent::ShowRunnables),
+        (
+            'r',
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+            Intent::RunNearest,
+        ),
+        (
+            'r',
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+            Intent::RunLast,
+        ),
+        (
+            't',
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+            Intent::RunFileTests,
+        ),
+        ('b', KeyModifiers::CONTROL, Intent::ToggleFileTree),
+    ];
+    if let Some((_, _, intent)) = custom
+        .into_iter()
+        .find(|(ch, modifiers, _)| key_is(key, *ch, *modifiers))
+    {
+        return Some(intent);
+    }
+    if is_custom_code_actions_shortcut(key) {
+        return Some(Intent::ShowCodeActions);
+    }
+
+    let primary = if platform == TargetPlatform::MacOS {
+        KeyModifiers::SUPER
+    } else {
+        KeyModifiers::CONTROL
+    };
+    let standard = [
+        ('q', primary, Intent::Quit),
+        ('o', primary, Intent::OpenFile),
+        ('o', primary | KeyModifiers::SHIFT, Intent::OpenDirectory),
+        ('s', primary, Intent::Save),
+        ('w', primary, Intent::CloseFile),
+        ('n', primary, Intent::NewFile),
+        ('p', primary, Intent::ShowFileFinder),
+        (
+            'p',
+            primary | KeyModifiers::SHIFT,
+            Intent::ShowCommandPrompt,
+        ),
+        ('b', primary, Intent::ShowBufferPicker),
+        ('+', primary | KeyModifiers::SHIFT, Intent::IncreaseFontSize),
+        ('=', primary, Intent::IncreaseFontSize),
+        ('-', primary, Intent::DecreaseFontSize),
+    ];
+    standard
+        .into_iter()
+        .find_map(|(ch, modifiers, intent)| key_is(key, ch, modifiers).then_some(intent))
 }
 
 fn command_count_digit(key: KeyEvent) -> Option<usize> {
@@ -2214,6 +2370,61 @@ mod tests {
             handle_native_test_key(&mut input, &mut editor, "F12"),
             UnhandledDisposition::RootNotFound,
         );
+    }
+
+    #[test]
+    fn platform_shortcut_resolver_uses_target_primary_modifier_and_shift() {
+        use crate::types::SemanticShortcutIntent as Intent;
+
+        assert_eq!(
+            resolve_fallback_shortcut(
+                Mode::Normal,
+                KeyEvent::from_str("C-s").unwrap(),
+                TargetPlatform::Linux,
+            ),
+            Some(Intent::Save)
+        );
+        assert_eq!(
+            resolve_fallback_shortcut(
+                Mode::Normal,
+                KeyEvent::from_str("C-s").unwrap(),
+                TargetPlatform::Windows,
+            ),
+            Some(Intent::Save)
+        );
+        assert_eq!(
+            resolve_fallback_shortcut(
+                Mode::Normal,
+                KeyEvent::from_str("Meta-s").unwrap(),
+                TargetPlatform::MacOS,
+            ),
+            Some(Intent::Save)
+        );
+        assert_eq!(
+            resolve_fallback_shortcut(
+                Mode::Normal,
+                KeyEvent::from_str("Meta-S-p").unwrap(),
+                TargetPlatform::MacOS,
+            ),
+            Some(Intent::ShowCommandPrompt)
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn insert_platform_fallback_precedes_printable_insertion() {
+        let mut editor = test_editor_with_text("");
+        editor.mode = Mode::Insert;
+        let mut input = NativeCommandInput::new_for_platform(
+            disposition_test_keymaps(Mode::Insert),
+            TargetPlatform::MacOS,
+        );
+        let before = focused_selection_fragments(&editor);
+
+        assert!(matches!(
+            handle_native_test_key(&mut input, &mut editor, "Meta-s"),
+            NativeInputResult::RequestSemanticShortcut(crate::types::SemanticShortcutIntent::Save)
+        ));
+        assert_eq!(focused_selection_fragments(&editor), before);
     }
 
     #[test]

@@ -135,7 +135,29 @@ pub enum Update {
     ShowHoverDocs,
     RunTask(nucleotide_events::v2::run::ResolvedTask),
     ToggleFileTree,
+    SemanticShortcut(SemanticShortcutIntent),
     TerminalPanel(gpui::Entity<nucleotide_terminal_panel::TerminalPanel>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SemanticShortcutIntent {
+    Quit,
+    OpenFile,
+    OpenDirectory,
+    Save,
+    CloseFile,
+    NewFile,
+    ShowFileFinder,
+    ShowCommandPrompt,
+    ShowBufferPicker,
+    ShowCodeActions,
+    IncreaseFontSize,
+    DecreaseFontSize,
+    ShowRunnables,
+    RunNearest,
+    RunLast,
+    RunFileTests,
+    ToggleFileTree,
 }
 
 impl std::fmt::Debug for Update {
@@ -193,6 +215,7 @@ impl std::fmt::Debug for Update {
             Update::ShowHoverDocs => write!(f, "ShowHoverDocs"),
             Update::RunTask(task) => write!(f, "RunTask({:?})", task.label()),
             Update::ToggleFileTree => write!(f, "ToggleFileTree"),
+            Update::SemanticShortcut(intent) => write!(f, "SemanticShortcut({intent:?})"),
             Update::TerminalPanel(_) => write!(f, "TerminalPanel(...)"),
         }
     }
