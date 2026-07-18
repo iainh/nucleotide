@@ -741,13 +741,6 @@ impl NativeCommandInput {
             }
             KeymapDispatch::Unhandled(disposition) => {
                 context.editor.selected_register = context.register.take();
-                if let Some(request) = native_workspace_key_sequence(&unhandled_keys) {
-                    context.editor.count = None;
-                    return NativeCommandResult::RequestWorkspace {
-                        callbacks: Vec::new(),
-                        request,
-                    };
-                }
                 if self.keymaps.pending().is_empty() {
                     context.editor.count = None;
                 }
@@ -798,6 +791,10 @@ impl NativeCommandInput {
                     return KeymapDispatch::RequestLspNavigation(request);
                 }
 
+                if let Some(request) = native_workspace_command(command) {
+                    return KeymapDispatch::RequestWorkspace(request);
+                }
+
                 if let Some(request) = native_viewport_cursor_command(command, context.count) {
                     return KeymapDispatch::RequestViewportCursor(request);
                 }
@@ -831,6 +828,7 @@ impl NativeCommandInput {
                         || native_picker_command(command).is_some()
                         || native_prompt_command(command).is_some()
                         || native_lsp_navigation_command(command).is_some()
+                        || native_workspace_command(command).is_some()
                         || native_viewport_cursor_command(command, None).is_some()
                         || native_page_cursor_command_supported(command)
                         || native_viewport_scroll_command(command, None).is_some()
@@ -850,6 +848,9 @@ impl NativeCommandInput {
                     }
                     if let Some(request) = native_lsp_navigation_command(command) {
                         return KeymapDispatch::RequestLspNavigation(request);
+                    }
+                    if let Some(request) = native_workspace_command(command) {
+                        return KeymapDispatch::RequestWorkspace(request);
                     }
                     if let Some(request) = native_viewport_cursor_command(command, context.count) {
                         return KeymapDispatch::RequestViewportCursor(request);
@@ -1498,27 +1499,8 @@ pub(crate) fn sync_cursor_after_native_page_scroll(
     Some(doc_id)
 }
 
-fn native_workspace_key_sequence(keys: &[KeyEvent]) -> Option<NativeWorkspaceRequest> {
-    match keys {
-        [space, key] if is_plain_space_key(*space) && is_plain_char_key(*key, 't') => {
-            Some(NativeWorkspaceRequest::ToggleFileTree)
-        }
-        _ => None,
-    }
-}
-
-fn is_plain_space_key(key: KeyEvent) -> bool {
-    is_plain_char_key(key, ' ')
-}
-
-fn is_plain_char_key(key: KeyEvent, expected: char) -> bool {
-    matches!(
-        key,
-        KeyEvent {
-            code: KeyCode::Char(ch),
-            modifiers
-        } if ch == expected && modifiers.is_empty()
-    )
+fn native_workspace_command(command: &MappableCommand) -> Option<NativeWorkspaceRequest> {
+    (command.name() == "toggle-file-tree").then_some(NativeWorkspaceRequest::ToggleFileTree)
 }
 
 fn native_file_navigation_command(command: &MappableCommand) -> Option<NativeFileOpenAction> {
@@ -2092,6 +2074,14 @@ mod tests {
     }
 
     fn reset_diff_change_keymaps() -> Keymaps {
+        nucleotide_keymaps(MappableCommand::Typable {
+            name: "toggle-file-tree".into(),
+            args: String::new(),
+            doc: "Toggle file tree".into(),
+        })
+    }
+
+    fn nucleotide_keymaps(toggle_file_tree: MappableCommand) -> Keymaps {
         use helix_term::config::Config as HelixConfig;
         use helix_term::keymap::{KeyTrie, KeyTrieNode, merge_keys};
         use indexmap::IndexMap;
@@ -2100,6 +2090,7 @@ mod tests {
         let space = KeyEvent::from_str("space").unwrap();
         let v = KeyEvent::from_str("v").unwrap();
         let r = KeyEvent::from_str("r").unwrap();
+        let t = KeyEvent::from_str("t").unwrap();
 
         let mut vcs_node = IndexMap::new();
         vcs_node.insert(
@@ -2109,6 +2100,7 @@ mod tests {
 
         let mut space_node = IndexMap::new();
         space_node.insert(v, KeyTrie::Node(KeyTrieNode::new("VCS", vcs_node)));
+        space_node.insert(t, KeyTrie::MappableCommand(toggle_file_tree));
 
         let mut normal_node = IndexMap::new();
         normal_node.insert(space, KeyTrie::Node(KeyTrieNode::new("Space", space_node)));
@@ -3036,23 +3028,17 @@ mod tests {
     }
 
     #[test]
-    fn workspace_leader_sequences_are_classified_separately() {
+    fn workspace_commands_are_classified_separately() {
         assert_eq!(
-            native_workspace_key_sequence(&[
-                KeyEvent::from_str("space").unwrap(),
-                KeyEvent::from_str("t").unwrap(),
-            ]),
+            native_workspace_command(&MappableCommand::Typable {
+                name: "toggle-file-tree".into(),
+                args: String::new(),
+                doc: "Toggle file tree".into(),
+            }),
             Some(NativeWorkspaceRequest::ToggleFileTree)
         );
         assert_eq!(
-            native_workspace_key_sequence(&[
-                KeyEvent::from_str("space").unwrap(),
-                KeyEvent::from_str("f").unwrap(),
-            ]),
-            None
-        );
-        assert_eq!(
-            native_workspace_key_sequence(&[KeyEvent::from_str("t").unwrap()]),
+            native_workspace_command(&MappableCommand::command_palette),
             None
         );
     }
@@ -3270,7 +3256,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn editor_input_bridge_requests_workspace_toggle_for_space_t() {
-        let mut bridge = EditorInputBridge::new(Keymaps::default());
+        let mut bridge = EditorInputBridge::new(reset_diff_change_keymaps());
         let mut editor = test_editor_with_text("one\ntwo\n");
         let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));
         let mut jobs = Jobs::new();
@@ -3293,6 +3279,36 @@ mod tests {
             Some(NativeWorkspaceRequest::ToggleFileTree)
         );
         assert_eq!(toggle.picker_requested, None);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn editor_input_bridge_keeps_user_space_t_helix_owned() {
+        let mut bridge = EditorInputBridge::new(nucleotide_keymaps(
+            MappableCommand::from_str(":quit").unwrap(),
+        ));
+        let mut editor = test_editor_with_text("one\ntwo\n");
+        let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));
+        let mut jobs = Jobs::new();
+
+        let pending = handle_key_str(
+            &mut bridge,
+            &mut editor,
+            &mut compositor,
+            &mut jobs,
+            "space",
+        );
+        assert!(pending.handled_by_native_command);
+
+        let result = handle_key_str(&mut bridge, &mut editor, &mut compositor, &mut jobs, "t");
+        assert!(!result.handled_by_native_command);
+        assert_eq!(result.workspace_requested, None);
+        assert_eq!(
+            result.unhandled_keys,
+            [
+                KeyEvent::from_str("space").unwrap(),
+                KeyEvent::from_str("t").unwrap()
+            ]
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

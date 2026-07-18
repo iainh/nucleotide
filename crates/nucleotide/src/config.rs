@@ -1175,41 +1175,54 @@ fn load_helix_config(_dir: &Path) -> anyhow::Result<HelixConfig> {
 fn merge_nucleotide_helix_keybindings(config: &mut HelixConfig) -> anyhow::Result<()> {
     use helix_term::{
         commands::MappableCommand,
-        keymap::{KeyTrie, KeyTrieNode, merge_keys},
+        keymap::{KeyTrie, KeyTrieNode},
     };
     use helix_view::{document::Mode, input::KeyEvent};
     use indexmap::IndexMap;
-    use std::{collections::HashMap, str::FromStr};
+    use std::str::FromStr;
+
+    fn merge_vacant(destination: &mut KeyTrie, source: KeyTrie) {
+        let (KeyTrie::Node(destination), KeyTrie::Node(mut source)) = (destination, source) else {
+            return;
+        };
+        for (key, source) in source.drain(..) {
+            match destination.get_mut(&key) {
+                Some(destination) => merge_vacant(destination, source),
+                None => {
+                    destination.insert(key, source);
+                }
+            }
+        }
+    }
 
     let space = KeyEvent::from_str("space")?;
     let v = KeyEvent::from_str("v")?;
     let r = KeyEvent::from_str("r")?;
+    let t = KeyEvent::from_str("t")?;
     let reset_diff_change = MappableCommand::from_str(":reset-diff-change")?;
-    if let Some(normal_keymap) = config.keys.get(&Mode::Normal)
-        && (matches!(
-            normal_keymap.search(&[space, v]),
-            Some(KeyTrie::MappableCommand(_) | KeyTrie::Sequence(_))
-        ) || normal_keymap.search(&[space, v, r]).is_some())
-    {
-        return Ok(());
-    }
+    let toggle_file_tree = MappableCommand::Typable {
+        name: "toggle-file-tree".into(),
+        args: String::new(),
+        doc: "Toggle file tree".into(),
+    };
 
     let mut vcs_node = IndexMap::new();
     vcs_node.insert(r, KeyTrie::MappableCommand(reset_diff_change));
 
     let mut space_node = IndexMap::new();
     space_node.insert(v, KeyTrie::Node(KeyTrieNode::new("VCS", vcs_node)));
+    space_node.insert(t, KeyTrie::MappableCommand(toggle_file_tree));
 
     let mut normal_node = IndexMap::new();
     normal_node.insert(space, KeyTrie::Node(KeyTrieNode::new("Space", space_node)));
 
-    merge_keys(
-        &mut config.keys,
-        HashMap::from([(
-            Mode::Normal,
-            KeyTrie::Node(KeyTrieNode::new("Normal mode", normal_node)),
-        )]),
-    );
+    let nucleotide = KeyTrie::Node(KeyTrieNode::new("Normal mode", normal_node));
+    match config.keys.get_mut(&Mode::Normal) {
+        Some(normal) => merge_vacant(normal, nucleotide),
+        None => {
+            config.keys.insert(Mode::Normal, nucleotide);
+        }
+    }
 
     Ok(())
 }
@@ -1383,7 +1396,7 @@ mod tests {
         let mut config = HelixConfig::default();
         merge_nucleotide_helix_keybindings(&mut config).unwrap();
 
-        let mut keymaps = Keymaps::new(Box::new(arc_swap::access::Constant(config.keys)));
+        let mut keymaps = Keymaps::new(Box::new(arc_swap::access::Constant(config.keys.clone())));
         assert!(matches!(
             keymaps.get(Mode::Normal, KeyEvent::from_str("space").unwrap()),
             KeymapResult::Pending(_)
@@ -1402,6 +1415,17 @@ mod tests {
             command,
             MappableCommand::from_str(":reset-diff-change").unwrap()
         );
+
+        let mut keymaps = Keymaps::new(Box::new(arc_swap::access::Constant(config.keys)));
+        assert!(matches!(
+            keymaps.get(Mode::Normal, KeyEvent::from_str("space").unwrap()),
+            KeymapResult::Pending(_)
+        ));
+        let toggle = match keymaps.get(Mode::Normal, KeyEvent::from_str("t").unwrap()) {
+            KeymapResult::Matched(command) => command,
+            other => panic!("expected <space> t to match toggle-file-tree, got {other:?}"),
+        };
+        assert_eq!(toggle.name(), "toggle-file-tree");
     }
 
     #[test]
@@ -1455,6 +1479,94 @@ mod tests {
             other => panic!("expected existing <space> v r binding to remain, got {other:?}"),
         };
         assert_eq!(command, MappableCommand::command_palette);
+    }
+
+    #[test]
+    fn nucleotide_helix_keybindings_preserve_commands_at_conflicting_prefixes() {
+        use helix_term::{
+            commands::MappableCommand,
+            keymap::{KeyTrie, KeyTrieNode},
+        };
+        use helix_view::{document::Mode, input::KeyEvent};
+        use indexmap::IndexMap;
+        use std::str::FromStr;
+
+        let key = |key| KeyEvent::from_str(key).unwrap();
+        let user = MappableCommand::command_palette;
+        for path in [
+            ["space", "", ""],
+            ["space", "v", ""],
+            ["space", "v", "r"],
+            ["space", "t", ""],
+        ] {
+            let leaf = KeyTrie::MappableCommand(user.clone());
+            let binding = if path[1].is_empty() {
+                leaf
+            } else if path[2].is_empty() {
+                KeyTrie::Node(KeyTrieNode::new(
+                    "Space",
+                    IndexMap::from([(key(path[1]), leaf)]),
+                ))
+            } else {
+                let vcs = KeyTrie::Node(KeyTrieNode::new(
+                    "VCS",
+                    IndexMap::from([(key(path[2]), leaf)]),
+                ));
+                KeyTrie::Node(KeyTrieNode::new(
+                    "Space",
+                    IndexMap::from([(key(path[1]), vcs)]),
+                ))
+            };
+            let mut config = HelixConfig::default();
+            config.keys.insert(
+                Mode::Normal,
+                KeyTrie::Node(KeyTrieNode::new(
+                    "Normal",
+                    IndexMap::from([(key(path[0]), binding)]),
+                )),
+            );
+
+            merge_nucleotide_helix_keybindings(&mut config).unwrap();
+            let search_path: Vec<_> = path
+                .iter()
+                .filter(|part| !part.is_empty())
+                .map(|part| key(part))
+                .collect();
+            assert_eq!(
+                config.keys[&Mode::Normal].search(&search_path),
+                Some(&KeyTrie::MappableCommand(user.clone())),
+                "user binding at {path:?} was replaced"
+            );
+        }
+
+        let x = key("x");
+        let mut config = HelixConfig::default();
+        config.keys.insert(
+            Mode::Normal,
+            KeyTrie::Node(KeyTrieNode::new(
+                "Normal",
+                IndexMap::from([(
+                    key("space"),
+                    KeyTrie::Node(KeyTrieNode::new(
+                        "Space",
+                        IndexMap::from([(
+                            key("v"),
+                            KeyTrie::Node(KeyTrieNode::new(
+                                "VCS",
+                                IndexMap::from([(x, KeyTrie::MappableCommand(user.clone()))]),
+                            )),
+                        )]),
+                    )),
+                )]),
+            )),
+        );
+        merge_nucleotide_helix_keybindings(&mut config).unwrap();
+        let normal = &config.keys[&Mode::Normal];
+        assert_eq!(
+            normal.search(&[key("space"), key("v"), x]),
+            Some(&KeyTrie::MappableCommand(user))
+        );
+        assert!(normal.search(&[key("space"), key("v"), key("r")]).is_some());
     }
 
     #[test]
