@@ -396,7 +396,7 @@ mod component_token_tests {
             "file tree OKLab L {file_tree_l:.3} should sit between editor {editor_l:.3} and titlebar {titlebar_l:.3}"
         );
 
-        // Status bar text should derive from chrome tokens rather than editor cursors
+        // Status-bar chrome and editor-mode colors retain their respective theme ownership.
         let expected_accent = ColorTheory::ensure_contrast(
             tokens.chrome.footer_background,
             tokens.chrome.primary,
@@ -404,12 +404,9 @@ mod component_token_tests {
         );
         assert_eq!(status_bar.text_primary, tokens.chrome.text_on_chrome);
         assert_eq!(status_bar.text_accent, expected_accent);
-        assert_eq!(status_bar.mode_normal, tokens.chrome.primary);
-        assert_eq!(status_bar.mode_text, tokens.editor.text_on_primary);
-        assert_eq!(status_bar.mode_insert, tokens.chrome.primary_hover);
-        assert_eq!(status_bar.mode_select, tokens.chrome.primary_active);
-        assert_ne!(status_bar.mode_insert, helix_colors.cursor_insert);
-        assert_ne!(status_bar.mode_select, helix_colors.cursor_select);
+        assert_eq!(status_bar.mode_normal, helix_colors.cursor_normal);
+        assert_eq!(status_bar.mode_insert, helix_colors.cursor_insert);
+        assert_eq!(status_bar.mode_select, helix_colors.cursor_select);
 
         println!("Hybrid component tokens validation passed ✓");
     }
@@ -491,8 +488,10 @@ mod component_token_tests {
         assert_ne!(status_bar.mode_normal, status_bar.mode_select);
         assert_ne!(status_bar.mode_insert, status_bar.mode_select);
 
-        // Mode colors should align with chrome accents
-        assert_ne!(status_bar.mode_normal, status_bar.text_primary);
+        // Mode colors should follow the active editor theme rather than system chrome.
+        assert_eq!(status_bar.mode_normal, tokens.editor.cursor_normal);
+        assert_eq!(status_bar.mode_insert, tokens.editor.cursor_insert);
+        assert_eq!(status_bar.mode_select, tokens.editor.cursor_select);
 
         let expected_accent = ColorTheory::ensure_contrast(
             tokens.chrome.footer_background,
@@ -500,8 +499,14 @@ mod component_token_tests {
             ContrastRatios::AA_NORMAL,
         );
         assert_eq!(status_bar.text_accent, expected_accent);
-        assert_eq!(status_bar.mode_insert, tokens.chrome.primary_hover);
-        assert_eq!(status_bar.mode_select, tokens.chrome.primary_active);
+
+        for (background, foreground) in [
+            (status_bar.mode_normal, status_bar.mode_normal_text),
+            (status_bar.mode_insert, status_bar.mode_insert_text),
+            (status_bar.mode_select, status_bar.mode_select_text),
+        ] {
+            assert!(ColorTheory::contrast_ratio(background, foreground) >= 4.5);
+        }
 
         // Verify background contrast
         let active_contrast =

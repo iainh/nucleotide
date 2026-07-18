@@ -1303,10 +1303,12 @@ pub struct StatusBarTokens {
     pub text_secondary: Hsla,
     pub text_accent: Hsla,
     pub border: Hsla,
-    pub mode_text: Hsla,
     pub mode_normal: Hsla,
+    pub mode_normal_text: Hsla,
     pub mode_insert: Hsla,
+    pub mode_insert_text: Hsla,
     pub mode_select: Hsla,
+    pub mode_select_text: Hsla,
 }
 
 impl StatusBarTokens {
@@ -1319,11 +1321,21 @@ impl StatusBarTokens {
         let text_accent =
             ColorTheory::ensure_contrast(bg_active, chrome.primary, ContrastRatios::AA_NORMAL);
         let border = chrome.border_shadow;
-        let mode_normal = chrome.primary;
-        let mode_insert = chrome.primary_hover;
-        let mode_select = chrome.primary_active;
-        let mode_text = ColorTheory::ensure_contrast(
+        let mode_normal = editor.cursor_normal;
+        let mode_insert = editor.cursor_insert;
+        let mode_select = editor.cursor_select;
+        let mode_normal_text = ColorTheory::ensure_contrast(
             mode_normal,
+            editor.text_on_primary,
+            ContrastRatios::AA_NORMAL,
+        );
+        let mode_insert_text = ColorTheory::ensure_contrast(
+            mode_insert,
+            editor.text_on_primary,
+            ContrastRatios::AA_NORMAL,
+        );
+        let mode_select_text = ColorTheory::ensure_contrast(
+            mode_select,
             editor.text_on_primary,
             ContrastRatios::AA_NORMAL,
         );
@@ -1347,10 +1359,12 @@ impl StatusBarTokens {
             text_secondary,
             text_accent,
             border,
-            mode_text,
             mode_normal,
+            mode_normal_text,
             mode_insert,
+            mode_insert_text,
             mode_select,
+            mode_select_text,
         }
     }
 
