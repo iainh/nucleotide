@@ -11,6 +11,7 @@ use gpui::{
     SharedString, Style, Styled, TextRun, UTF16Selection, UnderlineStyle, Window, div, fill, point,
     prelude::FluentBuilder, px, relative, size,
 };
+use helix_core::unicode::segmentation::UnicodeSegmentation;
 
 use crate::actions::text_input::{
     Backspace, Cancel, Copy, Cut, Delete, DeleteWordBackward, DeleteWordForward, MoveLeft,
@@ -142,6 +143,7 @@ pub struct TextInput {
     selected_range: Range<usize>,
     selection_reversed: bool,
     marked_range: Option<Range<usize>>,
+    pre_composition_snapshot: Option<EditSnapshot>,
     error: Option<SharedString>,
     last_layout: Option<ShapedLine>,
     last_bounds: Option<Bounds<Pixels>>,
@@ -165,6 +167,7 @@ impl TextInput {
             selected_range: 0..0,
             selection_reversed: false,
             marked_range: None,
+            pre_composition_snapshot: None,
             error: None,
             last_layout: None,
             last_bounds: None,
@@ -212,6 +215,7 @@ impl TextInput {
         self.selected_range = cursor..cursor;
         self.selection_reversed = false;
         self.marked_range = None;
+        self.pre_composition_snapshot = None;
         self.last_layout = None;
         self.last_bounds = None;
         self.undo_history.clear();
@@ -313,10 +317,10 @@ impl TextInput {
         self.select_to(self.content.len(), cx);
     }
 
-    fn word_class(ch: char) -> u8 {
-        if ch.is_whitespace() {
+    fn word_class(grapheme: &str) -> u8 {
+        if grapheme.chars().all(char::is_whitespace) {
             0
-        } else if ch.is_alphanumeric() || ch == '_' {
+        } else if grapheme.chars().any(|ch| ch.is_alphanumeric() || ch == '_') {
             1
         } else {
             2
@@ -324,45 +328,45 @@ impl TextInput {
     }
 
     fn previous_word_boundary(&self, offset: usize) -> usize {
-        let chars: Vec<_> = self.content[..self.clamp_to_boundary(offset)]
-            .char_indices()
+        let graphemes: Vec<_> = self.content[..self.clamp_to_boundary(offset)]
+            .grapheme_indices(true)
             .collect();
-        let mut i = chars.len();
-        while i > 0 && Self::word_class(chars[i - 1].1) == 0 {
+        let mut i = graphemes.len();
+        while i > 0 && Self::word_class(graphemes[i - 1].1) == 0 {
             i -= 1;
         }
         if i == 0 {
             return 0;
         }
-        let class = Self::word_class(chars[i - 1].1);
-        while i > 0 && Self::word_class(chars[i - 1].1) == class {
+        let class = Self::word_class(graphemes[i - 1].1);
+        while i > 0 && Self::word_class(graphemes[i - 1].1) == class {
             i -= 1;
         }
-        chars.get(i).map_or(0, |(offset, _)| *offset)
+        graphemes.get(i).map_or(0, |(offset, _)| *offset)
     }
 
     fn next_word_boundary(&self, offset: usize) -> usize {
         let offset = self.clamp_to_boundary(offset);
-        let mut chars = self.content[offset..].char_indices().peekable();
-        let Some((_, first)) = chars.next() else {
+        let mut graphemes = self.content[offset..].grapheme_indices(true).peekable();
+        let Some((_, first)) = graphemes.next() else {
             return self.content.len();
         };
         let class = Self::word_class(first);
-        while chars
+        while graphemes
             .peek()
-            .is_some_and(|(_, ch)| Self::word_class(*ch) == class)
+            .is_some_and(|(_, grapheme)| Self::word_class(grapheme) == class)
         {
-            chars.next();
+            graphemes.next();
         }
         if class != 0 {
-            while chars
+            while graphemes
                 .peek()
-                .is_some_and(|(_, ch)| Self::word_class(*ch) == 0)
+                .is_some_and(|(_, grapheme)| Self::word_class(grapheme) == 0)
             {
-                chars.next();
+                graphemes.next();
             }
         }
-        chars
+        graphemes
             .peek()
             .map_or(self.content.len(), |(index, _)| offset + *index)
     }
@@ -426,13 +430,26 @@ impl TextInput {
         }
         self.redo_history.clear();
     }
+    fn commit_composition(&mut self) -> bool {
+        let Some(snapshot) = self.pre_composition_snapshot.take() else {
+            return false;
+        };
+        self.undo_history.push(snapshot);
+        if self.undo_history.len() > 100 {
+            self.undo_history.remove(0);
+        }
+        self.redo_history.clear();
+        true
+    }
     fn undo(&mut self, _: &Undo, _: &mut Window, cx: &mut Context<Self>) {
+        self.pre_composition_snapshot = None;
         if let Some(snapshot) = self.undo_history.pop() {
             self.redo_history.push(self.snapshot());
             self.restore_snapshot(snapshot, cx);
         }
     }
     fn redo(&mut self, _: &Redo, _: &mut Window, cx: &mut Context<Self>) {
+        self.pre_composition_snapshot = None;
         if let Some(snapshot) = self.redo_history.pop() {
             self.undo_history.push(self.snapshot());
             self.restore_snapshot(snapshot, cx);
@@ -677,6 +694,7 @@ impl EntityInputHandler for TextInput {
     }
 
     fn unmark_text(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.commit_composition();
         self.marked_range = None;
         cx.notify();
     }
@@ -698,7 +716,9 @@ impl EntityInputHandler for TextInput {
             .or(self.marked_range.clone())
             .unwrap_or(self.selected_range.clone());
 
-        self.record_edit();
+        if !self.commit_composition() {
+            self.record_edit();
+        }
 
         self.content =
             (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..])
@@ -730,7 +750,10 @@ impl EntityInputHandler for TextInput {
             .or(self.marked_range.clone())
             .unwrap_or(self.selected_range.clone());
 
-        self.record_edit();
+        if self.pre_composition_snapshot.is_none() {
+            self.pre_composition_snapshot = Some(self.snapshot());
+            self.redo_history.clear();
+        }
 
         self.content =
             (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..])
@@ -1418,6 +1441,31 @@ mod tests {
     }
 
     #[gpui::test]
+    fn ime_composition_is_one_undo_transaction(cx: &mut TestAppContext) {
+        init_theme(cx);
+        let (harness, cx) = cx.add_window_view(|_, cx| TextInputHarness::new(cx));
+        let input = harness.read_with(cx, |harness, _| harness.input.clone());
+        let focus = input.read_with(cx, |input, cx| input.focus_handle(cx));
+
+        cx.update(|window, cx| {
+            input.update(cx, |input, cx| {
+                input.set_value_silent("initial ", cx);
+                input.replace_and_mark_text_in_range(None, "e", None, window, cx);
+                input.replace_and_mark_text_in_range(None, "é", None, window, cx);
+                input.replace_text_in_range(None, "é", window, cx);
+            });
+            window.focus(&focus, cx);
+            focus.dispatch_action(&Undo, window, cx);
+        });
+
+        input.read_with(cx, |input, _| {
+            assert_eq!(input.value().as_ref(), "initial ");
+            assert!(input.undo_history.is_empty());
+            assert_eq!(input.redo_history.len(), 1);
+        });
+    }
+
+    #[gpui::test]
     fn word_actions_preserve_unicode_boundaries(cx: &mut TestAppContext) {
         init_theme(cx);
         let (harness, cx) = cx.add_window_view(|_, cx| TextInputHarness::new(cx));
@@ -1435,6 +1483,25 @@ mod tests {
             assert_eq!(input.value().as_ref(), "héllo 💡");
             assert!(input.value().is_char_boundary(input.cursor_offset()));
             assert!(input.value().is_char_boundary(input.selected_range().start));
+        });
+    }
+
+    #[gpui::test]
+    fn word_boundaries_do_not_split_extended_graphemes(cx: &mut TestAppContext) {
+        let decomposed = "e\u{301}";
+        let emoji = "👩‍💻";
+        let text = format!("{decomposed} {emoji}");
+        init_theme(cx);
+        let (harness, cx) = cx.add_window_view(|_, cx| TextInputHarness::new(cx));
+        let input = harness.read_with(cx, |harness, _| harness.input.clone());
+        input.update(cx, |input, cx| input.set_value_silent(text.clone(), cx));
+
+        input.read_with(cx, |input, _| {
+            assert_eq!(input.next_word_boundary(0), decomposed.len() + 1);
+            assert_eq!(
+                input.previous_word_boundary(text.len()),
+                decomposed.len() + 1
+            );
         });
     }
 

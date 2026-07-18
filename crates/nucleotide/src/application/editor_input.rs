@@ -757,6 +757,7 @@ impl NativeCommandInput {
                             NativeCommandResult::RequestSemanticShortcut(request)
                         }
                         FallbackShortcut::Editor(action) => {
+                            self.current_insert_replay.keys.push(key);
                             execute_editor_semantic_action(action, context)
                         }
                     };
@@ -2035,24 +2036,51 @@ fn native_insert_shortcut_command(key: KeyEvent) -> Option<&'static MappableComm
 }
 
 fn canonicalize_key(key: &mut KeyEvent) {
-    if matches!(key.code, KeyCode::Char(_))
-        && !key
-            .modifiers
-            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER)
-    {
+    if matches!(key.code, KeyCode::Char(_)) {
         key.modifiers.remove(KeyModifiers::SHIFT);
     }
 }
 
 fn key_is(key: KeyEvent, ch: char, modifiers: KeyModifiers) -> bool {
+    fn normalize(mut ch: char, modifiers: &mut KeyModifiers) -> char {
+        if modifiers.contains(KeyModifiers::SHIFT) {
+            ch = match ch {
+                'a'..='z' => ch.to_ascii_uppercase(),
+                '`' => '~',
+                '1' => '!',
+                '2' => '@',
+                '3' => '#',
+                '4' => '$',
+                '5' => '%',
+                '6' => '^',
+                '7' => '&',
+                '8' => '*',
+                '9' => '(',
+                '0' => ')',
+                '-' => '_',
+                '=' => '+',
+                '[' => '{',
+                ']' => '}',
+                '\\' => '|',
+                ';' => ':',
+                '\'' => '"',
+                ',' => '<',
+                '.' => '>',
+                '/' => '?',
+                _ => ch,
+            };
+            modifiers.remove(KeyModifiers::SHIFT);
+        }
+        ch
+    }
+
     let KeyCode::Char(actual) = key.code else {
         return false;
     };
     let mut actual_modifiers = key.modifiers;
-    if actual.is_ascii_uppercase() || actual == '+' {
-        actual_modifiers.insert(KeyModifiers::SHIFT);
-    }
-    actual.eq_ignore_ascii_case(&ch) && actual_modifiers == modifiers
+    let mut expected_modifiers = modifiers;
+    normalize(actual, &mut actual_modifiers) == normalize(ch, &mut expected_modifiers)
+        && actual_modifiers == expected_modifiers
 }
 
 fn is_custom_completion_shortcut(mode: Mode, key: KeyEvent) -> bool {
@@ -2580,6 +2608,49 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn normalized_shifted_user_mapping_precedes_fallback() {
+        use helix_term::config::Config as HelixConfig;
+        use helix_term::keymap::{KeyTrie, KeyTrieNode, merge_keys};
+        use indexmap::IndexMap;
+        use std::collections::HashMap;
+
+        let mut mode_node = IndexMap::new();
+        mode_node.insert(
+            KeyEvent::from_str("C-R").unwrap(),
+            KeyTrie::MappableCommand(MappableCommand::from_str(":quit").unwrap()),
+        );
+        let mut config = HelixConfig::default();
+        merge_keys(
+            &mut config.keys,
+            HashMap::from([(
+                Mode::Normal,
+                KeyTrie::Node(KeyTrieNode::new("Test", mode_node)),
+            )]),
+        );
+        let mut input = NativeCommandInput::new_for_platform(
+            Keymaps::new(Box::new(arc_swap::access::Constant(config.keys))),
+            TargetPlatform::Linux,
+        );
+        let mut editor = test_editor_with_text("");
+        let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));
+        let mut jobs = Jobs::new();
+        let translated = crate::utils::translate_key(&gpui::Keystroke {
+            key: "r".into(),
+            key_char: Some("R".into()),
+            modifiers: gpui::Modifiers {
+                control: true,
+                shift: true,
+                ..Default::default()
+            },
+        });
+
+        assert_unhandled_disposition(
+            input.handle_key(translated, &mut compositor, &mut editor, &mut jobs),
+            UnhandledDisposition::ReservedUnsupported,
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn insert_keymap_dispositions_preserve_helix_ownership() {
         let mut editor = test_editor_with_text("");
         editor.mode = Mode::Insert;
@@ -2652,6 +2723,59 @@ mod tests {
                 "failed shortcut {key} on {platform:?}"
             );
         }
+    }
+
+    #[test]
+    fn translated_shifted_physical_chords_match_fallbacks() {
+        let translated = |key: &str, key_char: &str, control: bool, platform: bool| {
+            crate::utils::translate_key(&gpui::Keystroke {
+                key: key.into(),
+                key_char: Some(key_char.into()),
+                modifiers: gpui::Modifiers {
+                    control,
+                    shift: true,
+                    platform,
+                    ..Default::default()
+                },
+            })
+        };
+
+        assert_eq!(
+            resolve_fallback_shortcut(
+                Mode::Normal,
+                translated("[", "{", false, true),
+                TargetPlatform::MacOS,
+            ),
+            Some(FallbackShortcut::Editor(
+                EditorSemanticAction::PreviousBuffer
+            ))
+        );
+        assert_eq!(
+            resolve_fallback_shortcut(
+                Mode::Normal,
+                translated("r", "R", true, false),
+                TargetPlatform::Linux,
+            ),
+            Some(FallbackShortcut::Workspace(
+                crate::types::SemanticShortcutIntent::RunNearest
+            ))
+        );
+    }
+
+    #[test]
+    fn canonicalization_removes_shift_from_translated_modified_chars() {
+        let mut key = crate::utils::translate_key(&gpui::Keystroke {
+            key: "r".into(),
+            key_char: Some("R".into()),
+            modifiers: gpui::Modifiers {
+                control: true,
+                shift: true,
+                ..Default::default()
+            },
+        });
+        canonicalize_key(&mut key);
+        assert_eq!(key.code, KeyCode::Char('R'));
+        assert_eq!(key.modifiers, KeyModifiers::CONTROL);
     }
 
     #[test]
@@ -5058,6 +5182,21 @@ mod tests {
         input.record_insert_replay_key_if_needed(Mode::Insert, register_key);
 
         assert_eq!(input.current_insert_replay.keys, vec![register_key]);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn insert_editor_fallback_is_recorded_for_replay() {
+        let mut editor = test_editor_with_text("");
+        editor.mode = Mode::Insert;
+        let mut input = NativeCommandInput::new_for_platform(
+            disposition_test_keymaps(Mode::Insert),
+            TargetPlatform::Windows,
+        );
+        let key = KeyEvent::from_str("S-ins").unwrap();
+
+        let _ = handle_native_test_key(&mut input, &mut editor, "S-ins");
+
+        assert_eq!(input.current_insert_replay.keys, vec![key]);
     }
 
     #[test]

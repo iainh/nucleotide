@@ -844,6 +844,7 @@ fn is_running_in_wsl() -> bool {
 }
 
 // Import actions from our centralized definitions
+use nucleotide::actions::text_input::{Copy, Paste, Redo, Undo};
 use nucleotide::actions::updates::Check as CheckForUpdates;
 #[cfg(not(target_os = "windows"))]
 use nucleotide::actions::window::{Hide, HideOthers, ShowAll};
@@ -851,10 +852,15 @@ use nucleotide::actions::window::{Hide, HideOthers, ShowAll};
 use nucleotide::actions::workspace::{
     NewFile, NewWindow, ShowBufferPicker, ShowCodeActions, ShowCommandPrompt, ShowFileFinder,
 };
+#[cfg(target_os = "windows")]
+use nucleotide::actions::{
+    completion::TriggerCompletion,
+    editor::{CloseFile, DecreaseFontSize, IncreaseFontSize, Save, SaveAs},
+};
 use nucleotide::actions::{
     editor::{
-        CancelRemoteConnection, Copy, OpenDirectory, OpenFile, OpenRemote, OpenSettings, Paste,
-        Quit, ReconnectRemote, Redo, ReloadConfiguration, RevertCurrentChange, Undo,
+        CancelRemoteConnection, OpenDirectory, OpenFile, OpenRemote, OpenSettings, Quit,
+        ReconnectRemote, ReloadConfiguration, RevertCurrentChange,
     },
     help::{About, ComponentGallery, OpenTutorial, ThemeDebug},
     test::{TestCompletion, TestPrompt},
