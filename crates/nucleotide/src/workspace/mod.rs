@@ -14802,9 +14802,10 @@ impl Render for Workspace {
             },
         ));
 
-        // Add handlers for Undo, Redo, Copy, Paste
+        // Shared actions are handled by focused text inputs first and forwarded here only when
+        // the document view owns focus.
         workspace_div = workspace_div.on_action(cx.listener(
-            move |workspace, _: &crate::actions::editor::Undo, window, cx| {
+            move |workspace, _: &crate::actions::text_input::Undo, window, cx| {
                 workspace.send_editor_semantic_action(
                     crate::application::editor_input::EditorSemanticAction::Undo,
                     window,
@@ -14814,7 +14815,7 @@ impl Render for Workspace {
         ));
 
         workspace_div = workspace_div.on_action(cx.listener(
-            move |workspace, _: &crate::actions::editor::Redo, window, cx| {
+            move |workspace, _: &crate::actions::text_input::Redo, window, cx| {
                 workspace.send_editor_semantic_action(
                     crate::application::editor_input::EditorSemanticAction::Redo,
                     window,
@@ -14824,7 +14825,7 @@ impl Render for Workspace {
         ));
 
         workspace_div = workspace_div.on_action(cx.listener(
-            move |workspace, _: &crate::actions::editor::Copy, window, cx| {
+            move |workspace, _: &crate::actions::text_input::Copy, window, cx| {
                 workspace.send_editor_semantic_action(
                     crate::application::editor_input::EditorSemanticAction::Copy,
                     window,
@@ -14834,7 +14835,7 @@ impl Render for Workspace {
         ));
 
         workspace_div = workspace_div.on_action(cx.listener(
-            move |workspace, _: &crate::actions::editor::Paste, window, cx| {
+            move |workspace, _: &crate::actions::text_input::Paste, window, cx| {
                 workspace.send_editor_semantic_action(
                     crate::application::editor_input::EditorSemanticAction::Paste,
                     window,
