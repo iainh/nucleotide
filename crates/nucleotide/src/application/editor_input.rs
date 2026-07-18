@@ -198,7 +198,10 @@ impl EditorInputBridge {
                 handled_by_native_command = true;
                 viewport_cursor_requested = Some(request);
             }
-            NativeInputResult::Unhandled(keys) => {
+            NativeInputResult::Unhandled {
+                keys,
+                disposition: _,
+            } => {
                 debug!(?keys, "Native editor input was not handled");
                 unhandled_keys = keys;
             }
@@ -268,7 +271,17 @@ enum NativeInputResult {
     RequestWorkspace(NativeWorkspaceRequest),
     RequestViewportScroll(nucleotide_editor::EditorViewportScrollRequest),
     RequestViewportCursor(nucleotide_editor::EditorViewportCursorRequest),
-    Unhandled(Vec<KeyEvent>),
+    Unhandled {
+        keys: Vec<KeyEvent>,
+        disposition: UnhandledDisposition,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UnhandledDisposition {
+    RootNotFound,
+    ReservedUnsupported,
+    Cancelled,
 }
 
 enum NativeCommandResult {
@@ -305,7 +318,10 @@ enum NativeCommandResult {
         keys: Vec<KeyEvent>,
         count: usize,
     },
-    Unhandled(Vec<KeyEvent>),
+    Unhandled {
+        keys: Vec<KeyEvent>,
+        disposition: UnhandledDisposition,
+    },
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -449,8 +465,8 @@ impl NativeCommandInput {
                             NativeInputResult::RequestViewportCursor(request) => {
                                 return NativeInputResult::RequestViewportCursor(request);
                             }
-                            NativeInputResult::Unhandled(unhandled_keys) => {
-                                return NativeInputResult::Unhandled(unhandled_keys);
+                            NativeInputResult::Unhandled { keys, disposition } => {
+                                return NativeInputResult::Unhandled { keys, disposition };
                             }
                         }
                     }
@@ -461,9 +477,9 @@ impl NativeCommandInput {
                     prompt_requested: None,
                 }
             }
-            NativeCommandResult::Unhandled(keys) => {
+            NativeCommandResult::Unhandled { keys, disposition } => {
                 self.discard_insert_replay_if_needed(mode_before);
-                NativeInputResult::Unhandled(keys)
+                NativeInputResult::Unhandled { keys, disposition }
             }
         }
     }
@@ -513,7 +529,10 @@ impl NativeCommandInput {
                     };
                 }
                 if !native_insert_command_supported(command) {
-                    return NativeCommandResult::Unhandled(unhandled_keys);
+                    return NativeCommandResult::Unhandled {
+                        keys: unhandled_keys,
+                        disposition: UnhandledDisposition::ReservedUnsupported,
+                    };
                 }
                 let mut last_mode = mode;
                 execute_native_command(command, context, &mut last_mode);
@@ -529,7 +548,10 @@ impl NativeCommandInput {
                     native_insert_command_supported(command)
                         || native_insert_completion_command(command)
                 }) {
-                    return NativeCommandResult::Unhandled(unhandled_keys);
+                    return NativeCommandResult::Unhandled {
+                        keys: unhandled_keys,
+                        disposition: UnhandledDisposition::ReservedUnsupported,
+                    };
                 }
                 let mut last_mode = mode;
                 let mut completion_requested = None;
@@ -552,7 +574,10 @@ impl NativeCommandInput {
             }
             KeymapResult::NotFound => {
                 if has_pending_keys {
-                    return NativeCommandResult::Unhandled(unhandled_keys);
+                    return NativeCommandResult::Unhandled {
+                        keys: unhandled_keys,
+                        disposition: UnhandledDisposition::Cancelled,
+                    };
                 }
 
                 if self.run_on_next_key(OnKeyCallbackKind::Fallback, context, key) {
@@ -572,10 +597,16 @@ impl NativeCommandInput {
                     self.current_insert_replay.keys.push(key);
                     NativeCommandResult::Handled(Vec::new())
                 } else {
-                    NativeCommandResult::Unhandled(unhandled_keys)
+                    NativeCommandResult::Unhandled {
+                        keys: unhandled_keys,
+                        disposition: UnhandledDisposition::RootNotFound,
+                    }
                 }
             }
-            KeymapResult::Cancelled(_) => NativeCommandResult::Unhandled(unhandled_keys),
+            KeymapResult::Cancelled(_) => NativeCommandResult::Unhandled {
+                keys: unhandled_keys,
+                disposition: UnhandledDisposition::Cancelled,
+            },
         }
     }
 
@@ -613,7 +644,10 @@ impl NativeCommandInput {
                     count,
                 };
             }
-            return NativeCommandResult::Unhandled(vec![key]);
+            return NativeCommandResult::Unhandled {
+                keys: vec![key],
+                disposition: UnhandledDisposition::ReservedUnsupported,
+            };
         }
 
         context.count = context.editor.count;
@@ -705,7 +739,7 @@ impl NativeCommandInput {
                 context.editor.selected_register = context.register.take();
                 NativeCommandResult::Handled(Vec::new())
             }
-            KeymapDispatch::Unhandled => {
+            KeymapDispatch::Unhandled(disposition) => {
                 context.editor.selected_register = context.register.take();
                 if let Some(request) = native_workspace_key_sequence(&unhandled_keys) {
                     context.editor.count = None;
@@ -717,7 +751,10 @@ impl NativeCommandInput {
                 if self.keymaps.pending().is_empty() {
                     context.editor.count = None;
                 }
-                NativeCommandResult::Unhandled(unhandled_keys)
+                NativeCommandResult::Unhandled {
+                    keys: unhandled_keys,
+                    disposition,
+                }
             }
         }
     }
@@ -778,7 +815,7 @@ impl NativeCommandInput {
                 }
 
                 if !native_command_supported(command) {
-                    return KeymapDispatch::Unhandled;
+                    return KeymapDispatch::Unhandled(UnhandledDisposition::ReservedUnsupported);
                 }
                 self.record_reset_diff_change_if_needed(command);
                 execute_native_command(command, context, &mut last_mode);
@@ -798,7 +835,7 @@ impl NativeCommandInput {
                         || native_page_cursor_command_supported(command)
                         || native_viewport_scroll_command(command, None).is_some()
                 }) {
-                    return KeymapDispatch::Unhandled;
+                    return KeymapDispatch::Unhandled(UnhandledDisposition::ReservedUnsupported);
                 }
 
                 for command in commands {
@@ -835,10 +872,12 @@ impl NativeCommandInput {
                 if self.run_on_next_key(OnKeyCallbackKind::Fallback, context, key) {
                     KeymapDispatch::Handled
                 } else {
-                    KeymapDispatch::Unhandled
+                    KeymapDispatch::Unhandled(UnhandledDisposition::RootNotFound)
                 }
             }
-            KeymapResult::Cancelled(_) => KeymapDispatch::Unhandled,
+            KeymapResult::Cancelled(_) => {
+                KeymapDispatch::Unhandled(UnhandledDisposition::Cancelled)
+            }
         }
     }
 
@@ -877,7 +916,7 @@ enum KeymapDispatch {
     RequestViewportScroll(nucleotide_editor::EditorViewportScrollRequest),
     RequestViewportCursor(nucleotide_editor::EditorViewportCursorRequest),
     Pending,
-    Unhandled,
+    Unhandled(UnhandledDisposition),
 }
 
 trait NativeCommandResultExt {
@@ -1496,13 +1535,13 @@ fn handle_native_file_navigation(
     action: NativeFileOpenAction,
 ) -> KeymapDispatch {
     let Some((base_path, targets)) = native_file_navigation_targets(context.editor) else {
-        return KeymapDispatch::Unhandled;
+        return KeymapDispatch::Unhandled(UnhandledDisposition::ReservedUnsupported);
     };
 
     let mut paths = Vec::new();
     for target in targets {
         if target_is_external_url(&target) {
-            return KeymapDispatch::Unhandled;
+            return KeymapDispatch::Unhandled(UnhandledDisposition::ReservedUnsupported);
         }
 
         let target_path = path::expand(&target);
@@ -2084,6 +2123,105 @@ mod tests {
         );
 
         Keymaps::new(Box::new(arc_swap::access::Constant(config.keys)))
+    }
+
+    fn disposition_test_keymaps(mode: Mode) -> Keymaps {
+        use helix_term::config::Config as HelixConfig;
+        use helix_term::keymap::{KeyTrie, KeyTrieNode, merge_keys};
+        use indexmap::IndexMap;
+        use std::collections::HashMap;
+
+        let unsupported = MappableCommand::from_str(":quit").unwrap();
+        let mut prefix_node = IndexMap::new();
+        prefix_node.insert(
+            KeyEvent::from_str("y").unwrap(),
+            KeyTrie::MappableCommand(unsupported.clone()),
+        );
+        let mut mode_node = IndexMap::new();
+        mode_node.insert(
+            KeyEvent::from_str("x").unwrap(),
+            KeyTrie::Node(KeyTrieNode::new("Prefix", prefix_node)),
+        );
+        mode_node.insert(
+            KeyEvent::from_str("C-q").unwrap(),
+            KeyTrie::MappableCommand(unsupported),
+        );
+
+        let mut config = HelixConfig::default();
+        merge_keys(
+            &mut config.keys,
+            HashMap::from([(mode, KeyTrie::Node(KeyTrieNode::new("Test", mode_node)))]),
+        );
+        Keymaps::new(Box::new(arc_swap::access::Constant(config.keys)))
+    }
+
+    fn handle_native_test_key(
+        input: &mut NativeCommandInput,
+        editor: &mut Editor,
+        key: &str,
+    ) -> NativeInputResult {
+        let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));
+        let mut jobs = Jobs::new();
+        input.handle_key(
+            KeyEvent::from_str(key).unwrap(),
+            &mut compositor,
+            editor,
+            &mut jobs,
+        )
+    }
+
+    fn assert_unhandled_disposition(result: NativeInputResult, expected: UnhandledDisposition) {
+        assert!(
+            matches!(result, NativeInputResult::Unhandled { disposition, .. } if disposition == expected),
+            "expected {expected:?} disposition"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn command_keymap_dispositions_preserve_helix_ownership() {
+        let mut editor = test_editor_with_text("");
+        let mut input = NativeCommandInput::new(disposition_test_keymaps(Mode::Normal));
+
+        assert_unhandled_disposition(
+            handle_native_test_key(&mut input, &mut editor, "C-q"),
+            UnhandledDisposition::ReservedUnsupported,
+        );
+        assert!(matches!(
+            handle_native_test_key(&mut input, &mut editor, "x"),
+            NativeInputResult::Handled { .. }
+        ));
+        assert_unhandled_disposition(
+            handle_native_test_key(&mut input, &mut editor, "z"),
+            UnhandledDisposition::Cancelled,
+        );
+        assert_unhandled_disposition(
+            handle_native_test_key(&mut input, &mut editor, "F12"),
+            UnhandledDisposition::RootNotFound,
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn insert_keymap_dispositions_preserve_helix_ownership() {
+        let mut editor = test_editor_with_text("");
+        editor.mode = Mode::Insert;
+        let mut input = NativeCommandInput::new(disposition_test_keymaps(Mode::Insert));
+
+        assert_unhandled_disposition(
+            handle_native_test_key(&mut input, &mut editor, "C-q"),
+            UnhandledDisposition::ReservedUnsupported,
+        );
+        assert!(matches!(
+            handle_native_test_key(&mut input, &mut editor, "x"),
+            NativeInputResult::Handled { .. }
+        ));
+        assert_unhandled_disposition(
+            handle_native_test_key(&mut input, &mut editor, "z"),
+            UnhandledDisposition::Cancelled,
+        );
+        assert_unhandled_disposition(
+            handle_native_test_key(&mut input, &mut editor, "F12"),
+            UnhandledDisposition::RootNotFound,
+        );
     }
 
     #[test]
