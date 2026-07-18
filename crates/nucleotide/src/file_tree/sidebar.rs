@@ -437,7 +437,7 @@ fn render_icon(
     file_tree_tokens: FileTreeTokens,
     metrics: ProjectTreeDensityMetrics,
 ) -> impl IntoElement {
-    let icon_color = tree_icon_color(row, theme, file_tree_tokens);
+    let icon_color = tree_icon_color(row, file_tree_tokens);
 
     let vcs_icon = match &row.kind {
         ProjectTreeRowKind::Directory { .. } => VcsIcon::directory(row.is_expanded)
@@ -519,27 +519,13 @@ fn row_text_color(
     }
 }
 
-fn tree_icon_color(
-    row: &ProjectTreeRow,
-    theme: &Theme,
-    file_tree_tokens: FileTreeTokens,
-) -> gpui::Hsla {
+fn tree_icon_color(row: &ProjectTreeRow, file_tree_tokens: FileTreeTokens) -> gpui::Hsla {
     if row.is_selected {
         file_tree_tokens.icon_color_selected
     } else if row.is_hidden {
         file_tree_tokens.icon_color_hidden
     } else {
-        match &row.kind {
-            ProjectTreeRowKind::File { extension } => match extension.as_deref() {
-                Some("rs" | "toml") => theme.tokens.editor.warning,
-                Some("md" | "markdown") => theme.tokens.editor.info,
-                Some("json" | "yaml" | "yml") => theme.tokens.editor.success,
-                _ => file_tree_tokens.icon_color,
-            },
-            ProjectTreeRowKind::Directory { .. } | ProjectTreeRowKind::Symlink { .. } => {
-                file_tree_tokens.icon_color
-            }
-        }
+        file_tree_tokens.icon_color
     }
 }
 
@@ -928,7 +914,7 @@ mod tests {
             theme.tokens.file_tree_tokens().item_text_hidden
         );
         assert_eq!(
-            tree_icon_color(&hidden, &theme, file_tree_tokens),
+            tree_icon_color(&hidden, file_tree_tokens),
             theme.tokens.file_tree_tokens().icon_color_hidden
         );
         assert_eq!(
@@ -938,12 +924,19 @@ mod tests {
 
         let selected = ProjectTreeRow::from_entry(&entry, true, None);
         assert_eq!(
-            tree_icon_color(&selected, &theme, file_tree_tokens),
+            tree_icon_color(&selected, file_tree_tokens),
             theme.tokens.file_tree_tokens().icon_color_selected
         );
         assert_eq!(
             chevron_color(&selected, file_tree_tokens),
             theme.tokens.file_tree_tokens().icon_color_selected
+        );
+
+        entry.is_hidden = false;
+        let normal = ProjectTreeRow::from_entry(&entry, false, None);
+        assert_eq!(
+            tree_icon_color(&normal, file_tree_tokens),
+            theme.tokens.file_tree_tokens().icon_color
         );
     }
 
