@@ -3555,9 +3555,14 @@ impl Workspace {
             document_metadata,
             vcs_ref: cx
                 .has_global::<VcsServiceHandle>()
-                .then(|| cx.global::<VcsServiceHandle>().repository_head(cx))
-                .flatten()
-                .map(|head| abbreviated_vcs_ref(&head)),
+                .then(|| {
+                    let vcs = cx.global::<VcsServiceHandle>();
+                    vcs.repository_ref(cx).or_else(|| {
+                        vcs.repository_head(cx)
+                            .map(|head| abbreviated_vcs_ref(&head))
+                    })
+                })
+                .flatten(),
             environment: self.environment_badge,
             lsp: self.compute_statusbar_lsp_summary(cx, has_lsp_state, preferred_server_id),
             notification: self.notifications.read(cx).status_bar_notification(),

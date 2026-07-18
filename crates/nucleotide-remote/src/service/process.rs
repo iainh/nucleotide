@@ -17,6 +17,7 @@ pub(crate) fn v5_local_git_head(
         return Ok(GitHeadResult {
             root: root.to_path_buf(),
             head: None,
+            display_ref: None,
         });
     }
 
@@ -25,10 +26,22 @@ pub(crate) fn v5_local_git_head(
         .map(str::trim)
         .filter(|head| !head.is_empty())
         .map(ToOwned::to_owned);
+    let mut branch_command = Command::new("git");
+    branch_command
+        .args(["symbolic-ref", "--quiet", "--short", "HEAD"])
+        .current_dir(root);
+    let display_ref =
+        v5_run_cancellable_command_collect(branch_command, "git symbolic-ref", root, cancellation)
+            .ok()
+            .filter(|output| output.status.success())
+            .and_then(|output| String::from_utf8(output.stdout).ok())
+            .map(|branch| branch.trim().to_string())
+            .filter(|branch| !branch.is_empty());
 
     Ok(GitHeadResult {
         root: root.to_path_buf(),
         head,
+        display_ref,
     })
 }
 
