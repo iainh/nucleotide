@@ -51,8 +51,8 @@ use nucleotide_ui::scrollbar::{Scrollbar, ScrollbarState};
 use nucleotide_ui::{
     AboutWindow, Button, ButtonSize, ButtonVariant, ConfirmDialog, ConfirmDialogEvent,
     ConfirmDialogView, ContextMenuController, EditorPaneGrid, IndeterminateProgressIndicator,
-    MarkdownStyle, ModalLayer, PopupMenu, PopupMenuSurface, StateView, StatusBar, TextTooltip,
-    Tooltipped, completion_menu_action_for_key, markdown_extended,
+    MarkdownStyle, ModalLayer, PopupMenu, PopupMenuSurface, StateView, StatusBar, Tooltipped,
+    completion_menu_action_for_key, markdown_extended,
 };
 
 use crate::input_coordinator::{InputContext, InputCoordinator};
@@ -284,7 +284,6 @@ struct StatusBarGeometry {
     sidebar_width: Pixels,
     density: StatusBarDensity,
     mode_width: Pixels,
-    environment_width: Pixels,
     position_width: Pixels,
     lsp_width: Pixels,
     utility_width: Pixels,
@@ -305,7 +304,6 @@ impl StatusBarGeometry {
             sidebar_width: px(sidebar_width),
             density,
             mode_width: sizes.statusbar_mode_width,
-            environment_width: sizes.statusbar_environment_width,
             position_width: sizes.statusbar_position_width,
             lsp_width: density.lsp_width(sizes),
             utility_width: sizes.statusbar_utility_width,
@@ -321,7 +319,6 @@ struct StatusBarModel {
     position_text: String,
     document_metadata: Option<StatusBarDocumentMetadata>,
     vcs_ref: Option<String>,
-    environment: Option<EnvironmentBadge>,
     lsp: Option<LspStatusSummary>,
     notification: Option<StatusBarNotification>,
     background_activity: Option<String>,
@@ -438,20 +435,6 @@ impl EnvironmentBadge {
                 .get("ZED_ENVIRONMENT")
                 .map(String::as_str),
         )
-    }
-
-    fn label(self) -> &'static str {
-        match self {
-            Self::Loading => "direnv",
-            Self::NativeFlake => "direnv",
-        }
-    }
-
-    fn detail(self) -> &'static str {
-        match self {
-            Self::Loading => "loading",
-            Self::NativeFlake => "flake",
-        }
     }
 }
 
@@ -3418,7 +3401,7 @@ impl Workspace {
         let editor = &core.editor;
 
         let mut mode = helix_view::document::Mode::Normal;
-        let mut mode_name = "NOR";
+        let mut mode_name = "NORMAL";
         let mut file_name = "[no file]".to_string();
         let mut position_text = "1:1".to_string();
         let mut document_metadata = None;
@@ -3441,9 +3424,9 @@ impl Workspace {
         {
             mode = editor.mode();
             mode_name = match mode {
-                helix_view::document::Mode::Normal => "NOR",
-                helix_view::document::Mode::Insert => "INS",
-                helix_view::document::Mode::Select => "SEL",
+                helix_view::document::Mode::Normal => "NORMAL",
+                helix_view::document::Mode::Insert => "INSERT",
+                helix_view::document::Mode::Select => "SELECT",
             };
 
             file_name = doc
@@ -3560,7 +3543,6 @@ impl Workspace {
                     })
                 })
                 .flatten(),
-            environment: self.environment_badge,
             lsp: self.compute_statusbar_lsp_summary(cx, has_lsp_state, preferred_server_id),
             notification: self.notifications.read(cx).status_bar_notification(),
             background_activity: self
@@ -3568,19 +3550,6 @@ impl Workspace {
                 .map(|activity| activity.message.clone()),
             density,
         }
-    }
-
-    /// Standard divider element for the status bar.
-    fn statusbar_divider(&self, color: gpui::Hsla) -> gpui::AnyElement {
-        let metrics =
-            nucleotide_ui::DensityMetrics::for_density(nucleotide_ui::ControlDensity::Comfortable);
-        gpui::div()
-            .flex_none()
-            .w(gpui::px(1.0))
-            .h(metrics.icon_size)
-            .bg(color)
-            .mx_2()
-            .into_any_element()
     }
 
     fn statusbar_text_item(
@@ -3623,11 +3592,11 @@ impl Workspace {
                     .gap_1()
                     .child(
                         svg()
-                            .path("icons/circle-x.svg")
+                            .path("icons/triangle-alert.svg")
                             .size(px(12.0))
-                            .text_color(notification_tokens.error_text),
+                            .text_color(notification_tokens.warning_text),
                     )
-                    .child(metadata.errors.to_string()),
+                    .child(metadata.warnings.to_string()),
             )
             .child(
                 div()
@@ -3636,11 +3605,42 @@ impl Workspace {
                     .gap_1()
                     .child(
                         svg()
-                            .path("icons/triangle-alert.svg")
+                            .path("icons/circle-x.svg")
                             .size(px(12.0))
-                            .text_color(notification_tokens.warning_text),
+                            .text_color(notification_tokens.error_text),
                     )
-                    .child(metadata.warnings.to_string()),
+                    .child(metadata.errors.to_string()),
+            )
+            .into_any_element()
+    }
+
+    fn statusbar_vcs_item(
+        &self,
+        vcs_ref: &str,
+        status_bar_tokens: &nucleotide_ui::tokens::StatusBarTokens,
+    ) -> gpui::AnyElement {
+        div()
+            .h_full()
+            .max_w(px(120.0))
+            .px_2()
+            .flex()
+            .items_center()
+            .gap_1()
+            .overflow_hidden()
+            .text_color(status_bar_tokens.text_secondary)
+            .child(
+                svg()
+                    .path("icons/git-branch.svg")
+                    .size(px(12.0))
+                    .flex_shrink_0(),
+            )
+            .child(
+                div()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .child(vcs_ref.to_string()),
             )
             .into_any_element()
     }
@@ -3656,9 +3656,6 @@ impl Workspace {
             helix_view::document::Mode::Insert => status_bar_tokens.mode_insert,
             helix_view::document::Mode::Select => status_bar_tokens.mode_select,
         };
-        let mode_background = nucleotide_ui::tokens::utils::with_alpha(mode_color, 0.12);
-        let mode_border = nucleotide_ui::tokens::utils::with_alpha(mode_color, 0.28);
-
         div()
             .flex_none()
             .w(geometry.mode_width)
@@ -3668,57 +3665,19 @@ impl Workspace {
             .justify_center()
             .child(
                 div()
-                    .min_w(px(44.0))
+                    .min_w(px(60.0))
                     .h(px(22.0))
                     .px_2()
                     .flex()
                     .items_center()
                     .justify_center()
-                    .rounded(px(5.0))
-                    .border_1()
-                    .border_color(mode_border)
-                    .bg(mode_background)
-                    .text_color(mode_color)
+                    .rounded_full()
+                    .bg(mode_color)
+                    .text_color(status_bar_tokens.mode_text)
                     .font_weight(FontWeight::MEDIUM)
                     .child(model.mode_label),
             )
             .into_any_element()
-    }
-
-    fn statusbar_environment_badge(
-        &self,
-        badge: Option<EnvironmentBadge>,
-        geometry: StatusBarGeometry,
-        status_bar_tokens: &nucleotide_ui::tokens::StatusBarTokens,
-    ) -> gpui::AnyElement {
-        let mut slot = div()
-            .id("statusbar-environment")
-            .flex_none()
-            .w(geometry.environment_width)
-            .h_full()
-            .flex()
-            .items_center()
-            .justify_center();
-
-        if let Some(badge) = badge {
-            let tooltip_text = format!("Environment: {} {}", badge.label(), badge.detail());
-            let tooltip = tooltip_text.clone();
-            let icon_color = match badge {
-                EnvironmentBadge::Loading => status_bar_tokens.text_accent,
-                EnvironmentBadge::NativeFlake => status_bar_tokens.text_primary,
-            };
-            slot = slot
-                .aria_label(tooltip_text)
-                .tooltip(move |_window, cx| cx.new(|_| TextTooltip::new(tooltip.clone())).into())
-                .child(
-                    svg()
-                        .path("icons/code.svg")
-                        .size(px(14.0))
-                        .text_color(icon_color),
-                );
-        }
-
-        slot.into_any_element()
     }
 
     fn statusbar_lsp_item(
@@ -3731,7 +3690,7 @@ impl Workspace {
     ) -> gpui::AnyElement {
         let unavailable = LspStatusSummary {
             server_id: None,
-            server_name: "LSP".to_string(),
+            server_name: "LSP:".to_string(),
             kind: LspStatusKind::Unavailable,
             title: "No servers".to_string(),
             message: None,
@@ -3871,32 +3830,25 @@ impl Workspace {
         &self,
         model: &StatusBarModel,
         geometry: StatusBarGeometry,
-        divider_color: gpui::Hsla,
         status_bar_tokens: &nucleotide_ui::tokens::StatusBarTokens,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let mut context = div().flex_none().h_full().flex().items_center();
 
         if model.density != StatusBarDensity::Compact {
-            context = context
-                .child(self.statusbar_environment_badge(
-                    model.environment,
-                    geometry,
-                    status_bar_tokens,
-                ))
-                .child(
-                    div()
-                        .flex_none()
-                        .w(geometry.position_width)
-                        .h_full()
-                        .px_3()
-                        .flex()
-                        .items_center()
-                        .justify_end()
-                        .whitespace_nowrap()
-                        .text_color(status_bar_tokens.text_secondary)
-                        .child(model.position_text.clone()),
-                );
+            context = context.child(
+                div()
+                    .flex_none()
+                    .w(geometry.position_width)
+                    .h_full()
+                    .px_2()
+                    .flex()
+                    .items_center()
+                    .justify_end()
+                    .whitespace_nowrap()
+                    .text_color(status_bar_tokens.text_secondary)
+                    .child(model.position_text.clone()),
+            );
         }
 
         if model.density == StatusBarDensity::Wide
@@ -3918,8 +3870,7 @@ impl Workspace {
 
         if model.density == StatusBarDensity::Wide {
             if let Some(vcs_ref) = model.vcs_ref.as_ref() {
-                context = context
-                    .child(self.statusbar_text_item(format!("git:{vcs_ref}"), status_bar_tokens));
+                context = context.child(self.statusbar_vcs_item(vcs_ref, status_bar_tokens));
             }
             if let Some(metadata) = model.document_metadata.as_ref() {
                 context =
@@ -3948,7 +3899,6 @@ impl Workspace {
                         cx,
                     )),
             )
-            .child(self.statusbar_divider(divider_color))
             .child(context)
             .into_any_element()
     }
@@ -11518,13 +11468,7 @@ impl Workspace {
             .when(extend_sidebar_into_status_bar, |content| {
                 content.border_t_1().border_color(divider_color)
             })
-            .child(self.statusbar_main_content(
-                &model,
-                geometry,
-                divider_color,
-                &status_bar_tokens,
-                cx,
-            ));
+            .child(self.statusbar_main_content(&model, geometry, &status_bar_tokens, cx));
 
         let workspace_entity = cx.entity().clone();
         let file_tree_button = Button::icon_only("file-tree-toggle", "icons/folder-tree.svg")
@@ -11564,8 +11508,6 @@ impl Workspace {
             .when(extend_sidebar_into_status_bar, |utilities| {
                 utilities.border_t_1().border_color(divider_color)
             })
-            .border_l_1()
-            .border_color(divider_color)
             .child(
                 div()
                     .w(chrome_metrics.row_height)
@@ -18095,8 +18037,8 @@ mod tests {
         assert_eq!(medium.density, StatusBarDensity::Medium);
         assert_eq!(compact.density, StatusBarDensity::Compact);
         assert_eq!(wide_idle.lsp_width, wide_working.lsp_width);
-        assert_eq!(wide_idle.lsp_width, px(248.0));
-        assert_eq!(medium.lsp_width, px(184.0));
+        assert_eq!(wide_idle.lsp_width, px(132.0));
+        assert_eq!(medium.lsp_width, px(112.0));
         assert_eq!(compact.lsp_width, px(36.0));
         assert_eq!(wide_idle.position_width, wide_working.position_width);
         assert_eq!(wide_idle.utility_width, wide_working.utility_width);

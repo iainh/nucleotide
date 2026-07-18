@@ -491,6 +491,10 @@ impl Render for ThemeDebugView {
             color: status_bar.border,
         });
         items.push(DebugItem::Row {
+            label: SharedString::from("mode_text"),
+            color: status_bar.mode_text,
+        });
+        items.push(DebugItem::Row {
             label: SharedString::from("mode_normal"),
             color: status_bar.mode_normal,
         });
