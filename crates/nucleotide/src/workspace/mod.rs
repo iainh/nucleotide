@@ -260,10 +260,10 @@ enum StatusBarDensity {
 }
 
 impl StatusBarDensity {
-    fn for_viewport(viewport_width: f32) -> Self {
-        if viewport_width >= 1_100.0 {
+    fn for_available_width(available_width: f32) -> Self {
+        if available_width >= 780.0 {
             Self::Wide
-        } else if viewport_width >= 760.0 {
+        } else if available_width >= 400.0 {
             Self::Medium
         } else {
             Self::Compact
@@ -282,6 +282,7 @@ impl StatusBarDensity {
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct StatusBarGeometry {
     sidebar_width: Pixels,
+    density: StatusBarDensity,
     mode_width: Pixels,
     environment_width: Pixels,
     position_width: Pixels,
@@ -296,9 +297,13 @@ impl StatusBarGeometry {
         file_tree_width: f32,
         sizes: &nucleotide_ui::tokens::SizeTokens,
     ) -> Self {
-        let density = StatusBarDensity::for_viewport(viewport_width);
+        let sidebar_width = if show_file_tree { file_tree_width } else { 0.0 };
+        let available_width =
+            (viewport_width - sidebar_width - f32::from(sizes.statusbar_utility_width)).max(0.0);
+        let density = StatusBarDensity::for_available_width(available_width);
         Self {
-            sidebar_width: px(if show_file_tree { file_tree_width } else { 0.0 }),
+            sidebar_width: px(sidebar_width),
+            density,
             mode_width: sizes.statusbar_mode_width,
             environment_width: sizes.statusbar_environment_width,
             position_width: sizes.statusbar_position_width,
@@ -3532,7 +3537,7 @@ impl Workspace {
         ))
     }
 
-    fn statusbar_model(&self, viewport_width: f32, cx: &mut Context<Self>) -> StatusBarModel {
+    fn statusbar_model(&self, density: StatusBarDensity, cx: &mut Context<Self>) -> StatusBarModel {
         let (
             mode,
             mode_label,
@@ -3559,7 +3564,7 @@ impl Workspace {
             background_activity: self
                 .current_background_activity()
                 .map(|activity| activity.message.clone()),
-            density: StatusBarDensity::for_viewport(viewport_width),
+            density,
         }
     }
 
@@ -3584,9 +3589,12 @@ impl Workspace {
         div()
             .h_full()
             .px_2()
+            .max_w(px(120.0))
             .flex()
             .items_center()
+            .overflow_hidden()
             .whitespace_nowrap()
+            .text_ellipsis()
             .text_color(status_bar_tokens.text_secondary)
             .child(text.into())
             .into_any_element()
@@ -3865,25 +3873,29 @@ impl Workspace {
         status_bar_tokens: &nucleotide_ui::tokens::StatusBarTokens,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let mut context = div()
-            .flex_none()
-            .h_full()
-            .flex()
-            .items_center()
-            .child(self.statusbar_environment_badge(model.environment, geometry, status_bar_tokens))
-            .child(
-                div()
-                    .flex_none()
-                    .w(geometry.position_width)
-                    .h_full()
-                    .px_3()
-                    .flex()
-                    .items_center()
-                    .justify_end()
-                    .whitespace_nowrap()
-                    .text_color(status_bar_tokens.text_secondary)
-                    .child(model.position_text.clone()),
-            );
+        let mut context = div().flex_none().h_full().flex().items_center();
+
+        if model.density != StatusBarDensity::Compact {
+            context = context
+                .child(self.statusbar_environment_badge(
+                    model.environment,
+                    geometry,
+                    status_bar_tokens,
+                ))
+                .child(
+                    div()
+                        .flex_none()
+                        .w(geometry.position_width)
+                        .h_full()
+                        .px_3()
+                        .flex()
+                        .items_center()
+                        .justify_end()
+                        .whitespace_nowrap()
+                        .text_color(status_bar_tokens.text_secondary)
+                        .child(model.position_text.clone()),
+                );
+        }
 
         if model.density == StatusBarDensity::Wide
             && let Some(metadata) = model.document_metadata.as_ref()
@@ -11473,7 +11485,7 @@ impl Workspace {
             self.file_tree_width,
             &sizes,
         );
-        let model = self.statusbar_model(viewport_width, cx);
+        let model = self.statusbar_model(geometry.density, cx);
         let chrome_metrics =
             nucleotide_ui::DensityMetrics::for_density(nucleotide_ui::ControlDensity::Comfortable);
         let divider_color = status_bar_tokens.border;
@@ -18075,8 +18087,11 @@ mod tests {
         let wide_idle = StatusBarGeometry::new(1_200.0, true, 240.0, &sizes);
         let wide_working = StatusBarGeometry::new(1_500.0, false, 0.0, &sizes);
         let medium = StatusBarGeometry::new(900.0, true, 320.0, &sizes);
-        let compact = StatusBarGeometry::new(700.0, false, 0.0, &sizes);
+        let compact = StatusBarGeometry::new(700.0, true, 300.0, &sizes);
 
+        assert_eq!(wide_idle.density, StatusBarDensity::Wide);
+        assert_eq!(medium.density, StatusBarDensity::Medium);
+        assert_eq!(compact.density, StatusBarDensity::Compact);
         assert_eq!(wide_idle.lsp_width, wide_working.lsp_width);
         assert_eq!(wide_idle.lsp_width, px(248.0));
         assert_eq!(medium.lsp_width, px(184.0));
@@ -18088,21 +18103,33 @@ mod tests {
     #[test]
     fn statusbar_breakpoints_follow_research_priority() {
         assert_eq!(
-            StatusBarDensity::for_viewport(1_100.0),
+            StatusBarDensity::for_available_width(780.0),
             StatusBarDensity::Wide
         );
         assert_eq!(
-            StatusBarDensity::for_viewport(1_099.0),
+            StatusBarDensity::for_available_width(779.0),
             StatusBarDensity::Medium
         );
         assert_eq!(
-            StatusBarDensity::for_viewport(760.0),
+            StatusBarDensity::for_available_width(400.0),
             StatusBarDensity::Medium
         );
         assert_eq!(
-            StatusBarDensity::for_viewport(759.0),
+            StatusBarDensity::for_available_width(399.0),
             StatusBarDensity::Compact
         );
+    }
+
+    #[test]
+    fn statusbar_density_accounts_for_resized_sidebar() {
+        let sizes = nucleotide_ui::tokens::DesignTokens::light().sizes;
+
+        let narrow_editor = StatusBarGeometry::new(1_200.0, true, 1_000.0, &sizes);
+        let minimum_window = StatusBarGeometry::new(400.0, true, 240.0, &sizes);
+
+        assert_eq!(narrow_editor.density, StatusBarDensity::Compact);
+        assert_eq!(minimum_window.density, StatusBarDensity::Compact);
+        assert_eq!(narrow_editor.lsp_width, sizes.statusbar_lsp_width_compact);
     }
 
     #[test]
