@@ -682,7 +682,7 @@ impl Render for DocumentView {
                         .child(
                             div()
                                 .text_size(tokens.sizes.text_sm)
-                                .text_color(tokens.chrome.text_chrome_secondary)
+                                .text_color(tokens.editor.text_secondary)
                                 .child("Start typing or open a file"),
                         )
                         .child(
