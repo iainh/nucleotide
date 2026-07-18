@@ -126,7 +126,7 @@ pub enum TargetPlatform {
 }
 
 impl TargetPlatform {
-    fn current() -> Self {
+    pub(crate) fn current() -> Self {
         if cfg!(target_os = "macos") {
             Self::MacOS
         } else if cfg!(target_os = "windows") {

@@ -5806,6 +5806,11 @@ impl Application {
             updated_helix_config.editor.bufferline
         );
         self.helix_config_arc.store(Arc::new(updated_helix_config));
+        let native_keys = Box::new(Map::new(
+            Arc::clone(&self.helix_config_arc),
+            |config: &Config| &config.keys,
+        ));
+        self.editor_input = EditorInputBridge::new(Keymaps::new(native_keys));
 
         self.editor.refresh_config(&old_config);
         debug!(
