@@ -212,7 +212,6 @@ pub struct SizeTokens {
     pub radius_sm: Pixels,
     pub radius_md: Pixels,
     pub radius_lg: Pixels,
-    pub radius_xl: Pixels,
     pub radius_full: Pixels,
 
     // Font sizes
@@ -262,7 +261,6 @@ impl SizeTokens {
             radius_sm: px(4.0),
             radius_md: px(6.0),
             radius_lg: px(8.0),
-            radius_xl: px(12.0),
             radius_full: px(9999.0),
 
             // Font sizes
