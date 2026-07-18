@@ -305,11 +305,11 @@ mod titlebar_contrast_tests {
 
         assert_eq!(tokens.sizes.statusbar_height, gpui::px(32.0));
         assert!(tokens.sizes.statusbar_height < tokens.sizes.titlebar_height);
-        assert_eq!(tokens.sizes.statusbar_mode_width, gpui::px(52.0));
+        assert_eq!(tokens.sizes.statusbar_mode_width, gpui::px(68.0));
         assert_eq!(tokens.sizes.statusbar_environment_width, gpui::px(32.0));
-        assert_eq!(tokens.sizes.statusbar_position_width, gpui::px(88.0));
-        assert_eq!(tokens.sizes.statusbar_lsp_width_wide, gpui::px(248.0));
-        assert_eq!(tokens.sizes.statusbar_lsp_width_medium, gpui::px(184.0));
+        assert_eq!(tokens.sizes.statusbar_position_width, gpui::px(48.0));
+        assert_eq!(tokens.sizes.statusbar_lsp_width_wide, gpui::px(132.0));
+        assert_eq!(tokens.sizes.statusbar_lsp_width_medium, gpui::px(112.0));
         assert_eq!(tokens.sizes.statusbar_lsp_width_compact, gpui::px(36.0));
         assert_eq!(tokens.sizes.statusbar_utility_width, gpui::px(64.0));
     }
@@ -402,22 +402,12 @@ mod component_token_tests {
             tokens.chrome.primary,
             ContrastRatios::AA_NORMAL,
         );
-        let expected_insert = ColorTheory::ensure_contrast(
-            tokens.chrome.footer_background,
-            tokens.chrome.primary_hover,
-            ContrastRatios::AA_NORMAL,
-        );
-        let expected_select = ColorTheory::ensure_contrast(
-            tokens.chrome.footer_background,
-            tokens.chrome.primary_active,
-            ContrastRatios::AA_NORMAL,
-        );
-
         assert_eq!(status_bar.text_primary, tokens.chrome.text_on_chrome);
         assert_eq!(status_bar.text_accent, expected_accent);
-        assert_eq!(status_bar.mode_normal, tokens.chrome.text_on_chrome);
-        assert_eq!(status_bar.mode_insert, expected_insert);
-        assert_eq!(status_bar.mode_select, expected_select);
+        assert_eq!(status_bar.mode_normal, tokens.chrome.primary);
+        assert_eq!(status_bar.mode_text, tokens.editor.text_on_primary);
+        assert_eq!(status_bar.mode_insert, tokens.chrome.primary_hover);
+        assert_eq!(status_bar.mode_select, tokens.chrome.primary_active);
         assert_ne!(status_bar.mode_insert, helix_colors.cursor_insert);
         assert_ne!(status_bar.mode_select, helix_colors.cursor_select);
 
@@ -502,27 +492,16 @@ mod component_token_tests {
         assert_ne!(status_bar.mode_insert, status_bar.mode_select);
 
         // Mode colors should align with chrome accents
-        assert_eq!(status_bar.mode_normal, status_bar.text_primary);
+        assert_ne!(status_bar.mode_normal, status_bar.text_primary);
 
         let expected_accent = ColorTheory::ensure_contrast(
             tokens.chrome.footer_background,
             tokens.chrome.primary,
             ContrastRatios::AA_NORMAL,
         );
-        let expected_insert = ColorTheory::ensure_contrast(
-            tokens.chrome.footer_background,
-            tokens.chrome.primary_hover,
-            ContrastRatios::AA_NORMAL,
-        );
-        let expected_select = ColorTheory::ensure_contrast(
-            tokens.chrome.footer_background,
-            tokens.chrome.primary_active,
-            ContrastRatios::AA_NORMAL,
-        );
-
         assert_eq!(status_bar.text_accent, expected_accent);
-        assert_eq!(status_bar.mode_insert, expected_insert);
-        assert_eq!(status_bar.mode_select, expected_select);
+        assert_eq!(status_bar.mode_insert, tokens.chrome.primary_hover);
+        assert_eq!(status_bar.mode_select, tokens.chrome.primary_active);
 
         // Verify background contrast
         let active_contrast =
