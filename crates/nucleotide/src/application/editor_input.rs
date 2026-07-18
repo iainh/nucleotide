@@ -119,6 +119,27 @@ pub struct EditorInputBridge {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditorSemanticAction {
+    Undo,
+    Redo,
+    Copy,
+    Cut,
+    Paste,
+    SelectAll,
+    Find,
+    FindNext,
+    FindPrevious,
+    NextBuffer,
+    PreviousBuffer,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FallbackShortcut {
+    Workspace(crate::types::SemanticShortcutIntent),
+    Editor(EditorSemanticAction),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TargetPlatform {
     MacOS,
     Windows,
@@ -278,6 +299,79 @@ impl EditorInputBridge {
             semantic_shortcut_requested,
             viewport_scroll_requested,
             viewport_cursor_requested,
+        }
+    }
+
+    pub fn handle_semantic_action(
+        &mut self,
+        action: EditorSemanticAction,
+        compositor: &mut Compositor,
+        editor: &mut Editor,
+        jobs: &mut Jobs,
+    ) -> EditorInputOutcome {
+        let before_view = editor.tree.focus;
+        let before_doc = editor.tree.try_get(before_view).map(|view| view.doc);
+        let before_selection =
+            before_doc.and_then(|doc_id| selection_snapshot(editor, doc_id, before_view));
+        let mut prompt_requested = None;
+
+        if action == EditorSemanticAction::Find {
+            prompt_requested = Some(NativePromptRequest::Search);
+        } else {
+            let commands: &[&MappableCommand] = match action {
+                EditorSemanticAction::Undo => &[&MappableCommand::undo],
+                EditorSemanticAction::Redo => &[&MappableCommand::redo],
+                EditorSemanticAction::Copy => &[&MappableCommand::yank_to_clipboard],
+                EditorSemanticAction::Cut => &[
+                    &MappableCommand::yank_to_clipboard,
+                    &MappableCommand::delete_selection,
+                ],
+                EditorSemanticAction::Paste => &[&MappableCommand::paste_clipboard_after],
+                EditorSemanticAction::SelectAll => &[&MappableCommand::select_all],
+                EditorSemanticAction::FindNext => &[&MappableCommand::search_next],
+                EditorSemanticAction::FindPrevious => &[&MappableCommand::search_prev],
+                EditorSemanticAction::NextBuffer => &[&MappableCommand::goto_next_buffer],
+                EditorSemanticAction::PreviousBuffer => &[&MappableCommand::goto_previous_buffer],
+                EditorSemanticAction::Find => unreachable!(),
+            };
+            let callbacks = {
+                let mut context = commands::Context {
+                    editor,
+                    count: None,
+                    register: None,
+                    callback: Vec::new(),
+                    on_next_key_callback: None,
+                    jobs,
+                };
+                let mut last_mode = context.editor.mode();
+                for command in commands {
+                    execute_native_command(command, &mut context, &mut last_mode);
+                }
+                std::mem::take(&mut context.callback)
+            };
+            finalize_native_command(editor, jobs, compositor, callbacks);
+        }
+
+        let focused_view_id = editor.tree.focus;
+        let focused_doc_id = editor.tree.try_get(focused_view_id).map(|view| view.doc);
+        let after_selection =
+            focused_doc_id.and_then(|doc_id| selection_snapshot(editor, doc_id, focused_view_id));
+        EditorInputOutcome {
+            focused_view_id,
+            focused_doc_id,
+            selection_changed: before_doc != focused_doc_id
+                || selection_changed(before_selection, after_selection),
+            handled_by_native_command: true,
+            reset_diff_change_executed: false,
+            unhandled_keys: Vec::new(),
+            completion_requested: None,
+            picker_requested: None,
+            prompt_requested,
+            lsp_navigation_requested: None,
+            workspace_requested: None,
+            semantic_shortcut_requested: None,
+            viewport_scroll_requested: None,
+            viewport_cursor_requested: None,
         }
     }
 }
@@ -524,7 +618,7 @@ impl NativeCommandInput {
             }
             NativeCommandResult::Unhandled { keys, disposition } => {
                 if disposition == UnhandledDisposition::RootNotFound {
-                    if let Some(request) =
+                    if let Some(FallbackShortcut::Workspace(request)) =
                         resolve_fallback_shortcut(mode_before, key, self.target_platform)
                     {
                         return NativeInputResult::RequestSemanticShortcut(request);
@@ -657,8 +751,15 @@ impl NativeCommandInput {
                         request: NativePickerRequest::CodeActions,
                     };
                 }
-                if let Some(request) = resolve_fallback_shortcut(mode, key, self.target_platform) {
-                    return NativeCommandResult::RequestSemanticShortcut(request);
+                if let Some(fallback) = resolve_fallback_shortcut(mode, key, self.target_platform) {
+                    return match fallback {
+                        FallbackShortcut::Workspace(request) => {
+                            NativeCommandResult::RequestSemanticShortcut(request)
+                        }
+                        FallbackShortcut::Editor(action) => {
+                            execute_editor_semantic_action(action, context)
+                        }
+                    };
                 }
 
                 if let Some(ch) = key.char() {
@@ -812,6 +913,19 @@ impl NativeCommandInput {
                 context.editor.selected_register = context.register.take();
                 if self.keymaps.pending().is_empty() {
                     context.editor.count = None;
+                }
+                if disposition == UnhandledDisposition::RootNotFound
+                    && let Some(fallback) =
+                        resolve_fallback_shortcut(mode, key, self.target_platform)
+                {
+                    return match fallback {
+                        FallbackShortcut::Workspace(request) => {
+                            NativeCommandResult::RequestSemanticShortcut(request)
+                        }
+                        FallbackShortcut::Editor(action) => {
+                            execute_editor_semantic_action(action, context)
+                        }
+                    };
                 }
                 NativeCommandResult::Unhandled {
                     keys: unhandled_keys,
@@ -1081,6 +1195,39 @@ fn execute_native_command(
         });
         *last_mode = current_mode;
     }
+}
+
+fn execute_editor_semantic_action(
+    action: EditorSemanticAction,
+    context: &mut commands::Context<'_>,
+) -> NativeCommandResult {
+    if action == EditorSemanticAction::Find {
+        return NativeCommandResult::RequestPrompt {
+            callbacks: Vec::new(),
+            request: NativePromptRequest::Search,
+        };
+    }
+    let commands: &[&MappableCommand] = match action {
+        EditorSemanticAction::Undo => &[&MappableCommand::undo],
+        EditorSemanticAction::Redo => &[&MappableCommand::redo],
+        EditorSemanticAction::Copy => &[&MappableCommand::yank_to_clipboard],
+        EditorSemanticAction::Cut => &[
+            &MappableCommand::yank_to_clipboard,
+            &MappableCommand::delete_selection,
+        ],
+        EditorSemanticAction::Paste => &[&MappableCommand::paste_clipboard_after],
+        EditorSemanticAction::SelectAll => &[&MappableCommand::select_all],
+        EditorSemanticAction::FindNext => &[&MappableCommand::search_next],
+        EditorSemanticAction::FindPrevious => &[&MappableCommand::search_prev],
+        EditorSemanticAction::NextBuffer => &[&MappableCommand::goto_next_buffer],
+        EditorSemanticAction::PreviousBuffer => &[&MappableCommand::goto_previous_buffer],
+        EditorSemanticAction::Find => unreachable!(),
+    };
+    let mut last_mode = context.editor.mode();
+    for command in commands {
+        execute_native_command(command, context, &mut last_mode);
+    }
+    NativeCommandResult::Handled(Vec::new())
 }
 
 fn finalize_native_command(
@@ -1920,8 +2067,10 @@ pub fn resolve_fallback_shortcut(
     _mode: Mode,
     key: KeyEvent,
     platform: TargetPlatform,
-) -> Option<crate::types::SemanticShortcutIntent> {
+) -> Option<FallbackShortcut> {
     use crate::types::SemanticShortcutIntent as Intent;
+    use EditorSemanticAction as Editor;
+    use FallbackShortcut::{Editor as EditorFallback, Workspace};
 
     let custom = [
         ('r', KeyModifiers::CONTROL, Intent::ShowRunnables),
@@ -1946,10 +2095,10 @@ pub fn resolve_fallback_shortcut(
         .into_iter()
         .find(|(ch, modifiers, _)| key_is(key, *ch, *modifiers))
     {
-        return Some(intent);
+        return Some(Workspace(intent));
     }
     if is_custom_code_actions_shortcut(key) {
-        return Some(Intent::ShowCodeActions);
+        return Some(Workspace(Intent::ShowCodeActions));
     }
 
     let primary = if platform == TargetPlatform::MacOS {
@@ -1975,9 +2124,82 @@ pub fn resolve_fallback_shortcut(
         ('=', primary, Intent::IncreaseFontSize),
         ('-', primary, Intent::DecreaseFontSize),
     ];
-    standard
+    if let Some(intent) = standard
         .into_iter()
         .find_map(|(ch, modifiers, intent)| key_is(key, ch, modifiers).then_some(intent))
+    {
+        return Some(Workspace(intent));
+    }
+
+    let semantic = if platform == TargetPlatform::MacOS {
+        [
+            ('z', KeyModifiers::SUPER, Editor::Undo),
+            ('z', KeyModifiers::SUPER | KeyModifiers::SHIFT, Editor::Redo),
+            ('c', KeyModifiers::SUPER, Editor::Copy),
+            ('x', KeyModifiers::SUPER, Editor::Cut),
+            ('v', KeyModifiers::SUPER, Editor::Paste),
+            ('a', KeyModifiers::SUPER, Editor::SelectAll),
+            ('f', KeyModifiers::SUPER, Editor::Find),
+            ('g', KeyModifiers::SUPER, Editor::FindNext),
+            (
+                'g',
+                KeyModifiers::SUPER | KeyModifiers::SHIFT,
+                Editor::FindPrevious,
+            ),
+            (
+                ']',
+                KeyModifiers::SUPER | KeyModifiers::SHIFT,
+                Editor::NextBuffer,
+            ),
+            (
+                '[',
+                KeyModifiers::SUPER | KeyModifiers::SHIFT,
+                Editor::PreviousBuffer,
+            ),
+        ]
+        .into_iter()
+        .find_map(|(ch, modifiers, action)| key_is(key, ch, modifiers).then_some(action))
+    } else {
+        [
+            ('z', KeyModifiers::CONTROL, Editor::Undo),
+            ('y', KeyModifiers::CONTROL, Editor::Redo),
+            (
+                'z',
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+                Editor::Redo,
+            ),
+            ('c', KeyModifiers::CONTROL, Editor::Copy),
+            ('x', KeyModifiers::CONTROL, Editor::Cut),
+            ('v', KeyModifiers::CONTROL, Editor::Paste),
+            ('a', KeyModifiers::CONTROL, Editor::SelectAll),
+            ('f', KeyModifiers::CONTROL, Editor::Find),
+        ]
+        .into_iter()
+        .find_map(|(ch, modifiers, action)| key_is(key, ch, modifiers).then_some(action))
+    };
+    if let Some(action) = semantic {
+        return Some(EditorFallback(action));
+    }
+
+    let desktop = matches!(platform, TargetPlatform::Linux | TargetPlatform::Windows);
+    match (key.code, key.modifiers) {
+        (KeyCode::F(3), KeyModifiers::NONE) if desktop => Some(EditorFallback(Editor::FindNext)),
+        (KeyCode::F(3), KeyModifiers::SHIFT) if desktop => {
+            Some(EditorFallback(Editor::FindPrevious))
+        }
+        (KeyCode::Tab, KeyModifiers::CONTROL) if desktop => {
+            Some(EditorFallback(Editor::NextBuffer))
+        }
+        (KeyCode::Tab, modifiers)
+            if desktop && modifiers == KeyModifiers::CONTROL | KeyModifiers::SHIFT =>
+        {
+            Some(EditorFallback(Editor::PreviousBuffer))
+        }
+        (KeyCode::Insert, KeyModifiers::CONTROL) if desktop => Some(EditorFallback(Editor::Copy)),
+        (KeyCode::Insert, KeyModifiers::SHIFT) if desktop => Some(EditorFallback(Editor::Paste)),
+        (KeyCode::Delete, KeyModifiers::SHIFT) if desktop => Some(EditorFallback(Editor::Cut)),
+        _ => None,
+    }
 }
 
 fn command_count_digit(key: KeyEvent) -> Option<usize> {
@@ -2382,7 +2604,7 @@ mod tests {
                 KeyEvent::from_str("C-s").unwrap(),
                 TargetPlatform::Linux,
             ),
-            Some(Intent::Save)
+            Some(FallbackShortcut::Workspace(Intent::Save))
         );
         assert_eq!(
             resolve_fallback_shortcut(
@@ -2390,7 +2612,7 @@ mod tests {
                 KeyEvent::from_str("C-s").unwrap(),
                 TargetPlatform::Windows,
             ),
-            Some(Intent::Save)
+            Some(FallbackShortcut::Workspace(Intent::Save))
         );
         assert_eq!(
             resolve_fallback_shortcut(
@@ -2398,7 +2620,7 @@ mod tests {
                 KeyEvent::from_str("Meta-s").unwrap(),
                 TargetPlatform::MacOS,
             ),
-            Some(Intent::Save)
+            Some(FallbackShortcut::Workspace(Intent::Save))
         );
         assert_eq!(
             resolve_fallback_shortcut(
@@ -2406,8 +2628,55 @@ mod tests {
                 KeyEvent::from_str("Meta-S-p").unwrap(),
                 TargetPlatform::MacOS,
             ),
-            Some(Intent::ShowCommandPrompt)
+            Some(FallbackShortcut::Workspace(Intent::ShowCommandPrompt))
         );
+    }
+
+    #[test]
+    fn platform_editor_shortcuts_cover_edit_search_and_buffer_navigation() {
+        use EditorSemanticAction as Action;
+        use FallbackShortcut::Editor;
+
+        let cases = [
+            ("Meta-z", TargetPlatform::MacOS, Action::Undo),
+            ("Meta-S-g", TargetPlatform::MacOS, Action::FindPrevious),
+            ("C-y", TargetPlatform::Windows, Action::Redo),
+            ("C-S-z", TargetPlatform::Linux, Action::Redo),
+            ("F3", TargetPlatform::Linux, Action::FindNext),
+            ("S-F3", TargetPlatform::Windows, Action::FindPrevious),
+            ("C-tab", TargetPlatform::Linux, Action::NextBuffer),
+            ("C-S-tab", TargetPlatform::Windows, Action::PreviousBuffer),
+            ("C-ins", TargetPlatform::Linux, Action::Copy),
+            ("S-ins", TargetPlatform::Windows, Action::Paste),
+            ("S-del", TargetPlatform::Linux, Action::Cut),
+        ];
+        for (key, platform, action) in cases {
+            assert_eq!(
+                resolve_fallback_shortcut(Mode::Insert, KeyEvent::from_str(key).unwrap(), platform),
+                Some(Editor(action)),
+                "failed shortcut {key} on {platform:?}"
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn semantic_menu_action_in_insert_does_not_insert_printable_text() {
+        let mut editor = test_editor_with_text("unchanged");
+        editor.mode = Mode::Insert;
+        let mut bridge = EditorInputBridge::new(disposition_test_keymaps(Mode::Insert));
+        let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));
+        let mut jobs = Jobs::new();
+        let before = focused_selection_fragments(&editor);
+
+        let outcome = bridge.handle_semantic_action(
+            EditorSemanticAction::Find,
+            &mut compositor,
+            &mut editor,
+            &mut jobs,
+        );
+
+        assert_eq!(outcome.prompt_requested, Some(NativePromptRequest::Search));
+        assert_eq!(focused_selection_fragments(&editor), before);
     }
 
     #[tokio::test(flavor = "current_thread")]

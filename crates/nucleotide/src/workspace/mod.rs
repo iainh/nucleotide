@@ -6847,11 +6847,13 @@ impl Workspace {
     ) -> bool {
         let key = crate::utils::translate_key(&ev.keystroke);
         let mode = self.core.read(cx).editor.mode();
-        let Some(intent) = crate::application::editor_input::resolve_fallback_shortcut(
-            mode,
-            key,
-            crate::application::editor_input::TargetPlatform::current(),
-        ) else {
+        let Some(crate::application::editor_input::FallbackShortcut::Workspace(intent)) =
+            crate::application::editor_input::resolve_fallback_shortcut(
+                mode,
+                key,
+                crate::application::editor_input::TargetPlatform::current(),
+            )
+        else {
             return false;
         };
         self.execute_semantic_shortcut(intent, cx);
@@ -13660,6 +13662,22 @@ impl Workspace {
             .update(cx, |_, cx| cx.emit(InputEvent::key(key_event)));
     }
 
+    fn send_editor_semantic_action(
+        &mut self,
+        action: crate::application::editor_input::EditorSemanticAction,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.view_manager.is_document_view_focused(cx, window) {
+            return;
+        }
+        if self.view_manager.focused_view_id().is_some() {
+            self.view_manager.set_needs_focus_restore(true);
+        }
+        self.input
+            .update(cx, |_, cx| cx.emit(InputEvent::semantic(action)));
+    }
+
     /// Adjust the editor font size
     fn adjust_font_size(&mut self, delta: f32, cx: &mut Context<Self>) {
         // Get current font config
@@ -14775,26 +14793,42 @@ impl Render for Workspace {
 
         // Add handlers for Undo, Redo, Copy, Paste
         workspace_div = workspace_div.on_action(cx.listener(
-            move |workspace, _: &crate::actions::editor::Undo, _window, cx| {
-                workspace.send_helix_key("u", cx);
+            move |workspace, _: &crate::actions::editor::Undo, window, cx| {
+                workspace.send_editor_semantic_action(
+                    crate::application::editor_input::EditorSemanticAction::Undo,
+                    window,
+                    cx,
+                );
             },
         ));
 
         workspace_div = workspace_div.on_action(cx.listener(
-            move |workspace, _: &crate::actions::editor::Redo, _window, cx| {
-                workspace.send_helix_key("U", cx);
+            move |workspace, _: &crate::actions::editor::Redo, window, cx| {
+                workspace.send_editor_semantic_action(
+                    crate::application::editor_input::EditorSemanticAction::Redo,
+                    window,
+                    cx,
+                );
             },
         ));
 
         workspace_div = workspace_div.on_action(cx.listener(
-            move |workspace, _: &crate::actions::editor::Copy, _window, cx| {
-                workspace.send_helix_key("y", cx);
+            move |workspace, _: &crate::actions::editor::Copy, window, cx| {
+                workspace.send_editor_semantic_action(
+                    crate::application::editor_input::EditorSemanticAction::Copy,
+                    window,
+                    cx,
+                );
             },
         ));
 
         workspace_div = workspace_div.on_action(cx.listener(
-            move |workspace, _: &crate::actions::editor::Paste, _window, cx| {
-                workspace.send_helix_key("p", cx);
+            move |workspace, _: &crate::actions::editor::Paste, window, cx| {
+                workspace.send_editor_semantic_action(
+                    crate::application::editor_input::EditorSemanticAction::Paste,
+                    window,
+                    cx,
+                );
             },
         ));
 
