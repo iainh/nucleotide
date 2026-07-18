@@ -358,6 +358,19 @@ fn statusbar_language_label(language: Option<&str>) -> String {
         .unwrap_or_else(|| "Plain Text".to_string())
 }
 
+fn statusbar_file_label(path: &Path) -> String {
+    path.file_name()
+        .map(|file_name| file_name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_string_lossy().into_owned())
+}
+
+fn statusbar_show_secondary_document_metadata(
+    density: StatusBarDensity,
+    vcs_ref: Option<&str>,
+) -> bool {
+    density == StatusBarDensity::Wide && vcs_ref.is_none_or(|vcs_ref| vcs_ref.chars().count() <= 16)
+}
+
 fn abbreviated_vcs_ref(head: &str) -> String {
     head.chars().take(8).collect()
 }
@@ -3431,18 +3444,7 @@ impl Workspace {
 
             file_name = doc
                 .path()
-                .map(|p| {
-                    let path_str = p.to_string_lossy().to_string();
-                    if path_str.len() > 50 {
-                        if let Some(file_name) = p.file_name() {
-                            format!(".../{}", file_name.to_string_lossy())
-                        } else {
-                            "...".to_string()
-                        }
-                    } else {
-                        path_str
-                    }
-                })
+                .map(|path| statusbar_file_label(path))
                 .unwrap_or_else(|| "[scratch]".to_string());
 
             let position = helix_core::coords_at_pos(
@@ -3621,7 +3623,7 @@ impl Workspace {
     ) -> gpui::AnyElement {
         div()
             .h_full()
-            .max_w(px(120.0))
+            .max_w(px(200.0))
             .px_2()
             .flex()
             .items_center()
@@ -3854,9 +3856,12 @@ impl Workspace {
         if model.density == StatusBarDensity::Wide
             && let Some(metadata) = model.document_metadata.as_ref()
         {
+            if statusbar_show_secondary_document_metadata(model.density, model.vcs_ref.as_deref()) {
+                context = context
+                    .child(self.statusbar_text_item(metadata.encoding.clone(), status_bar_tokens))
+                    .child(self.statusbar_text_item(metadata.line_ending, status_bar_tokens));
+            }
             context = context
-                .child(self.statusbar_text_item(metadata.encoding.clone(), status_bar_tokens))
-                .child(self.statusbar_text_item(metadata.line_ending, status_bar_tokens))
                 .child(self.statusbar_text_item(metadata.language.clone(), status_bar_tokens));
         }
 
@@ -17924,6 +17929,26 @@ mod tests {
         assert_eq!(statusbar_language_label(None), "Plain Text");
         assert_eq!(statusbar_language_label(Some("rust")), "Rust");
         assert_eq!(abbreviated_vcs_ref("0123456789abcdef"), "01234567");
+    }
+
+    #[test]
+    fn statusbar_prioritizes_document_and_branch_labels_over_secondary_metadata() {
+        assert_eq!(
+            statusbar_file_label(Path::new("/workspace/crates/nucleotide/src/lib.rs")),
+            "lib.rs"
+        );
+        assert!(statusbar_show_secondary_document_metadata(
+            StatusBarDensity::Wide,
+            Some("main")
+        ));
+        assert!(!statusbar_show_secondary_document_metadata(
+            StatusBarDensity::Wide,
+            Some("feat/modern-ui-refresh")
+        ));
+        assert!(!statusbar_show_secondary_document_metadata(
+            StatusBarDensity::Medium,
+            Some("main")
+        ));
     }
 
     #[test]
