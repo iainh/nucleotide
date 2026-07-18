@@ -610,7 +610,9 @@ impl RenderOnce for Tab {
         };
         let min_width = px(TAB_MIN_WIDTH);
         let max_width = px(TAB_MAX_WIDTH);
-        let content_height = height - px(1.0);
+        let tab_vertical_inset = tokens.sizes.space_1;
+        let rendered_height = height - tab_vertical_inset * 2.0;
+        let content_height = rendered_height - px(2.0);
 
         // Build the tab container using design tokens and delegate inner content
         let tab_hover_group = SharedString::from(format!("tab-hover-{}", self.doc_id));
@@ -677,17 +679,18 @@ impl RenderOnce for Tab {
             .flex()
             .flex_none() // Don't grow or shrink
             .items_center()
-            .h(height)
+            .h(rendered_height)
+            .my(tab_vertical_inset)
             .min_w(min_width)
             .max_w(max_width)
             .bg(bg_color)
+            .rounded(tokens.sizes.radius_sm)
             .when(enable_animations && !disabled, |tab| {
                 tab.hover(|style| style.bg(hover_bg))
             })
             .when(!disabled, |tab| tab.cursor(CursorStyle::PointingHand))
             .border_color(border_color)
-            .when(is_active, |tab| tab.border_l_1().border_r_1())
-            .when(!is_active, |tab| tab.border_b_1())
+            .when(is_active, |tab| tab.border_1())
             .when(is_active, |tab| {
                 tab.child(
                     div()
@@ -695,7 +698,7 @@ impl RenderOnce for Tab {
                         .bottom_0()
                         .left(active_indicator_inset)
                         .right(active_indicator_inset)
-                        .h(px(3.0))
+                        .h(px(2.0))
                         .rounded_full()
                         .bg(nucleotide_ui::tokens::with_alpha(
                             tokens.editor.focus_ring,
