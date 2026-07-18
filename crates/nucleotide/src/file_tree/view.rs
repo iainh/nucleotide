@@ -2781,11 +2781,15 @@ impl FileTreeView {
         let root_actions = (row.depth == 0).then(|| {
             let root_path = row.path.clone();
             div()
-                .ml_auto()
+                .absolute()
+                .top(theme.tokens.sizes.space_1)
+                .right(theme.tokens.sizes.space_2)
                 .flex()
                 .flex_none()
                 .items_center()
                 .gap(theme.tokens.sizes.space_1)
+                .rounded(theme.tokens.sizes.radius_sm)
+                .bg(file_tree_tokens.background)
                 .child(
                     Button::icon_only("file-tree-search", "icons/search.svg")
                         .variant(ButtonVariant::Ghost)

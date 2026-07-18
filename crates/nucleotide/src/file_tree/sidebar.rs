@@ -332,7 +332,6 @@ pub fn render_project_tree_row(
     let drag_payload = row.dragged_entry();
     let can_be_dragged = row.can_be_dragged();
     let drop_background = file_tree_tokens.item_background_hover;
-    let guide_depth = row.depth;
 
     div()
         .id(("file-tree-entry", row.id))
@@ -379,7 +378,15 @@ pub fn render_project_tree_row(
                 .relative()
                 .text_color(row_foreground)
                 .when(row.is_selected, |row| {
-                    row.bg(file_tree_tokens.item_background_selected)
+                    row.bg(file_tree_tokens.item_background_selected).child(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .bottom_0()
+                            .left_0()
+                            .w(px(2.0))
+                            .bg(theme.tokens.editor.focus_ring),
+                    )
                 })
                 .when(!row.is_selected, |row| {
                     row.hover(move |row| {
@@ -387,17 +394,6 @@ pub fn render_project_tree_row(
                             .text_color(file_tree_tokens.item_text)
                     })
                 })
-                .children((0..guide_depth).map(|level| {
-                    div()
-                        .absolute()
-                        .top_0()
-                        .bottom_0()
-                        .left(px(
-                            level as f32 * metrics.indent_px + metrics.icon_slot_px / 2.0
-                        ))
-                        .w(px(1.0))
-                        .bg(file_tree_tokens.separator)
-                }))
                 .child(render_chevron_slot(&row, file_tree_tokens, metrics))
                 .child(render_icon(&row, theme, file_tree_tokens, metrics))
                 .child(render_filename(&row, theme, file_tree_tokens))
@@ -441,7 +437,7 @@ fn render_icon(
     file_tree_tokens: FileTreeTokens,
     metrics: ProjectTreeDensityMetrics,
 ) -> impl IntoElement {
-    let icon_color = tree_icon_color(row, file_tree_tokens);
+    let icon_color = tree_icon_color(row, theme, file_tree_tokens);
 
     let vcs_icon = match &row.kind {
         ProjectTreeRowKind::Directory { .. } => VcsIcon::directory(row.is_expanded)
@@ -523,13 +519,27 @@ fn row_text_color(
     }
 }
 
-fn tree_icon_color(row: &ProjectTreeRow, file_tree_tokens: FileTreeTokens) -> gpui::Hsla {
+fn tree_icon_color(
+    row: &ProjectTreeRow,
+    theme: &Theme,
+    file_tree_tokens: FileTreeTokens,
+) -> gpui::Hsla {
     if row.is_selected {
         file_tree_tokens.icon_color_selected
     } else if row.is_hidden {
         file_tree_tokens.icon_color_hidden
     } else {
-        file_tree_tokens.icon_color
+        match &row.kind {
+            ProjectTreeRowKind::File { extension } => match extension.as_deref() {
+                Some("rs" | "toml") => theme.tokens.editor.warning,
+                Some("md" | "markdown") => theme.tokens.editor.info,
+                Some("json" | "yaml" | "yml") => theme.tokens.editor.success,
+                _ => file_tree_tokens.icon_color,
+            },
+            ProjectTreeRowKind::Directory { .. } | ProjectTreeRowKind::Symlink { .. } => {
+                file_tree_tokens.icon_color
+            }
+        }
     }
 }
 
@@ -918,7 +928,7 @@ mod tests {
             theme.tokens.file_tree_tokens().item_text_hidden
         );
         assert_eq!(
-            tree_icon_color(&hidden, file_tree_tokens),
+            tree_icon_color(&hidden, &theme, file_tree_tokens),
             theme.tokens.file_tree_tokens().icon_color_hidden
         );
         assert_eq!(
@@ -928,7 +938,7 @@ mod tests {
 
         let selected = ProjectTreeRow::from_entry(&entry, true, None);
         assert_eq!(
-            tree_icon_color(&selected, file_tree_tokens),
+            tree_icon_color(&selected, &theme, file_tree_tokens),
             theme.tokens.file_tree_tokens().icon_color_selected
         );
         assert_eq!(
