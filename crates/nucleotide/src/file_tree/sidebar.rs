@@ -5,7 +5,7 @@ use std::{path::PathBuf, sync::Arc};
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    App, AppContext, ClickEvent, Context, InteractiveElement, IntoElement, MouseButton,
+    AnyElement, App, AppContext, ClickEvent, Context, InteractiveElement, IntoElement, MouseButton,
     MouseDownEvent, ParentElement, Pixels, Point, Render, StatefulInteractiveElement, Styled,
     Window, div, px,
 };
@@ -314,6 +314,7 @@ pub fn render_project_tree_row(
     row: ProjectTreeRow,
     style: ProjectTreeRowStyle<'_>,
     density: FileTreeDisplayDensity,
+    trailing: Option<AnyElement>,
     on_left_mouse_down: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
     on_right_mouse_down: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
@@ -331,6 +332,7 @@ pub fn render_project_tree_row(
     let drag_payload = row.dragged_entry();
     let can_be_dragged = row.can_be_dragged();
     let drop_background = file_tree_tokens.item_background_hover;
+    let guide_depth = row.depth;
 
     div()
         .id(("file-tree-entry", row.id))
@@ -374,6 +376,7 @@ pub fn render_project_tree_row(
                 .gap(px(metrics.row_gap_px))
                 .pl(indentation)
                 .pr(px(metrics.padding_right_px))
+                .relative()
                 .text_color(row_foreground)
                 .when(row.is_selected, |row| {
                     row.bg(file_tree_tokens.item_background_selected)
@@ -384,9 +387,21 @@ pub fn render_project_tree_row(
                             .text_color(file_tree_tokens.item_text)
                     })
                 })
+                .children((0..guide_depth).map(|level| {
+                    div()
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .left(px(
+                            level as f32 * metrics.indent_px + metrics.icon_slot_px / 2.0
+                        ))
+                        .w(px(1.0))
+                        .bg(file_tree_tokens.separator)
+                }))
                 .child(render_chevron_slot(&row, file_tree_tokens, metrics))
                 .child(render_icon(&row, theme, file_tree_tokens, metrics))
                 .child(render_filename(&row, theme, file_tree_tokens))
+                .when_some(trailing, |row, trailing| row.child(trailing))
                 .when_some(render_git_status_lane(&row, theme, metrics), |row, lane| {
                     row.child(lane)
                 }),

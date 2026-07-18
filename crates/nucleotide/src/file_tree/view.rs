@@ -14,14 +14,15 @@ use crate::file_tree::{
 };
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    App, Context, EventEmitter, FocusHandle, Focusable, InteractiveElement, IntoElement,
-    MouseButton, MouseDownEvent, ParentElement, Render, ScrollHandle, ScrollStrategy,
+    App, ClickEvent, Context, EventEmitter, FocusHandle, Focusable, InteractiveElement,
+    IntoElement, MouseButton, MouseDownEvent, ParentElement, Render, ScrollHandle, ScrollStrategy,
     StatefulInteractiveElement, Styled, UniformListScrollHandle, Window, div, px, uniform_list,
 };
 use nucleotide_logging::{debug, error, warn};
 use nucleotide_types::{VcsStatus, scrollbar::SCROLLBAR_THICKNESS};
 use nucleotide_ui::ThemedContext as UIThemedContext;
 use nucleotide_ui::scrollbar::{Scrollbar, ScrollbarState};
+use nucleotide_ui::{Button, ButtonSize, ButtonVariant, Tooltipped};
 use nucleotide_vcs::VcsServiceHandle;
 use nucleotide_workspace::{
     DirectoryListing, FileKind as WorkspaceFileKind, WorkspaceBackendHandle, WorkspaceIdentity,
@@ -1545,6 +1546,29 @@ impl FileTreeView {
         cx.notify();
     }
 
+    /// Collapse every expanded directory below the workspace root.
+    pub fn collapse_all_directories(&mut self, cx: &mut Context<Self>) {
+        let root_path = self.tree.root_path().to_path_buf();
+        let expanded_paths: Vec<_> = self
+            .tree
+            .visible_entries_snapshot()
+            .iter()
+            .filter(|entry| {
+                entry.path != root_path
+                    && entry.is_directory()
+                    && self.tree.is_expanded(&entry.path)
+            })
+            .map(|entry| entry.path.clone())
+            .collect();
+
+        for path in expanded_paths.into_iter().rev() {
+            let _ = self.tree.collapse_directory(&path);
+        }
+        self.tree_revision = self.tree_revision.wrapping_add(1);
+        self.sync_remote_file_watch_roots(cx);
+        cx.notify();
+    }
+
     /// Select the next visible search match.
     pub fn select_next_search_match(&mut self, cx: &mut Context<Self>) {
         self.select_relative_search_match(1, cx);
@@ -2754,11 +2778,61 @@ impl FileTreeView {
         let left_click_row = row.clone();
         let drop_target_path = row.path.clone();
         let density = self.tree.config().density;
+        let root_actions = (row.depth == 0).then(|| {
+            let root_path = row.path.clone();
+            div()
+                .ml_auto()
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap(theme.tokens.sizes.space_1)
+                .child(
+                    Button::icon_only("file-tree-search", "icons/search.svg")
+                        .variant(ButtonVariant::Ghost)
+                        .size(ButtonSize::ExtraSmall)
+                        .tooltip("Search Files")
+                        .activate_on_mouse_down()
+                        .on_click(cx.listener(|view, _event, _window, cx| {
+                            view.request_search(cx);
+                            cx.stop_propagation();
+                        })),
+                )
+                .child(
+                    Button::icon_only("file-tree-collapse-all", "icons/chevron-up.svg")
+                        .variant(ButtonVariant::Ghost)
+                        .size(ButtonSize::ExtraSmall)
+                        .tooltip("Collapse All")
+                        .activate_on_mouse_down()
+                        .on_click(cx.listener(|view, _event, _window, cx| {
+                            view.collapse_all_directories(cx);
+                            cx.stop_propagation();
+                        })),
+                )
+                .child(
+                    Button::icon_only("file-tree-more", "icons/menu.svg")
+                        .variant(ButtonVariant::Ghost)
+                        .size(ButtonSize::ExtraSmall)
+                        .tooltip("More Actions")
+                        .activate_on_mouse_down()
+                        .on_click(cx.listener(move |view, event: &ClickEvent, window, cx| {
+                            view.request_entry_context_menu(
+                                root_path.clone(),
+                                true,
+                                event.position(),
+                                window,
+                                cx,
+                            );
+                            cx.stop_propagation();
+                        })),
+                )
+                .into_any_element()
+        });
 
         render_project_tree_row(
             row,
             ProjectTreeRowStyle::new(&theme, file_tree_tokens),
             density,
+            root_actions,
             {
                 let left_click_row = left_click_row.clone();
                 cx.listener(move |view, event: &MouseDownEvent, window, cx| {
