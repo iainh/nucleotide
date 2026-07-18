@@ -323,6 +323,10 @@ impl VcsService {
         self.status_revision
     }
 
+    pub fn repository_head(&self) -> Option<&str> {
+        self.repository_head.as_deref()
+    }
+
     /// Get diff hunks for a specific file
     pub fn get_diff_hunks(&self, path: &Path) -> Option<&[DiffHunkInfo]> {
         let abs_path = self.absolute_path(path)?;
@@ -1332,6 +1336,13 @@ impl VcsServiceHandle {
 
     pub fn status_revision(&self, cx: &App) -> u64 {
         self.service.read(cx).status_revision()
+    }
+
+    pub fn repository_head(&self, cx: &App) -> Option<String> {
+        self.service
+            .read(cx)
+            .repository_head()
+            .map(ToOwned::to_owned)
     }
 
     /// Force refresh VCS status

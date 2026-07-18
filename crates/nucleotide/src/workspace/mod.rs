@@ -30,8 +30,8 @@ use gpui::{
     Anchor, App, AppContext, BorrowAppContext, Bounds, Context, DismissEvent, Entity, EventEmitter,
     FocusHandle, Focusable, Hsla, InteractiveElement, IntoElement, KeyDownEvent, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point, Render,
-    ScrollHandle, Size, StatefulInteractiveElement, Styled, Subscription, TextStyle, Window,
-    WindowAppearance, canvas, div, img, point, px, relative, svg,
+    ScrollHandle, SharedString, Size, StatefulInteractiveElement, Styled, Subscription, TextStyle,
+    Window, WindowAppearance, canvas, div, img, point, px, relative, svg,
 };
 use gpui::{FontFeatures, FontWeight};
 use helix_core::syntax::config::LanguageServerFeature;
@@ -314,11 +314,50 @@ struct StatusBarModel {
     mode_label: &'static str,
     file_name: String,
     position_text: String,
+    document_metadata: Option<StatusBarDocumentMetadata>,
+    vcs_ref: Option<String>,
     environment: Option<EnvironmentBadge>,
     lsp: Option<LspStatusSummary>,
     notification: Option<StatusBarNotification>,
     background_activity: Option<String>,
     density: StatusBarDensity,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct StatusBarDocumentMetadata {
+    encoding: String,
+    line_ending: &'static str,
+    language: String,
+    errors: usize,
+    warnings: usize,
+}
+
+fn statusbar_line_ending_label(line_ending: &str) -> &'static str {
+    match line_ending {
+        "\r\n" => "CRLF",
+        "\r" => "CR",
+        "\x0b" => "VT",
+        "\x0c" => "FF",
+        "\u{0085}" => "NEL",
+        "\u{2028}" => "LS",
+        "\u{2029}" => "PS",
+        _ => "LF",
+    }
+}
+
+fn statusbar_language_label(language: Option<&str>) -> String {
+    let Some(language) = language.filter(|language| !language.is_empty()) else {
+        return "Plain Text".to_string();
+    };
+    let mut chars = language.chars();
+    chars
+        .next()
+        .map(|first| first.to_uppercase().chain(chars).collect())
+        .unwrap_or_else(|| "Plain Text".to_string())
+}
+
+fn abbreviated_vcs_ref(head: &str) -> String {
+    head.chars().take(8).collect()
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -3369,6 +3408,7 @@ impl Workspace {
         &'static str,                        // mode label
         String,                              // file name display
         String,                              // position text
+        Option<StatusBarDocumentMetadata>,   // encoding, language, diagnostics
         bool,                                // has LSP state
         Option<helix_lsp::LanguageServerId>, // preferred server for current doc
     ) {
@@ -3379,6 +3419,7 @@ impl Workspace {
         let mut mode_name = "NOR";
         let mut file_name = "[no file]".to_string();
         let mut position_text = "1:1".to_string();
+        let mut document_metadata = None;
 
         if let Some(tab) = self
             .active_image_tab_id
@@ -3386,7 +3427,7 @@ impl Workspace {
         {
             file_name = tab.path.display().to_string();
             position_text = image_zoom_percent(tab.zoom);
-            return (mode, mode_name, file_name, position_text, false, None);
+            return (mode, mode_name, file_name, position_text, None, false, None);
         }
 
         // Get info from focused view if available
@@ -3426,6 +3467,25 @@ impl Workspace {
                     .cursor(doc.text().slice(..)),
             );
             position_text = format!("{}:{}", position.row + 1, position.col + 1);
+            document_metadata = Some(StatusBarDocumentMetadata {
+                encoding: doc.encoding().name().to_string(),
+                line_ending: statusbar_line_ending_label(doc.line_ending.as_str()),
+                language: statusbar_language_label(doc.language_name()),
+                errors: doc
+                    .diagnostics()
+                    .iter()
+                    .filter(|diagnostic| {
+                        diagnostic.severity == Some(helix_core::diagnostic::Severity::Error)
+                    })
+                    .count(),
+                warnings: doc
+                    .diagnostics()
+                    .iter()
+                    .filter(|diagnostic| {
+                        diagnostic.severity == Some(helix_core::diagnostic::Severity::Warning)
+                    })
+                    .count(),
+            });
         }
 
         // Determine preferred LSP server for the current document
@@ -3444,6 +3504,7 @@ impl Workspace {
             mode_name,
             file_name,
             position_text,
+            document_metadata,
             has_lsp_state,
             preferred_server_id,
         )
@@ -3472,13 +3533,26 @@ impl Workspace {
     }
 
     fn statusbar_model(&self, viewport_width: f32, cx: &mut Context<Self>) -> StatusBarModel {
-        let (mode, mode_label, file_name, position_text, has_lsp_state, preferred_server_id) =
-            self.statusbar_doc_info(cx);
+        let (
+            mode,
+            mode_label,
+            file_name,
+            position_text,
+            document_metadata,
+            has_lsp_state,
+            preferred_server_id,
+        ) = self.statusbar_doc_info(cx);
         StatusBarModel {
             mode,
             mode_label,
             file_name,
             position_text,
+            document_metadata,
+            vcs_ref: cx
+                .has_global::<VcsServiceHandle>()
+                .then(|| cx.global::<VcsServiceHandle>().repository_head(cx))
+                .flatten()
+                .map(|head| abbreviated_vcs_ref(&head)),
             environment: self.environment_badge,
             lsp: self.compute_statusbar_lsp_summary(cx, has_lsp_state, preferred_server_id),
             notification: self.notifications.read(cx).status_bar_notification(),
@@ -3499,6 +3573,65 @@ impl Workspace {
             .h(metrics.icon_size)
             .bg(color)
             .mx_2()
+            .into_any_element()
+    }
+
+    fn statusbar_text_item(
+        &self,
+        text: impl Into<SharedString>,
+        status_bar_tokens: &nucleotide_ui::tokens::StatusBarTokens,
+    ) -> gpui::AnyElement {
+        div()
+            .h_full()
+            .px_2()
+            .flex()
+            .items_center()
+            .whitespace_nowrap()
+            .text_color(status_bar_tokens.text_secondary)
+            .child(text.into())
+            .into_any_element()
+    }
+
+    fn statusbar_diagnostics_item(
+        &self,
+        metadata: &StatusBarDocumentMetadata,
+        status_bar_tokens: &nucleotide_ui::tokens::StatusBarTokens,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let notification_tokens = cx.theme().tokens.notification_tokens();
+        div()
+            .h_full()
+            .px_2()
+            .flex()
+            .items_center()
+            .gap_2()
+            .text_color(status_bar_tokens.text_secondary)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .child(
+                        svg()
+                            .path("icons/circle-x.svg")
+                            .size(px(12.0))
+                            .text_color(notification_tokens.error_text),
+                    )
+                    .child(metadata.errors.to_string()),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .child(
+                        svg()
+                            .path("icons/triangle-alert.svg")
+                            .size(px(12.0))
+                            .text_color(notification_tokens.warning_text),
+                    )
+                    .child(metadata.warnings.to_string()),
+            )
             .into_any_element()
     }
 
@@ -3732,7 +3865,7 @@ impl Workspace {
         status_bar_tokens: &nucleotide_ui::tokens::StatusBarTokens,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let context = div()
+        let mut context = div()
             .flex_none()
             .h_full()
             .flex()
@@ -3750,14 +3883,35 @@ impl Workspace {
                     .whitespace_nowrap()
                     .text_color(status_bar_tokens.text_secondary)
                     .child(model.position_text.clone()),
-            )
-            .child(self.statusbar_lsp_item(
-                model.lsp.as_ref(),
-                model.density,
-                geometry,
-                status_bar_tokens,
-                cx,
-            ));
+            );
+
+        if model.density == StatusBarDensity::Wide
+            && let Some(metadata) = model.document_metadata.as_ref()
+        {
+            context = context
+                .child(self.statusbar_text_item(metadata.encoding.clone(), status_bar_tokens))
+                .child(self.statusbar_text_item(metadata.line_ending, status_bar_tokens))
+                .child(self.statusbar_text_item(metadata.language.clone(), status_bar_tokens));
+        }
+
+        context = context.child(self.statusbar_lsp_item(
+            model.lsp.as_ref(),
+            model.density,
+            geometry,
+            status_bar_tokens,
+            cx,
+        ));
+
+        if model.density == StatusBarDensity::Wide {
+            if let Some(vcs_ref) = model.vcs_ref.as_ref() {
+                context = context
+                    .child(self.statusbar_text_item(format!("git:{vcs_ref}"), status_bar_tokens));
+            }
+            if let Some(metadata) = model.document_metadata.as_ref() {
+                context =
+                    context.child(self.statusbar_diagnostics_item(metadata, status_bar_tokens, cx));
+            }
+        }
 
         div()
             .flex()
@@ -17805,6 +17959,15 @@ mod tests {
             statusbar_notification_icon(StatusBarNotificationSeverity::Error),
             "icons/circle-x.svg"
         );
+    }
+
+    #[test]
+    fn statusbar_document_metadata_labels_are_compact() {
+        assert_eq!(statusbar_line_ending_label("\n"), "LF");
+        assert_eq!(statusbar_line_ending_label("\r\n"), "CRLF");
+        assert_eq!(statusbar_language_label(None), "Plain Text");
+        assert_eq!(statusbar_language_label(Some("rust")), "Rust");
+        assert_eq!(abbreviated_vcs_ref("0123456789abcdef"), "01234567");
     }
 
     #[test]
