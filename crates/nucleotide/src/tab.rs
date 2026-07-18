@@ -610,9 +610,7 @@ impl RenderOnce for Tab {
         };
         let min_width = px(TAB_MIN_WIDTH);
         let max_width = px(TAB_MAX_WIDTH);
-        let tab_vertical_inset = tokens.sizes.space_1;
-        let rendered_height = height - tab_vertical_inset * 2.0;
-        let content_height = rendered_height - px(2.0);
+        let content_height = height - px(2.0);
 
         // Build the tab container using design tokens and delegate inner content
         let tab_hover_group = SharedString::from(format!("tab-hover-{}", self.doc_id));
@@ -668,38 +666,31 @@ impl RenderOnce for Tab {
             show_file_icons,
             cx,
         );
-        // Align the active indicator with the leading edge of the file icon.
-        // The matching trailing inset keeps the pill balanced across the tab.
-        let active_indicator_inset = px(match close_position {
-            TabClosePosition::Left => END_TAB_SLOT_SIZE,
-            TabClosePosition::Right => START_TAB_SLOT_SIZE,
-        } + 2.0 * f32::from(tokens.sizes.space_2));
         root.group(tab_hover_group)
             .relative()
             .flex()
             .flex_none() // Don't grow or shrink
             .items_center()
-            .h(rendered_height)
-            .my(tab_vertical_inset)
+            .h(height)
             .min_w(min_width)
             .max_w(max_width)
             .bg(bg_color)
-            .rounded(tokens.sizes.radius_sm)
+            .when(is_active, |tab| tab.rounded_tl_sm().rounded_tr_sm())
             .when(enable_animations && !disabled, |tab| {
                 tab.hover(|style| style.bg(hover_bg))
             })
             .when(!disabled, |tab| tab.cursor(CursorStyle::PointingHand))
             .border_color(border_color)
-            .when(is_active, |tab| tab.border_1())
+            .when(is_active, |tab| tab.border_t_1().border_l_1().border_r_1())
+            .when(!is_active, |tab| tab.border_b_1())
             .when(is_active, |tab| {
                 tab.child(
                     div()
                         .absolute()
                         .bottom_0()
-                        .left(active_indicator_inset)
-                        .right(active_indicator_inset)
+                        .left_0()
+                        .right_0()
                         .h(px(2.0))
-                        .rounded_full()
                         .bg(nucleotide_ui::tokens::with_alpha(
                             tokens.editor.focus_ring,
                             0.9,
