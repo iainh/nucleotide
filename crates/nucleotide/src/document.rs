@@ -73,6 +73,14 @@ fn focus_editor_view(core: &Entity<Core>, view_id: ViewId, cx: &mut App) {
     });
 }
 
+fn request_file_picker(core: &Entity<Core>, cx: &mut App) {
+    core.update(cx, |_core, cx| cx.emit(crate::Update::ShowFilePicker));
+}
+
+fn should_show_empty_scratch_state(has_path: bool, text_len: usize) -> bool {
+    !has_path && text_len == 0
+}
+
 fn run_gutter_task(core: &Entity<Core>, view_id: ViewId, task: ResolvedTask, cx: &mut App) {
     core.update(cx, |core, cx| {
         if core.editor.tree.try_get(view_id).is_none() {
@@ -521,6 +529,16 @@ impl Render for DocumentView {
             .unwrap_or_default();
         let show_rendered_markdown =
             matches!(markdown_mode, MarkdownDisplayMode::Rendered) && markdown_document.is_some();
+        let show_empty_scratch_state = {
+            let core = self.core.read(cx);
+            core.editor
+                .tree
+                .try_get(self.view_id)
+                .and_then(|view| core.editor.documents.get(&view.doc))
+                .is_some_and(|doc| {
+                    should_show_empty_scratch_state(doc.path().is_some(), doc.text().len_chars())
+                })
+        };
 
         let editor_content = {
             let core = self.core.clone();
@@ -626,6 +644,71 @@ impl Render for DocumentView {
         let controls = markdown_document
             .as_ref()
             .map(|snapshot| self.render_markdown_controls(snapshot.doc_id, markdown_mode, cx));
+        let empty_scratch_state = show_empty_scratch_state.then(|| {
+            let tokens = cx.theme().tokens;
+            let open_file_core = self.core.clone();
+            let quick_open_core = self.core.clone();
+
+            div()
+                .absolute()
+                .top_0()
+                .right_0()
+                .bottom_0()
+                .left_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .gap(tokens.sizes.space_3)
+                        .text_color(tokens.editor.line_number)
+                        .child(
+                            div()
+                                .size(tokens.sizes.space_10)
+                                .rounded(tokens.sizes.radius_lg)
+                                .border_1()
+                                .border_color(tokens.chrome.border_shadow)
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .text_size(tokens.sizes.text_xl)
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .text_color(tokens.editor.line_number_active)
+                                .child("N"),
+                        )
+                        .child(
+                            div()
+                                .text_size(tokens.sizes.text_sm)
+                                .text_color(tokens.chrome.text_chrome_secondary)
+                                .child("Start typing or open a file"),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(tokens.sizes.space_2)
+                                .child(
+                                    Button::new("empty-scratch-open-file", "⌘ O  Open File")
+                                        .variant(ButtonVariant::Secondary)
+                                        .size(ButtonSize::ExtraSmall)
+                                        .on_click(move |_event, _window, cx| {
+                                            request_file_picker(&open_file_core, cx);
+                                        }),
+                                )
+                                .child(
+                                    Button::new("empty-scratch-quick-open", "⌘ P  Quick Open")
+                                        .variant(ButtonVariant::Secondary)
+                                        .size(ButtonSize::ExtraSmall)
+                                        .on_click(move |_event, _window, cx| {
+                                            request_file_picker(&quick_open_core, cx);
+                                        }),
+                                ),
+                        ),
+                )
+        });
 
         div()
             .id(SharedString::from(format!("doc-view-{:?}", self.view_id)))
@@ -635,6 +718,7 @@ impl Render for DocumentView {
             .flex()
             .flex_col()
             .child(content)
+            .when_some(empty_scratch_state, gpui::ParentElement::child)
             .when_some(controls, gpui::ParentElement::child)
     }
 }
@@ -953,6 +1037,13 @@ mod tests {
     use gpui::px;
     use nucleotide_editor::run_gutter_button_left;
     use nucleotide_events::v2::run::{CommandSpec, RunKind, SourceLocation, TaskTemplate};
+
+    #[test]
+    fn empty_state_is_limited_to_empty_scratch_documents() {
+        assert!(should_show_empty_scratch_state(false, 0));
+        assert!(!should_show_empty_scratch_state(true, 0));
+        assert!(!should_show_empty_scratch_state(false, 1));
+    }
 
     #[test]
     fn run_gutter_extra_columns_tracks_cell_width() {
