@@ -852,12 +852,9 @@ use nucleotide::actions::workspace::{
     NewFile, NewWindow, ShowBufferPicker, ShowCodeActions, ShowCommandPrompt, ShowFileFinder,
 };
 use nucleotide::actions::{
-    common::{Cancel, Confirm, MoveDown, MoveLeft, MoveRight, MoveUp},
-    completion::TriggerCompletion,
     editor::{
-        CancelRemoteConnection, CloseFile, Copy, DecreaseFontSize, IncreaseFontSize, OpenDirectory,
-        OpenFile, OpenRemote, OpenSettings, Paste, Quit, ReconnectRemote, Redo,
-        ReloadConfiguration, RevertCurrentChange, Save, SaveAs, Undo,
+        CancelRemoteConnection, Copy, OpenDirectory, OpenFile, OpenRemote, OpenSettings, Paste,
+        Quit, ReconnectRemote, Redo, ReloadConfiguration, RevertCurrentChange, Undo,
     },
     help::{About, ComponentGallery, OpenTutorial, ThemeDebug},
     test::{TestCompletion, TestPrompt},
@@ -1329,57 +1326,6 @@ fn gui_main(
 
                 cx.activate(true);
                 cx.set_menus(app_menus());
-
-                // Set up keybindings with proper key contexts
-
-                // Import workspace actions for global bindings
-                use nucleotide::actions::workspace::{
-                    NewFile, NewWindow, RunFileTests, RunLast, RunNearest, ShowBufferPicker,
-                    ShowCodeActions, ShowCommandPrompt, ShowFileFinder, ShowRunnables,
-                    ToggleFileTree,
-                };
-
-                // Global actions - work regardless of focus (no context specified)
-                cx.bind_keys([
-                    gpui::KeyBinding::new("cmd-q", Quit, None),
-                    gpui::KeyBinding::new("cmd-o", OpenFile, None),
-                    gpui::KeyBinding::new("cmd-shift-o", OpenDirectory, None),
-                    gpui::KeyBinding::new("cmd-s", Save, None),
-                    gpui::KeyBinding::new("cmd-shift-s", SaveAs, None),
-                    gpui::KeyBinding::new("cmd-w", CloseFile, None),
-                    gpui::KeyBinding::new("cmd-n", NewFile, None),
-                    gpui::KeyBinding::new("cmd-shift-n", NewWindow, None),
-                    gpui::KeyBinding::new("cmd-p", ShowFileFinder, None),
-                    gpui::KeyBinding::new("cmd-shift-p", ShowCommandPrompt, None),
-                    gpui::KeyBinding::new("cmd-b", ShowBufferPicker, None),
-                    gpui::KeyBinding::new("cmd-z", Undo, None),
-                    gpui::KeyBinding::new("cmd-shift-z", Redo, None),
-                    gpui::KeyBinding::new("cmd-c", Copy, None),
-                    gpui::KeyBinding::new("cmd-v", Paste, None),
-                    gpui::KeyBinding::new("cmd-+", IncreaseFontSize, None),
-                    gpui::KeyBinding::new("cmd-=", IncreaseFontSize, None), // Also bind = key since + requires shift
-                    gpui::KeyBinding::new("cmd--", DecreaseFontSize, None),
-                    // Completion trigger
-                    gpui::KeyBinding::new("ctrl-space", TriggerCompletion, None),
-                    // Temporary keybinding for Code Actions (Ctrl-.)
-                    gpui::KeyBinding::new("ctrl-.", ShowCodeActions, None),
-                    gpui::KeyBinding::new("ctrl-r", ShowRunnables, None),
-                    gpui::KeyBinding::new("ctrl-shift-r", RunNearest, None),
-                    gpui::KeyBinding::new("ctrl-alt-r", RunLast, None),
-                    gpui::KeyBinding::new("ctrl-alt-t", RunFileTests, None),
-                    // File tree toggle
-                    gpui::KeyBinding::new("ctrl-b", ToggleFileTree, None),
-                ]);
-
-                // General editor actions
-                cx.bind_keys([
-                    gpui::KeyBinding::new("up", MoveUp, Some("Editor")),
-                    gpui::KeyBinding::new("down", MoveDown, Some("Editor")),
-                    gpui::KeyBinding::new("left", MoveLeft, Some("Editor")),
-                    gpui::KeyBinding::new("right", MoveRight, Some("Editor")),
-                    gpui::KeyBinding::new("enter", Confirm, Some("Editor")),
-                    gpui::KeyBinding::new("escape", Cancel, Some("Editor")),
-                ]);
 
                 #[cfg(any(target_os = "macos", target_os = "windows"))]
                 {
