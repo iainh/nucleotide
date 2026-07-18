@@ -2058,8 +2058,12 @@ impl Application {
 
         while let Poll::Ready(Some(callback)) = self.jobs.wait_futures.poll_next_unpin(task_cx) {
             progressed = true;
-            self.jobs
-                .handle_callback(&mut self.editor, &mut self.compositor, callback);
+            if let Some(job) =
+                self.jobs
+                    .handle_callback(&mut self.editor, &mut self.compositor, callback)
+            {
+                self.jobs.add(job);
+            }
         }
 
         progressed
@@ -11311,7 +11315,10 @@ mod tests {
     use helix_core::{Rope, Transaction, diagnostic::Severity, syntax};
     use helix_lsp::{LspProgressMap, OffsetEncoding, lsp};
     use helix_term::{
-        compositor::Compositor, config::Config as HelixConfig, job::Jobs, keymap::Keymaps,
+        compositor::Compositor,
+        config::Config as HelixConfig,
+        job::{Callback, Job, Jobs},
+        keymap::Keymaps,
     };
     use helix_view::{graphics::Rect, handlers::Handlers, theme};
     use nucleotide_core::event_bridge;
@@ -12800,6 +12807,33 @@ mod tests {
             let (message, severity) = app.editor.get_status().expect("editor status");
             assert_eq!(message.as_ref(), "indexing workspace");
             assert_eq!(*severity, helix_view::editor::Severity::Warning);
+        });
+    }
+
+    #[gpui::test]
+    async fn maintenance_schedules_followup_returned_by_wait_job(cx: &mut gpui::TestAppContext) {
+        let app = new_test_application(cx);
+
+        app.update(cx, |app, _cx| {
+            let followup = Job::with_callback(async {
+                Ok(Callback::Editor(Box::new(|editor| {
+                    editor.set_error("follow-up completed");
+                })))
+            })
+            .wait_before_exiting();
+            let initial = Job::with_callback(async {
+                Ok(Callback::Followup(Box::new(move |_editor| Some(followup))))
+            })
+            .wait_before_exiting();
+            app.jobs.add(initial);
+        });
+
+        run_event_driven_maintenance(cx, &app);
+
+        app.read_with(cx, |app, _cx| {
+            let (message, severity) = app.editor.get_status().expect("editor status");
+            assert_eq!(message.as_ref(), "follow-up completed");
+            assert_eq!(*severity, helix_view::editor::Severity::Error);
         });
     }
 
