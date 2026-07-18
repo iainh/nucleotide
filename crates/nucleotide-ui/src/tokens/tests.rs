@@ -675,6 +675,7 @@ mod component_token_tests {
                     > f32::from(tokens.chrome.shadow_sm.blur_radius)
             );
             assert_eq!(f32::from(tokens.chrome.shadow_sm.spread_radius), 0.0);
+            assert!(tokens.sizes.radius_xl > tokens.sizes.radius_lg);
 
             println!("{} theme depth tokens validated ✓", theme_name);
         }

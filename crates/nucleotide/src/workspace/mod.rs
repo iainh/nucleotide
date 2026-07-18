@@ -15625,10 +15625,11 @@ impl Render for Workspace {
                         div()
                             .flex()
                             .flex_col()
+                            .relative()
                             .flex_1()
                             .w_full()
                             .min_h(px(0.0))
-                            .rounded(workspace_tokens.sizes.radius_lg)
+                            .rounded(workspace_tokens.sizes.radius_xl)
                             .shadow(vec![workspace_tokens.chrome.shadow_sm.to_box_shadow(false)])
                             .overflow_hidden()
                             // Ensure content can shrink and never hide the status bar.
@@ -15641,7 +15642,15 @@ impl Render for Workspace {
                                     .min_h(px(0.0))
                                     .child(content_area),
                             )
-                            .child(self.render_unified_status_bar(window, cx)),
+                            .child(self.render_unified_status_bar(window, cx))
+                            .child(
+                                div()
+                                    .absolute()
+                                    .inset_0()
+                                    .rounded(workspace_tokens.sizes.radius_xl)
+                                    .border_1()
+                                    .border_color(workspace_tokens.chrome.border_default),
+                            ),
                     ),
             )
             // Add Linux client-side resize hitboxes so the window can be resized
