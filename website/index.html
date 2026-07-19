@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Nucleotide is a fast, native GUI for the Helix modal editor, with GPU rendering, project navigation, remote workspaces, and familiar Helix keybindings.">
+    <meta name="theme-color" content="#075e59">
+    <title>Nucleotide — Helix, in its native element</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Geist:wght@100..900&amp;family=Geist+Mono:wght@100..900&amp;display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+    <script src="script.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    <header class="site-header">
+      <a class="brand" href="#top" aria-label="Nucleotide home">
+        <svg class="brand-mark" viewBox="0 0 48 48" aria-hidden="true">
+          <path d="M24 3 42 13v22L24 45 6 35V13L24 3Z"></path>
+          <path d="m24 13 9 5v11l-9 5-9-5V18l9-5Z"></path>
+        </svg>
+        <span>Nucleotide</span>
+      </a>
+      <nav aria-label="Primary navigation">
+        <a href="#why">Why Nucleotide</a>
+        <a href="#screenshots">Screenshots</a>
+        <a href="#configure">Configure</a>
+      </nav>
+      <a class="button button-small" href="#download">Get Nucleotide</a>
+    </header>
+
+    <main id="main">
+      <section class="hero" id="top" aria-labelledby="hero-title">
+        <div class="hero-copy">
+          <p class="eyebrow"><span class="status-dot"></span> A native GUI for Helix</p>
+          <h1 id="hero-title">Modal editing,<br><em>in its native element.</em></h1>
+          <p class="hero-lede">Nucleotide brings Helix’s selection-first editing model into a fast, GPU-rendered desktop app—with a project tree, tabs, terminals, and remote workspaces close at hand.</p>
+          <div class="hero-actions">
+            <a class="button" href="#download">Choose your platform <span aria-hidden="true">↓</span></a>
+            <a class="text-link" href="https://github.com/iainh/nucleotide">Explore the source <span aria-hidden="true">↗</span></a>
+          </div>
+          <ul class="hero-facts" aria-label="Project facts">
+            <li><strong>Rust</strong><span>from core to chrome</span></li>
+            <li><strong>GPUI</strong><span>GPU-rendered interface</span></li>
+            <li><strong>MPL-2.0</strong><span>open source</span></li>
+          </ul>
+        </div>
+
+        <div class="hero-visual" aria-label="Stylized preview of Nucleotide editing a Rust project">
+          <div class="molecule molecule-one" aria-hidden="true"></div>
+          <div class="molecule molecule-two" aria-hidden="true"></div>
+          <div class="app-window app-window-hero">
+            <div class="window-bar">
+              <span class="window-controls" aria-hidden="true"><i></i><i></i><i></i></span>
+              <span class="window-title">nucleotide / workspace.rs</span>
+              <span class="mode-badge">NORMAL</span>
+            </div>
+            <div class="app-grid">
+              <div class="file-tree" aria-hidden="true">
+                <p class="panel-label">EXPLORER</p>
+                <p>⌄ nucleotide</p>
+                <p class="indent">⌄ crates</p>
+                <p class="indent-2 active-file">◇ nucleotide</p>
+                <p class="indent-3">config.rs</p>
+                <p class="indent-3 selected">workspace.rs</p>
+                <p class="indent-2">◇ editor</p>
+                <p class="indent">⌄ docs</p>
+                <p class="indent-2">event_system.md</p>
+                <p>◇ Cargo.toml</p>
+              </div>
+              <div class="editor" aria-hidden="true">
+                <div class="tabs"><span class="tab">config.rs</span><span class="tab active-tab">workspace.rs</span><span class="tab">event.rs</span></div>
+                <ol class="code-lines">
+                  <li><span class="kw">pub struct</span> <span class="ty">Workspace</span> {</li>
+                  <li>&nbsp;&nbsp;editor: <span class="ty">Editor</span>,</li>
+                  <li>&nbsp;&nbsp;project: <span class="ty">Project</span>,</li>
+                  <li>&nbsp;&nbsp;terminal: <span class="ty">Terminal</span>,</li>
+                  <li>}</li>
+                  <li>&nbsp;</li>
+                  <li><span class="kw">impl</span> <span class="ty">Workspace</span> {</li>
+                  <li class="selected-code">&nbsp;&nbsp;<span class="kw">pub fn</span> open(path: <span class="ty">PathBuf</span>) {</li>
+                  <li>&nbsp;&nbsp;&nbsp;&nbsp;<span class="fn">dispatch</span>(Event::Open(path));</li>
+                  <li>&nbsp;&nbsp;}</li>
+                  <li>}</li>
+                </ol>
+                <div class="editor-status"><span>NORMAL</span><span>Rust&nbsp;&nbsp; UTF-8&nbsp;&nbsp; 8:24</span></div>
+              </div>
+            </div>
+          </div>
+          <p class="specimen-label" aria-hidden="true">SPECIMEN 01 / NATIVE WORKSPACE</p>
+        </div>
+      </section>
+
+      <section class="ticker" aria-label="Nucleotide capabilities">
+        <div>
+          <span>SELECT-FIRST EDITING</span><i>✦</i><span>NATIVE WINDOWS</span><i>✦</i><span>PROJECT-AWARE LSP</span><i>✦</i><span>SSH + WSL</span><i>✦</i><span>HELIX AT HEART</span>
+        </div>
+      </section>
+
+      <section class="section intro" id="why" aria-labelledby="why-title">
+        <div class="section-heading">
+          <p class="section-index">01 / DIFFERENTIATORS</p>
+          <h2 id="why-title">Terminal instincts.<br>Desktop affordances.</h2>
+        </div>
+        <p class="section-intro">Keep the composable language and muscle memory of Helix. Add the spatial context of a native desktop app. Nucleotide is designed to make the two feel like one system—not a terminal trapped inside a window.</p>
+
+        <div class="feature-grid">
+          <article class="feature feature-large">
+            <span class="feature-number">A</span>
+            <svg class="feature-icon" viewBox="0 0 64 64" aria-hidden="true"><path d="M32 4 56 18v28L32 60 8 46V18L32 4Z"></path><path d="M20 27h24M20 37h16"></path></svg>
+            <h3>Helix without translation</h3>
+            <p>Use Helix’s modal, selection-first editing model and full keymap. Nucleotide merges its GUI commands without overwriting your existing editor bindings.</p>
+            <p class="feature-note">Helix engine · native rendering</p>
+          </article>
+          <article class="feature">
+            <span class="feature-number">B</span>
+            <h3>GPU-rendered by design</h3>
+            <p>GPUI draws the editor and interface as a responsive native surface on macOS, Linux, and Windows.</p>
+          </article>
+          <article class="feature feature-dark">
+            <span class="feature-number">C</span>
+            <h3>Remote feels local</h3>
+            <p>Open SSH and WSL workspaces with remote file operations, search, Git, target-side language servers, and terminal sessions.</p>
+          </article>
+          <article class="feature">
+            <span class="feature-number">D</span>
+            <h3>Project-aware tooling</h3>
+            <p>Detect project roots across Rust, Python, TypeScript, Go, Java, and C#, then start language servers from the right place.</p>
+          </article>
+          <article class="feature feature-accent">
+            <span class="feature-number">E</span>
+            <h3>Useful desktop context</h3>
+            <p>Navigate with a file tree, tabs, previews, Git decorations, diagnostics, native menus, and a built-in terminal—without giving up the keyboard.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="section screenshots-section" id="screenshots" aria-labelledby="screenshots-title">
+        <div class="section-heading heading-row">
+          <div>
+            <p class="section-index">02 / SCREENSHOTS</p>
+            <h2 id="screenshots-title">A workspace with<br>more dimensions.</h2>
+          </div>
+          <p>Interface previews based on Nucleotide’s current workspace, project tree, editor, and remote tooling.</p>
+        </div>
+
+        <figure class="screenshot-card screenshot-main">
+          <div class="app-window app-window-wide" aria-label="Interface preview showing editor tabs, project tree, diagnostics, and integrated terminal">
+            <div class="window-bar">
+              <span class="window-controls" aria-hidden="true"><i></i><i></i><i></i></span>
+              <span class="window-title">nucleotide — remote_protocol.rs</span>
+              <span class="mode-badge">NORMAL</span>
+            </div>
+            <div class="wide-workspace" aria-hidden="true">
+              <div class="activity-rail"><b>◇</b><span>⌕</span><span>⑂</span><span>▣</span><i></i><span>⚙</span></div>
+              <div class="file-tree detailed-tree">
+                <p class="panel-label">NUCLEOTIDE</p>
+                <p>⌄ crates</p><p class="indent selected">◇ nucleotide-remote</p><p class="indent-2">client.rs</p><p class="indent-2 active-file">protocol.rs <b>M</b></p><p class="indent-2">transport.rs</p><p class="indent">◇ nucleotide-ui</p><p>⌄ docs</p><p class="indent">remote_protocol.md</p>
+              </div>
+              <div class="editor editor-with-terminal">
+                <div class="tabs"><span class="tab">client.rs</span><span class="tab active-tab">protocol.rs <b>●</b></span><span class="tab">transport.rs</span></div>
+                <div class="breadcrumb">crates › nucleotide-remote › protocol.rs › Request</div>
+                <ol class="code-lines wide-code">
+                  <li><span class="kw">use</span> serde::{Deserialize, Serialize};</li>
+                  <li>&nbsp;</li>
+                  <li><span class="attr">#[derive(Debug, Serialize, Deserialize)]</span></li>
+                  <li><span class="kw">pub enum</span> <span class="ty">Request</span> {</li>
+                  <li>&nbsp;&nbsp;ReadFile { path: <span class="ty">PathBuf</span> },</li>
+                  <li class="selected-code">&nbsp;&nbsp;Search { query: <span class="ty">String</span> },</li>
+                  <li>&nbsp;&nbsp;SpawnLsp { root: <span class="ty">PathBuf</span> },</li>
+                  <li>}</li>
+                </ol>
+                <div class="terminal-preview"><div class="terminal-tabs"><b>TERMINAL</b><span>PROBLEMS&nbsp; 0</span><span>OUTPUT</span><i></i><span>＋</span></div><p><span>nucleotide</span> on <em>main</em> <b>❯</b> cargo check -p nucleotide-remote</p><p class="terminal-ok">Finished `dev` profile in 0.48s</p><p><span>nucleotide</span> on <em>main</em> <b>❯</b> <i class="cursor"></i></p></div>
+                <div class="editor-status"><span>NORMAL</span><span>Ln 16, Col 3&nbsp;&nbsp; Rust&nbsp;&nbsp; UTF-8</span></div>
+              </div>
+            </div>
+          </div>
+          <figcaption><span>01</span><strong>Everything in context</strong><p>Project navigation, modal editing, diagnostics, and a terminal share one native workspace.</p></figcaption>
+        </figure>
+
+        <div class="screenshot-pair">
+          <figure class="screenshot-card">
+            <div class="remote-preview" aria-label="Interface preview of an SSH remote workspace picker">
+              <div class="preview-noise" aria-hidden="true"></div>
+              <div class="remote-dialog">
+                <p class="panel-label">OPEN REMOTE WORKSPACE</p>
+                <h3>Where are we coding?</h3>
+                <div class="search-field"><span aria-hidden="true">⌕</span><span>Search hosts and distributions…</span><kbd>esc</kbd></div>
+                <ul>
+                  <li class="remote-active"><span class="remote-symbol">SSH</span><div><strong>production-api</strong><small>dev@api.example.com</small></div><kbd>↵</kbd></li>
+                  <li><span class="remote-symbol">SSH</span><div><strong>staging</strong><small>~/.ssh/config</small></div></li>
+                  <li><span class="remote-symbol">WSL</span><div><strong>Ubuntu</strong><small>Windows Subsystem for Linux</small></div></li>
+                </ul>
+              </div>
+            </div>
+            <figcaption><span>02</span><strong>Cross the boundary</strong><p>Browse SSH hosts and WSL distributions, then run project tools where the code lives.</p></figcaption>
+          </figure>
+          <figure class="screenshot-card screenshot-theme">
+            <div class="theme-preview" aria-label="Interface preview showing Nucleotide light and dark themes">
+              <div class="theme-swatch theme-light"><span>nucleotide-cyan-light</span><pre><b>fn</b> main() {
+  <i>open</i>(workspace);
+}</pre></div>
+              <div class="theme-swatch theme-dark"><span>nucleotide-teal</span><pre><b>fn</b> main() {
+  <i>open</i>(workspace);
+}</pre></div>
+              <svg viewBox="0 0 100 100" aria-hidden="true"><path d="M50 4 90 27v46L50 96 10 73V27L50 4Z"></path><path d="m50 28 20 11v22L50 72 30 61V39l20-11Z"></path></svg>
+            </div>
+            <figcaption><span>03</span><strong>Follow the light</strong><p>Match the system appearance or choose dedicated light and dark themes.</p></figcaption>
+          </figure>
+        </div>
+      </section>
+
+      <section class="section config-section" id="configure" aria-labelledby="config-title">
+        <div class="config-copy">
+          <p class="section-index">03 / CONFIGURATION</p>
+          <h2 id="config-title">Tune the interface.<br>Keep your editor.</h2>
+          <p>Put GUI preferences in <code>nucleotide.toml</code>. Standard editor preferences stay in the neighboring Helix <code>config.toml</code>, so your setup remains portable.</p>
+          <div class="config-paths">
+            <p><span>macOS / Linux</span><code>~/.config/helix/nucleotide.toml</code></p>
+            <p><span>Windows</span><code>%APPDATA%\helix\nucleotide.toml</code></p>
+          </div>
+          <a class="text-link" href="https://github.com/iainh/nucleotide/blob/main/crates/nucleotide/nucleotide.example.toml">View every option <span aria-hidden="true">↗</span></a>
+        </div>
+        <div class="code-card">
+          <div class="code-card-bar"><span>nucleotide.toml</span><button class="copy-button" type="button" data-copy-target="config-code">Copy</button></div>
+          <pre id="config-code" tabindex="0"><code><span class="comment"># Follow the OS, then choose each side.</span>
+<span class="section-name">[theme]</span>
+mode = <span class="string">"system"</span>
+light_theme = <span class="string">"nucleotide-cyan-light"</span>
+dark_theme = <span class="string">"nucleotide-teal"</span>
+
+<span class="section-name">[tabs]</span>
+file_icons = <span class="bool">true</span>
+git_status = <span class="bool">true</span>
+show_diagnostics = <span class="string">"errors"</span>
+
+<span class="section-name">[file_tree]</span>
+density = <span class="string">"compact"</span>
+flatten_empty_directories = <span class="bool">true</span>
+
+<span class="section-name">[remote.ssh]</span>
+helper_install = <span class="string">"auto"</span>
+connect_timeout_secs = <span class="number">30</span>
+
+<span class="section-name">[lsp]</span>
+project_lsp_startup = <span class="bool">true</span></code></pre>
+        </div>
+      </section>
+
+      <section class="section download-section" id="download" aria-labelledby="download-title">
+        <div class="download-heading">
+          <svg viewBox="0 0 120 120" aria-hidden="true"><path d="M60 5 108 33v54l-48 28L12 87V33L60 5Z"></path><path d="m60 35 22 13v24L60 85 38 72V48l22-13Z"></path></svg>
+          <p class="section-index">04 / DOWNLOAD</p>
+          <h2 id="download-title">Pick your environment.</h2>
+          <p>Release builds are published through GitHub. Until the first release appears, Nucleotide can be built directly from source.</p>
+        </div>
+        <div class="download-grid">
+          <article>
+            <span class="platform-icon" aria-hidden="true">⌘</span>
+            <h3>macOS</h3>
+            <p>Apple silicon · Velopack package</p>
+            <a class="button button-outline" href="https://github.com/iainh/nucleotide/releases">Browse macOS releases <span aria-hidden="true">↗</span></a>
+          </article>
+          <article>
+            <span class="platform-icon" aria-hidden="true">⊞</span>
+            <h3>Windows</h3>
+            <p>x86_64 · Portable ZIP</p>
+            <a class="button button-outline" href="https://github.com/iainh/nucleotide/releases">Browse Windows releases <span aria-hidden="true">↗</span></a>
+          </article>
+          <article>
+            <span class="platform-icon linux-icon" aria-hidden="true">◇</span>
+            <h3>Linux</h3>
+            <p>x86_64 · Tar archive</p>
+            <a class="button button-outline" href="https://github.com/iainh/nucleotide/releases">Browse Linux releases <span aria-hidden="true">↗</span></a>
+          </article>
+          <article class="source-download">
+            <span class="platform-icon" aria-hidden="true">&lt;/&gt;</span>
+            <h3>Build from source</h3>
+            <p>Rust stable + Zig 0.15.2</p>
+            <a class="button button-light" href="https://github.com/iainh/nucleotide#installation">Read build instructions <span aria-hidden="true">↗</span></a>
+          </article>
+        </div>
+        <p class="release-note">No releases are currently published. Platform links lead to the official GitHub releases page, where verified artifacts and checksums will appear.</p>
+      </section>
+
+      <section class="closing" aria-labelledby="closing-title">
+        <p class="eyebrow">Built on giants</p>
+        <h2 id="closing-title">Helix at the core.<br><em>Native all around.</em></h2>
+        <p>Nucleotide builds on Helix, Zed’s GPUI, and the original helix-gpui project. Open source, in the open.</p>
+        <a class="button" href="https://github.com/iainh/nucleotide">Star on GitHub <span aria-hidden="true">↗</span></a>
+      </section>
+    </main>
+
+    <footer>
+      <a class="brand footer-brand" href="#top">
+        <svg class="brand-mark" viewBox="0 0 48 48" aria-hidden="true"><path d="M24 3 42 13v22L24 45 6 35V13L24 3Z"></path><path d="m24 13 9 5v11l-9 5-9-5V18l9-5Z"></path></svg>
+        <span>Nucleotide</span>
+      </a>
+      <p>A native GUI for Helix.</p>
+      <nav aria-label="Footer navigation"><a href="https://github.com/iainh/nucleotide">GitHub</a><a href="https://github.com/iainh/nucleotide/issues">Issues</a><a href="https://github.com/iainh/nucleotide/blob/main/LICENSE">MPL-2.0</a></nav>
+      <p>© <span data-current-year>2026</span> Nucleotide contributors</p>
+    </footer>
+  </body>
+</html>
