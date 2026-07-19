@@ -100,6 +100,7 @@ const END_TAB_SLOT_SIZE: f32 = 14.0;
 const TAB_SLOT_ICON_SIZE: f32 = 12.0;
 const TAB_MIN_WIDTH: f32 = 112.0;
 const TAB_MAX_WIDTH: f32 = 280.0;
+const ACTIVE_TAB_HIGHLIGHT_HEIGHT: f32 = 3.0;
 
 pub(crate) fn tab_container_height(_tokens: nucleotide_ui::tokens::DesignTokens) -> gpui::Pixels {
     // Zed tabs use DynamicSpacing::Base32 for the tab container height.
@@ -675,13 +676,12 @@ impl RenderOnce for Tab {
             .min_w(min_width)
             .max_w(max_width)
             .bg(bg_color)
-            .when(is_active, |tab| tab.rounded_tl_sm().rounded_tr_sm())
             .when(enable_animations && !disabled, |tab| {
                 tab.hover(|style| style.bg(hover_bg))
             })
             .when(!disabled, |tab| tab.cursor(CursorStyle::PointingHand))
             .border_color(border_color)
-            .when(is_active, |tab| tab.border_t_1().border_l_1().border_r_1())
+            .when(is_active, |tab| tab.border_l_1().border_r_1())
             .when(!is_active, |tab| tab.border_b_1())
             .when(is_active, |tab| {
                 tab.child(
@@ -690,7 +690,7 @@ impl RenderOnce for Tab {
                         .bottom_0()
                         .left_0()
                         .right_0()
-                        .h(px(2.0))
+                        .h(px(ACTIVE_TAB_HIGHLIGHT_HEIGHT))
                         .bg(nucleotide_ui::tokens::with_alpha(
                             tokens.editor.focus_ring,
                             0.9,
