@@ -91,6 +91,14 @@ mod system_chrome_token_tests {
             light.bufferline_inactive
         );
         assert_eq!(dark_tabs.tab_inactive_background, dark.bufferline_inactive);
+        let light_status = light.status_bar_tokens(&EditorTokens::fallback(false));
+        let dark_status = dark.status_bar_tokens(&EditorTokens::fallback(true));
+        assert_eq!(light_status.background_active, light.footer_background);
+        assert_eq!(light_status.background_inactive, light.footer_background);
+        assert_eq!(dark_status.background_active, dark.footer_background);
+        assert_eq!(dark_status.background_inactive, dark.footer_background);
+        assert_eq!(light_status.text_secondary, light.text_chrome_secondary);
+        assert_eq!(dark_status.text_secondary, dark.text_chrome_secondary);
         assert!(light.popup_background.a < 1.0);
         assert!(dark.popup_background.a < 1.0);
         assert!(light.popup_background.a >= 0.94);
@@ -125,6 +133,12 @@ mod system_chrome_token_tests {
         assert!((system.primary.h - platform_accent.h).abs() < 0.08);
         assert_eq!(system.border_focus, system.primary);
         assert_eq!(system.surface_selected.h, system.primary.h);
+        for background in [system.primary, system.primary_hover, system.primary_active] {
+            assert!(
+                ColorTheory::contrast_ratio(background, system.primary_foreground)
+                    >= ContrastRatios::AA_NORMAL
+            );
+        }
     }
 
     #[test]
@@ -224,17 +238,25 @@ mod titlebar_contrast_tests {
             vcs_modified: gpui::hsla(210.0 / 360.0, 0.7, 0.5, 1.0),
             vcs_deleted: gpui::hsla(0.0, 0.8, 0.5, 1.0),
             statusline: gpui::hsla(0.0, 0.0, 0.95, 1.0),
+            statusline_foreground: gpui::hsla(0.0, 0.0, 0.10, 1.0),
             statusline_inactive: gpui::hsla(0.0, 0.0, 0.9, 1.0),
+            statusline_inactive_foreground: gpui::hsla(0.0, 0.0, 0.10, 1.0),
             popup: gpui::hsla(0.0, 0.0, 0.98, 1.0),
+            popup_foreground: gpui::hsla(0.0, 0.0, 0.10, 1.0),
             bufferline_background: gpui::hsla(0.0, 0.0, 0.92, 1.0),
+            bufferline_foreground: gpui::hsla(0.0, 0.0, 0.10, 1.0),
             bufferline_active: gpui::hsla(0.0, 0.0, 1.0, 1.0),
+            bufferline_active_foreground: gpui::hsla(0.0, 0.0, 0.10, 1.0),
             bufferline_inactive: gpui::hsla(0.0, 0.0, 0.85, 1.0),
+            bufferline_inactive_foreground: gpui::hsla(0.0, 0.0, 0.10, 1.0),
             gutter_background: gpui::hsla(0.0, 0.0, 0.98, 1.0),
             gutter_selected: gpui::hsla(0.0, 0.0, 0.95, 1.0),
             line_number: gpui::hsla(0.0, 0.0, 0.6, 1.0),
             line_number_active: gpui::hsla(0.0, 0.0, 0.4, 1.0),
             menu_background: gpui::hsla(0.0, 0.0, 0.98, 1.0),
+            menu_foreground: gpui::hsla(0.0, 0.0, 0.10, 1.0),
             menu_selected: gpui::hsla(220.0 / 360.0, 0.7, 0.9, 1.0),
+            menu_selected_foreground: gpui::hsla(0.0, 0.0, 0.10, 1.0),
             menu_separator: gpui::hsla(0.0, 0.0, 0.9, 1.0),
             separator: gpui::hsla(0.0, 0.0, 0.9, 1.0),
             focus: gpui::hsla(220.0 / 360.0, 0.7, 0.6, 1.0),
@@ -324,8 +346,8 @@ mod component_token_tests {
     #[test]
     fn test_hybrid_component_tokens() {
         let helix_colors = HelixThemeColors {
-            selection: hsla(220.0 / 360.0, 0.7, 0.8, 0.3),
-            cursor_normal: hsla(220.0 / 360.0, 0.7, 0.6, 1.0),
+            selection: hsla(285.0 / 360.0, 0.72, 0.55, 1.0),
+            cursor_normal: hsla(285.0 / 360.0, 0.7, 0.6, 1.0),
             cursor_insert: hsla(120.0 / 360.0, 0.7, 0.6, 1.0),
             cursor_select: hsla(280.0 / 360.0, 0.7, 0.6, 1.0),
             cursor_match: hsla(40.0 / 360.0, 0.7, 0.6, 1.0),
@@ -336,17 +358,25 @@ mod component_token_tests {
             vcs_modified: hsla(205.0 / 360.0, 0.75, 0.55, 1.0),
             vcs_deleted: hsla(350.0 / 360.0, 0.8, 0.55, 1.0),
             statusline: hsla(0.0, 0.0, 0.2, 1.0),
+            statusline_foreground: hsla(0.0, 0.0, 0.90, 1.0),
             statusline_inactive: hsla(0.0, 0.0, 0.15, 1.0),
+            statusline_inactive_foreground: hsla(0.0, 0.0, 0.90, 1.0),
             popup: hsla(0.0, 0.0, 0.1, 1.0),
+            popup_foreground: hsla(0.0, 0.0, 0.90, 1.0),
             bufferline_background: hsla(0.0, 0.0, 0.12, 1.0),
+            bufferline_foreground: hsla(0.0, 0.0, 0.90, 1.0),
             bufferline_active: hsla(0.0, 0.0, 0.05, 1.0),
+            bufferline_active_foreground: hsla(0.0, 0.0, 0.90, 1.0),
             bufferline_inactive: hsla(0.0, 0.0, 0.08, 1.0),
+            bufferline_inactive_foreground: hsla(0.0, 0.0, 0.90, 1.0),
             gutter_background: hsla(0.0, 0.0, 0.05, 1.0),
             gutter_selected: hsla(0.0, 0.0, 0.1, 1.0),
             line_number: hsla(0.0, 0.0, 0.4, 1.0),
             line_number_active: hsla(0.0, 0.0, 0.8, 1.0),
             menu_background: hsla(0.0, 0.0, 0.08, 1.0),
-            menu_selected: hsla(220.0 / 360.0, 0.7, 0.8, 0.3),
+            menu_foreground: hsla(0.0, 0.0, 0.90, 1.0),
+            menu_selected: hsla(25.0 / 360.0, 0.8, 0.65, 1.0),
+            menu_selected_foreground: hsla(0.0, 0.0, 0.08, 1.0),
             menu_separator: hsla(0.0, 0.0, 0.15, 1.0),
             separator: hsla(0.0, 0.0, 0.2, 1.0),
             focus: hsla(220.0 / 360.0, 0.7, 0.6, 1.0),
@@ -363,12 +393,22 @@ mod component_token_tests {
         let file_tree = tokens.file_tree_tokens();
         let status_bar = tokens.status_bar_tokens();
         let tab_bar = tokens.tab_bar_tokens();
+        let picker = tokens.picker_tokens();
+        let dropdown = tokens.dropdown_tokens();
 
-        // Verify that chrome backgrounds are computed (different from Helix colors)
+        // Helix-owned component channels map directly into live chrome.
+        assert_eq!(tokens.chrome.primary, helix_colors.selection);
+        assert_ne!(tokens.chrome.primary_hover, tokens.chrome.primary);
+        assert_ne!(tokens.chrome.primary_active, tokens.chrome.primary);
+        assert_eq!(tokens.chrome.popup_background, helix_colors.popup);
+        assert_eq!(tokens.chrome.menu_background, helix_colors.menu_background);
+        assert_eq!(tokens.chrome.menu_selected, helix_colors.menu_selected);
+        assert_eq!(tokens.chrome.separator_color, helix_colors.separator);
+        assert_eq!(tokens.chrome.menu_separator, helix_colors.menu_separator);
         assert_ne!(titlebar.background, helix_colors.statusline);
         assert_ne!(file_tree.background, helix_colors.gutter_background);
-        assert_ne!(status_bar.background_active, helix_colors.statusline);
-        assert_ne!(
+        assert_eq!(status_bar.background_active, helix_colors.statusline);
+        assert_eq!(
             tab_bar.container_background,
             helix_colors.bufferline_background
         );
@@ -379,13 +419,32 @@ mod component_token_tests {
             tokens.chrome.surface_selected
         );
         assert_eq!(file_tree.item_text_selected, tokens.chrome.text_on_chrome);
-        assert_eq!(tab_bar.tab_active_background, tokens.editor.background);
-        assert_eq!(tab_bar.tab_text_active, tokens.chrome.text_on_chrome);
+        assert_eq!(
+            tab_bar.tab_active_background,
+            helix_colors.bufferline_active
+        );
+        assert_eq!(
+            tab_bar.tab_text_active,
+            tokens.chrome.bufferline_active_foreground
+        );
+        assert_eq!(picker.container_background, helix_colors.popup);
+        assert_eq!(picker.item_text, tokens.chrome.popup_foreground);
+        assert_eq!(picker.item_background_selected, helix_colors.menu_selected);
+        assert_eq!(
+            picker.item_text_selected,
+            tokens.chrome.menu_selected_foreground
+        );
+        assert_eq!(dropdown.container_background, helix_colors.menu_background);
+        assert_eq!(dropdown.item_text, tokens.chrome.menu_foreground);
+        assert_eq!(
+            dropdown.item_text_selected,
+            tokens.chrome.menu_selected_foreground
+        );
         assert_eq!(tab_bar.tab_modified_indicator, helix_colors.warning);
         assert_eq!(tokens.editor.vcs_added, helix_colors.vcs_added);
         assert_eq!(tokens.editor.vcs_modified, helix_colors.vcs_modified);
         assert_eq!(tokens.editor.vcs_deleted, helix_colors.vcs_deleted);
-        assert_eq!(file_tree.background, tab_bar.container_background);
+        assert_ne!(file_tree.background, tab_bar.container_background);
         assert_ne!(file_tree.background, titlebar.background);
 
         let editor_l = ColorTheory::hsla_to_oklab(tokens.editor.background).L;
@@ -395,6 +454,93 @@ mod component_token_tests {
             file_tree_l > editor_l.min(titlebar_l) && file_tree_l < editor_l.max(titlebar_l),
             "file tree OKLab L {file_tree_l:.3} should sit between editor {editor_l:.3} and titlebar {titlebar_l:.3}"
         );
+
+        for (name, background, foreground, minimum) in [
+            (
+                "primary",
+                tokens.chrome.primary,
+                tokens.chrome.primary_foreground,
+                ContrastRatios::AA_NORMAL,
+            ),
+            (
+                "primary hover",
+                tokens.chrome.primary_hover,
+                tokens.chrome.primary_foreground,
+                ContrastRatios::AA_NORMAL,
+            ),
+            (
+                "primary active",
+                tokens.chrome.primary_active,
+                tokens.chrome.primary_foreground,
+                ContrastRatios::AA_NORMAL,
+            ),
+            (
+                "popup",
+                tokens.chrome.popup_background,
+                tokens.chrome.popup_foreground,
+                ContrastRatios::AA_NORMAL,
+            ),
+            (
+                "menu",
+                tokens.chrome.menu_background,
+                tokens.chrome.menu_foreground,
+                ContrastRatios::AA_NORMAL,
+            ),
+            (
+                "selected menu row",
+                tokens.chrome.menu_selected,
+                tokens.chrome.menu_selected_foreground,
+                ContrastRatios::AA_NORMAL,
+            ),
+            (
+                "active statusline",
+                tokens.chrome.statusline_active,
+                tokens.chrome.statusline_active_foreground,
+                ContrastRatios::AA_NORMAL,
+            ),
+            (
+                "active bufferline",
+                tokens.chrome.bufferline_active,
+                tokens.chrome.bufferline_active_foreground,
+                ContrastRatios::AA_NORMAL,
+            ),
+            (
+                "focus indicator",
+                tokens.chrome.surface,
+                tokens.chrome.border_focus,
+                ContrastRatios::AA_LARGE,
+            ),
+        ] {
+            let ratio = ColorTheory::contrast_ratio(background, foreground);
+            assert!(
+                ratio >= minimum,
+                "{name} contrast {ratio:.2} < {minimum:.2}"
+            );
+        }
+
+        // Low-contrast theme seeds are moved only as far as required for
+        // non-text UI and focus visibility.
+        let low_contrast_colors = HelixThemeColors {
+            selection: surface_color,
+            focus: editor_bg,
+            ..helix_colors
+        };
+        let corrected = DesignTokens::from_helix_and_surface(
+            low_contrast_colors,
+            surface_color,
+            editor_bg,
+            true,
+        );
+        for background in [corrected.chrome.surface, corrected.editor.background] {
+            assert!(
+                ColorTheory::contrast_ratio(background, corrected.chrome.primary)
+                    >= ContrastRatios::AA_LARGE
+            );
+            assert!(
+                ColorTheory::contrast_ratio(background, corrected.chrome.border_focus)
+                    >= ContrastRatios::AA_LARGE
+            );
+        }
 
         // Status-bar chrome and editor-mode colors retain their respective theme ownership.
         let expected_accent = ColorTheory::ensure_contrast(
@@ -535,9 +681,12 @@ mod component_token_tests {
             tab_bar.tab_inactive_background
         );
         assert_eq!(tab_bar.tab_active_background, tokens.editor.background);
-        assert_eq!(tab_bar.tab_text_active, tokens.chrome.text_on_chrome);
+        assert_eq!(
+            tab_bar.tab_text_active,
+            tokens.chrome.bufferline_active_foreground
+        );
         assert_ne!(tab_bar.tab_active_background, tab_bar.container_background);
-        assert_ne!(tab_bar.tab_text_active, tab_bar.tab_text_inactive);
+        assert_eq!(tab_bar.tab_text_active, tab_bar.tab_text_inactive);
 
         // Test active tab contrast (should be high for readability)
         let active_contrast =

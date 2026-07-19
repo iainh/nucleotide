@@ -25,13 +25,19 @@ pub struct HelixThemeColors {
 
     // UI component backgrounds
     pub statusline: Hsla,
+    pub statusline_foreground: Hsla,
     pub statusline_inactive: Hsla,
+    pub statusline_inactive_foreground: Hsla,
     pub popup: Hsla,
+    pub popup_foreground: Hsla,
 
     // Buffer and tab system
     pub bufferline_background: Hsla,
+    pub bufferline_foreground: Hsla,
     pub bufferline_active: Hsla,
+    pub bufferline_active_foreground: Hsla,
     pub bufferline_inactive: Hsla,
+    pub bufferline_inactive_foreground: Hsla,
 
     // Gutter and line number system
     pub gutter_background: Hsla,
@@ -41,7 +47,9 @@ pub struct HelixThemeColors {
 
     // Menu and popup system
     pub menu_background: Hsla,
+    pub menu_foreground: Hsla,
     pub menu_selected: Hsla,
+    pub menu_selected_foreground: Hsla,
     pub menu_separator: Hsla,
 
     // Separator and focus system

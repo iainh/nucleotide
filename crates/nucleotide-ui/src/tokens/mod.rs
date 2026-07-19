@@ -113,6 +113,39 @@ fn system_accent_colors(base_accent: Hsla, is_dark: bool) -> (Hsla, Hsla, Hsla) 
     )
 }
 
+fn ensure_visual_contrast(backgrounds: &[Hsla], color: Hsla, minimum: f32) -> Hsla {
+    let minimum_contrast = |candidate| {
+        backgrounds
+            .iter()
+            .map(|background| ColorTheory::contrast_ratio(*background, candidate))
+            .fold(f32::INFINITY, f32::min)
+    };
+    let mut best = color;
+    let mut best_contrast = minimum_contrast(color);
+    if best_contrast >= minimum {
+        return color;
+    }
+
+    // Search equal lightness steps in both directions so a compliant theme
+    // colour remains unchanged and a corrected colour moves as little as possible.
+    for step in 1..=50 {
+        let delta = step as f32 * 0.02;
+        for direction in [-1.0, 1.0] {
+            let candidate = ColorTheory::adjust_oklab_lightness(color, direction * delta);
+            let contrast = minimum_contrast(candidate);
+            if contrast > best_contrast {
+                best = candidate;
+                best_contrast = contrast;
+            }
+            if contrast >= minimum {
+                return candidate;
+            }
+        }
+    }
+
+    best
+}
+
 impl BaseColors {
     /// Light theme base colors
     pub fn light() -> Self {
@@ -435,20 +468,29 @@ pub struct ChromeTokens {
     pub primary: Hsla,
     pub primary_hover: Hsla,
     pub primary_active: Hsla,
+    pub primary_foreground: Hsla,
 
     // Menu and popup system (chrome elements)
     pub popup_background: Hsla,
+    pub popup_foreground: Hsla,
     pub popup_border: Hsla,
     pub menu_background: Hsla,
+    pub menu_foreground: Hsla,
     pub menu_selected: Hsla,
+    pub menu_selected_foreground: Hsla,
     pub menu_separator: Hsla,
 
     // Status and buffer system (chrome backgrounds)
     pub statusline_active: Hsla,
+    pub statusline_active_foreground: Hsla,
     pub statusline_inactive: Hsla,
+    pub statusline_inactive_foreground: Hsla,
     pub bufferline_background: Hsla,
+    pub bufferline_foreground: Hsla,
     pub bufferline_active: Hsla,
+    pub bufferline_active_foreground: Hsla,
     pub bufferline_inactive: Hsla,
+    pub bufferline_inactive_foreground: Hsla,
 
     // Chrome text colors (computed for contrast)
     pub text_on_chrome: Hsla,
@@ -631,6 +673,91 @@ impl EditorTokens {
 }
 
 impl ChromeTokens {
+    /// Create theme-owned chrome from resolved Helix semantic colours.
+    pub fn from_helix_theme(
+        helix: HelixThemeColors,
+        surface_color: Hsla,
+        editor_background: Hsla,
+        is_dark: bool,
+    ) -> Self {
+        let mut tokens = Self::from_surface_and_editor(surface_color, editor_background, is_dark);
+        let contrast = |background, foreground| {
+            ColorTheory::ensure_contrast(background, foreground, ContrastRatios::AA_NORMAL)
+        };
+
+        tokens.primary = ensure_visual_contrast(
+            &[tokens.surface, editor_background],
+            helix.selection,
+            ContrastRatios::AA_LARGE,
+        );
+        let white = hsla(0.0, 0.0, 1.0, 1.0);
+        let black = hsla(0.0, 0.0, 0.0, 1.0);
+        tokens.primary_foreground = if ColorTheory::contrast_ratio(tokens.primary, white)
+            >= ColorTheory::contrast_ratio(tokens.primary, black)
+        {
+            white
+        } else {
+            black
+        };
+        // Move interaction states away from the chosen foreground. This keeps
+        // one stable label colour at AA contrast across every button state.
+        let state_direction = if tokens.primary_foreground == white {
+            -1.0
+        } else {
+            1.0
+        };
+        tokens.primary_hover =
+            ColorTheory::adjust_oklab_lightness(tokens.primary, state_direction * 0.07);
+        tokens.primary_active =
+            ColorTheory::adjust_oklab_lightness(tokens.primary, state_direction * 0.12);
+
+        tokens.surface_selected = utils::with_alpha(tokens.primary, 0.2);
+        tokens.border_focus = ensure_visual_contrast(
+            &[tokens.surface, tokens.surface_hover, editor_background],
+            helix.focus,
+            ContrastRatios::AA_LARGE,
+        );
+        tokens.separator_color = helix.separator;
+        tokens.border_default = helix.separator;
+        tokens.menu_separator = helix.menu_separator;
+
+        tokens.popup_background = helix.popup;
+        tokens.popup_foreground = contrast(helix.popup, helix.popup_foreground);
+        tokens.popup_border = helix.separator;
+        tokens.menu_background = helix.menu_background;
+        tokens.menu_foreground = contrast(helix.menu_background, helix.menu_foreground);
+        tokens.menu_selected = helix.menu_selected;
+        tokens.menu_selected_foreground =
+            contrast(helix.menu_selected, helix.menu_selected_foreground);
+
+        tokens.statusline_active = helix.statusline;
+        tokens.statusline_active_foreground =
+            contrast(helix.statusline, helix.statusline_foreground);
+        tokens.statusline_inactive = helix.statusline_inactive;
+        tokens.statusline_inactive_foreground = contrast(
+            helix.statusline_inactive,
+            helix.statusline_inactive_foreground,
+        );
+        tokens.footer_background = helix.statusline;
+        tokens.bufferline_background = helix.bufferline_background;
+        tokens.bufferline_foreground =
+            contrast(helix.bufferline_background, helix.bufferline_foreground);
+        tokens.bufferline_active = helix.bufferline_active;
+        tokens.bufferline_active_foreground =
+            contrast(helix.bufferline_active, helix.bufferline_active_foreground);
+        tokens.bufferline_inactive = helix.bufferline_inactive;
+        tokens.bufferline_inactive_foreground = contrast(
+            helix.bufferline_inactive,
+            helix.bufferline_inactive_foreground,
+        );
+        tokens.tab_empty_background = helix.bufferline_background;
+
+        tokens.text_on_chrome = contrast(tokens.surface, helix.text_primary);
+        tokens.text_chrome_secondary = utils::with_alpha(tokens.text_on_chrome, 0.7);
+        tokens.text_chrome_disabled = utils::with_alpha(tokens.text_on_chrome, 0.4);
+        tokens
+    }
+
     /// Create chrome tokens from surface color using color theory
     pub fn from_surface_color(surface_color: Hsla, is_dark: bool) -> Self {
         Self::from_surface_and_editor(surface_color, surface_color, is_dark)
@@ -696,6 +823,25 @@ impl ChromeTokens {
         let shadow_alpha = if is_dark { 0.34 } else { 0.14 };
         let shadow_color = hsla(0.0, 0.0, 0.0, shadow_alpha);
         let shadow_color_strong = hsla(0.0, 0.0, 0.0, if is_dark { 0.46 } else { 0.20 });
+        let primary_candidates = [
+            base_colors.primary_500,
+            base_colors.primary_600,
+            base_colors.primary_700,
+        ];
+        let minimum_primary_contrast = |candidate| {
+            primary_candidates
+                .into_iter()
+                .map(|background| ColorTheory::contrast_ratio(background, candidate))
+                .fold(f32::INFINITY, f32::min)
+        };
+        let white = hsla(0.0, 0.0, 1.0, 1.0);
+        let black = hsla(0.0, 0.0, 0.0, 1.0);
+        let primary_foreground =
+            if minimum_primary_contrast(white) >= minimum_primary_contrast(black) {
+                white
+            } else {
+                black
+            };
 
         Self {
             // Computed chrome backgrounds from color theory
@@ -782,20 +928,29 @@ impl ChromeTokens {
             primary: base_colors.primary_500,
             primary_hover: base_colors.primary_600,
             primary_active: base_colors.primary_700,
+            primary_foreground,
 
             // Menu and popup system (chrome elements)
             popup_background: chrome_colors.file_tree_background, // Consistent with file tree
+            popup_foreground: text_on_chrome,
             popup_border: border_shadow,
             menu_background: chrome_colors.file_tree_background,
+            menu_foreground: text_on_chrome,
             menu_selected: utils::with_alpha(base_colors.primary_500, 0.2),
+            menu_selected_foreground: text_on_chrome,
             menu_separator: chrome_colors.separator_color,
 
             // Status and buffer system (chrome backgrounds)
             statusline_active: chrome_colors.footer_background,
+            statusline_active_foreground: text_on_chrome,
             statusline_inactive: utils::with_alpha(chrome_colors.footer_background, 0.8),
+            statusline_inactive_foreground: text_on_chrome,
             bufferline_background: chrome_colors.tab_empty_background,
+            bufferline_foreground: text_on_chrome,
             bufferline_active: editor_background,
+            bufferline_active_foreground: text_on_chrome,
             bufferline_inactive: utils::with_alpha(chrome_colors.tab_empty_background, 0.9),
+            bufferline_inactive_foreground: text_on_chrome,
 
             // Chrome text colors (computed for contrast)
             text_on_chrome,
@@ -839,6 +994,20 @@ impl ChromeTokens {
         let smoke = hsla(0.0, 0.0, 0.0, 1.0);
         let shadow_color = hsla(0.0, 0.0, 0.0, palette.shadow_alpha);
         let shadow_color_strong = hsla(0.0, 0.0, 0.0, palette.strong_shadow_alpha);
+        let minimum_primary_contrast = |candidate| {
+            [accent, accent_hover, accent_active]
+                .into_iter()
+                .map(|background| ColorTheory::contrast_ratio(background, candidate))
+                .fold(f32::INFINITY, f32::min)
+        };
+        let white = hsla(0.0, 0.0, 1.0, 1.0);
+        let black = hsla(0.0, 0.0, 0.0, 1.0);
+        let primary_foreground =
+            if minimum_primary_contrast(white) >= minimum_primary_contrast(black) {
+                white
+            } else {
+                black
+            };
 
         Self {
             titlebar_background: mica,
@@ -901,18 +1070,33 @@ impl ChromeTokens {
             primary: accent,
             primary_hover: accent_hover,
             primary_active: accent_active,
+            primary_foreground,
 
             popup_background: palette.acrylic,
+            popup_foreground: text_on_chrome,
             popup_border: palette.stroke_subtle,
             menu_background: palette.acrylic,
+            menu_foreground: text_on_chrome,
             menu_selected: selected,
+            menu_selected_foreground: text_on_chrome,
             menu_separator: palette.stroke,
 
             statusline_active: mica,
-            statusline_inactive: utils::with_alpha(palette.mica_base, palette.mica_alpha * 0.86),
+            statusline_active_foreground: text_on_chrome,
+            statusline_inactive: mica,
+            statusline_inactive_foreground: utils::with_alpha(
+                text_on_chrome,
+                palette.secondary_text_alpha,
+            ),
             bufferline_background: mica,
+            bufferline_foreground: text_on_chrome,
             bufferline_active: elevated,
+            bufferline_active_foreground: text_on_chrome,
             bufferline_inactive: mica,
+            bufferline_inactive_foreground: utils::with_alpha(
+                text_on_chrome,
+                palette.secondary_text_alpha,
+            ),
 
             text_on_chrome,
             text_chrome_secondary: utils::with_alpha(text_on_chrome, palette.secondary_text_alpha),
@@ -988,12 +1172,6 @@ impl DesignTokens {
         editor_background: Hsla,
         is_dark_theme: bool,
     ) -> Self {
-        let _base_colors = if is_dark_theme {
-            BaseColors::dark()
-        } else {
-            BaseColors::light()
-        };
-
         // Create editor tokens from Helix colors
         let mut editor = EditorTokens::from_helix_colors(helix_colors);
         // Ensure editor background matches the extracted editor background
@@ -1001,8 +1179,12 @@ impl DesignTokens {
 
         // Create chrome tokens from the computed surface and editor background.
         // The sidebar/file-tree layer uses both to sit between content and titlebar chrome.
-        let chrome =
-            ChromeTokens::from_surface_and_editor(surface_color, editor_background, is_dark_theme);
+        let chrome = ChromeTokens::from_helix_theme(
+            helix_colors,
+            surface_color,
+            editor_background,
+            is_dark_theme,
+        );
 
         Self {
             editor,
@@ -1314,10 +1496,10 @@ pub struct StatusBarTokens {
 impl StatusBarTokens {
     /// Create status bar tokens using computed chrome colors.
     pub fn from_tokens(chrome: &ChromeTokens, editor: &EditorTokens) -> Self {
-        let bg_active = chrome.footer_background;
-        let bg_inactive = chrome.footer_background; // Use same chrome color for consistency
-        let text_primary = chrome.text_on_chrome;
-        let text_secondary = chrome.text_chrome_secondary;
+        let bg_active = chrome.statusline_active;
+        let bg_inactive = chrome.statusline_inactive;
+        let text_primary = chrome.statusline_active_foreground;
+        let text_secondary = chrome.statusline_inactive_foreground;
         let text_accent =
             ColorTheory::ensure_contrast(bg_active, chrome.primary, ContrastRatios::AA_NORMAL);
         let border = chrome.border_shadow;
@@ -1397,8 +1579,8 @@ impl TabBarTokens {
         let tab_active_bg = chrome.bufferline_active;
         let tab_inactive_bg = chrome.bufferline_inactive;
         let tab_hover_bg = chrome.surface_hover;
-        let tab_text_active = chrome.text_on_chrome;
-        let tab_text_inactive = chrome.text_chrome_secondary;
+        let tab_text_active = chrome.bufferline_active_foreground;
+        let tab_text_inactive = chrome.bufferline_inactive_foreground;
         let tab_border = chrome.border_shadow;
         let tab_separator = chrome.separator_color;
         let tab_close = chrome.text_chrome_secondary;
@@ -1531,7 +1713,7 @@ impl ButtonTokens {
         let primary_bg = chrome.primary;
         let primary_bg_hover = chrome.primary_hover;
         let primary_bg_active = chrome.primary_active;
-        let primary_text = ColorTheory::ensure_contrast(primary_bg, editor.text_on_primary, 4.5);
+        let primary_text = chrome.primary_foreground;
         let primary_border = ColorTheory::with_alpha(chrome.primary_active, 0.0);
 
         // Secondary buttons mirror gpui-component's default button: surfaced,
@@ -1692,13 +1874,9 @@ impl PickerTokens {
         let item_bg_hover = utils::with_alpha_at_most(chrome.surface_hover, 0.3);
         let item_bg_selected = chrome.menu_selected;
         // Ensure item text contrasts against the container background (popup surface)
-        let item_text = ColorTheory::ensure_contrast(
-            container_bg,
-            chrome.text_on_chrome,
-            ContrastRatios::AA_NORMAL,
-        );
+        let item_text = chrome.popup_foreground;
         let item_text_secondary = ColorTheory::with_alpha(item_text, 0.7);
-        let item_text_selected = chrome.text_on_chrome;
+        let item_text_selected = chrome.menu_selected_foreground;
 
         // Input fields use chrome backgrounds with system/chrome focus.
         let input_bg = chrome.surface_hover;
@@ -1795,10 +1973,10 @@ impl DropdownTokens {
         let item_bg = ColorTheory::transparent();
         let item_bg_hover = utils::with_alpha_at_most(chrome.surface_hover, 0.3);
         let item_bg_selected = chrome.menu_selected;
-        let item_text = chrome.text_on_chrome;
-        let item_text_secondary = chrome.text_chrome_secondary;
-        let item_text_selected = chrome.text_on_chrome;
-        let item_text_disabled = ColorTheory::with_alpha(chrome.text_on_chrome, 0.5);
+        let item_text = chrome.menu_foreground;
+        let item_text_secondary = ColorTheory::with_alpha(chrome.menu_foreground, 0.7);
+        let item_text_selected = chrome.menu_selected_foreground;
+        let item_text_disabled = ColorTheory::with_alpha(chrome.menu_foreground, 0.5);
 
         // Trigger button uses chrome colors for consistency
         let trigger_bg = chrome.surface_hover;
