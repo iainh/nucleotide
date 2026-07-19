@@ -2774,7 +2774,6 @@ impl FileTreeView {
         } else {
             theme.tokens.file_tree_tokens()
         };
-        let context_menu_event = row.context_menu_event();
         let left_click_row = row.clone();
         let drop_target_path = row.path.clone();
         let density = self.tree.config().density;
@@ -2863,10 +2862,14 @@ impl FileTreeView {
             ProjectTreeRowStyle::new(&theme, file_tree_tokens),
             density,
             root_actions,
-            {
+            Arc::new({
                 let left_click_row = left_click_row.clone();
                 cx.listener(move |view, event: &MouseDownEvent, window, cx| {
-                    let row_event = left_click_row.click_event(event.modifiers.secondary());
+                    let row_event = if event.button == MouseButton::Right {
+                        left_click_row.context_menu_event()
+                    } else {
+                        left_click_row.click_event(event.modifiers.secondary())
+                    };
                     view.handle_project_tree_row_event(
                         row_event,
                         Some(event.position),
@@ -2876,20 +2879,7 @@ impl FileTreeView {
                     );
                     cx.stop_propagation();
                 })
-            },
-            {
-                let context_menu_event = context_menu_event.clone();
-                cx.listener(move |view, event: &MouseDownEvent, window, cx| {
-                    view.handle_project_tree_row_event(
-                        context_menu_event.clone(),
-                        Some(event.position),
-                        event.click_count,
-                        window,
-                        cx,
-                    );
-                    cx.stop_propagation();
-                })
-            },
+            }),
             |_, _, cx| cx.stop_propagation(),
             {
                 let drop_target_path = drop_target_path.clone();

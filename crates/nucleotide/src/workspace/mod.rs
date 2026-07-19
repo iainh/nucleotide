@@ -3444,7 +3444,7 @@ impl Workspace {
 
             file_name = doc
                 .path()
-                .map(|path| statusbar_file_label(path))
+                .map(statusbar_file_label)
                 .unwrap_or_else(|| "[scratch]".to_string());
 
             let position = helix_core::coords_at_pos(

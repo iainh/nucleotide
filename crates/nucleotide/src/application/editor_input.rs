@@ -617,12 +617,11 @@ impl NativeCommandInput {
                 }
             }
             NativeCommandResult::Unhandled { keys, disposition } => {
-                if disposition == UnhandledDisposition::RootNotFound {
-                    if let Some(FallbackShortcut::Workspace(request)) =
+                if disposition == UnhandledDisposition::RootNotFound
+                    && let Some(FallbackShortcut::Workspace(request)) =
                         resolve_fallback_shortcut(mode_before, key, self.target_platform)
-                    {
-                        return NativeInputResult::RequestSemanticShortcut(request);
-                    }
+                {
+                    return NativeInputResult::RequestSemanticShortcut(request);
                 }
                 self.discard_insert_replay_if_needed(mode_before);
                 NativeInputResult::Unhandled { keys, disposition }
