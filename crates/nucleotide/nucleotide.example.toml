@@ -31,7 +31,7 @@ auto_download = false
 mode = "system"
 
 # Theme used when light appearance is active. Default: "nucleotide-cyan-light".
-light_theme = "nucleotide-cyan-light"
+light_theme = "nucleotide-sandcastle"
 
 # Theme used when dark appearance is active. Default: "nucleotide-teal".
 dark_theme = "nucleotide-teal"

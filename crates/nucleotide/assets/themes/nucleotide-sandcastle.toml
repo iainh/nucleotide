@@ -1,0 +1,151 @@
+# Nucleotide Sandcastle Theme
+# Author: Nucleotide contributors
+# License: MPL-2.0
+# Compatibility: This theme was created for Nucleotide but is fully compatible with Helix.
+#
+# A warm, sand-coloured light theme with seaside accents. Text and functional
+# colours meet WCAG 2.2 AA contrast (at least 4.5:1) on their intended surfaces.
+
+attribute = "ocean"
+keyword = "coral"
+"keyword.directive" = "coral"
+namespace = "ocean"
+punctuation = "driftwood"
+"punctuation.delimiter" = "driftwood"
+operator = "driftwood"
+special = "sunset"
+"variable.other.member" = "foreground"
+variable = "foreground"
+"variable.other" = "foreground"
+"variable.parameter" = { fg = "foreground" }
+"variable.builtin" = "ocean"
+type = "lagoon"
+"type.builtin" = "ocean"
+"type.parameter" = "foreground"
+constructor = "lagoon"
+function = "shell"
+"function.macro" = "ocean"
+"function.builtin" = "ocean"
+tag = "palm"
+comment = "muted"
+"comment.block.documentation" = { fg = "muted", modifiers = ["italic"] }
+"comment.line.documentation" = { fg = "muted", modifiers = ["italic"] }
+constant = "sunset"
+"constant.builtin" = "sunset"
+"constant.numeric" = "ocean"
+"constant.character" = "coral"
+"constant.character.escape" = { fg = "palm", modifiers = ["bold"] }
+string = "palm"
+"string.regexp" = "lagoon"
+"string.special.url" = { fg = "ocean", modifiers = ["underlined"] }
+label = "ocean"
+module = "ocean"
+tabstop = { modifiers = ["italic"], bg = "sand_shadow" }
+
+"markup.heading" = { fg = "ocean", modifiers = ["bold"] }
+"markup.bold" = { fg = "foreground", modifiers = ["bold"] }
+"markup.italic" = { fg = "foreground", modifiers = ["italic"] }
+"markup.strikethrough" = { modifiers = ["crossed_out"] }
+"markup.link.url" = { fg = "ocean", modifiers = ["underlined"] }
+"markup.link.text" = "lagoon"
+"markup.raw" = "palm"
+"markup.quote" = "lagoon"
+"markup.list" = "sunset"
+"markup.normal.completion" = "foreground"
+"markup.normal.hover" = "foreground"
+
+"diff.plus" = "palm"
+"diff.minus" = "error"
+"diff.delta" = "ocean"
+
+"ui.background" = { fg = "foreground", bg = "sand" }
+"ui.background.separator" = { fg = "border", bg = "border" }
+"ui.linenr" = { fg = "muted", bg = "sand" }
+"ui.linenr.selected" = { fg = "foreground", bg = "sand" }
+"ui.gutter" = { bg = "sand" }
+"ui.gutter.selected" = { bg = "sand_light" }
+"ui.statusline" = { fg = "muted", bg = "sand_dark" }
+"ui.statusline.inactive" = { fg = "muted", bg = "sand_dark" }
+"ui.bufferline" = { fg = "muted", bg = "sand_dark" }
+"ui.bufferline.active" = { fg = "foreground", bg = "sand" }
+"ui.bufferline.inactive" = { fg = "muted", bg = "sand_dark" }
+"ui.popup" = { fg = "foreground", bg = "sand_light" }
+"ui.window" = { fg = "border", bg = "sand_dark" }
+"ui.help" = { fg = "foam", bg = "deep_ocean" }
+"ui.text" = { fg = "foreground" }
+"ui.text.focus" = { fg = "foreground" }
+"ui.text.inactive" = "muted"
+"ui.text.directory" = { fg = "ocean" }
+"ui.virtual" = { fg = "muted" }
+"ui.virtual.ruler" = { bg = "sand_shadow" }
+"ui.virtual.jump-label" = { fg = "error", modifiers = ["bold"] }
+"ui.virtual.indent-guide" = { fg = "border" }
+"ui.virtual.inlay-hint" = { fg = "muted", bg = "sand_light" }
+"ui.virtual.inlay-hint.parameter" = { fg = "muted", bg = "sand_light" }
+"ui.virtual.inlay-hint.type" = { fg = "muted", bg = "sand_light" }
+
+"ui.selection" = { fg = "foreground", bg = "seafoam" }
+"ui.selection.primary" = { fg = "foreground", bg = "seafoam" }
+"ui.cursor.select" = { bg = "aqua" }
+"ui.cursor.insert" = { bg = "foreground" }
+"ui.cursor.primary.select" = { bg = "aqua" }
+"ui.cursor.primary.insert" = { bg = "foreground" }
+"ui.cursor.match" = { fg = "foreground", bg = "aqua" }
+"ui.cursor" = { modifiers = ["reversed"] }
+"ui.cursorline.primary" = { bg = "sand_light" }
+"ui.highlight" = { bg = "sand_light" }
+"ui.highlight.frameline" = { bg = "sand_shadow" }
+"ui.highlight.search" = { fg = "foreground", bg = "sunshine" }
+"ui.highlight.search.current" = { fg = "foreground", bg = "aqua" }
+"ui.debug" = { fg = "ocean" }
+"ui.debug.breakpoint" = { fg = "error" }
+"ui.menu" = { fg = "foreground", bg = "sand_light" }
+"ui.menu.selected" = { fg = "foam", bg = "deep_ocean" }
+"ui.menu.scroll" = { fg = "foreground", bg = "sand_shadow" }
+"ui.menu.separator" = { fg = "border", bg = "border" }
+"ui.focus" = { fg = "ocean", bg = "ocean" }
+
+"diagnostic.hint" = { underline = { color = "muted", style = "curl" } }
+"diagnostic.info" = { underline = { color = "ocean", style = "curl" } }
+"diagnostic.warning" = { underline = { color = "warning", style = "curl" } }
+"diagnostic.error" = { underline = { color = "error", style = "curl" } }
+"diagnostic.unnecessary" = { modifiers = ["dim"] }
+"diagnostic.deprecated" = { modifiers = ["crossed_out"] }
+
+warning = "warning"
+error = "error"
+info = "ocean"
+hint = "muted"
+
+rainbow = ["coral", "sunset", "palm", "ocean", "shell", "lagoon"]
+
+[palette]
+# Warm sand surfaces.
+sand = "#faf7f1"
+sand_dark = "#f1e9da"
+sand_light = "#fffcf7"
+sand_shadow = "#e8dcc7"
+border = "#d4c3a5"
+border_strong = "#b69c71"
+
+# Foregrounds have at least 4.5:1 contrast on the sand surfaces where used.
+foreground = "#29343A" # 11.93:1 on sand
+driftwood = "#4F4A42"  # 8.22:1 on sand
+muted = "#635E53"      # 6.03:1 on sand
+foam = "#FFFFFF"
+
+# Saturated seaside syntax and functional colours, darkened for accessible text.
+ocean = "#00658A"      # 6.08:1 on sand
+deep_ocean = "#006C78" # 6.15:1 with foam
+lagoon = "#006B5E"     # 6.02:1 on sand
+coral = "#A43832"      # 6.16:1 on sand
+shell = "#79519A"      # 5.68:1 on sand
+sunset = "#8A4B00"     # 6.36:1 on sand
+palm = "#276528"       # 6.59:1 on sand
+warning = "#765A00"    # 6.08:1 on sand
+error = "#A12F35"      # 6.60:1 on sand
+
+# Bright non-text accents retain a sunny, seaside character.
+seafoam = "#8EDDD2"
+aqua = "#73D2DE"
+sunshine = "#FFD166"
