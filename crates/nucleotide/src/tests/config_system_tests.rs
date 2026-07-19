@@ -197,7 +197,7 @@ mode = "light"
         assert_eq!(config.theme.mode, ThemeMode::Light);
         assert_eq!(config.file_tree.density, FileTreeDisplayDensity::Default);
         assert!(config.file_tree.flatten_empty_directories);
-        assert_eq!(config.theme.get_light_theme(), "nucleotide-cyan-light"); // Default
+        assert_eq!(config.theme.get_light_theme(), "nucleotide-sandcastle"); // Default
         assert_eq!(config.theme.get_dark_theme(), "nucleotide-teal"); // Default
     }
 
@@ -546,7 +546,7 @@ dark_theme = "custom_dark"
         let theme_config = ThemeConfig::default();
 
         assert_eq!(theme_config.mode, ThemeMode::System);
-        assert_eq!(theme_config.get_light_theme(), "nucleotide-cyan-light");
+        assert_eq!(theme_config.get_light_theme(), "nucleotide-sandcastle");
         assert_eq!(theme_config.get_dark_theme(), "nucleotide-teal");
     }
 
