@@ -10,7 +10,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use std::path::{Path, PathBuf};
 
 /// Default theme for light mode
-pub const DEFAULT_LIGHT_THEME: &str = "nucleotide-cyan-light";
+pub const DEFAULT_LIGHT_THEME: &str = "nucleotide-sandcastle";
 
 /// Default theme for dark mode
 pub const DEFAULT_DARK_THEME: &str = "nucleotide-teal";
@@ -261,7 +261,7 @@ pub struct ThemeConfig {
     #[serde(default)]
     pub mode: ThemeMode,
 
-    /// Theme to use in light mode (defaults to "nucleotide-cyan-light" if not specified)
+    /// Theme to use in light mode (defaults to "nucleotide-sandcastle" if not specified)
     #[serde(default)]
     pub light_theme: Option<String>,
 
