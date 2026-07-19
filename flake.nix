@@ -81,7 +81,7 @@
         # Keep Nix's cc wrapper so library paths and SDK flags are preserved,
         # while asking clang to use LLD's Darwin linker underneath.
         darwinRustLinker = "${stdenv.cc}/bin/cc";
-        darwinRustLinkerFlags = "-C link-arg=-fuse-ld=${pkgs.lld}/bin/ld64.lld";
+        darwinRustLinkerFlags = "-C link-arg=-fuse-ld=${pkgs.lld}/bin/ld64.lld -C link-arg=-Wl,-no_fixup_chains";
         darwinRustLinkerEnv = lib.optionalAttrs stdenv.isDarwin {
           CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER = darwinRustLinker;
           CARGO_TARGET_AARCH64_APPLE_DARWIN_RUSTFLAGS = darwinRustLinkerFlags;
