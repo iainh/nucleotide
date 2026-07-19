@@ -2778,56 +2778,82 @@ impl FileTreeView {
         let left_click_row = row.clone();
         let drop_target_path = row.path.clone();
         let density = self.tree.config().density;
+        let search_active = self.search_query().is_some();
         let root_actions = (row.depth == 0).then(|| {
             let root_path = row.path.clone();
             div()
                 .absolute()
-                .top(theme.tokens.sizes.space_1)
+                .top_0()
+                .bottom_0()
                 .right(theme.tokens.sizes.space_2)
                 .flex()
                 .flex_none()
                 .items_center()
-                .gap(theme.tokens.sizes.space_1)
-                .rounded(theme.tokens.sizes.radius_sm)
-                .bg(file_tree_tokens.background)
                 .child(
-                    Button::icon_only("file-tree-search", "icons/search.svg")
-                        .variant(ButtonVariant::Ghost)
-                        .size(ButtonSize::ExtraSmall)
-                        .tooltip("Search Files")
-                        .activate_on_mouse_down()
-                        .on_click(cx.listener(|view, _event, _window, cx| {
-                            view.request_search(cx);
-                            cx.stop_propagation();
-                        })),
-                )
-                .child(
-                    Button::icon_only("file-tree-collapse-all", "icons/chevron-up.svg")
-                        .variant(ButtonVariant::Ghost)
-                        .size(ButtonSize::ExtraSmall)
-                        .tooltip("Collapse All")
-                        .activate_on_mouse_down()
-                        .on_click(cx.listener(|view, _event, _window, cx| {
-                            view.collapse_all_directories(cx);
-                            cx.stop_propagation();
-                        })),
-                )
-                .child(
-                    Button::icon_only("file-tree-more", "icons/menu.svg")
-                        .variant(ButtonVariant::Ghost)
-                        .size(ButtonSize::ExtraSmall)
-                        .tooltip("More Actions")
-                        .activate_on_mouse_down()
-                        .on_click(cx.listener(move |view, event: &ClickEvent, window, cx| {
-                            view.request_entry_context_menu(
-                                root_path.clone(),
-                                true,
-                                event.position(),
-                                window,
-                                cx,
-                            );
-                            cx.stop_propagation();
-                        })),
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(theme.tokens.sizes.space_2)
+                        .rounded(theme.tokens.sizes.radius_sm)
+                        .bg(file_tree_tokens.background)
+                        .child(
+                            Button::icon_only(
+                                "file-tree-search",
+                                if search_active {
+                                    "icons/circle-x.svg"
+                                } else {
+                                    "icons/search.svg"
+                                },
+                            )
+                            .variant(ButtonVariant::Ghost)
+                            .size(ButtonSize::ExtraSmall)
+                            .tooltip(if search_active {
+                                "Clear File Filter"
+                            } else {
+                                "Filter Files"
+                            })
+                            .activate_on_mouse_down()
+                            .on_click(cx.listener(
+                                move |view, _event, _window, cx| {
+                                    if search_active {
+                                        view.clear_search_query(cx);
+                                    } else {
+                                        view.request_search(cx);
+                                    }
+                                    cx.stop_propagation();
+                                },
+                            )),
+                        )
+                        .child(
+                            Button::icon_only("file-tree-collapse-all", "icons/chevron-up.svg")
+                                .variant(ButtonVariant::Ghost)
+                                .size(ButtonSize::ExtraSmall)
+                                .tooltip("Collapse All")
+                                .activate_on_mouse_down()
+                                .on_click(cx.listener(|view, _event, _window, cx| {
+                                    view.collapse_all_directories(cx);
+                                    cx.stop_propagation();
+                                })),
+                        )
+                        .child(
+                            Button::icon_only("file-tree-more", "icons/menu.svg")
+                                .variant(ButtonVariant::Ghost)
+                                .size(ButtonSize::ExtraSmall)
+                                .tooltip("More Actions")
+                                .activate_on_mouse_down()
+                                .on_click(cx.listener(
+                                    move |view, event: &ClickEvent, window, cx| {
+                                        view.request_entry_context_menu(
+                                            root_path.clone(),
+                                            true,
+                                            event.position(),
+                                            window,
+                                            cx,
+                                        );
+                                        cx.stop_propagation();
+                                    },
+                                )),
+                        ),
                 )
                 .into_any_element()
         });
