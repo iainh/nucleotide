@@ -132,7 +132,7 @@ impl ThemeManager {
             },
             "ui.statusline" => Style {
                 bg: to_helix_color(ui_theme.tokens.chrome.statusline_active),
-                fg: to_helix_color(ui_theme.tokens.chrome.text_on_chrome),
+                fg: to_helix_color(ui_theme.tokens.chrome.statusline_active_foreground),
                 ..Default::default()
             },
             "ui.window" => Style {
@@ -141,21 +141,21 @@ impl ThemeManager {
             },
             "ui.menu" => Style {
                 bg: to_helix_color(ui_theme.tokens.chrome.menu_background),
-                fg: to_helix_color(ui_theme.tokens.chrome.text_on_chrome),
+                fg: to_helix_color(ui_theme.tokens.chrome.menu_foreground),
                 ..Default::default()
             },
             "ui.popup" => Style {
                 bg: to_helix_color(ui_theme.tokens.chrome.popup_background),
-                fg: to_helix_color(ui_theme.tokens.chrome.popup_border), // fg is used for borders in popups
+                fg: to_helix_color(ui_theme.tokens.chrome.popup_foreground),
                 ..Default::default()
             },
             "ui.menu.selected" => Style {
                 bg: to_helix_color(ui_theme.tokens.chrome.menu_selected),
-                fg: to_helix_color(ui_theme.tokens.chrome.text_on_chrome),
+                fg: to_helix_color(ui_theme.tokens.chrome.menu_selected_foreground),
                 ..Default::default()
             },
             "ui.background.separator" => Style {
-                bg: to_helix_color(ui_theme.tokens.chrome.separator_color),
+                fg: to_helix_color(ui_theme.tokens.chrome.separator_color),
                 ..Default::default()
             },
             "ui.cursor.primary.insert" => Style {
@@ -272,17 +272,17 @@ impl ThemeManager {
             // Enhanced status and buffer mappings
             "ui.statusline.inactive" => Style {
                 bg: to_helix_color(ui_theme.tokens.chrome.statusline_inactive),
-                fg: to_helix_color(ui_theme.tokens.chrome.text_chrome_secondary),
+                fg: to_helix_color(ui_theme.tokens.chrome.statusline_inactive_foreground),
                 ..Default::default()
             },
             "ui.bufferline" => Style {
                 bg: to_helix_color(ui_theme.tokens.chrome.bufferline_background),
-                fg: to_helix_color(ui_theme.tokens.chrome.text_on_chrome),
+                fg: to_helix_color(ui_theme.tokens.chrome.bufferline_foreground),
                 ..Default::default()
             },
             "ui.bufferline.active" => Style {
                 bg: to_helix_color(ui_theme.tokens.chrome.bufferline_active),
-                fg: to_helix_color(ui_theme.tokens.chrome.text_on_chrome),
+                fg: to_helix_color(ui_theme.tokens.chrome.bufferline_active_foreground),
                 ..Default::default()
             },
             // Enhanced diagnostic mappings
@@ -338,17 +338,17 @@ impl ThemeManager {
             // Additional buffer line mappings
             "ui.bufferline.inactive" => Style {
                 bg: to_helix_color(ui_theme.tokens.chrome.bufferline_inactive),
-                fg: to_helix_color(ui_theme.tokens.chrome.text_chrome_secondary),
+                fg: to_helix_color(ui_theme.tokens.chrome.bufferline_inactive_foreground),
                 ..Default::default()
             },
             // Menu separator mapping
             "ui.menu.separator" => Style {
-                bg: to_helix_color(ui_theme.tokens.chrome.menu_separator),
+                fg: to_helix_color(ui_theme.tokens.chrome.menu_separator),
                 ..Default::default()
             },
             // Enhanced focus ring variants for accessibility
             "ui.focus" => Style {
-                bg: to_helix_color(ui_theme.tokens.editor.focus_ring),
+                fg: to_helix_color(ui_theme.tokens.chrome.border_focus),
                 ..Default::default()
             },
             "ui.focus.error" => Style {
@@ -626,17 +626,21 @@ impl ThemeManager {
                 empty_style,
             )
         } else {
-            let ui_bg = helix_theme.get("ui.background");
-            let ui_text = helix_theme.get("ui.text");
-            let ui_selection = helix_theme.get("ui.selection");
-            let ui_cursor = helix_theme.get("ui.cursor.primary");
-            let ui_cursor_insert = helix_theme.get("ui.cursor.insert");
-            let ui_cursor_select = helix_theme.get("ui.cursor.select");
-            let ui_cursor_match = helix_theme.get("ui.cursor.match");
-            let ui_window = helix_theme.get("ui.window");
-            let ui_menu = helix_theme.get("ui.menu");
-            let ui_statusline = helix_theme.get("ui.statusline");
-            let ui_popup = helix_theme.get("ui.popup");
+            let exact_style = |scope| helix_theme.try_get_exact(scope).unwrap_or_default();
+            let ui_bg = exact_style("ui.background");
+            let ui_text = exact_style("ui.text");
+            let ui_selection = exact_style("ui.selection");
+            let ui_cursor = helix_theme
+                .try_get_exact("ui.cursor.primary")
+                .or_else(|| helix_theme.try_get_exact("ui.cursor"))
+                .unwrap_or_default();
+            let ui_cursor_insert = exact_style("ui.cursor.insert");
+            let ui_cursor_select = exact_style("ui.cursor.select");
+            let ui_cursor_match = exact_style("ui.cursor.match");
+            let ui_window = exact_style("ui.window");
+            let ui_menu = exact_style("ui.menu");
+            let ui_statusline = exact_style("ui.statusline");
+            let ui_popup = exact_style("ui.popup");
             let error_style = helix_theme.get("error");
             let warning_style = helix_theme.get("warning");
             let info_style = helix_theme.get("info");
@@ -744,17 +748,14 @@ impl ThemeManager {
         };
 
         let surface = surface_from_theme.unwrap_or_else(|| {
-            // Simplified fallback: sentinel red surface
-            let red = hsla(0.0, 1.0, 0.5, 1.0);
             nucleotide_logging::warn!(
                 system_appearance = ?system_appearance,
                 background_color = ?background,
-                fallback_surface = ?red,
                 ui_menu_bg_available = ui_menu.bg.is_some(),
                 ui_background_available = ui_bg.bg.is_some(),
-                "TITLEBAR THEME_MANAGER: Missing surface inputs; using sentinel red surface"
+                "Missing surface inputs; deriving chrome surface from editor background"
             );
-            red
+            compute_surface_from_bg(background)
         });
 
         nucleotide_logging::debug!(
@@ -784,39 +785,23 @@ impl ThemeManager {
             .and_then(color_to_hsla)
             .or_else(|| ui_text.fg.and_then(color_to_hsla))
             .map(|c| hsla(c.h, c.s * 0.5, c.l * 0.5, c.a * 0.8));
-        let border = border_from_theme.unwrap_or_else(|| {
-            // Simplified fallback: sentinel red
-            let red = hsla(0.0, 1.0, 0.5, 1.0);
-            nucleotide_logging::debug!(
-                system_appearance = ?system_appearance,
-                background_color = ?background,
-                fallback_border = ?red,
-                "Missing border color; using sentinel red"
-            );
-            red
-        });
+        let border = border_from_theme.unwrap_or_else(|| hsla(text.h, text.s, text.l, 0.45));
 
-        let accent_from_theme = ui_selection
-            .bg
-            .and_then(color_to_hsla)
+        let accent_from_theme = helix_theme
+            .try_get_exact("ui.selection.primary")
+            .and_then(|style| style.bg.and_then(color_to_hsla))
+            .or_else(|| ui_selection.bg.and_then(color_to_hsla))
             .or_else(|| ui_cursor.bg.and_then(color_to_hsla));
-        let accent = accent_from_theme.unwrap_or_else(|| hsla(0.0, 1.0, 0.5, 1.0));
+        let accent = accent_from_theme.unwrap_or(text);
 
         let error_from_theme = error_style.fg.and_then(color_to_hsla);
-        let error = error_from_theme.unwrap_or_else(|| hsla(0.0, 0.8, 0.5, 1.0));
+        let error = error_from_theme.unwrap_or(accent);
 
         let warning_from_theme = warning_style.fg.and_then(color_to_hsla);
-        let warning = warning_from_theme.unwrap_or_else(|| hsla(40.0 / 360.0, 0.8, 0.5, 1.0));
+        let warning = warning_from_theme.unwrap_or(accent);
 
         let success_from_theme = info_style.fg.and_then(color_to_hsla);
-        let success = success_from_theme.unwrap_or_else(|| hsla(120.0 / 360.0, 0.6, 0.5, 1.0));
-
-        let diff_delta_fallback = hsla(
-            210.0 / 360.0,
-            0.7,
-            if background.l > 0.5 { 0.5 } else { 0.6 },
-            1.0,
-        );
+        let success = success_from_theme.unwrap_or(accent);
         let vcs_added_from_theme = diff_plus_style
             .fg
             .and_then(color_to_hsla)
@@ -831,24 +816,24 @@ impl ThemeManager {
             .or_else(|| diff_delta_style.bg.and_then(color_to_hsla));
         let vcs_added = vcs_added_from_theme.unwrap_or(success);
         let vcs_deleted = vcs_deleted_from_theme.unwrap_or(error);
-        let vcs_modified = vcs_modified_from_theme.unwrap_or(diff_delta_fallback);
+        let vcs_modified = vcs_modified_from_theme.unwrap_or(accent);
 
         // Extract additional cursor colors from Helix theme
         let cursor_insert_from_theme = ui_cursor_insert.bg.and_then(color_to_hsla);
-        let cursor_insert = cursor_insert_from_theme.unwrap_or(hsla(0.0, 1.0, 0.5, 1.0));
+        let cursor_insert = cursor_insert_from_theme.unwrap_or(accent);
 
         let cursor_select_from_theme = ui_cursor_select.bg.and_then(color_to_hsla);
-        let cursor_select = cursor_select_from_theme.unwrap_or(hsla(0.0, 1.0, 0.5, 1.0));
+        let cursor_select = cursor_select_from_theme.unwrap_or(accent);
 
         let cursor_match_from_theme = ui_cursor_match.bg.and_then(color_to_hsla);
-        let cursor_match = cursor_match_from_theme.unwrap_or(hsla(0.0, 1.0, 0.5, 1.0));
+        let cursor_match = cursor_match_from_theme.unwrap_or(accent);
 
         // Extract statusline and popup colors
         let statusline_from_theme = ui_statusline.bg.and_then(color_to_hsla);
-        let statusline = statusline_from_theme.unwrap_or(hsla(0.0, 1.0, 0.5, 1.0));
+        let statusline = statusline_from_theme.unwrap_or(surface);
 
         let popup_from_theme = ui_popup.bg.and_then(color_to_hsla);
-        let popup = popup_from_theme.unwrap_or(hsla(0.0, 1.0, 0.5, 1.0));
+        let popup = popup_from_theme.unwrap_or(surface);
 
         if test_fallback {
             nucleotide_logging::info!(
@@ -871,29 +856,60 @@ impl ThemeManager {
         }
 
         // Extract additional UI component colors for comprehensive mapping
-        let extract_color = |key: &str, _fallback: Hsla| -> Hsla {
+        let extract_color = |key: &str, fallback: Hsla| -> Hsla {
             if test_fallback {
-                hsla(0.0, 1.0, 0.5, 1.0)
+                fallback
             } else {
                 helix_theme
-                    .get(key)
+                    .try_get_exact(key)
+                    .unwrap_or_default()
                     .bg
                     .and_then(color_to_hsla)
-                    .unwrap_or(hsla(0.0, 1.0, 0.5, 1.0))
+                    .unwrap_or(fallback)
             }
         };
 
-        let extract_fg_color = |key: &str, _fallback: Hsla| -> Hsla {
+        let extract_fg_color = |key: &str, fallback: Hsla| -> Hsla {
             if test_fallback {
-                hsla(0.0, 1.0, 0.5, 1.0)
+                fallback
             } else {
                 helix_theme
-                    .get(key)
+                    .try_get_exact(key)
+                    .unwrap_or_default()
                     .fg
                     .and_then(color_to_hsla)
-                    .unwrap_or(hsla(0.0, 1.0, 0.5, 1.0))
+                    .unwrap_or(fallback)
             }
         };
+
+        // Child UI scopes inherit missing channels from their semantic base,
+        // not from Helix's generic dotted-scope fallback.
+        let statusline_foreground = ui_statusline.fg.and_then(color_to_hsla).unwrap_or(text);
+        let statusline_inactive = extract_color("ui.statusline.inactive", statusline);
+        let statusline_inactive_foreground =
+            extract_fg_color("ui.statusline.inactive", statusline_foreground);
+        let popup_foreground = ui_popup.fg.and_then(color_to_hsla).unwrap_or(text);
+        let bufferline_inactive_base = extract_color("ui.bufferline", statusline);
+        let bufferline_inactive_foreground_base =
+            extract_fg_color("ui.bufferline", statusline_foreground);
+        let bufferline_background =
+            extract_color("ui.bufferline.background", bufferline_inactive_base);
+        let bufferline_foreground = extract_fg_color(
+            "ui.bufferline.background",
+            bufferline_inactive_foreground_base,
+        );
+        let bufferline_active = extract_color("ui.bufferline.active", bufferline_inactive_base);
+        let bufferline_active_foreground =
+            extract_fg_color("ui.bufferline.active", bufferline_inactive_foreground_base);
+        let bufferline_inactive = extract_color("ui.bufferline.inactive", bufferline_inactive_base);
+        let bufferline_inactive_foreground = extract_fg_color(
+            "ui.bufferline.inactive",
+            bufferline_inactive_foreground_base,
+        );
+        let menu_background = ui_menu.bg.and_then(color_to_hsla).unwrap_or(surface);
+        let menu_foreground = ui_menu.fg.and_then(color_to_hsla).unwrap_or(text);
+        let menu_selected = extract_color("ui.menu.selected", accent);
+        let menu_selected_foreground = extract_fg_color("ui.menu.selected", menu_foreground);
 
         // Create comprehensive theme colors struct
         let theme_colors = HelixThemeColors {
@@ -914,13 +930,19 @@ impl ThemeManager {
 
             // UI component backgrounds
             statusline,
-            statusline_inactive: extract_color("ui.statusline.inactive", derived_surface),
+            statusline_foreground,
+            statusline_inactive,
+            statusline_inactive_foreground,
             popup,
+            popup_foreground,
 
             // Buffer and tab system
-            bufferline_background: extract_color("ui.bufferline", background),
-            bufferline_active: extract_color("ui.bufferline.active", background),
-            bufferline_inactive: extract_color("ui.bufferline.inactive", derived_surface),
+            bufferline_background,
+            bufferline_foreground,
+            bufferline_active,
+            bufferline_active_foreground,
+            bufferline_inactive,
+            bufferline_inactive_foreground,
 
             // Gutter and line number system
             gutter_background: extract_color("ui.gutter", background),
@@ -929,13 +951,15 @@ impl ThemeManager {
             line_number_active: extract_fg_color("ui.linenr.selected", text),
 
             // Menu and popup system
-            menu_background: extract_color("ui.menu", surface),
-            menu_selected: extract_color("ui.menu.selected", accent),
-            menu_separator: extract_color("ui.menu.separator", border),
+            menu_background,
+            menu_foreground,
+            menu_selected,
+            menu_selected_foreground,
+            menu_separator: extract_fg_color("ui.menu.separator", border),
 
             // Separator and focus system
-            separator: extract_color("ui.background.separator", border),
-            focus: extract_color("ui.focus", accent),
+            separator: extract_fg_color("ui.background.separator", border),
+            focus: extract_fg_color("ui.focus", accent),
             // Text
             text_primary: text,
         };

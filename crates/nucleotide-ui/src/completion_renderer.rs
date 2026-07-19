@@ -260,7 +260,12 @@ impl CompletionItemElement {
             .filter(|text| !text.is_empty());
 
         if self.compact {
-            let label_color = tokens.chrome.text_on_chrome;
+            let label_color = if self.is_selected {
+                tokens.chrome.menu_selected_foreground
+            } else {
+                tokens.chrome.popup_foreground
+            };
+            let secondary_color = label_color;
 
             return div()
                 .flex()
@@ -272,7 +277,7 @@ impl CompletionItemElement {
                 .gap(tokens.sizes.space_2)
                 .rounded(tokens.sizes.radius_sm)
                 .line_height(relative(1.0))
-                .when(self.is_selected, |div| div.bg(tokens.chrome.surface_active))
+                .when(self.is_selected, |div| div.bg(tokens.chrome.menu_selected))
                 .when(!self.is_selected, |div| {
                     div.hover(|style| style.bg(tokens.chrome.surface_hover))
                 })
@@ -306,7 +311,7 @@ impl CompletionItemElement {
                             row.child(
                                 div()
                                     .text_size(tokens.sizes.text_base)
-                                    .text_color(tokens.chrome.text_chrome_secondary)
+                                    .text_color(secondary_color)
                                     .overflow_hidden()
                                     .whitespace_nowrap()
                                     .text_ellipsis()
@@ -317,7 +322,7 @@ impl CompletionItemElement {
                             row.child(
                                 div()
                                     .text_size(tokens.sizes.text_base)
-                                    .text_color(tokens.chrome.text_chrome_secondary)
+                                    .text_color(secondary_color)
                                     .overflow_hidden()
                                     .whitespace_nowrap()
                                     .text_ellipsis()
@@ -329,7 +334,7 @@ impl CompletionItemElement {
                                 div()
                                     .ml_auto()
                                     .text_size(tokens.sizes.text_sm)
-                                    .text_color(tokens.chrome.text_chrome_secondary)
+                                    .text_color(secondary_color)
                                     .overflow_hidden()
                                     .whitespace_nowrap()
                                     .text_ellipsis()
@@ -340,6 +345,11 @@ impl CompletionItemElement {
                 .into_any_element();
         }
 
+        let item_text = if self.is_selected {
+            tokens.chrome.menu_selected_foreground
+        } else {
+            tokens.chrome.popup_foreground
+        };
         let base_container = div()
             .flex()
             .flex_row()
@@ -348,9 +358,7 @@ impl CompletionItemElement {
             .px_2()
             .py(px(3.0)) // This is 6px total (3px top + 3px bottom)
             .gap_2()
-            .when(self.is_selected, |div| {
-                div.bg(tokens.editor.selection_primary)
-            })
+            .when(self.is_selected, |div| div.bg(tokens.chrome.menu_selected))
             .when(!self.is_selected, |div| {
                 div.hover(|style| style.bg(tokens.editor.selection_secondary))
             });
@@ -383,11 +391,11 @@ impl CompletionItemElement {
                             div()
                                 .text_sm()
                                 .font_weight(gpui::FontWeight::NORMAL)
-                                .text_color(tokens.chrome.text_on_chrome)
+                                .text_color(item_text)
                                 .child(self.render_highlighted_text(
                                     display_text,
                                     &self.string_match.positions,
-                                    tokens.chrome.text_on_chrome,
+                                    item_text,
                                 )),
                         )
                         // Show signature info (parameters) directly after function name
@@ -395,7 +403,7 @@ impl CompletionItemElement {
                             div_el.child(
                                 div()
                                     .text_sm()
-                                    .text_color(tokens.chrome.text_chrome_secondary)
+                                    .text_color(item_text)
                                     .font_weight(gpui::FontWeight::NORMAL)
                                     .child(signature),
                             )
@@ -405,7 +413,7 @@ impl CompletionItemElement {
                             div_el.child(
                                 div()
                                     .text_sm()
-                                    .text_color(tokens.chrome.text_chrome_secondary)
+                                    .text_color(item_text)
                                     .font_weight(gpui::FontWeight::LIGHT)
                                     .child(format!("→ {}", type_info)),
                             )
@@ -416,7 +424,7 @@ impl CompletionItemElement {
                     div_el.child(
                         div()
                             .text_xs()
-                            .text_color(tokens.chrome.text_chrome_secondary)
+                            .text_color(item_text)
                             .w_full()
                             .max_w_full()
                             .overflow_hidden()
@@ -583,12 +591,16 @@ where
                 .py_1()
                 .gap_2()
                 .when(index == selected_index, |div| {
-                    div.bg(tokens.editor.selection_primary)
+                    div.bg(tokens.chrome.menu_selected)
                 })
                 .child(
                     div()
                         .text_sm()
-                        .text_color(tokens.chrome.text_on_chrome)
+                        .text_color(if index == selected_index {
+                            tokens.chrome.menu_selected_foreground
+                        } else {
+                            tokens.chrome.popup_foreground
+                        })
                         .child(item.text.clone()),
                 );
 

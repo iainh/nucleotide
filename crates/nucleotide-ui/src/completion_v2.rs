@@ -2350,7 +2350,7 @@ impl Render for CompletionView {
                                 .shadow(vec![tokens.chrome.shadow_md.to_box_shadow(false)])
                                 .text_size(tokens.sizes.text_base)
                                 .line_height(relative(1.35))
-                                .text_color(tokens.chrome.text_on_chrome)
+                                .text_color(tokens.chrome.popup_foreground)
                                 .child(documentation),
                         )
                     }),
