@@ -2,6 +2,7 @@
 // ABOUTME: Derives visible rows from canonical paths, expansion, search, and flattening
 
 use anyhow::{Context, Result};
+use globset::{GlobBuilder, GlobMatcher};
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
@@ -47,6 +48,8 @@ pub struct FileTree {
     gitignore: Option<Gitignore>,
     /// Normalized search query.
     search_query: Option<String>,
+    /// Compiled wildcard matcher for search queries containing `*` or `?`.
+    search_glob: Option<GlobMatcher>,
 }
 
 impl FileTree {
@@ -90,6 +93,7 @@ impl FileTree {
             loading_dirs: HashSet::new(),
             gitignore,
             search_query: None,
+            search_glob: None,
         }
     }
 
@@ -117,6 +121,7 @@ impl FileTree {
             .filter(|query| !query.is_empty());
 
         if self.search_query != normalized {
+            self.search_glob = normalized.as_deref().and_then(compile_search_glob);
             self.search_query = normalized;
             self.invalidate_cache();
         }
@@ -581,7 +586,12 @@ impl FileTree {
 
     fn entry_matches_search(&self, entry: &FileTreeEntry, query: &str) -> bool {
         let name = display_name_for_path(&entry.path).to_lowercase();
-        if name.contains(query) {
+        if self
+            .search_glob
+            .as_ref()
+            .is_some_and(|glob| glob.is_match(&name))
+            || (self.search_glob.is_none() && name.contains(query))
+        {
             return true;
         }
 
@@ -593,7 +603,10 @@ impl FileTree {
             .replace(std::path::MAIN_SEPARATOR, "/")
             .to_lowercase();
 
-        relative_path.contains(query)
+        self.search_glob.as_ref().map_or_else(
+            || relative_path.contains(query),
+            |glob| glob.is_match(&relative_path),
+        )
     }
 
     /// Invalidate the visible entries cache.
@@ -1549,6 +1562,20 @@ fn normalize_search_query(value: &str) -> String {
     value.trim().to_lowercase()
 }
 
+fn compile_search_glob(query: &str) -> Option<GlobMatcher> {
+    query
+        .contains(['*', '?'])
+        .then(|| {
+            GlobBuilder::new(query)
+                .case_insensitive(true)
+                .literal_separator(true)
+                .build()
+                .ok()
+                .map(|glob| glob.compile_matcher())
+        })
+        .flatten()
+}
+
 fn rebase_path(path: &Path, from: &Path, to: &Path) -> PathBuf {
     match path.strip_prefix(from) {
         Ok(relative) if relative.as_os_str().is_empty() => to.to_path_buf(),
@@ -2111,6 +2138,38 @@ mod tests {
         assert!(paths.contains(&matched));
         assert!(!paths.contains(&other));
         assert_eq!(tree.search_matching_paths(), vec![matched]);
+    }
+
+    #[test]
+    fn search_wildcards_match_file_names_and_relative_paths() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path().to_path_buf();
+        let src = root.join("src");
+        let nested = src.join("nested");
+        let main_rs = src.join("main.rs");
+        let main_ts = src.join("main.ts");
+        let nested_rs = nested.join("nested.rs");
+        let readme = root.join("README.md");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(&main_rs, "fn main() {}\n").unwrap();
+        fs::write(&main_ts, "export {};\n").unwrap();
+        fs::write(&nested_rs, "pub fn nested() {}\n").unwrap();
+        fs::write(&readme, "readme\n").unwrap();
+
+        let mut tree = FileTree::new(root, config());
+        tree.load().unwrap();
+
+        tree.set_search_query(Some("*.rs".to_string()));
+        assert_eq!(
+            tree.search_matching_paths(),
+            vec![main_rs.clone(), nested_rs.clone()]
+        );
+
+        tree.set_search_query(Some("src/*.?s".to_string()));
+        assert_eq!(tree.search_matching_paths(), vec![main_rs.clone(), main_ts]);
+
+        tree.set_search_query(Some("src/**/*.rs".to_string()));
+        assert_eq!(tree.search_matching_paths(), vec![main_rs, nested_rs]);
     }
 
     #[test]

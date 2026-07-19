@@ -5104,6 +5104,7 @@ dependencies = [
  "embed-resource",
  "futures-executor",
  "futures-util",
+ "globset",
  "gpui",
  "gpui_platform",
  "helix-core",
