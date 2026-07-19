@@ -19,6 +19,7 @@ use crate::file_tree::{
 };
 
 const PROJECT_TREE_FILENAME_CHAR_WIDTH_PX: f32 = 8.0;
+type ProjectTreeMouseDownHandler = Arc<dyn Fn(&MouseDownEvent, &mut Window, &mut App) + 'static>;
 
 #[derive(Clone, Copy)]
 pub struct ProjectTreeRowStyle<'a> {
@@ -315,8 +316,7 @@ pub fn render_project_tree_row(
     style: ProjectTreeRowStyle<'_>,
     density: FileTreeDisplayDensity,
     trailing: Option<AnyElement>,
-    on_left_mouse_down: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
-    on_right_mouse_down: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
+    on_mouse_down: ProjectTreeMouseDownHandler,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
     on_drop: impl Fn(&ProjectTreeDraggedEntry, &mut Window, &mut App) + 'static,
 ) -> gpui::AnyElement {
@@ -332,6 +332,7 @@ pub fn render_project_tree_row(
     let drag_payload = row.dragged_entry();
     let can_be_dragged = row.can_be_dragged();
     let drop_background = file_tree_tokens.item_background_hover;
+    let on_right_mouse_down = Arc::clone(&on_mouse_down);
 
     div()
         .id(("file-tree-entry", row.id))
@@ -362,8 +363,12 @@ pub fn render_project_tree_row(
                 cx.new(|_| ProjectTreeDragPreview::new(dragged.clone(), position))
             })
         })
-        .on_mouse_down(MouseButton::Left, on_left_mouse_down)
-        .on_mouse_down(MouseButton::Right, on_right_mouse_down)
+        .on_mouse_down(MouseButton::Left, move |event, window, cx| {
+            on_mouse_down(event, window, cx);
+        })
+        .on_mouse_down(MouseButton::Right, move |event, window, cx| {
+            on_right_mouse_down(event, window, cx);
+        })
         .on_click(on_click)
         .child(
             div()
