@@ -23,6 +23,7 @@ pub fn init(cx: &mut App) {
 pub struct OverlayView {
     native_picker_view: Option<Entity<PickerView>>,
     native_prompt_view: Option<Entity<PromptView>>,
+    regex_selection_preview: Option<Arc<Mutex<RegexSelectionPreviewState>>>,
     remote_connection_manager_view:
         Option<Entity<crate::remote_connection_manager::RemoteConnectionManagerView>>,
     completion_view: Option<Entity<CompletionView>>,
@@ -52,6 +53,34 @@ struct ResizeStateInner {
     _start_mouse_y: f32,
     _start_height: f32,
     height: f32,
+}
+
+#[derive(Clone)]
+struct RegexSelectionSnapshot {
+    doc_id: helix_view::DocumentId,
+    view_id: helix_view::ViewId,
+    document_version: i32,
+    selection: helix_core::Selection,
+    view_offset: helix_view::view::ViewPosition,
+}
+
+struct RegexSelectionPreviewState {
+    snapshot: RegexSelectionSnapshot,
+    phase: RegexSelectionPreviewPhase,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RegexSelectionPreviewPhase {
+    Active,
+    Submitted,
+    Dismissed,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RegexSelectionOutcome {
+    Applied,
+    Restored,
+    TargetUnavailable,
 }
 
 const REMOTE_PATH_COMPLETION_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(1);
@@ -169,6 +198,145 @@ fn prompt_submit_action(prompt_text: &str) -> PromptSubmitAction {
     }
 }
 
+fn regex_selection_snapshot(core: &crate::Core) -> Option<RegexSelectionSnapshot> {
+    let view_id = core.editor.tree.focus;
+    let view = core.editor.tree.try_get(view_id)?;
+    let doc = core.editor.documents.get(&view.doc)?;
+
+    Some(RegexSelectionSnapshot {
+        doc_id: view.doc,
+        view_id,
+        document_version: doc.version(),
+        selection: doc.selection(view_id).clone(),
+        view_offset: doc.view_offset(view_id),
+    })
+}
+
+fn restore_regex_selection(core: &mut crate::Core, snapshot: &RegexSelectionSnapshot) -> bool {
+    let tree = &mut core.editor.tree;
+    let documents = &mut core.editor.documents;
+    if tree
+        .try_get(snapshot.view_id)
+        .is_none_or(|view| view.doc != snapshot.doc_id)
+    {
+        return false;
+    }
+    let Some(doc) = documents
+        .get_mut(&snapshot.doc_id)
+        .filter(|doc| doc.version() == snapshot.document_version)
+    else {
+        return false;
+    };
+
+    doc.set_selection(snapshot.view_id, snapshot.selection.clone());
+    doc.set_view_offset(snapshot.view_id, snapshot.view_offset);
+    true
+}
+
+fn apply_regex_selection(
+    core: &mut crate::Core,
+    action: RegexSelectionAction,
+    regex_text: &str,
+    snapshot: &RegexSelectionSnapshot,
+    commit: bool,
+) -> Result<RegexSelectionOutcome, String> {
+    if core
+        .editor
+        .tree
+        .try_get(snapshot.view_id)
+        .is_none_or(|view| view.doc != snapshot.doc_id)
+        || core
+            .editor
+            .documents
+            .get(&snapshot.doc_id)
+            .is_none_or(|doc| doc.version() != snapshot.document_version)
+    {
+        return Ok(RegexSelectionOutcome::TargetUnavailable);
+    }
+
+    if regex_text.is_empty() {
+        return Ok(if restore_regex_selection(core, snapshot) {
+            RegexSelectionOutcome::Restored
+        } else {
+            RegexSelectionOutcome::TargetUnavailable
+        });
+    }
+
+    let case_insensitive =
+        core.editor.config().search.smart_case && !regex_text.chars().any(char::is_uppercase);
+    let is_crlf = core
+        .editor
+        .documents
+        .get(&snapshot.doc_id)
+        .is_some_and(|doc| doc.line_ending == helix_core::LineEnding::Crlf);
+    let regex = match helix_stdx::rope::RegexBuilder::new()
+        .syntax(
+            helix_stdx::rope::Config::new()
+                .case_insensitive(case_insensitive)
+                .multi_line(true)
+                .crlf(is_crlf),
+        )
+        .build(regex_text)
+    {
+        Ok(regex) => regex,
+        Err(error) => {
+            restore_regex_selection(core, snapshot);
+            return Err(format!("Invalid regex: {error}"));
+        }
+    };
+
+    let result = {
+        let tree = &mut core.editor.tree;
+        let documents = &mut core.editor.documents;
+        if tree
+            .try_get(snapshot.view_id)
+            .is_none_or(|view| view.doc != snapshot.doc_id)
+        {
+            return Ok(RegexSelectionOutcome::TargetUnavailable);
+        }
+        let view = tree.get_mut(snapshot.view_id);
+        let Some(doc) = documents
+            .get_mut(&snapshot.doc_id)
+            .filter(|doc| doc.version() == snapshot.document_version)
+        else {
+            return Ok(RegexSelectionOutcome::TargetUnavailable);
+        };
+
+        doc.set_selection(snapshot.view_id, snapshot.selection.clone());
+        if commit {
+            doc.append_changes_to_history(view);
+            view.push_jump(doc, (snapshot.doc_id, snapshot.selection.clone()));
+        }
+
+        crate::workspace::regex_selection_result(
+            action,
+            doc.text().slice(..),
+            doc.selection(snapshot.view_id),
+            &regex,
+        )
+        .map_err(str::to_owned)
+    };
+
+    match result {
+        Ok(selection) => {
+            if selection == snapshot.selection {
+                restore_regex_selection(core, snapshot);
+                return Ok(RegexSelectionOutcome::Restored);
+            }
+            let Some(doc) = core.editor.documents.get_mut(&snapshot.doc_id) else {
+                return Ok(RegexSelectionOutcome::TargetUnavailable);
+            };
+            doc.set_selection(snapshot.view_id, selection);
+            core.editor.ensure_cursor_in_view(snapshot.view_id);
+            Ok(RegexSelectionOutcome::Applied)
+        }
+        Err(error) => {
+            restore_regex_selection(core, snapshot);
+            Err(error)
+        }
+    }
+}
+
 impl OverlayView {
     pub fn new(
         focus: &FocusHandle,
@@ -178,6 +346,7 @@ impl OverlayView {
         Self {
             native_picker_view: None,
             native_prompt_view: None,
+            regex_selection_preview: None,
             remote_connection_manager_view: None,
             completion_view: None,
             terminal_panel: None,
@@ -376,6 +545,29 @@ impl OverlayView {
     fn clear_prompt(&mut self, cx: &mut Context<Self>) -> bool {
         let dismissed = self.native_prompt_view.take().is_some();
         if dismissed {
+            let snapshot = self.regex_selection_preview.take().and_then(|state| {
+                state.lock().ok().and_then(|mut state| {
+                    if state.phase != RegexSelectionPreviewPhase::Active {
+                        return None;
+                    }
+                    state.phase = RegexSelectionPreviewPhase::Dismissed;
+                    Some(state.snapshot.clone())
+                })
+            });
+            if let Some(snapshot) = snapshot
+                && let Some(core) = self.core.upgrade()
+            {
+                core.update(cx, |core, cx| {
+                    if restore_regex_selection(core, &snapshot) {
+                        cx.emit(crate::Update::SelectionRestored {
+                            doc_id: snapshot.doc_id,
+                            view_id: snapshot.view_id,
+                        });
+                        cx.emit(crate::Update::Redraw);
+                        cx.notify();
+                    }
+                });
+            }
             Self::clear_prompt_focus(cx);
         }
         dismissed
@@ -497,10 +689,21 @@ impl OverlayView {
                 let initial_input = initial_input.clone();
                 let on_submit = on_submit.clone();
                 let on_cancel = on_cancel.clone();
+                let submit_action = prompt_submit_action(&prompt_text);
+                let regex_selection_preview = match submit_action {
+                    PromptSubmitAction::RegexSelection(_) => self.core.upgrade().and_then(|core| {
+                        regex_selection_snapshot(core.read(cx)).map(|snapshot| {
+                            Arc::new(Mutex::new(RegexSelectionPreviewState {
+                                snapshot,
+                                phase: RegexSelectionPreviewPhase::Active,
+                            }))
+                        })
+                    }),
+                    _ => None,
+                };
+                self.regex_selection_preview = regex_selection_preview.clone();
 
                 let prompt_view = cx.new(|cx| {
-                    let submit_action = prompt_submit_action(&prompt_text);
-
                     let mut view = PromptView::new(prompt_text.clone(), cx);
 
                     // Apply theme styling using testing-aware theme access
@@ -509,6 +712,58 @@ impl OverlayView {
 
                     if !initial_input.is_empty() {
                         view.set_text(&initial_input, cx);
+                    }
+
+                    if let (
+                        PromptSubmitAction::RegexSelection(action),
+                        Some(preview_state),
+                    ) = (submit_action, regex_selection_preview.clone())
+                    {
+                        let core_weak_change = self.core.clone();
+                        view = view.on_change(move |input, cx| {
+                            let snapshot = match preview_state.lock() {
+                                Ok(state)
+                                    if state.phase == RegexSelectionPreviewPhase::Active =>
+                                {
+                                    state.snapshot.clone()
+                                }
+                                _ => return,
+                            };
+                            let Some(core) = core_weak_change.upgrade() else {
+                                if let Ok(mut state) = preview_state.lock() {
+                                    state.phase = RegexSelectionPreviewPhase::Dismissed;
+                                }
+                                return;
+                            };
+
+                            core.update(cx, |core, cx| {
+                                let result = apply_regex_selection(
+                                    core, action, input, &snapshot, false,
+                                );
+                                match result {
+                                    Ok(RegexSelectionOutcome::Applied) => {
+                                        cx.emit(crate::Update::SelectionChanged {
+                                            doc_id: snapshot.doc_id,
+                                            view_id: snapshot.view_id,
+                                        });
+                                    }
+                                    Ok(RegexSelectionOutcome::Restored) | Err(_) => {
+                                        cx.emit(crate::Update::SelectionRestored {
+                                            doc_id: snapshot.doc_id,
+                                            view_id: snapshot.view_id,
+                                        });
+                                    }
+                                    Ok(RegexSelectionOutcome::TargetUnavailable) => {
+                                        if let Ok(mut state) = preview_state.lock() {
+                                            state.phase = RegexSelectionPreviewPhase::Dismissed;
+                                        }
+                                        return;
+                                    }
+                                }
+                                cx.emit(crate::Update::Redraw);
+                                cx.notify();
+                            });
+                        });
                     }
 
                     // Only set up completion for command prompts, not search/regex prompts.
@@ -677,10 +932,70 @@ impl OverlayView {
                                         cx.emit(crate::Update::OpenRemote(input.to_string()));
                                     }
                                     PromptSubmitAction::RegexSelection(action) => {
-                                        cx.emit(crate::Update::RegexSelectionSubmitted {
-                                            action,
-                                            regex: input.to_string(),
-                                        });
+                                        let snapshot = regex_selection_preview
+                                            .as_ref()
+                                            .and_then(|state| {
+                                                state.lock().ok().and_then(|state| {
+                                                    (state.phase
+                                                        == RegexSelectionPreviewPhase::Active)
+                                                        .then(|| state.snapshot.clone())
+                                                })
+                                            });
+                                        if let Some(snapshot) = snapshot {
+                                            let result = apply_regex_selection(
+                                                _core, action, input, &snapshot, true,
+                                            );
+                                            match result {
+                                                Ok(RegexSelectionOutcome::Applied) => {
+                                                    if let Some(state) = &regex_selection_preview
+                                                        && let Ok(mut state) = state.lock()
+                                                    {
+                                                        state.phase =
+                                                            RegexSelectionPreviewPhase::Submitted;
+                                                    }
+                                                    cx.emit(crate::Update::SelectionChanged {
+                                                        doc_id: snapshot.doc_id,
+                                                        view_id: snapshot.view_id,
+                                                    });
+                                                }
+                                                Ok(RegexSelectionOutcome::Restored) => {
+                                                    if let Some(state) = &regex_selection_preview
+                                                        && let Ok(mut state) = state.lock()
+                                                    {
+                                                        state.phase =
+                                                            RegexSelectionPreviewPhase::Submitted;
+                                                    }
+                                                    cx.emit(crate::Update::SelectionRestored {
+                                                        doc_id: snapshot.doc_id,
+                                                        view_id: snapshot.view_id,
+                                                    });
+                                                }
+                                                Ok(RegexSelectionOutcome::TargetUnavailable) => {
+                                                    if let Some(state) = &regex_selection_preview
+                                                        && let Ok(mut state) = state.lock()
+                                                    {
+                                                        state.phase =
+                                                            RegexSelectionPreviewPhase::Dismissed;
+                                                    }
+                                                    return;
+                                                }
+                                                Err(error) => {
+                                                    if let Some(state) = &regex_selection_preview
+                                                        && let Ok(mut state) = state.lock()
+                                                    {
+                                                        state.phase =
+                                                            RegexSelectionPreviewPhase::Submitted;
+                                                    }
+                                                    _core.editor.set_error(error);
+                                                    cx.emit(crate::Update::SelectionRestored {
+                                                        doc_id: snapshot.doc_id,
+                                                        view_id: snapshot.view_id,
+                                                    });
+                                                }
+                                            }
+                                            cx.emit(crate::Update::Redraw);
+                                            cx.notify();
+                                        }
                                     }
                                     PromptSubmitAction::Command => {
                                         debug!(command = %input, "Emitting CommandSubmitted event");

@@ -134,6 +134,10 @@ impl EditorViewState {
         self.viewport.request_cursor_reveal(reveal);
     }
 
+    pub fn clear_cursor_reveal_request(&self) {
+        self.viewport.take_cursor_reveal_request();
+    }
+
     pub fn apply_viewport_scroll(
         &self,
         request: EditorViewportScrollRequest,
@@ -705,6 +709,16 @@ mod tests {
             state.viewport().take_cursor_reveal_request(),
             Some(EditorCursorReveal::Center)
         );
+    }
+
+    #[test]
+    fn view_state_clears_pending_cursor_reveal_requests() {
+        let state = EditorViewState::new(px(20.0), px(8.0));
+        state.request_cursor_reveal(EditorCursorReveal::Scrolloff);
+
+        state.clear_cursor_reveal_request();
+
+        assert_eq!(state.viewport().pending_cursor_reveal_request(), None);
     }
 
     #[test]
