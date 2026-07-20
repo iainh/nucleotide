@@ -2459,7 +2459,7 @@ fn os_string_to_string(value: std::ffi::OsString) -> String {
         .unwrap_or_else(|value| value.to_string_lossy().into_owned())
 }
 
-fn regex_selection_result(
+pub(crate) fn regex_selection_result(
     action: RegexSelectionAction,
     text: RopeSlice<'_>,
     selection: &Selection,
@@ -8390,6 +8390,22 @@ impl Workspace {
         cx.notify();
     }
 
+    fn handle_selection_restored(
+        &mut self,
+        doc_id: helix_view::DocumentId,
+        view_id: helix_view::ViewId,
+        cx: &mut Context<Self>,
+    ) {
+        self.update_specific_document_view(doc_id, cx);
+        if let Some(view_entity) = self.view_manager.get_document_view(&view_id) {
+            view_entity.update(cx, |view, cx| {
+                view.clear_cursor_reveal_request();
+                cx.notify();
+            });
+        }
+        cx.notify();
+    }
+
     fn handle_diagnostics_changed(
         &mut self,
         doc_id: helix_view::DocumentId,
@@ -10667,6 +10683,9 @@ impl Workspace {
             // Helix event bridge - respond to automatic Helix events
             crate::Update::SelectionChanged { doc_id, view_id } => {
                 self.handle_selection_changed(*doc_id, *view_id, cx)
+            }
+            crate::Update::SelectionRestored { doc_id, view_id } => {
+                self.handle_selection_restored(*doc_id, *view_id, cx)
             }
             crate::Update::ViewFocused { view_id } => self.handle_view_focused(*view_id, cx),
             crate::Update::ViewportScroll { view_id, request } => {

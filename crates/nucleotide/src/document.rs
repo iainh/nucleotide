@@ -201,6 +201,10 @@ impl DocumentView {
             .request_cursor_reveal(EditorCursorReveal::Center);
     }
 
+    pub fn clear_cursor_reveal_request(&self) {
+        self.editor_state.clear_cursor_reveal_request();
+    }
+
     pub fn apply_viewport_scroll(
         &self,
         request: nucleotide_editor::EditorViewportScrollRequest,

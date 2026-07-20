@@ -116,6 +116,10 @@ pub enum Update {
         doc_id: helix_view::DocumentId,
         view_id: helix_view::ViewId,
     },
+    SelectionRestored {
+        doc_id: helix_view::DocumentId,
+        view_id: helix_view::ViewId,
+    },
     ViewFocused {
         view_id: helix_view::ViewId,
     },
@@ -199,6 +203,9 @@ impl std::fmt::Debug for Update {
             }
             Update::SelectionChanged { doc_id, view_id } => {
                 write!(f, "SelectionChanged(doc: {doc_id:?}, view: {view_id:?})")
+            }
+            Update::SelectionRestored { doc_id, view_id } => {
+                write!(f, "SelectionRestored(doc: {doc_id:?}, view: {view_id:?})")
             }
             Update::ViewFocused { view_id } => write!(f, "ViewFocused({view_id:?})"),
             Update::ViewportScroll { view_id, request } => {
