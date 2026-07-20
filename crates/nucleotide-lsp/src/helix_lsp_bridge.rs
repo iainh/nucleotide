@@ -50,6 +50,7 @@ pub trait LspLaunchProxyProvider: Send + Sync {
         &self,
         workspace_root: &std::path::Path,
         server_name: &str,
+        server_command: &str,
     ) -> Result<Option<LspLaunchProxy>, Box<dyn std::error::Error + Send + Sync>>;
 }
 
@@ -425,13 +426,28 @@ impl HelixLspBridge {
                     language_id
                 ))
             })?;
+        let server_command = syntax_loader
+            .language_server_configs()
+            .get(server_name)
+            .ok_or_else(|| {
+                ProjectLspError::Configuration(format!(
+                    "No server configuration found for: {}",
+                    server_name
+                ))
+            })?
+            .command
+            .clone();
 
         let mut original_env_vars = Vec::new();
         let mut launch_proxy_cleanup_paths = Vec::new();
         let mut launch_proxy_enabled = false;
 
         if let Some(ref launch_proxy_provider) = self.launch_proxy_provider {
-            match launch_proxy_provider.create_lsp_launch_proxy(workspace_root, server_name) {
+            match launch_proxy_provider.create_lsp_launch_proxy(
+                workspace_root,
+                server_name,
+                &server_command,
+            ) {
                 Ok(Some(proxy)) => {
                     let original = std::env::var("PATH").ok();
                     original_env_vars.push(("PATH".to_string(), original));
@@ -450,12 +466,9 @@ impl HelixLspBridge {
                 }
                 Ok(None) => {}
                 Err(error) => {
-                    warn!(
-                        server_name = %server_name,
-                        workspace_root = %workspace_root.display(),
-                        error = %error,
-                        "Failed to create LSP launch proxy"
-                    );
+                    return Err(ProjectLspError::ServerStartup(format!(
+                        "Failed to create LSP launch proxy for {server_name}: {error}"
+                    )));
                 }
             }
         }
