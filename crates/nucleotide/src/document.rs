@@ -1013,8 +1013,6 @@ fn paint_document_content(
                 palette: NativeEditorFramePalette {
                     fg_color: tokens.editor.text_primary,
                     bg_color: tokens.editor.background,
-                    selection_primary: tokens.editor.selection_primary,
-                    selection_secondary: tokens.editor.selection_secondary,
                     fallback_gutter_color: ui_tokens.editor.line_number,
                     diagnostic_highlight_base: tokens.chrome.text_on_chrome,
                     diagnostic_icon_colors: DiagnosticSeverityIconColors {
