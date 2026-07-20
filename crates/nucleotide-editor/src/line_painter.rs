@@ -124,7 +124,6 @@ pub struct UnwrappedEditorLinePaintParams<'a, 'b> {
     pub font_size: Pixels,
     pub viewport_width: Pixels,
     pub line_height: Pixels,
-    pub cursorline_color: Option<Hsla>,
 }
 
 pub fn paint_unwrapped_editor_line(
@@ -132,12 +131,6 @@ pub fn paint_unwrapped_editor_line(
     cx: &mut App,
     params: UnwrappedEditorLinePaintParams<'_, '_>,
 ) -> Result<LineLayout> {
-    if params.plan.is_cursor_line
-        && let Some(cursorline_color) = params.cursorline_color
-    {
-        paint_cursorline_background(window, params.plan.cursorline_bounds, cursorline_color);
-    }
-
     let text_system = window.text_system().clone();
     let shaped_line = if params.line_text.is_empty() {
         params.line_cache.shape_line_cached(
@@ -186,7 +179,6 @@ pub struct SoftWrapEditorLinePaintParams<'a, 'b> {
     pub font_size: Pixels,
     pub viewport_width: Pixels,
     pub line_height: Pixels,
-    pub cursorline_color: Option<Hsla>,
 }
 
 pub fn paint_soft_wrap_editor_line(
@@ -194,12 +186,6 @@ pub fn paint_soft_wrap_editor_line(
     cx: &mut App,
     params: SoftWrapEditorLinePaintParams<'_, '_>,
 ) -> Result<Option<LineLayout>> {
-    if params.plan.is_cursor_visual_line
-        && let Some(cursorline_color) = params.cursorline_color
-    {
-        paint_cursorline_background(window, params.plan.cursorline_bounds, cursorline_color);
-    }
-
     if params.plan.visual.text.is_empty() {
         return Ok(None);
     }

@@ -358,8 +358,6 @@ struct UnwrappedDocumentFramePaintParams<'a> {
     pub font_size: Pixels,
     pub fg_color: Hsla,
     pub default_bg: Hsla,
-    pub cursorline_color: Option<Hsla>,
-    pub cursorline_secondary_color: Option<Hsla>,
     pub is_focused: bool,
     pub element_focused: bool,
     pub diagnostic_theme: &'a Theme,
@@ -378,8 +376,6 @@ struct SoftWrapDocumentFramePaintParams<'a> {
     pub font_size: Pixels,
     pub fg_color: Hsla,
     pub default_bg: Hsla,
-    pub cursorline_color: Option<Hsla>,
-    pub cursorline_secondary_color: Option<Hsla>,
     pub is_focused: bool,
     pub diagnostic_theme: &'a Theme,
     pub diagnostic_icon_colors: DiagnosticSeverityIconColors,
@@ -890,6 +886,7 @@ pub fn paint_document_frame(
     cx: &mut App,
     params: DocumentFramePaintParams<'_>,
 ) -> Option<CursorOverlayPlan> {
+    paint_document_cursorlines(window, &params);
     paint_visible_rulers(window, &params.frame.frameline_paint_plans);
     paint_visible_rulers(window, &params.frame.cursorcolumn_paint_plans);
     paint_visible_rulers(window, &params.frame.ruler_paint_plans);
@@ -908,8 +905,6 @@ pub fn paint_document_frame(
                 font_size: params.font_size,
                 fg_color: params.fg_color,
                 default_bg: params.default_bg,
-                cursorline_color: params.cursorline_color,
-                cursorline_secondary_color: params.cursorline_secondary_color,
                 is_focused: params.is_focused,
                 diagnostic_theme: params.diagnostic_theme,
                 diagnostic_icon_colors: params.diagnostic_icon_colors,
@@ -932,8 +927,6 @@ pub fn paint_document_frame(
             font_size: params.font_size,
             fg_color: params.fg_color,
             default_bg: params.default_bg,
-            cursorline_color: params.cursorline_color,
-            cursorline_secondary_color: params.cursorline_secondary_color,
             is_focused: params.is_focused,
             element_focused: params.element_focused,
             diagnostic_theme: params.diagnostic_theme,
@@ -942,6 +935,59 @@ pub fn paint_document_frame(
             scroll_line_offset: params.scroll_line_offset,
         },
     )
+}
+
+fn paint_document_cursorlines(window: &mut Window, params: &DocumentFramePaintParams<'_>) {
+    if params.cursorline_color.is_none() && params.cursorline_secondary_color.is_none() {
+        return;
+    }
+
+    let frame = params.frame;
+
+    if let Some(render_plan) = &frame.soft_wrap_render_plan {
+        for line_plan in render_plan.line_paint_plans(
+            params.layout.line_height,
+            params.scroll_line_offset,
+            frame.render_snapshot.cursor_line,
+        ) {
+            let color = if line_plan.is_cursor_visual_line {
+                params.cursorline_color
+            } else if frame
+                .secondary_cursor_lines
+                .binary_search(&line_plan.visual.doc_line)
+                .is_ok()
+            {
+                params.cursorline_secondary_color
+            } else {
+                None
+            };
+
+            if let Some(color) = color {
+                paint_cursorline_background(window, line_plan.cursorline_bounds, color);
+            }
+        }
+        return;
+    }
+
+    if let Some(render_plan) = &frame.unwrapped_render_plan {
+        for line_plan in render_plan.line_paint_plans() {
+            let color = if line_plan.is_cursor_line {
+                params.cursorline_color
+            } else if frame
+                .secondary_cursor_lines
+                .binary_search(&line_plan.line.line_idx)
+                .is_ok()
+            {
+                params.cursorline_secondary_color
+            } else {
+                None
+            };
+
+            if let Some(color) = color {
+                paint_cursorline_background(window, line_plan.cursorline_bounds, color);
+            }
+        }
+    }
 }
 
 fn paint_soft_wrap_document_frame(
@@ -976,15 +1022,6 @@ fn paint_soft_wrap_document_frame(
                         ),
                 ))
             });
-        if !line_plan.is_cursor_visual_line
-            && frame
-                .secondary_cursor_lines
-                .binary_search(&line_plan.visual.doc_line)
-                .is_ok()
-            && let Some(color) = params.cursorline_secondary_color
-        {
-            paint_cursorline_background(window, line_plan.cursorline_bounds, color);
-        }
         match paint_soft_wrap_editor_line(
             window,
             cx,
@@ -995,7 +1032,6 @@ fn paint_soft_wrap_document_frame(
                 font_size: params.font_size,
                 viewport_width: params.bounds.size.width,
                 line_height: params.layout.line_height,
-                cursorline_color: params.cursorline_color,
             },
         ) {
             Ok(Some(layout)) => {
@@ -1100,23 +1136,6 @@ fn paint_unwrapped_document_frame(
         let indent_guide_source = line_text.source.clone();
         let line_runs = &highlighted_line.line_runs;
 
-        if unwrapped_plan.is_cursor_line && params.cursorline_color.is_some() {
-            trace!(
-                "Painting cursorline for line {} (cursor at line {})",
-                line_idx, frame.render_snapshot.cursor_line
-            );
-        }
-
-        if !unwrapped_plan.is_cursor_line
-            && frame
-                .secondary_cursor_lines
-                .binary_search(&line_idx)
-                .is_ok()
-            && let Some(color) = params.cursorline_secondary_color
-        {
-            paint_cursorline_background(window, unwrapped_plan.cursorline_bounds, color);
-        }
-
         let layout = match paint_unwrapped_editor_line(
             window,
             cx,
@@ -1128,7 +1147,6 @@ fn paint_unwrapped_document_frame(
                 font_size: params.font_size,
                 viewport_width: params.bounds.size.width,
                 line_height: params.layout.line_height,
-                cursorline_color: params.cursorline_color,
             },
         ) {
             Ok(layout) => layout,
