@@ -79,7 +79,7 @@ use nucleotide_env::ProjectEnvironment;
 /// This bridges our environment system with the LSP system
 pub struct ProjectEnvironmentProvider {
     project_environment: Arc<ProjectEnvironment>,
-    workspace_backend: WorkspaceBackendHandle,
+    workspace_backend: Mutex<WorkspaceBackendHandle>,
 }
 
 impl ProjectEnvironmentProvider {
@@ -93,8 +93,15 @@ impl ProjectEnvironmentProvider {
     ) -> Self {
         Self {
             project_environment,
-            workspace_backend,
+            workspace_backend: Mutex::new(workspace_backend),
         }
+    }
+
+    pub fn set_workspace_backend(&self, workspace_backend: WorkspaceBackendHandle) {
+        *self
+            .workspace_backend
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = workspace_backend;
     }
 }
 
@@ -114,7 +121,11 @@ impl nucleotide_lsp::EnvironmentProvider for ProjectEnvironmentProvider {
         >,
     > {
         let project_env = self.project_environment.clone();
-        let workspace_backend = self.workspace_backend.clone();
+        let workspace_backend = self
+            .workspace_backend
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         let directory = directory.to_path_buf();
 
         Box::pin(async move {
@@ -364,11 +375,20 @@ impl LspLaunchProxyProvider for RemoteLspLaunchProxyProvider {
     fn create_lsp_launch_proxy(
         &self,
         workspace_root: &std::path::Path,
-        server_name: &str,
+        _server_name: &str,
+        server_command: &str,
     ) -> Result<Option<LspLaunchProxy>, Box<dyn std::error::Error + Send + Sync>> {
         let location = classify_workspace_location(workspace_root);
         if !location.is_remote() {
             return Ok(None);
+        }
+
+        if Path::new(server_command).components().count() != 1 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("remote LSP command must be resolved through PATH: {server_command}"),
+            )
+            .into());
         }
 
         let helper_path = self.resolved_helper_path(&location)?;
@@ -376,7 +396,7 @@ impl LspLaunchProxyProvider for RemoteLspLaunchProxyProvider {
             &location,
             helper_path,
             &self.options,
-            server_name,
+            server_command,
         ) else {
             return Ok(None);
         };
@@ -387,7 +407,7 @@ impl LspLaunchProxyProvider for RemoteLspLaunchProxyProvider {
             chrono::Utc::now().timestamp_micros()
         ));
         std::fs::create_dir_all(&shim_dir)?;
-        let shim_path = shim_dir.join(lsp_shim_file_name(server_name));
+        let shim_path = shim_dir.join(lsp_shim_file_name(server_command));
         write_lsp_proxy_shim(&shim_path, &command)?;
 
         Ok(Some(LspLaunchProxy {
@@ -1508,6 +1528,7 @@ impl Wake for MaintenanceWakeTask {
 struct ProjectLspSystem {
     manager: ProjectLspManager,
     bridge: HelixLspBridge,
+    environment_provider: Arc<ProjectEnvironmentProvider>,
 }
 
 #[derive(Debug, Default)]
@@ -1789,6 +1810,11 @@ impl Application {
 
     pub(crate) fn set_workspace_backend(&mut self, workspace_backend: WorkspaceBackendHandle) {
         self.workspace_backend = workspace_backend.clone();
+        if let Some(system) = &self.project_lsp_system {
+            system
+                .environment_provider
+                .set_workspace_backend(workspace_backend.clone());
+        }
         self.editor
             .set_save_handler(Some(Arc::new(WorkspaceDocumentSaveHandler::new(
                 workspace_backend,
@@ -2699,6 +2725,9 @@ impl Application {
         let inventory_bridge = bridge.clone();
         let workspace_backend = self.workspace_backend.clone();
         let inventory_backend = workspace_backend.clone();
+        let server_commands = configured_language_server_commands(&self.editor);
+        let inventory_server_commands = server_commands.clone();
+        let remote_workspace = classify_workspace_location(&workspace_root).is_remote();
         let timeout = Duration::from_millis(self.config.gui.lsp.startup_timeout_ms);
         let proactive_startup_enabled = self.config.gui.lsp.project_lsp_startup;
         let runtime = handle.clone();
@@ -2707,6 +2736,7 @@ impl Application {
             let task_root = workspace_root.clone();
             let preparation = runtime
                 .spawn(async move {
+                    let availability_backend = workspace_backend.clone();
                     let plan_future =
                         detect_project_lsp_plan_with_backend(&task_root, workspace_backend);
                     let environment_future = async {
@@ -2726,11 +2756,25 @@ impl Application {
                             None => Err("HelixLspBridge not initialized".to_string()),
                         }
                     };
-                    tokio::join!(plan_future, environment_future)
+                    let (plan, environment) = tokio::join!(plan_future, environment_future);
+                    let available_commands = if remote_workspace && proactive_startup_enabled {
+                        probe_available_language_server_commands(
+                            &task_root,
+                            availability_backend,
+                            server_commands.values().cloned().collect(),
+                            environment.as_ref().ok().and_then(Option::as_ref),
+                            timeout,
+                        )
+                        .await
+                        .map(Some)
+                    } else {
+                        Ok(None)
+                    };
+                    (plan, environment, available_commands)
                 })
                 .await;
 
-            let Ok((plan, environment)) = preparation else {
+            let Ok((plan, environment, available_commands)) = preparation else {
                 if let Some(this) = this.upgrade() {
                     this.update(cx, |app, _cx| {
                         app.project_lsp_supervisor.complete_session(
@@ -2753,11 +2797,29 @@ impl Application {
                         return;
                     }
 
-                    let planned_servers = if proactive_startup_enabled {
+                    let proactive_startup_enabled = proactive_startup_enabled
+                        && app.config.gui.lsp.project_lsp_startup;
+                    let mut planned_servers = if proactive_startup_enabled {
                         configured_project_servers(&app.editor, &plan)
                     } else {
                         Vec::new()
                     };
+                    let available_commands = match available_commands {
+                        Ok(available_commands) => available_commands,
+                        Err(error) => {
+                            warn!(
+                                %error,
+                                workspace_root = %workspace_root.display(),
+                                "Failed to probe remote language server availability; retaining configured candidates"
+                            );
+                            None
+                        }
+                    };
+                    retain_servers_with_available_commands(
+                        &mut planned_servers,
+                        &inventory_server_commands,
+                        available_commands.as_ref(),
+                    );
                     if let Some(state) = &app.lsp_state {
                         let environment_source = match &environment {
                             Ok(Some(_)) => ProjectEnvironmentSource::Project,
@@ -2806,15 +2868,19 @@ impl Application {
                         .iter()
                         .map(|language| language.language_id.clone())
                         .collect::<HashSet<_>>();
-                    app.schedule_project_language_inventory(
-                        &runtime,
-                        generation,
-                        workspace_root.clone(),
-                        inventory_backend,
-                        inventory_bridge,
-                        planned_language_ids,
-                        cx,
-                    );
+                    if proactive_startup_enabled {
+                        app.schedule_project_language_inventory(
+                            &runtime,
+                            generation,
+                            workspace_root.clone(),
+                            inventory_backend,
+                            inventory_bridge,
+                            planned_language_ids,
+                            inventory_server_commands,
+                            available_commands,
+                            cx,
+                        );
+                    }
                     app.sync_lsp_state(cx);
                     cx.emit(crate::Update::Redraw);
                     cx.notify();
@@ -2833,6 +2899,8 @@ impl Application {
         workspace_backend: WorkspaceBackendHandle,
         bridge: Option<HelixLspBridge>,
         existing_languages: HashSet<String>,
+        server_commands: HashMap<String, String>,
+        available_commands: Option<HashSet<String>>,
         cx: &mut gpui::Context<crate::Core>,
     ) {
         let runtime = handle.clone();
@@ -2882,6 +2950,7 @@ impl Application {
                     if !app
                         .project_lsp_supervisor
                         .is_current(generation, &workspace_root)
+                        || !app.config.gui.lsp.project_lsp_startup
                     {
                         return;
                     }
@@ -2898,6 +2967,11 @@ impl Application {
                             .collect(),
                     };
                     let mut servers = configured_project_servers(&app.editor, &discovered_plan);
+                    retain_servers_with_available_commands(
+                        &mut servers,
+                        &server_commands,
+                        available_commands.as_ref(),
+                    );
                     if let Some(state) = &app.lsp_state {
                         let existing_servers =
                             state.read(cx).project_session.as_ref().map(|session| {
@@ -6743,12 +6817,13 @@ impl Application {
             Arc::new(RemoteLspLaunchProxyProvider::from_config(&self.config));
         let helix_bridge = nucleotide_lsp::HelixLspBridge::new_with_environment_and_launch_proxy(
             event_tx,
-            env_provider,
+            env_provider.clone(),
             launch_proxy_provider,
         );
         self.project_lsp_system = Some(ProjectLspSystem {
             manager: project_manager.clone(),
             bridge: helix_bridge.clone(),
+            environment_provider: env_provider,
         });
 
         let maintenance_wake = self.maintenance_wake.clone();
@@ -10860,6 +10935,103 @@ fn configured_project_servers(
     servers
 }
 
+fn configured_language_server_commands(editor: &Editor) -> HashMap<String, String> {
+    editor
+        .syn_loader
+        .load()
+        .language_server_configs()
+        .iter()
+        .map(|(name, config)| (name.clone(), config.command.clone()))
+        .collect()
+}
+
+fn retain_servers_with_available_commands(
+    servers: &mut Vec<(String, String)>,
+    server_commands: &HashMap<String, String>,
+    available_commands: Option<&HashSet<String>>,
+) {
+    let Some(available_commands) = available_commands else {
+        return;
+    };
+
+    servers.retain(|(_, server_name)| {
+        server_commands
+            .get(server_name)
+            .is_none_or(|command| available_commands.contains(command))
+    });
+}
+
+async fn probe_available_language_server_commands(
+    workspace_root: &Path,
+    workspace_backend: WorkspaceBackendHandle,
+    commands: Vec<String>,
+    environment: Option<&HashMap<String, String>>,
+    timeout: Duration,
+) -> Result<HashSet<String>, String> {
+    let commands = commands.into_iter().collect::<BTreeSet<_>>();
+    if commands.is_empty() {
+        return Ok(HashSet::new());
+    }
+    if environment.is_some_and(|environment| {
+        environment
+            .get("PATH")
+            .is_none_or(|path| path.trim().is_empty())
+    }) {
+        return Err("captured remote project environment has no PATH".to_string());
+    }
+
+    let mut args = vec![
+        "-c".to_string(),
+        concat!(
+            "for command_name do ",
+            "if command -v \"$command_name\" >/dev/null 2>&1; then ",
+            "printf '%s\\n' \"$command_name\"; ",
+            "fi; done"
+        )
+        .to_string(),
+        "nucleotide-lsp-probe".to_string(),
+    ];
+    args.extend(commands.iter().cloned());
+
+    let output = workspace_backend
+        .run_process(ProcessSpec {
+            program: "sh".to_string(),
+            args,
+            cwd: workspace_root.to_path_buf(),
+            env: environment
+                .into_iter()
+                .flatten()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect(),
+            clear_env: true,
+            inherit_project_environment: environment.is_none(),
+            stdin: Vec::new(),
+            max_output_bytes: Some(64 * 1024),
+            timeout_ms: Some(timeout.as_millis().min(u128::from(u64::MAX)) as u64),
+        })
+        .await
+        .map_err(|error| error.to_string())?;
+
+    if !output.success || output.timed_out || output.stdout_truncated {
+        return Err(format!(
+            "remote language server probe failed (status: {:?}, timed out: {}, output truncated: {})",
+            output.status_code, output.timed_out, output.stdout_truncated
+        ));
+    }
+
+    let available = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::to_string)
+        .collect::<HashSet<_>>();
+    info!(
+        workspace_root = %workspace_root.display(),
+        configured_command_count = commands.len(),
+        available_command_count = available.len(),
+        "Probed remote language server availability"
+    );
+    Ok(available)
+}
+
 async fn detect_project_lsp_plan_with_backend(
     workspace_root: &Path,
     workspace_backend: WorkspaceBackendHandle,
@@ -11316,11 +11488,11 @@ mod tests {
     use super::{
         Application, EditorInputBridge, LspCompletionTrigger, MaintenanceWake,
         NativeOpenFileOutcome, NativeSymbolItem, NativeSymbolTarget, PendingCompletionRequest,
-        ProjectLspSupervisor, RemoteLspLaunchProxyProvider, WorkspaceDocumentSaveHandler,
-        bridged_event_needs_gpui_context, buffer_text_matches_path, buffer_text_matches_string,
-        buffer_word_completion_items, char_index_for_line_col, coalesce_bridged_events,
-        completion_context_for_trigger, configured_project_servers, current_dir_is_executable_dir,
-        dedupe_completion_items, detect_project_lsp_metadata,
+        ProjectEnvironmentProvider, ProjectLspSupervisor, RemoteLspLaunchProxyProvider,
+        WorkspaceDocumentSaveHandler, bridged_event_needs_gpui_context, buffer_text_matches_path,
+        buffer_text_matches_string, buffer_word_completion_items, char_index_for_line_col,
+        coalesce_bridged_events, completion_context_for_trigger, configured_project_servers,
+        current_dir_is_executable_dir, dedupe_completion_items, detect_project_lsp_metadata,
         detect_project_type_from_workspace_backend, detect_project_type_from_workspace_listing,
         diagnostic_picker_path_label, diagnostic_severity_label,
         discover_project_languages_with_backend, file_picker_current_directory,
@@ -11332,10 +11504,11 @@ mod tests {
         lsp_diagnostic_document_uri, lsp_location_from_location, lsp_location_path_from_url,
         lsp_symbol_picker, native_open_file_with_backend, native_symbol_item_from_lsp,
         navigation_display_path, open_loading_workspace_document, open_workspace_document,
-        path_completion_items, path_completion_items_from_listing, project_health_status,
-        project_lsp_config, project_lsp_plan_from_names, project_server_language_id,
-        read_workspace_document, remote_lsp_project_root_for_document,
-        remote_lsp_root_uri_matches_document_workspace, remote_native_file_uri,
+        path_completion_items, path_completion_items_from_listing,
+        probe_available_language_server_commands, project_health_status, project_lsp_config,
+        project_lsp_plan_from_names, project_server_language_id, read_workspace_document,
+        remote_lsp_project_root_for_document, remote_lsp_root_uri_matches_document_workspace,
+        remote_native_file_uri, retain_servers_with_available_commands,
         should_stat_picker_root_with_backend, should_use_native_save_for_settings_file,
         should_use_workspace_syntax_symbol_fallback, startup_path_should_open_as_file,
         str_prefix_at_byte_limit, suppress_shadowed_buffer_word_completion_items,
@@ -11362,14 +11535,14 @@ mod tests {
     use nucleotide_workspace::{
         DirectoryEntry, DirectoryListing, FileKind, FileSearchQuery, FileSearchResult, FileStat,
         GitHeadResult, GitStatusOptions, GitStatusResult, ProcessOutput, ProcessSpec,
-        ProjectEnvironmentSnapshot, ReadOptions, RemoteWorkspaceIdentity, RemoteWorkspaceKind,
-        TextSearchQuery, TextSearchResult, WorkspaceBackend, WorkspaceBackendHandle,
-        WorkspaceIdentity, WorkspacePathMapping, WriteOptions, local_workspace_backend,
-        path_mapped_workspace_backend,
+        ProjectEnvironmentOrigin, ProjectEnvironmentSnapshot, ReadOptions, RemoteWorkspaceIdentity,
+        RemoteWorkspaceKind, TextSearchQuery, TextSearchResult, WorkspaceBackend,
+        WorkspaceBackendHandle, WorkspaceIdentity, WorkspacePathMapping, WriteOptions,
+        local_workspace_backend, path_mapped_workspace_backend,
     };
     use slotmap::{Key, KeyData};
     use std::cell::RefCell;
-    use std::collections::{HashMap, HashSet};
+    use std::collections::{BTreeMap, HashMap, HashSet};
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::process::Command;
@@ -11527,19 +11700,27 @@ mod tests {
         let proxy = nucleotide_lsp::LspLaunchProxyProvider::create_lsp_launch_proxy(
             &provider,
             Path::new("ssh://me@example.com/home/me/project"),
-            "rust-analyzer",
+            "jedi",
+            "jedi-language-server",
         )
         .unwrap()
         .expect("remote proxy");
 
         assert!(proxy.path_dir.is_dir());
         assert!(proxy.description.contains("lsp-proxy"));
-        assert!(proxy.description.contains("rust-analyzer"));
+        assert!(proxy.description.contains("jedi-language-server"));
+        assert!(
+            proxy.cleanup_paths[0]
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("jedi-language-server")
+        );
 
         let script = fs::read_to_string(&proxy.cleanup_paths[0]).unwrap();
         assert!(script.contains("nucleotide-remote"));
         assert!(script.contains("lsp-proxy"));
-        assert!(script.contains("rust-analyzer"));
+        assert!(script.contains("jedi-language-server"));
         #[cfg(windows)]
         if let Ok(ssh) = helix_stdx::env::which("ssh") {
             assert!(script.contains(&ssh.to_string_lossy().into_owned()));
@@ -11809,7 +11990,15 @@ mod tests {
             &self,
             root: &Path,
         ) -> nucleotide_workspace::Result<ProjectEnvironmentSnapshot> {
-            Self::delegate().project_environment(root).await
+            Ok(ProjectEnvironmentSnapshot {
+                root: root.to_path_buf(),
+                variables: BTreeMap::from([(
+                    "NUCLEOTIDE_TEST_REMOTE_ENV".to_string(),
+                    "remote".to_string(),
+                )]),
+                origin: ProjectEnvironmentOrigin::Cli,
+                diagnostics: Vec::new(),
+            })
         }
 
         async fn git_head(&self, root: &Path) -> nucleotide_workspace::Result<GitHeadResult> {
@@ -11830,6 +12019,42 @@ mod tests {
         ) -> nucleotide_workspace::Result<ProcessOutput> {
             Self::delegate().run_process(spec).await
         }
+    }
+
+    #[test]
+    fn project_environment_provider_follows_workspace_backend_switches() {
+        let project = tempdir().unwrap();
+        let provider = ProjectEnvironmentProvider::with_workspace_backend(
+            Arc::new(nucleotide_env::ProjectEnvironment::new(Some(
+                HashMap::from([("NUCLEOTIDE_TEST_LOCAL_ENV".to_string(), "local".to_string())]),
+            ))),
+            local_workspace_backend(),
+        );
+
+        let local_environment = TEST_RUNTIME
+            .block_on(nucleotide_lsp::EnvironmentProvider::get_lsp_environment(
+                &provider,
+                project.path(),
+            ))
+            .unwrap();
+        assert_eq!(
+            local_environment.get("NUCLEOTIDE_TEST_LOCAL_ENV"),
+            Some(&"local".to_string())
+        );
+
+        provider.set_workspace_backend(Arc::new(RemoteIdentityLocalBackend));
+        let remote_environment = TEST_RUNTIME
+            .block_on(nucleotide_lsp::EnvironmentProvider::get_lsp_environment(
+                &provider,
+                project.path(),
+            ))
+            .unwrap();
+
+        assert_eq!(
+            remote_environment.get("NUCLEOTIDE_TEST_REMOTE_ENV"),
+            Some(&"remote".to_string())
+        );
+        assert!(!remote_environment.contains_key("NUCLEOTIDE_TEST_LOCAL_ENV"));
     }
 
     #[test]
@@ -13487,6 +13712,71 @@ language-servers = ["taplo"]
                 ]
             );
         });
+    }
+
+    #[test]
+    fn project_lsp_candidates_are_filtered_by_configured_command_availability() {
+        let mut servers = vec![
+            ("toml".to_string(), "taplo".to_string()),
+            ("toml".to_string(), "tombi".to_string()),
+            ("markdown".to_string(), "marksman".to_string()),
+        ];
+        let commands = HashMap::from([
+            ("taplo".to_string(), "taplo".to_string()),
+            ("tombi".to_string(), "tombi-cli".to_string()),
+            ("marksman".to_string(), "marksman".to_string()),
+        ]);
+        let available = HashSet::from(["tombi-cli".to_string(), "marksman".to_string()]);
+
+        retain_servers_with_available_commands(&mut servers, &commands, Some(&available));
+
+        assert_eq!(
+            servers,
+            vec![
+                ("toml".to_string(), "tombi".to_string()),
+                ("markdown".to_string(), "marksman".to_string()),
+            ]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn language_server_command_probe_uses_project_path_and_reports_available_commands() {
+        let project = tempdir().unwrap();
+
+        let available = TEST_RUNTIME
+            .block_on(probe_available_language_server_commands(
+                project.path(),
+                local_workspace_backend(),
+                vec![
+                    "sh".to_string(),
+                    "nucleotide-language-server-that-does-not-exist".to_string(),
+                ],
+                None,
+                Duration::from_secs(5),
+            ))
+            .unwrap();
+
+        assert!(available.contains("sh"));
+        assert!(!available.contains("nucleotide-language-server-that-does-not-exist"));
+    }
+
+    #[test]
+    fn language_server_command_probe_rejects_captured_environment_without_path() {
+        let project = tempdir().unwrap();
+        let environment = HashMap::new();
+
+        let error = TEST_RUNTIME
+            .block_on(probe_available_language_server_commands(
+                project.path(),
+                local_workspace_backend(),
+                vec!["rust-analyzer".to_string()],
+                Some(&environment),
+                Duration::from_secs(5),
+            ))
+            .unwrap_err();
+
+        assert!(error.contains("no PATH"));
     }
 
     #[test]
