@@ -9820,6 +9820,9 @@ pub(crate) fn hydrate_workspace_document_from_read(
     doc.ensure_view_init(view_id);
     doc.hydrate_from_reader(&mut bytes, view, metadata)
         .with_context(|| format!("failed to decode workspace file {}", read.path.display()))?;
+    // Hydration inserts the entire file into an empty placeholder, which maps the
+    // placeholder's cursor from offset zero to the end of the inserted text.
+    doc.set_selection(view_id, Selection::point(0));
     set_remote_document_lsp_url(doc, &read.path);
 
     if let Some(diff_base) = diff_base {
@@ -12178,6 +12181,13 @@ mod tests {
         let first_doc = editor.document(first_doc_id).unwrap();
         assert_eq!(first_doc.path(), Some(first_path.as_path()));
         assert_eq!(first_doc.text(), "fn first() {}\n");
+        assert_eq!(
+            first_doc
+                .selection(view_id)
+                .primary()
+                .cursor(first_doc.text().slice(..)),
+            0
+        );
         assert!(!first_doc.readonly);
         assert!(!first_doc.is_modified());
         assert!(first_doc.file_version().is_some());
