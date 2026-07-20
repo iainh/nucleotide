@@ -73,29 +73,34 @@ pub(crate) async fn run_lsp_proxy(options: LspProxyOptions) -> Result<()> {
 }
 
 pub(crate) async fn run_terminal_proxy(options: TerminalProxyOptions) -> Result<()> {
+    if !path_is_within_workspace(&options.cwd, &options.workspace_root) {
+        bail!(
+            "terminal command working directory {} is outside workspace root {}",
+            options.cwd.display(),
+            options.workspace_root.display()
+        );
+    }
+
     let mut environment = load_proxy_environment("terminal-proxy", &options.workspace_root).await?;
     environment.extend(options.env.iter().cloned());
     remove_interactive_shell_state(&mut environment);
 
     let process = terminal_proxy_process(&options, &environment);
-    let program_path = resolve_program_from_environment_path(
-        &process.program,
-        &environment,
-        &options.workspace_root,
-    );
+    let program_path =
+        resolve_program_from_environment_path(&process.program, &environment, &options.cwd);
 
     exec_terminal_proxy_process(
         &program_path,
         &process.args,
         process.login_shell,
         &environment,
-        &options.workspace_root,
+        &options.cwd,
     )
     .with_context(|| {
         format!(
             "failed to run terminal command {} in {}",
             program_path.display(),
-            options.workspace_root.display()
+            options.cwd.display()
         )
     })
 }
@@ -157,7 +162,7 @@ pub(crate) fn exec_terminal_proxy_process(
     args: &[String],
     login_shell: bool,
     environment: &HashMap<String, String>,
-    workspace_root: &Path,
+    cwd: &Path,
 ) -> io::Result<()> {
     use std::os::unix::process::CommandExt;
 
@@ -167,7 +172,7 @@ pub(crate) fn exec_terminal_proxy_process(
     }
     let error = command
         .args(args)
-        .current_dir(workspace_root)
+        .current_dir(cwd)
         .env_clear()
         .envs(environment)
         .exec();
@@ -180,11 +185,11 @@ pub(crate) fn exec_terminal_proxy_process(
     args: &[String],
     _login_shell: bool,
     environment: &HashMap<String, String>,
-    workspace_root: &Path,
+    cwd: &Path,
 ) -> io::Result<()> {
     let status = Command::new(program)
         .args(args)
-        .current_dir(workspace_root)
+        .current_dir(cwd)
         .env_clear()
         .envs(environment)
         .status()?;
@@ -238,14 +243,14 @@ pub(crate) async fn load_proxy_environment(
 pub(crate) fn resolve_program_from_environment_path(
     program: &str,
     environment: &HashMap<String, String>,
-    workspace_root: &Path,
+    cwd: &Path,
 ) -> PathBuf {
     let program_path = Path::new(program);
     if program_path.components().count() > 1 {
         return if program_path.is_absolute() {
             program_path.to_path_buf()
         } else {
-            workspace_root.join(program_path)
+            cwd.join(program_path)
         };
     }
 
@@ -257,7 +262,7 @@ pub(crate) fn resolve_program_from_environment_path(
             if directory.is_absolute() {
                 directory.join(program)
             } else {
-                workspace_root.join(directory).join(program)
+                cwd.join(directory).join(program)
             }
         })
         .find(|candidate| candidate.is_file())

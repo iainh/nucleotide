@@ -338,23 +338,27 @@ pub fn ssh_lsp_proxy_command(
 pub fn wsl_terminal_proxy_command(
     distro: impl AsRef<OsStr>,
     linux_root: impl AsRef<Path>,
+    linux_cwd: impl AsRef<Path>,
     helper_path: impl AsRef<Path>,
     shell: Option<&str>,
     command: Option<(&str, &[String])>,
     env: &[(String, String)],
 ) -> RemoteServiceCommand {
     let linux_root = linux_root.as_ref();
+    let linux_cwd = linux_cwd.as_ref();
     let helper_path = helper_path.as_ref();
     let mut args = vec![
         OsString::from("--distribution"),
         distro.as_ref().to_os_string(),
         OsString::from("--cd"),
-        linux_root.as_os_str().to_os_string(),
+        linux_cwd.as_os_str().to_os_string(),
         OsString::from("--exec"),
         helper_path.as_os_str().to_os_string(),
         OsString::from("terminal-proxy"),
         OsString::from("--workspace"),
         linux_root.as_os_str().to_os_string(),
+        OsString::from("--cwd"),
+        linux_cwd.as_os_str().to_os_string(),
     ];
     append_terminal_proxy_args(&mut args, shell, command, env);
 
@@ -368,6 +372,7 @@ pub fn wsl_terminal_proxy_command(
 pub fn ssh_terminal_proxy_command(
     target: SshTarget,
     remote_root: impl AsRef<Path>,
+    remote_cwd: impl AsRef<Path>,
     helper_path: impl AsRef<Path>,
     shell: Option<&str>,
     command: Option<(&str, &[String])>,
@@ -376,6 +381,7 @@ pub fn ssh_terminal_proxy_command(
     let remote_command = terminal_proxy_shell_command(
         helper_path.as_ref(),
         remote_root.as_ref(),
+        remote_cwd.as_ref(),
         shell,
         command,
         env,
@@ -469,18 +475,22 @@ pub(crate) fn append_terminal_proxy_args(
 pub(crate) fn terminal_proxy_shell_command(
     helper_path: &Path,
     remote_root: &Path,
+    remote_cwd: &Path,
     shell: Option<&str>,
     command: Option<(&str, &[String])>,
     env: &[(String, String)],
 ) -> String {
     let helper_path = posix_path_string(helper_path);
     let remote_root = posix_path_string(remote_root);
+    let remote_cwd = posix_path_string(remote_cwd);
     let mut parts = vec![
         "exec".to_string(),
         quote_posix_shell(&helper_path),
         "terminal-proxy".to_string(),
         "--workspace".to_string(),
         quote_posix_shell(&remote_root),
+        "--cwd".to_string(),
+        quote_posix_shell(&remote_cwd),
     ];
     if let Some(shell) = shell.filter(|shell| !shell.is_empty()) {
         parts.push("--shell".to_string());
