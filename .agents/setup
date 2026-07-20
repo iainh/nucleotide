@@ -29,6 +29,9 @@ sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
   xz-utils \
   zlib1g-dev
 
+git config user.name 'Iain H'
+git config user.email 'iain@spiralpoint.org'
+
 # Amp shells include ~/.local/bin by default, while rustup installs its proxies
 # under ~/.cargo/bin.
 export PATH="${HOME}/.cargo/bin:${PATH}"
