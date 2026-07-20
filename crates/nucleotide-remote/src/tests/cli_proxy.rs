@@ -48,10 +48,13 @@ fn lsp_proxy_options_parse_workspace_server_and_args() {
 #[test]
 fn terminal_proxy_options_parse_shell_env_and_command() {
     let temp = tempfile::tempdir().unwrap();
+    let cwd = temp.path().join("crates/nucleotide");
 
     let options = parse_terminal_proxy_options([
         "--workspace".to_string(),
         temp.path().display().to_string(),
+        "--cwd".to_string(),
+        cwd.display().to_string(),
         "--shell".to_string(),
         "/bin/zsh".to_string(),
         "--env".to_string(),
@@ -64,6 +67,7 @@ fn terminal_proxy_options_parse_shell_env_and_command() {
     .unwrap();
 
     assert_eq!(options.workspace_root, temp.path());
+    assert_eq!(options.cwd, cwd);
     assert_eq!(options.shell.as_deref(), Some("/bin/zsh"));
     assert_eq!(
         options.env,
@@ -79,6 +83,49 @@ fn terminal_proxy_options_parse_shell_env_and_command() {
 }
 
 #[test]
+fn terminal_proxy_options_default_cwd_to_workspace_root() {
+    let temp = tempfile::tempdir().unwrap();
+
+    let options = parse_terminal_proxy_options([
+        "--workspace".to_string(),
+        temp.path().display().to_string(),
+    ])
+    .unwrap();
+
+    assert_eq!(options.cwd, options.workspace_root);
+}
+
+#[test]
+fn terminal_proxy_options_resolve_relative_cwd_from_workspace_root() {
+    let temp = tempfile::tempdir().unwrap();
+
+    let options = parse_terminal_proxy_options([
+        "--workspace".to_string(),
+        temp.path().display().to_string(),
+        "--cwd".to_string(),
+        "crates/nucleotide".to_string(),
+    ])
+    .unwrap();
+
+    assert_eq!(options.cwd, temp.path().join("crates/nucleotide"));
+}
+
+#[tokio::test]
+async fn terminal_proxy_rejects_cwd_outside_workspace_before_loading_environment() {
+    let options = TerminalProxyOptions {
+        workspace_root: PathBuf::from("/workspace"),
+        cwd: PathBuf::from("/workspace/../outside"),
+        shell: None,
+        env: Vec::new(),
+        command: None,
+    };
+
+    let error = run_terminal_proxy(options).await.unwrap_err();
+
+    assert!(error.to_string().contains("outside workspace root"));
+}
+
+#[test]
 fn terminal_proxy_options_reject_invalid_env_entry() {
     let error = parse_terminal_proxy_options(["--env".to_string(), "BAD".to_string()]).unwrap_err();
 
@@ -89,6 +136,7 @@ fn terminal_proxy_options_reject_invalid_env_entry() {
 fn terminal_proxy_process_uses_environment_shell_as_login_shell_without_extra_flags() {
     let options = TerminalProxyOptions {
         workspace_root: PathBuf::from("/workspace"),
+        cwd: PathBuf::from("/workspace/crates/nucleotide"),
         shell: None,
         env: Vec::new(),
         command: None,
@@ -106,6 +154,7 @@ fn terminal_proxy_process_uses_environment_shell_as_login_shell_without_extra_fl
 fn terminal_proxy_process_keeps_command_sessions_non_login() {
     let options = TerminalProxyOptions {
         workspace_root: PathBuf::from("/workspace"),
+        cwd: PathBuf::from("/workspace/crates/nucleotide"),
         shell: None,
         env: Vec::new(),
         command: Some((
@@ -151,6 +200,22 @@ fn terminal_proxy_environment_removes_prompt_and_shell_startup_state() {
     assert_eq!(
         environment.get("PATH").map(String::as_str),
         Some("/usr/bin:/bin")
+    );
+}
+
+#[test]
+fn terminal_proxy_resolves_relative_path_entries_from_command_cwd() {
+    let temp = tempfile::tempdir().unwrap();
+    let cwd = temp.path().join("crates/nucleotide");
+    let bin = cwd.join("tools/bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let cargo = bin.join("cargo");
+    std::fs::write(&cargo, "").unwrap();
+    let environment = HashMap::from([("PATH".to_string(), "tools/bin".to_string())]);
+
+    assert_eq!(
+        resolve_program_from_environment_path("cargo", &environment, &cwd),
+        cargo
     );
 }
 

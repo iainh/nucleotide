@@ -216,6 +216,7 @@ fn wsl_terminal_proxy_command_uses_remote_helper() {
     let spec = wsl_terminal_proxy_command(
         "Ubuntu",
         "/home/me/project",
+        "/home/me/project/crates/nucleotide",
         "/home/me/.cache/nucl/remote",
         Some("/bin/zsh"),
         Some(("cargo", &command_args)),
@@ -229,12 +230,14 @@ fn wsl_terminal_proxy_command_uses_remote_helper() {
             OsString::from("--distribution"),
             OsString::from("Ubuntu"),
             OsString::from("--cd"),
-            OsString::from("/home/me/project"),
+            OsString::from("/home/me/project/crates/nucleotide"),
             OsString::from("--exec"),
             OsString::from("/home/me/.cache/nucl/remote"),
             OsString::from("terminal-proxy"),
             OsString::from("--workspace"),
             OsString::from("/home/me/project"),
+            OsString::from("--cwd"),
+            OsString::from("/home/me/project/crates/nucleotide"),
             OsString::from("--shell"),
             OsString::from("/bin/zsh"),
             OsString::from("--env"),
@@ -306,6 +309,7 @@ fn ssh_commands_normalize_remote_paths_to_posix() {
     let spec = ssh_terminal_proxy_command(
         SshTarget::new("devbox"),
         r"\home\me\project",
+        r"\home\me\project\crates\nucleotide",
         r"\home\me\.cache\nucl\remote",
         None,
         None,
@@ -316,6 +320,7 @@ fn ssh_commands_normalize_remote_paths_to_posix() {
 
     assert!(command.contains("'/home/me/.cache/nucl/remote'"));
     assert!(command.contains("'/home/me/project'"));
+    assert!(command.contains("'/home/me/project/crates/nucleotide'"));
 }
 
 #[cfg(windows)]
@@ -406,6 +411,7 @@ fn ssh_terminal_proxy_command_quotes_remote_command_and_forces_tty() {
     let spec = ssh_terminal_proxy_command(
         target,
         "/home/me/project with spaces/it's",
+        "/home/me/project with spaces/it's/crates/nucleotide",
         "/home/me/.cache/nucleotide remote/bin",
         None,
         Some(("cargo", &command_args)),
@@ -424,6 +430,9 @@ fn ssh_terminal_proxy_command_quotes_remote_command_and_forces_tty() {
     assert!(command.contains("'/home/me/.cache/nucleotide remote/bin'"));
     assert!(command.contains(" terminal-proxy "));
     assert!(command.contains("'/home/me/project with spaces/it'\"'\"'s'"));
+    assert!(command.contains(
+        "--cwd '/home/me/project with spaces/it'\"'\"'s/crates/nucleotide'"
+    ));
     assert!(command.contains("--env 'RUST_LOG=debug'"));
     assert!(command.contains(" -- 'cargo' 'test' "));
     assert!(command.ends_with("'--workspace'"));

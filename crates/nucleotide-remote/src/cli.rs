@@ -190,6 +190,7 @@ where
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TerminalProxyOptions {
     pub(crate) workspace_root: PathBuf,
+    pub(crate) cwd: PathBuf,
     pub(crate) shell: Option<String>,
     pub(crate) env: Vec<(String, String)>,
     pub(crate) command: Option<(String, Vec<String>)>,
@@ -201,6 +202,7 @@ where
 {
     let mut args = args.into_iter();
     let mut workspace_root = None;
+    let mut cwd = None;
     let mut shell = None;
     let mut env = Vec::new();
     let mut command = None;
@@ -219,6 +221,12 @@ where
                         .context("failed to resolve current directory")?
                         .join(path)
                 });
+            }
+            "--cwd" => {
+                cwd = Some(PathBuf::from(
+                    args.next()
+                        .context("--cwd requires a command working directory")?,
+                ));
             }
             "--shell" => {
                 shell = Some(args.next().context("--shell requires a shell path")?);
@@ -243,11 +251,23 @@ where
         }
     }
 
+    let workspace_root = workspace_root
+        .map(Ok)
+        .unwrap_or_else(std::env::current_dir)
+        .context("failed to resolve workspace root")?;
+    let cwd = cwd
+        .map(|path| {
+            if path.is_absolute() {
+                path
+            } else {
+                workspace_root.join(path)
+            }
+        })
+        .unwrap_or_else(|| workspace_root.clone());
+
     Ok(TerminalProxyOptions {
-        workspace_root: workspace_root
-            .map(Ok)
-            .unwrap_or_else(std::env::current_dir)
-            .context("failed to resolve workspace root")?,
+        workspace_root,
+        cwd,
         shell,
         env,
         command,
@@ -263,7 +283,7 @@ pub(crate) fn print_help<W: Write>(writer: &mut W) -> io::Result<()> {
     )?;
     writeln!(
         writer,
-        "nucleotide-remote terminal-proxy [--workspace <path>] [--shell <path>] [--env KEY=VALUE]... [-- <command> <args>...]"
+        "nucleotide-remote terminal-proxy [--workspace <path>] [--cwd <path>] [--shell <path>] [--env KEY=VALUE]... [-- <command> <args>...]"
     )?;
     writeln!(writer)?;
     writeln!(

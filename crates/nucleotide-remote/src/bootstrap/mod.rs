@@ -1702,15 +1702,18 @@ pub fn resolved_remote_lsp_proxy_command_for_location(
 }
 
 pub fn resolved_remote_terminal_proxy_command_for_location(
-    location: &WorkspaceLocation,
+    workspace_location: &WorkspaceLocation,
+    cwd_location: &WorkspaceLocation,
     options: &RemoteWorkspaceBackendOptions,
     shell: Option<&str>,
     command: Option<(&str, &[String])>,
     env: &[(String, String)],
 ) -> Result<Option<RemoteServiceCommand>> {
-    let helper_path = resolve_remote_helper_for_location(location, options)?;
+    validate_remote_terminal_proxy_locations(workspace_location, cwd_location)?;
+    let helper_path = resolve_remote_helper_for_location(workspace_location, options)?;
     Ok(remote_terminal_proxy_command_for_location_with_options(
-        location,
+        workspace_location,
+        cwd_location,
         helper_path,
         options,
         shell,
@@ -1843,66 +1846,114 @@ pub fn remote_interactive_terminal_command_for_location_with_options(
 }
 
 pub fn remote_terminal_proxy_command_for_location(
-    location: &WorkspaceLocation,
+    workspace_location: &WorkspaceLocation,
+    cwd_location: &WorkspaceLocation,
     helper_path: impl AsRef<Path>,
     shell: Option<&str>,
     command: Option<(&str, &[String])>,
     env: &[(String, String)],
 ) -> Option<RemoteServiceCommand> {
+    if validate_remote_terminal_proxy_locations(workspace_location, cwd_location).is_err() {
+        return None;
+    }
     let helper_path = helper_path.as_ref();
-    match location {
-        WorkspaceLocation::Local { .. } => None,
-        WorkspaceLocation::Wsl {
-            distro, linux_path, ..
-        } => Some(wsl_terminal_proxy_command(
+    match (workspace_location, cwd_location) {
+        (WorkspaceLocation::Local { .. }, _) => None,
+        (
+            WorkspaceLocation::Wsl {
+                distro, linux_path, ..
+            },
+            WorkspaceLocation::Wsl {
+                linux_path: linux_cwd,
+                ..
+            },
+        ) => Some(wsl_terminal_proxy_command(
             distro,
             linux_path,
+            linux_cwd,
             helper_path,
             shell,
             command,
             env,
         )),
-        WorkspaceLocation::Ssh { target, path, .. } => Some(ssh_terminal_proxy_command(
-            ssh_target_from_workspace_target(target),
-            path,
-            helper_path,
-            shell,
-            command,
-            env,
-        )),
+        (WorkspaceLocation::Ssh { target, path, .. }, WorkspaceLocation::Ssh { path: cwd, .. }) => {
+            Some(ssh_terminal_proxy_command(
+                ssh_target_from_workspace_target(target),
+                path,
+                cwd,
+                helper_path,
+                shell,
+                command,
+                env,
+            ))
+        }
+        _ => None,
     }
 }
 
 pub(crate) fn remote_terminal_proxy_command_for_location_with_options(
-    location: &WorkspaceLocation,
+    workspace_location: &WorkspaceLocation,
+    cwd_location: &WorkspaceLocation,
     helper_path: impl AsRef<Path>,
     options: &RemoteWorkspaceBackendOptions,
     shell: Option<&str>,
     command: Option<(&str, &[String])>,
     env: &[(String, String)],
 ) -> Option<RemoteServiceCommand> {
+    if validate_remote_terminal_proxy_locations(workspace_location, cwd_location).is_err() {
+        return None;
+    }
     let helper_path = helper_path.as_ref();
-    match location {
-        WorkspaceLocation::Local { .. } => None,
-        WorkspaceLocation::Wsl {
-            distro, linux_path, ..
-        } => Some(wsl_terminal_proxy_command(
+    match (workspace_location, cwd_location) {
+        (WorkspaceLocation::Local { .. }, _) => None,
+        (
+            WorkspaceLocation::Wsl {
+                distro, linux_path, ..
+            },
+            WorkspaceLocation::Wsl {
+                linux_path: linux_cwd,
+                ..
+            },
+        ) => Some(wsl_terminal_proxy_command(
             distro,
             linux_path,
+            linux_cwd,
             helper_path,
             shell,
             command,
             env,
         )),
-        WorkspaceLocation::Ssh { target, path, .. } => Some(ssh_terminal_proxy_command(
-            ssh_target_from_workspace_target_with_options(target, options),
-            path,
-            helper_path,
-            shell,
-            command,
-            env,
-        )),
+        (WorkspaceLocation::Ssh { target, path, .. }, WorkspaceLocation::Ssh { path: cwd, .. }) => {
+            Some(ssh_terminal_proxy_command(
+                ssh_target_from_workspace_target_with_options(target, options),
+                path,
+                cwd,
+                helper_path,
+                shell,
+                command,
+                env,
+            ))
+        }
+        _ => None,
     }
+}
+
+fn validate_remote_terminal_proxy_locations(
+    workspace_location: &WorkspaceLocation,
+    cwd_location: &WorkspaceLocation,
+) -> Result<()> {
+    if !workspace_location.is_remote() || !workspace_location.matches_remote_identity(cwd_location)
+    {
+        bail!("terminal workspace root and working directory must use the same remote target");
+    }
+    if !path_is_within_workspace(cwd_location.native_root(), workspace_location.native_root()) {
+        bail!(
+            "terminal working directory {} is outside workspace root {}",
+            cwd_location.display_root().display(),
+            workspace_location.display_root().display()
+        );
+    }
+    Ok(())
 }
 
 pub fn connect_workspace_backend_for_location(

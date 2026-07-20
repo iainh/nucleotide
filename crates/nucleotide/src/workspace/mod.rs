@@ -2492,18 +2492,24 @@ impl Workspace {
     }
 
     fn remote_terminal_proxy_command_with_options(
-        location: &nucleotide_workspace::WorkspaceLocation,
+        workspace_location: &nucleotide_workspace::WorkspaceLocation,
+        cwd_location: &nucleotide_workspace::WorkspaceLocation,
         options: &nucleotide_remote::RemoteWorkspaceBackendOptions,
         shell: Option<&str>,
         command: Option<(&str, &[String])>,
         env: &[(String, String)],
     ) -> Option<nucleotide_remote::RemoteServiceCommand> {
-        if !location.is_remote() {
+        if !workspace_location.is_remote() {
             return None;
         }
 
         match nucleotide_remote::resolved_remote_terminal_proxy_command_for_location(
-            location, options, shell, command, env,
+            workspace_location,
+            cwd_location,
+            options,
+            shell,
+            command,
+            env,
         ) {
             Ok(command) => command,
             Err(error) => {
@@ -2514,14 +2520,18 @@ impl Workspace {
     }
 
     async fn remote_terminal_proxy_command_async(
+        workspace_root: Option<PathBuf>,
         cwd: Option<PathBuf>,
         shell: Option<String>,
         command: Option<(String, Vec<String>)>,
         env: Vec<(String, String)>,
     ) -> Option<nucleotide_remote::RemoteServiceCommand> {
         match tokio::task::spawn_blocking(move || {
-            let location = cwd.as_deref().map(classify_workspace_location)?;
-            if !location.is_remote() {
+            let workspace_location = workspace_root
+                .as_deref()
+                .map(classify_workspace_location)?;
+            let cwd_location = cwd.as_deref().map(classify_workspace_location)?;
+            if !workspace_location.is_remote() {
                 return None;
             }
 
@@ -2533,7 +2543,7 @@ impl Workspace {
                 });
             if shell.is_none() && command.is_none() && env.is_empty() {
                 return nucleotide_remote::remote_interactive_terminal_command_for_location_with_options(
-                    &location,
+                    &cwd_location,
                     &options,
                 );
             }
@@ -2541,7 +2551,8 @@ impl Workspace {
                 .as_ref()
                 .map(|(program, args)| (program.as_str(), args.as_slice()));
             Self::remote_terminal_proxy_command_with_options(
-                &location,
+                &workspace_location,
+                &cwd_location,
                 &options,
                 shell.as_deref(),
                 command,
@@ -2612,6 +2623,7 @@ impl Workspace {
         self.last_terminal_bounds = None;
 
         let shell: Option<String> = None;
+        let workspace_root = self.current_project_root.clone();
         let (terminal_runtime, project_environment) = {
             let core = self.core.read(cx);
             (
@@ -2621,6 +2633,7 @@ impl Workspace {
         };
         self.handle.spawn(async move {
             let remote_proxy = Self::remote_terminal_proxy_command_async(
+                workspace_root,
                 cwd.clone(),
                 shell.clone(),
                 None,
@@ -2697,6 +2710,7 @@ impl Workspace {
         self.run_output_terminal = Some(id);
         self.last_terminal_bounds = None;
 
+        let workspace_root = self.current_project_root.clone();
         let (terminal_runtime, project_environment) = {
             let core = self.core.read(cx);
             (
@@ -2706,6 +2720,7 @@ impl Workspace {
         };
         self.handle.spawn(async move {
             let remote_proxy = Self::remote_terminal_proxy_command_async(
+                workspace_root,
                 cwd.clone(),
                 None,
                 Some((program.clone(), args.clone())),
@@ -19163,11 +19178,15 @@ mod tests {
     #[test]
     fn remote_terminal_proxy_command_routes_wsl_cwd_through_helper() {
         let args = vec!["test".to_string()];
-        let location =
+        let workspace_location =
             classify_workspace_location(Path::new(r"\\wsl.localhost\Ubuntu\home\me\project"));
+        let cwd_location = classify_workspace_location(Path::new(
+            r"\\wsl.localhost\Ubuntu\home\me\project\crates\nucleotide",
+        ));
         let options = nucleotide_remote::RemoteWorkspaceBackendOptions::default();
         let spec = Workspace::remote_terminal_proxy_command_with_options(
-            &location,
+            &workspace_location,
+            &cwd_location,
             &options,
             None,
             Some(("cargo", &args)),
@@ -19182,6 +19201,18 @@ mod tests {
         );
         assert!(spec.args.contains(&std::ffi::OsString::from("cargo")));
         assert!(spec.args.contains(&std::ffi::OsString::from("test")));
+        assert!(spec.args.windows(2).any(|args| {
+            args == [
+                std::ffi::OsString::from("--workspace"),
+                std::ffi::OsString::from("/home/me/project"),
+            ]
+        }));
+        assert!(spec.args.windows(2).any(|args| {
+            args == [
+                std::ffi::OsString::from("--cwd"),
+                std::ffi::OsString::from("/home/me/project/crates/nucleotide"),
+            ]
+        }));
     }
 
     #[test]
@@ -19190,9 +19221,50 @@ mod tests {
         let options = nucleotide_remote::RemoteWorkspaceBackendOptions::default();
         let spec = Workspace::remote_terminal_proxy_command_with_options(
             &location,
+            &location,
             &options,
             None,
             None,
+            &[],
+        );
+
+        assert!(spec.is_none());
+    }
+
+    #[test]
+    fn remote_terminal_proxy_command_rejects_cwd_outside_workspace() {
+        let workspace_location =
+            classify_workspace_location(Path::new(r"\\wsl.localhost\Ubuntu\home\me\project"));
+        let cwd_location =
+            classify_workspace_location(Path::new(r"\\wsl.localhost\Ubuntu\home\me\outside"));
+        let options = nucleotide_remote::RemoteWorkspaceBackendOptions::default();
+
+        let spec = Workspace::remote_terminal_proxy_command_with_options(
+            &workspace_location,
+            &cwd_location,
+            &options,
+            None,
+            Some(("cargo", &[])),
+            &[],
+        );
+
+        assert!(spec.is_none());
+    }
+
+    #[test]
+    fn remote_terminal_proxy_command_rejects_different_remote_target() {
+        let workspace_location =
+            classify_workspace_location(Path::new(r"\\wsl.localhost\Ubuntu\home\me\project"));
+        let cwd_location =
+            classify_workspace_location(Path::new(r"\\wsl.localhost\Debian\home\me\project"));
+        let options = nucleotide_remote::RemoteWorkspaceBackendOptions::default();
+
+        let spec = Workspace::remote_terminal_proxy_command_with_options(
+            &workspace_location,
+            &cwd_location,
+            &options,
+            None,
+            Some(("cargo", &[])),
             &[],
         );
 
