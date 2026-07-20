@@ -125,7 +125,7 @@ exceptions = [
     #{ allow = ["ISC", "MIT", "OpenSSL"], crate = "openssl" },
     # Velopack's rustls transport uses Mozilla's CA root data. The CDLA 2.0
     # licence is permissive but applies only to this data crate.
-    { allow = ["CDLA-Permissive-2.0"], crate = "webpki-roots@1.0.8" },
+    { allow = ["CDLA-Permissive-2.0"], crate = "webpki-roots@1.0.9" },
 ]
 
 # Some crates don't have (easily) machine readable licensing information,
