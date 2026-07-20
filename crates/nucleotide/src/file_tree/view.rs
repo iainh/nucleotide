@@ -4421,6 +4421,11 @@ impl Render for FileTreeView {
                                     .min_w(px(0.0))
                                     .min_h(px(0.0))
                                     .overflow_x_scroll()
+                                    .map(|mut scroll_container| {
+                                        scroll_container.style().restrict_scroll_to_axis =
+                                            Some(true);
+                                        scroll_container
+                                    })
                                     .track_scroll(&self.horizontal_scroll_handle)
                                     .child(
                                         div()
