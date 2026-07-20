@@ -18,13 +18,12 @@ use nucleotide_logging::{PerfTimer, error, trace};
 
 use crate::{
     CursorOverlayPlan, DiagnosticGutterMarkersPaintParams, EditorCursorTextPaintParams,
-    EditorDocumentFrame, EditorDocumentFrameParams, EditorLayout, EditorLineBackgroundStyle,
-    EditorSurfaceGeometry, EditorViewFrameState, EditorViewState, EditorViewportSurfaceLayout,
-    GutterLine, GutterLinePlan, IndentGuidePaintConfig, LineLayoutCache, RulerPaintPlan,
-    SoftWrapCursorPaintPlanParams, SoftWrapEditorLinePaintParams, SoftWrapGutterLinePlanParams,
-    UnwrappedCursorPaintPlanParams, UnwrappedEditorLinePaintParams, UnwrappedGutterLinePlanParams,
-    build_gutter_lines_from_plans, build_soft_wrap_gutter_line_plans,
-    build_unwrapped_gutter_line_plans, cursor_style_for_mode,
+    EditorDocumentFrame, EditorDocumentFrameParams, EditorLayout, EditorSurfaceGeometry,
+    EditorViewFrameState, EditorViewState, EditorViewportSurfaceLayout, GutterLine, GutterLinePlan,
+    IndentGuidePaintConfig, LineLayoutCache, RulerPaintPlan, SoftWrapCursorPaintPlanParams,
+    SoftWrapEditorLinePaintParams, SoftWrapGutterLinePlanParams, UnwrappedCursorPaintPlanParams,
+    UnwrappedEditorLinePaintParams, UnwrappedGutterLinePlanParams, build_gutter_lines_from_plans,
+    build_soft_wrap_gutter_line_plans, build_unwrapped_gutter_line_plans, cursor_style_for_mode,
     diagnostics::DiagnosticSeverityIconColors, document_text_format_for_surface,
     editor_document_frame, gutter::gutter_origin, highlight::gpui_hsla_to_helix_color,
     line_text::line_text_without_trailing_newline, paint_cursorline_background,
@@ -50,8 +49,6 @@ pub struct DocumentFramePaintParams<'a> {
     pub cursorline_secondary_color: Option<Hsla>,
     pub is_focused: bool,
     pub element_focused: bool,
-    pub selection_primary: Hsla,
-    pub selection_secondary: Hsla,
     pub diagnostic_theme: &'a Theme,
     pub diagnostic_icon_colors: DiagnosticSeverityIconColors,
     pub gutter_bg: Option<Hsla>,
@@ -69,8 +66,6 @@ pub struct NativeEditorFramePaintStyle {
     pub cursorcolumn_primary_color: Option<Hsla>,
     pub cursorcolumn_secondary_color: Option<Hsla>,
     pub frameline_color: Option<Hsla>,
-    pub selection_primary: Hsla,
-    pub selection_secondary: Hsla,
     pub gutter_color: Hsla,
     pub gutter_selected_color: Hsla,
     pub diagnostic_highlight_base: Hsla,
@@ -86,8 +81,6 @@ pub struct NativeEditorFramePaintStyle {
 pub struct NativeEditorFramePalette {
     pub fg_color: Hsla,
     pub bg_color: Hsla,
-    pub selection_primary: Hsla,
-    pub selection_secondary: Hsla,
     pub fallback_gutter_color: Hsla,
     pub diagnostic_highlight_base: Hsla,
     pub diagnostic_icon_colors: DiagnosticSeverityIconColors,
@@ -97,6 +90,7 @@ pub struct NativeEditorFramePalette {
 
 #[derive(Clone, Copy, Default)]
 pub struct NativeEditorFrameThemeStyles {
+    pub text: Style,
     pub cursor: Style,
     pub cursor_primary: Style,
     pub cursor_primary_insert: Style,
@@ -121,6 +115,7 @@ pub struct NativeEditorFrameThemeStyles {
 impl NativeEditorFrameThemeStyles {
     pub fn from_style_fn(mut style_for_key: impl FnMut(&str) -> Style) -> Self {
         Self {
+            text: style_for_key("ui.text"),
             cursor: style_for_key("ui.cursor"),
             cursor_primary: style_for_key("ui.cursor.primary"),
             cursor_primary_insert: style_for_key("ui.cursor.primary.insert"),
@@ -145,6 +140,7 @@ impl NativeEditorFrameThemeStyles {
 
     fn style_for_key(&self, key: &str) -> Style {
         match key {
+            "ui.text" => self.text,
             "ui.cursor" => self.cursor,
             "ui.cursor.primary" => self.cursor_primary,
             "ui.cursor.primary.insert" => self.cursor_primary_insert,
@@ -178,11 +174,10 @@ pub struct NativeEditorFramePaintStyleParams {
 pub fn native_editor_frame_paint_style(
     params: NativeEditorFramePaintStyleParams,
 ) -> NativeEditorFramePaintStyle {
-    let default_text_style = Style {
-        fg: gpui_hsla_to_helix_color(params.palette.fg_color),
-        bg: gpui_hsla_to_helix_color(params.palette.bg_color),
-        ..Default::default()
-    };
+    let mut default_text_style = params.theme_styles.text;
+    default_text_style.fg = default_text_style
+        .fg
+        .or_else(|| gpui_hsla_to_helix_color(params.palette.fg_color));
     let cursor_style = cursor_style_for_mode(params.editor_mode, |key| {
         params.theme_styles.style_for_key(key)
     });
@@ -264,8 +259,6 @@ pub fn native_editor_frame_paint_style(
         cursorcolumn_primary_color,
         cursorcolumn_secondary_color,
         frameline_color,
-        selection_primary: params.palette.selection_primary,
-        selection_secondary: params.palette.selection_secondary,
         gutter_color,
         gutter_selected_color,
         diagnostic_highlight_base: params.palette.diagnostic_highlight_base,
@@ -369,8 +362,6 @@ struct UnwrappedDocumentFramePaintParams<'a> {
     pub cursorline_secondary_color: Option<Hsla>,
     pub is_focused: bool,
     pub element_focused: bool,
-    pub selection_primary: Hsla,
-    pub selection_secondary: Hsla,
     pub diagnostic_theme: &'a Theme,
     pub diagnostic_icon_colors: DiagnosticSeverityIconColors,
     pub gutter_bg: Option<Hsla>,
@@ -390,8 +381,6 @@ struct SoftWrapDocumentFramePaintParams<'a> {
     pub cursorline_color: Option<Hsla>,
     pub cursorline_secondary_color: Option<Hsla>,
     pub is_focused: bool,
-    pub selection_primary: Hsla,
-    pub selection_secondary: Hsla,
     pub diagnostic_theme: &'a Theme,
     pub diagnostic_icon_colors: DiagnosticSeverityIconColors,
     pub gutter_bg: Option<Hsla>,
@@ -823,8 +812,6 @@ pub fn paint_native_editor_frame(
                 .flatten(),
             is_focused: plan.is_focused,
             element_focused: params.element_focused,
-            selection_primary: plan.style.selection_primary,
-            selection_secondary: plan.style.selection_secondary,
             diagnostic_theme: params.diagnostic_theme,
             diagnostic_icon_colors: plan.style.diagnostic_icon_colors,
             gutter_bg: plan.style.gutter_bg,
@@ -924,8 +911,6 @@ pub fn paint_document_frame(
                 cursorline_color: params.cursorline_color,
                 cursorline_secondary_color: params.cursorline_secondary_color,
                 is_focused: params.is_focused,
-                selection_primary: params.selection_primary,
-                selection_secondary: params.selection_secondary,
                 diagnostic_theme: params.diagnostic_theme,
                 diagnostic_icon_colors: params.diagnostic_icon_colors,
                 gutter_bg: params.gutter_bg,
@@ -951,8 +936,6 @@ pub fn paint_document_frame(
             cursorline_secondary_color: params.cursorline_secondary_color,
             is_focused: params.is_focused,
             element_focused: params.element_focused,
-            selection_primary: params.selection_primary,
-            selection_secondary: params.selection_secondary,
             diagnostic_theme: params.diagnostic_theme,
             diagnostic_icon_colors: params.diagnostic_icon_colors,
             gutter_bg: params.gutter_bg,
@@ -1013,11 +996,6 @@ fn paint_soft_wrap_document_frame(
                 viewport_width: params.bounds.size.width,
                 line_height: params.layout.line_height,
                 cursorline_color: params.cursorline_color,
-                background_style: EditorLineBackgroundStyle {
-                    only_selection_backgrounds: line_plan.is_cursor_visual_line,
-                    selection_primary: params.selection_primary,
-                    selection_secondary: params.selection_secondary,
-                },
             },
         ) {
             Ok(Some(layout)) => {
@@ -1151,11 +1129,6 @@ fn paint_unwrapped_document_frame(
                 viewport_width: params.bounds.size.width,
                 line_height: params.layout.line_height,
                 cursorline_color: params.cursorline_color,
-                background_style: EditorLineBackgroundStyle {
-                    only_selection_backgrounds: unwrapped_plan.is_cursor_line,
-                    selection_primary: params.selection_primary,
-                    selection_secondary: params.selection_secondary,
-                },
             },
         ) {
             Ok(layout) => layout,
@@ -1527,8 +1500,6 @@ mod tests {
     async fn native_frame_paint_style_resolves_theme_styles_and_fallbacks() {
         let fallback_gutter_color = helix_color_to_hsla(Color::Rgb(80, 90, 100)).unwrap();
         let fallback_ruler_color = helix_color_to_hsla(Color::Rgb(110, 120, 130)).unwrap();
-        let selection_primary = helix_color_to_hsla(Color::Rgb(140, 150, 160)).unwrap();
-        let selection_secondary = helix_color_to_hsla(Color::Rgb(170, 180, 190)).unwrap();
         let diagnostic_highlight_base = helix_color_to_hsla(Color::Rgb(200, 210, 220)).unwrap();
         let diagnostic_icon_colors = test_diagnostic_icon_colors();
 
@@ -1549,8 +1520,6 @@ mod tests {
             palette: NativeEditorFramePalette {
                 fg_color: black(),
                 bg_color: white(),
-                selection_primary,
-                selection_secondary,
                 fallback_gutter_color,
                 diagnostic_highlight_base,
                 diagnostic_icon_colors,
@@ -1565,10 +1534,7 @@ mod tests {
             style.default_text_style.fg,
             gpui_hsla_to_helix_color(black())
         );
-        assert_eq!(
-            style.default_text_style.bg,
-            gpui_hsla_to_helix_color(white())
-        );
+        assert_eq!(style.default_text_style.bg, None);
         assert_eq!(style.cursor_style.bg, Some(Color::Rgb(1, 2, 3)));
         assert!(style.cursor_style.add_modifier.contains(Modifier::BOLD));
         assert_eq!(
@@ -1605,8 +1571,6 @@ mod tests {
         );
         assert_eq!(style.gutter_selected_color, fallback_gutter_color);
         assert_eq!(style.gutter_bg, helix_color_to_hsla(Color::Rgb(16, 17, 18)));
-        assert_eq!(style.selection_primary, selection_primary);
-        assert_eq!(style.selection_secondary, selection_secondary);
         assert_eq!(style.diagnostic_highlight_base, diagnostic_highlight_base);
         assert_eq!(style.diagnostic_icon_colors, diagnostic_icon_colors);
         assert_eq!(style.run_button_color, fallback_gutter_color);
@@ -1616,8 +1580,6 @@ mod tests {
     async fn native_frame_paint_style_falls_back_for_indent_guide_color() {
         let fallback_gutter_color = helix_color_to_hsla(Color::Rgb(80, 90, 100)).unwrap();
         let fallback_ruler_color = helix_color_to_hsla(Color::Rgb(110, 120, 130)).unwrap();
-        let selection_primary = helix_color_to_hsla(Color::Rgb(140, 150, 160)).unwrap();
-        let selection_secondary = helix_color_to_hsla(Color::Rgb(170, 180, 190)).unwrap();
         let diagnostic_highlight_base = helix_color_to_hsla(Color::Rgb(200, 210, 220)).unwrap();
         let diagnostic_icon_colors = test_diagnostic_icon_colors();
 
@@ -1630,8 +1592,6 @@ mod tests {
             palette: NativeEditorFramePalette {
                 fg_color: black(),
                 bg_color: white(),
-                selection_primary,
-                selection_secondary,
                 fallback_gutter_color,
                 diagnostic_highlight_base,
                 diagnostic_icon_colors,
@@ -1650,14 +1610,33 @@ mod tests {
         NativeEditorFramePalette {
             fg_color: black(),
             bg_color: white(),
-            selection_primary: black(),
-            selection_secondary: white(),
             fallback_gutter_color: black(),
             diagnostic_highlight_base: black(),
             diagnostic_icon_colors: test_diagnostic_icon_colors(),
             fallback_ruler_color: black(),
             run_button_color: black(),
         }
+    }
+
+    #[test]
+    fn native_frame_paint_style_preserves_explicit_text_background() {
+        let text_background = Color::Rgb(21, 22, 23);
+        let theme_styles = NativeEditorFrameThemeStyles {
+            text: Style::default().bg(text_background),
+            ..Default::default()
+        };
+
+        let style = native_editor_frame_paint_style(NativeEditorFramePaintStyleParams {
+            editor_mode: Mode::Normal,
+            theme_styles,
+            palette: paint_palette(),
+        });
+
+        assert_eq!(style.default_text_style.bg, Some(text_background));
+        assert_eq!(
+            style.default_text_style.fg,
+            gpui_hsla_to_helix_color(black())
+        );
     }
 
     fn paint_style() -> NativeEditorFramePaintStyle {
@@ -1671,8 +1650,6 @@ mod tests {
             cursorcolumn_primary_color: Some(black()),
             cursorcolumn_secondary_color: Some(white()),
             frameline_color: Some(black()),
-            selection_primary: black(),
-            selection_secondary: white(),
             gutter_color: black(),
             gutter_selected_color: white(),
             diagnostic_highlight_base: black(),
