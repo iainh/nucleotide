@@ -102,55 +102,71 @@ impl FileIcon {
         self
     }
 
-    /// Get the appropriate SVG for this file type
-    fn get_svg(&self) -> Svg {
+    fn icon_path(&self) -> &'static str {
         if self.is_directory {
             if self.is_expanded {
-                svg().path("icons/folder-open.svg")
+                "icons/folder-open.svg"
             } else {
-                svg().path("icons/folder.svg")
+                "icons/folder.svg"
             }
         } else {
             match self.extension.as_deref() {
-                Some("rs") => svg().path("icons/file-code-2.svg"),
-                Some("js" | "ts" | "jsx" | "tsx") => svg().path("icons/file-code-2.svg"),
-                Some("py") => svg().path("icons/file-code-2.svg"),
-                Some("go") => svg().path("icons/file-code-2.svg"),
-                Some("java" | "kt") => svg().path("icons/file-code-2.svg"),
-                Some("cpp" | "cc" | "cxx" | "c" | "h" | "hpp") => {
-                    svg().path("icons/file-code-2.svg")
-                }
-                Some("cs") => svg().path("icons/file-code-2.svg"),
-                Some("php") => svg().path("icons/file-code-2.svg"),
-                Some("rb") => svg().path("icons/file-code-2.svg"),
-                Some("swift") => svg().path("icons/file-code-2.svg"),
-                Some("json") => svg().path("icons/file-json.svg"),
-                Some("yaml" | "yml") => svg().path("icons/braces.svg"),
-                Some("xml" | "html" | "htm") => svg().path("icons/braces.svg"),
-                Some("md" | "markdown") => svg().path("icons/file-text.svg"),
-                Some("txt") => svg().path("icons/file-text.svg"),
-                Some("doc" | "docx" | "pdf") => svg().path("icons/file-text.svg"),
-                Some("toml") => svg().path("icons/settings.svg"),
-                Some("ini" | "conf" | "config") => svg().path("icons/settings.svg"),
-                Some("env") => svg().path("icons/settings.svg"),
-                Some("png" | "jpg" | "jpeg" | "gif" | "bmp" | "svg" | "ico" | "webp") => {
-                    svg().path("icons/file-image.svg")
-                }
-                Some("zip" | "tar" | "gz" | "rar" | "7z" | "bz2" | "xz") => {
-                    svg().path("icons/file-archive.svg")
-                }
+                Some("c") => "icons/file-c.svg",
+                Some("cs") => "icons/file-c-sharp.svg",
+                Some("cpp" | "cc" | "cxx") => "icons/file-cpp.svg",
+                Some("css") => "icons/file-css.svg",
+                Some("csv") => "icons/file-csv.svg",
+                Some("doc" | "docx") => "icons/file-doc.svg",
+                Some("html" | "htm") => "icons/file-html.svg",
+                Some("ini") => "icons/file-ini.svg",
+                Some("jpg" | "jpeg") => "icons/file-jpg.svg",
+                Some("js") => "icons/file-js.svg",
+                Some("jsx") => "icons/file-jsx.svg",
+                Some("md" | "markdown") => "icons/file-md.svg",
+                Some("pdf") => "icons/file-pdf.svg",
+                Some("png") => "icons/file-png.svg",
+                Some("ppt" | "pptx") => "icons/file-ppt.svg",
+                Some("py") => "icons/file-py.svg",
+                Some("rs") => "icons/file-rs.svg",
+                Some("sql") => "icons/file-sql.svg",
+                Some("svg") => "icons/file-svg.svg",
+                Some("ts") => "icons/file-ts.svg",
+                Some("tsx") => "icons/file-tsx.svg",
+                Some("txt") => "icons/file-txt.svg",
+                Some("vue") => "icons/file-vue.svg",
+                Some("xls" | "xlsx") => "icons/file-xls.svg",
+                Some("zip") => "icons/file-zip.svg",
+                Some("json") => "icons/file-json.svg",
+                Some("gif" | "bmp" | "ico" | "webp") => "icons/file-image.svg",
+                Some("tar" | "gz" | "rar" | "7z" | "bz2" | "xz") => "icons/file-archive.svg",
                 Some("sh" | "bash" | "zsh" | "fish" | "ps1" | "bat" | "cmd") => {
-                    svg().path("icons/file-terminal.svg")
+                    "icons/file-terminal.svg"
                 }
-                Some("lock") => svg().path("icons/file-text.svg"), // Lock files are text-like documents
-                Some("git" | "gitignore" | "gitattributes") => svg().path("icons/git-branch.svg"),
-                Some("link") => svg().path("icons/link.svg"),
-                Some("link-broken") => svg().path("icons/link-broken.svg"),
-                Some("scratch") => svg().path("icons/file-question.svg"), // Special case for scratch buffers
-                None => svg().path("icons/file-text.svg"), // Extensionless files get document icon
-                _ => svg().path("icons/file-text.svg"), // Generic document icon for any unmatched file
+                Some("lock") => "icons/file-lock.svg",
+                Some("git" | "gitignore" | "gitattributes") => "icons/git-branch.svg",
+                Some("link") => "icons/link.svg",
+                Some("link-broken") => "icons/link-broken.svg",
+                Some("scratch") => "icons/file-question.svg",
+                Some(
+                    "astro" | "cjs" | "clj" | "cljs" | "cljc" | "cmake" | "coffee" | "conf"
+                    | "config" | "dart" | "env" | "ex" | "exs" | "fs" | "fsi" | "fsx" | "gleam"
+                    | "go" | "gql" | "graphql" | "groovy" | "h" | "hh" | "hpp" | "hs" | "hxx"
+                    | "java" | "jl" | "jsonc" | "kt" | "kts" | "lua" | "m" | "mm" | "nix" | "php"
+                    | "pl" | "pm" | "proto" | "r" | "rb" | "rkt" | "scala" | "scm" | "sol"
+                    | "swift" | "tf" | "tfvars" | "toml" | "vala" | "v" | "vb" | "wasm" | "wgsl"
+                    | "xml" | "yaml" | "yml" | "zig",
+                ) => "icons/file-code.svg",
+                Some("adoc" | "asc" | "log" | "nfo" | "org" | "rst" | "rtf" | "tex" | "text") => {
+                    "icons/file-text.svg"
+                }
+                None | Some(_) => "icons/file.svg",
             }
         }
+    }
+
+    /// Get the appropriate SVG for this file type.
+    fn get_svg(&self) -> Svg {
+        svg().path(self.icon_path())
     }
 }
 
@@ -165,5 +181,90 @@ impl IntoElement for FileIcon {
         }
 
         svg
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn maps_every_phosphor_extension_icon() {
+        let mappings = [
+            ("c", "file-c"),
+            ("cs", "file-c-sharp"),
+            ("cpp", "file-cpp"),
+            ("css", "file-css"),
+            ("csv", "file-csv"),
+            ("doc", "file-doc"),
+            ("html", "file-html"),
+            ("ini", "file-ini"),
+            ("jpg", "file-jpg"),
+            ("js", "file-js"),
+            ("jsx", "file-jsx"),
+            ("md", "file-md"),
+            ("pdf", "file-pdf"),
+            ("png", "file-png"),
+            ("ppt", "file-ppt"),
+            ("py", "file-py"),
+            ("rs", "file-rs"),
+            ("sql", "file-sql"),
+            ("svg", "file-svg"),
+            ("ts", "file-ts"),
+            ("tsx", "file-tsx"),
+            ("txt", "file-txt"),
+            ("vue", "file-vue"),
+            ("xls", "file-xls"),
+            ("zip", "file-zip"),
+        ];
+
+        for (extension, icon) in mappings {
+            assert_eq!(
+                FileIcon::from_extension(Some(extension)).icon_path(),
+                format!("icons/{icon}.svg")
+            );
+        }
+    }
+
+    #[test]
+    fn maps_extension_aliases_to_their_phosphor_icons() {
+        let mappings = [
+            ("cc", "file-cpp"),
+            ("cxx", "file-cpp"),
+            ("docx", "file-doc"),
+            ("htm", "file-html"),
+            ("jpeg", "file-jpg"),
+            ("markdown", "file-md"),
+            ("pptx", "file-ppt"),
+            ("xlsx", "file-xls"),
+        ];
+
+        for (extension, icon) in mappings {
+            assert_eq!(
+                FileIcon::from_extension(Some(extension)).icon_path(),
+                format!("icons/{icon}.svg")
+            );
+        }
+    }
+
+    #[test]
+    fn uses_semantic_fallbacks_for_unmapped_extensions() {
+        assert_eq!(
+            FileIcon::from_extension(Some("go")).icon_path(),
+            "icons/file-code.svg"
+        );
+        assert_eq!(
+            FileIcon::from_extension(Some("log")).icon_path(),
+            "icons/file-text.svg"
+        );
+        assert_eq!(
+            FileIcon::from_extension(Some("text")).icon_path(),
+            "icons/file-text.svg"
+        );
+        assert_eq!(
+            FileIcon::from_extension(Some("unknown")).icon_path(),
+            "icons/file.svg"
+        );
+        assert_eq!(FileIcon::from_extension(None).icon_path(), "icons/file.svg");
     }
 }

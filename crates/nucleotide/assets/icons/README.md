@@ -8,6 +8,10 @@ website](https://phosphoricons.com) for the icon catalog.
 Source version: Phosphor Icons core v2.1.1, commit
 `2b75f3ad12b420c9504ef05df8d2564a28f8500e`.
 
+Extension-specific file icons retain their canonical `file-<extension>.svg`
+names. Files without a dedicated extension icon use `file-code.svg` or
+`file-text.svg` when their type is known, and `file.svg` otherwise.
+
 ## License
 
 MIT License
