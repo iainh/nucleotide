@@ -1496,7 +1496,7 @@ impl FileTree {
     }
 
     /// Check if a file is ignored using the same patterns as the file picker.
-    fn is_ignored_file(&self, path: &Path) -> bool {
+    pub(crate) fn is_ignored_file(&self, path: &Path) -> bool {
         for component in path.components() {
             if let Component::Normal(name) = component
                 && let Some(name_str) = name.to_str()
@@ -2012,6 +2012,21 @@ mod tests {
 
         let mut tree = FileTree::new_for_backend(root.clone(), config, backend.identity());
         tree.load_with_backend(&backend).unwrap();
+
+        let entry = tree.entry_by_path(&ignored).expect("ignored entry");
+        assert!(entry.is_ignored);
+    }
+
+    #[test]
+    fn default_config_shows_local_ignored_entries() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path().to_path_buf();
+        let ignored = root.join("ignored.log");
+        fs::write(root.join(".gitignore"), "ignored.log\n").unwrap();
+        fs::write(&ignored, "ignored\n").unwrap();
+
+        let mut tree = FileTree::new(root, FileTreeConfig::default());
+        tree.load().unwrap();
 
         let entry = tree.entry_by_path(&ignored).expect("ignored entry");
         assert!(entry.is_ignored);

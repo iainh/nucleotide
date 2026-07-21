@@ -2266,6 +2266,7 @@ impl FileTreeView {
 
         entry.depth = parent_depth + 1;
         entry.is_visible = true;
+        entry.is_ignored = self.tree.is_ignored_file(path);
 
         // VCS status will be retrieved during rendering from centralized service
         entry.git_status = None;

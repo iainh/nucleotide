@@ -176,7 +176,7 @@ impl Default for FileTreeConfig {
     fn default() -> Self {
         Self {
             show_hidden: false,
-            show_ignored: false,
+            show_ignored: true,
             initial_depth: 3,
             watch_filesystem: true,
             flatten_empty_directories: true,
