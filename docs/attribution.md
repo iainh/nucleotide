@@ -22,12 +22,12 @@ Nucleotide is built on the shoulders of giants. This file acknowledges the proje
 - **License**: MPL-2.0
 - **Role**: The original GUI implementation that Nucleotide was forked from
 
-### Lucide Icons
-- **Project**: https://github.com/lucide-icons/lucide
-- **Website**: https://lucide.dev
-- **License**: ISC
-- **Role**: Provides the icon set used throughout the interface
-- **Maintainers**: Lucide Icons team
+### Phosphor Icons
+- **Project/Core**: https://github.com/phosphor-icons/core
+- **Website**: https://phosphoricons.com
+- **License**: MIT
+- **Role**: Provides the duotone icon set used throughout the interface
+- **Maintainers**: Phosphor Icons team
 
 ## Special Thanks
 

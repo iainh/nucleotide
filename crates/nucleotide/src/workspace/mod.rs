@@ -17946,7 +17946,7 @@ mod tests {
     }
 
     #[test]
-    fn statusbar_notifications_use_lucide_icons() {
+    fn statusbar_notifications_use_phosphor_icons() {
         assert_eq!(
             statusbar_notification_icon(StatusBarNotificationSeverity::Info),
             "icons/info.svg"
