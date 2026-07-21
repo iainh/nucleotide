@@ -4569,9 +4569,9 @@ checksum = "34b357333733e8260735ba5894eb928c02ecc69c78715f01a8019e7fa7f2db4c"
 
 [[package]]
 name = "libc"
-version = "0.2.186"
+version = "0.2.188"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
+checksum = "22053b6a34f84abc97f9129e61334f40174659a1b9bd18c970b83db6a9a6348b"
 
 [[package]]
 name = "libfuzzer-sys"
@@ -5113,7 +5113,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -5177,7 +5177,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-appearance"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "gpui",
  "windows-sys 0.61.2",
@@ -5185,7 +5185,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-core"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "gpui",
@@ -5204,7 +5204,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-editor"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "arc-swap",
  "criterion",
@@ -5236,7 +5236,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-events"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "helix-core",
  "helix-lsp",
@@ -5250,7 +5250,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-logging"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "dirs",
@@ -5265,7 +5265,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-lsp"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -5289,7 +5289,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-lsp-proxy"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -5301,7 +5301,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-process"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "libc",
  "tempfile",
@@ -5330,7 +5330,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-remote"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5355,7 +5355,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-terminal"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "libghostty-vt",
@@ -5365,7 +5365,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-terminal-panel"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "gpui",
  "nucleotide-events",
@@ -5375,7 +5375,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-terminal-view"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "gpui",
  "nucleotide-events",
@@ -5387,7 +5387,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-types"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "gpui",
  "helix-core",
@@ -5397,7 +5397,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-ui"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "gpui",
@@ -5436,7 +5436,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-workspace"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "async-trait",
  "futures",
@@ -8841,9 +8841,9 @@ checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
 
 [[package]]
 name = "value-bag"
-version = "1.13.0"
+version = "1.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5dd4ec1eb1d240636e354a30110a1dfcb37047169a4d9bd6d9d3469df574b5c4"
+checksum = "ef73bfbaf3216cb59c205d7176bee1194e0d84348979da31f4a71fefe3c2054e"
 dependencies = [
  "value-bag-serde1",
  "value-bag-sval2",
@@ -8851,9 +8851,9 @@ dependencies = [
 
 [[package]]
 name = "value-bag-serde1"
-version = "1.13.0"
+version = "1.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2a8e44fd7ce9cf838a1e2dad56d2d83f2b2435ae1df9cb3cac31e759e455e88d"
+checksum = "5b92170db3db8a6354f12a5b7f13a5453928433e08fc46aee51eedfa8f7a28a1"
 dependencies = [
  "erased-serde",
  "serde_core",
@@ -8862,9 +8862,9 @@ dependencies = [
 
 [[package]]
 name = "value-bag-sval2"
-version = "1.13.0"
+version = "1.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3f9f1705b87b798b06a8d7a51f44ed0626eee413991555e8edfd3562b35a130d"
+checksum = "0bf9832097ca044466ae3f1aa43a943d4e450b7c3b8cdf65363875df07da79a0"
 dependencies = [
  "sval",
  "sval_buffer",
