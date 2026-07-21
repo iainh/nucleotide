@@ -159,6 +159,7 @@ pub struct ProjectTreeRow {
     pub kind: ProjectTreeRowKind,
     pub is_expanded: bool,
     pub is_selected: bool,
+    pub is_ignored: bool,
     pub is_hidden: bool,
     pub is_search_match: bool,
     pub vcs_status: Option<VcsStatus>,
@@ -223,6 +224,7 @@ impl ProjectTreeRow {
             kind: ProjectTreeRowKind::from(&entry.kind),
             is_expanded: entry.is_expanded,
             is_selected,
+            is_ignored: entry.is_ignored,
             is_hidden: entry.is_hidden,
             is_search_match: entry.is_search_match,
             vcs_status: vcs_status.or(entry.git_status),
@@ -517,6 +519,8 @@ fn row_text_color(
             | VcsStatus::Renamed
             | VcsStatus::Clean => file_tree_tokens.item_text,
         }
+    } else if row.is_ignored {
+        file_tree_tokens.item_text_secondary
     } else if row.is_hidden {
         file_tree_tokens.item_text_hidden
     } else {
@@ -728,6 +732,7 @@ mod tests {
         entry.set_size = 5;
         entry.ancestor_paths =
             Arc::from([PathBuf::from("/workspace"), PathBuf::from("/workspace/src")]);
+        entry.is_ignored = true;
         entry.is_hidden = true;
         entry.git_status = Some(VcsStatus::Clean);
 
@@ -744,6 +749,7 @@ mod tests {
             [PathBuf::from("/workspace"), PathBuf::from("/workspace/src")]
         );
         assert!(row.is_selected);
+        assert!(row.is_ignored);
         assert!(row.is_hidden);
         assert_eq!(row.vcs_status, Some(VcsStatus::Modified));
         assert_eq!(
@@ -898,6 +904,31 @@ mod tests {
         assert_eq!(
             row_text_color(&deleted, &theme, file_tree_tokens),
             theme.tokens.editor.error
+        );
+    }
+
+    #[test]
+    fn row_text_color_fades_ignored_entries_unless_selected() {
+        let theme = Theme::from_tokens(nucleotide_ui::DesignTokens::dark());
+        let file_tree_tokens = theme.tokens.file_tree_tokens();
+        let mut entry = FileTreeEntry::new_file(
+            FileTreeEntryId(4),
+            PathBuf::from("/workspace/target.log"),
+            1,
+            None,
+        );
+        entry.is_ignored = true;
+
+        let ignored = ProjectTreeRow::from_entry(&entry, false, None);
+        assert_eq!(
+            row_text_color(&ignored, &theme, file_tree_tokens),
+            file_tree_tokens.item_text_secondary
+        );
+
+        let selected = ProjectTreeRow::from_entry(&entry, true, None);
+        assert_eq!(
+            row_text_color(&selected, &theme, file_tree_tokens),
+            file_tree_tokens.item_text_selected
         );
     }
 
