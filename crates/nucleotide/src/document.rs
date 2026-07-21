@@ -14,7 +14,9 @@ use nucleotide_types::scrollbar::SCROLLBAR_THICKNESS;
 use nucleotide_ui::ThemedContext as UIThemedContext;
 use nucleotide_ui::scrollbar::{Scrollbar, ScrollbarState};
 use nucleotide_ui::theme_manager::HelixThemedContext;
-use nucleotide_ui::{Button, ButtonSize, ButtonVariant, MarkdownStyle, Tooltipped, markdown};
+use nucleotide_ui::{
+    Button, ButtonSize, ButtonVariant, MarkdownStyle, Tooltipped, markdown_extended,
+};
 use nucleotide_workspace::{WorkspaceBackendHandle, WorkspaceIdentity};
 
 use crate::{Core, Input, InputEvent};
@@ -808,7 +810,7 @@ impl DocumentView {
             })
             .px(tokens.sizes.space_8)
             .py(tokens.sizes.space_8)
-            .child(markdown(snapshot.source.clone(), markdown_style));
+            .child(markdown_extended(snapshot.source.clone(), markdown_style));
 
         div()
             .id(SharedString::from(format!(
