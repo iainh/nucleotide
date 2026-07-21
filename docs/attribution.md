@@ -26,7 +26,7 @@ Nucleotide is built on the shoulders of giants. This file acknowledges the proje
 - **Project/Core**: https://github.com/phosphor-icons/core
 - **Website**: https://phosphoricons.com
 - **License**: MIT
-- **Role**: Provides the duotone icon set used throughout the interface
+- **Role**: Provides the regular and duotone icons used throughout the interface
 - **Maintainers**: Phosphor Icons team
 
 ## Special Thanks

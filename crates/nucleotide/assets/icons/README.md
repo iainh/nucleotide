@@ -1,8 +1,9 @@
 # Icons
 
 All UI assets in this directory are official [Phosphor Icons core](https://github.com/phosphor-icons/core)
-duotone icons. They are renamed locally where necessary to preserve the stable
-`icons/*.svg` paths used by existing call sites. See the [Phosphor Icons
+icons. Most use the duotone weight, while compact action icons use the regular
+weight for clarity. They are renamed locally where necessary to preserve the
+stable `icons/*.svg` paths used by existing call sites. See the [Phosphor Icons
 website](https://phosphoricons.com) for the icon catalog.
 
 Source version: Phosphor Icons core v2.1.1, commit
