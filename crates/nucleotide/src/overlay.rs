@@ -1169,6 +1169,7 @@ impl OverlayView {
                             let items_for_callback = items.clone();
 
                             view = view.with_preview(*show_preview);
+                            view = view.with_title(title.clone());
 
                             view = view.with_items(items);
 

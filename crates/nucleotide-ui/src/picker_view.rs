@@ -11,15 +11,16 @@ use crate::{InputSize, InputVariant, StateView, TextInput, TextInputEvent};
 use gpui::prelude::FluentBuilder;
 use gpui::{
     App, AppContext as _, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable, Hsla,
-    InteractiveElement, IntoElement, KeyBinding, ParentElement, Pixels, Render, Result,
-    SharedString, Size, Styled, Task, UniformListScrollHandle, div, px, svg, uniform_list,
+    InteractiveElement, IntoElement, KeyBinding, ListAlignment, ListOffset, ListState, MouseButton,
+    ParentElement, Pixels, Render, Result, SharedString, Size, StatefulInteractiveElement, Styled,
+    Task, UniformListScrollHandle, div, list, px, svg, uniform_list,
 };
 use gpui::{Context, ScrollStrategy, Window};
 use helix_view::DocumentId;
 use nucleo::Nucleo;
 use nucleotide_logging::warn;
 use nucleotide_types::VcsStatus;
-use std::{ops::Range, path::PathBuf, sync::Arc};
+use std::{collections::HashMap, ops::Range, path::PathBuf, sync::Arc};
 
 pub(crate) const PICKER_CONTEXT: &str = "Picker";
 
@@ -52,7 +53,11 @@ pub enum ColumnData {
         icon_path: String,
         path: String,
         line: usize,
+        column: usize,
         message: String,
+        source: Option<String>,
+        code: Option<String>,
+        tags: Vec<helix_core::diagnostic::DiagnosticTag>,
     },
 }
 
@@ -162,6 +167,16 @@ fn str_prefix_at_byte_limit(value: &str, max_bytes: usize) -> &str {
     &value[..boundary]
 }
 
+fn diagnostic_message_summary(message: &str) -> &str {
+    message.trim().lines().next().unwrap_or("")
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum DiagnosticDisplayRow {
+    FileHeader { path: String },
+    Diagnostic { filtered_index: usize },
+}
+
 pub struct PickerView {
     // Core picker state
     query: SharedString,
@@ -169,6 +184,10 @@ pub struct PickerView {
     items: Vec<PickerItem>,
     filtered_indices: Vec<u32>,
     selected_index: usize,
+    title: Option<SharedString>,
+    diagnostic_filter: Option<helix_core::diagnostic::Severity>,
+    diagnostic_display_rows: Vec<DiagnosticDisplayRow>,
+    diagnostic_list_state: ListState,
 
     // Fuzzy matcher
     matcher: Option<Nucleo<PickerItem>>,
@@ -340,6 +359,10 @@ impl PickerView {
             items: Vec::new(),
             filtered_indices: Vec::new(),
             selected_index: 0,
+            title: None,
+            diagnostic_filter: None,
+            diagnostic_display_rows: Vec::new(),
+            diagnostic_list_state: ListState::new(0, ListAlignment::Top, px(128.0)),
             matcher: None,
             focus_handle,
             list_scroll_handle: UniformListScrollHandle::new(),
@@ -381,6 +404,10 @@ impl PickerView {
             items: Vec::new(),
             filtered_indices: Vec::new(),
             selected_index: 0,
+            title: None,
+            diagnostic_filter: None,
+            diagnostic_display_rows: Vec::new(),
+            diagnostic_list_state: ListState::new(0, ListAlignment::Top, px(128.0)),
             matcher: None,
             focus_handle,
             list_scroll_handle: UniformListScrollHandle::new(),
@@ -492,6 +519,12 @@ impl PickerView {
         self.preview_content = None;
         self.preview_content_path = None;
         // VCS status will be fetched from global service as needed
+        self.rebuild_diagnostic_display_rows();
+        self
+    }
+
+    pub fn with_title(mut self, title: impl Into<SharedString>) -> Self {
+        self.title = Some(title.into());
         self
     }
 
@@ -552,29 +585,36 @@ impl PickerView {
         self.filter_items(cx);
         self.selected_index = 0;
         // Scroll to top when query changes
-        self.list_scroll_handle
-            .scroll_to_item(0, ScrollStrategy::Top);
+        self.scroll_to_first_item();
         self.load_preview_for_selected_item(cx);
         cx.notify();
     }
 
     fn filter_items(&mut self, _cx: &mut Context<Self>) {
-        if self.query.is_empty() {
-            // Reasonable assumption: pickers won't have more than u32::MAX items
-            let item_count = u32::try_from(self.items.len()).unwrap_or(u32::MAX);
-            self.filtered_indices = (0..item_count).collect();
-        } else {
-            let query = self.query.to_string();
-            let mut scored_items = self
-                .items
-                .iter()
-                .enumerate()
-                .filter_map(|(idx, item)| {
+        let query = self.query.to_string();
+        let mut scored_items = self
+            .items
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| {
+                self.diagnostic_filter.is_none_or(|filter| {
+                    matches!(
+                        &item.columns,
+                        Some(ColumnData::Diagnostic { severity, .. }) if *severity == filter
+                    )
+                })
+            })
+            .filter_map(|(idx, item)| {
+                if query.is_empty() {
+                    Some((idx, usize::MAX))
+                } else {
                     let search_text = Self::item_search_text(item);
                     Self::fuzzy_score(&query, &search_text).map(|score| (idx, score))
-                })
-                .collect::<Vec<_>>();
+                }
+            })
+            .collect::<Vec<_>>();
 
+        if !query.is_empty() {
             scored_items.sort_by(|(a_idx, a_score), (b_idx, b_score)| {
                 b_score.cmp(a_score).then_with(|| {
                     self.items[*a_idx]
@@ -583,11 +623,113 @@ impl PickerView {
                         .cmp(self.items[*b_idx].label.as_ref())
                 })
             });
+        }
 
-            self.filtered_indices = scored_items
-                .into_iter()
-                .filter_map(|(idx, _)| u32::try_from(idx).ok())
-                .collect();
+        self.filtered_indices = scored_items
+            .into_iter()
+            .filter_map(|(idx, _)| u32::try_from(idx).ok())
+            .collect();
+
+        if self.is_diagnostic_picker() {
+            self.group_diagnostics_by_path();
+        }
+        self.rebuild_diagnostic_display_rows();
+    }
+
+    fn group_diagnostics_by_path(&mut self) {
+        let mut group_indices = HashMap::<String, usize>::new();
+        let mut groups = Vec::<Vec<u32>>::new();
+
+        for index in self.filtered_indices.iter().copied() {
+            let Some(ColumnData::Diagnostic { path, .. }) = self
+                .items
+                .get(index as usize)
+                .and_then(|item| item.columns.as_ref())
+            else {
+                continue;
+            };
+            let group_index = match group_indices.entry(path.clone()) {
+                std::collections::hash_map::Entry::Occupied(entry) => *entry.get(),
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    let group_index = groups.len();
+                    entry.insert(group_index);
+                    groups.push(Vec::new());
+                    group_index
+                }
+            };
+            groups[group_index].push(index);
+        }
+
+        self.filtered_indices = groups.into_iter().flatten().collect();
+    }
+
+    fn rebuild_diagnostic_display_rows(&mut self) {
+        self.diagnostic_display_rows.clear();
+        if !self.is_diagnostic_picker() {
+            self.diagnostic_list_state.reset(0);
+            return;
+        }
+
+        let mut previous_path: Option<&str> = None;
+        for (filtered_index, item_index) in self.filtered_indices.iter().copied().enumerate() {
+            let Some(ColumnData::Diagnostic { path, .. }) = self
+                .items
+                .get(item_index as usize)
+                .and_then(|item| item.columns.as_ref())
+            else {
+                continue;
+            };
+
+            if previous_path != Some(path.as_str()) {
+                self.diagnostic_display_rows
+                    .push(DiagnosticDisplayRow::FileHeader { path: path.clone() });
+                previous_path = Some(path);
+            }
+            self.diagnostic_display_rows
+                .push(DiagnosticDisplayRow::Diagnostic { filtered_index });
+        }
+        self.diagnostic_list_state
+            .reset(self.diagnostic_display_rows.len());
+    }
+
+    fn selected_diagnostic_display_index(&self) -> Option<usize> {
+        self.diagnostic_display_rows
+            .iter()
+            .position(|row| matches!(row, DiagnosticDisplayRow::Diagnostic { filtered_index } if *filtered_index == self.selected_index))
+    }
+
+    fn scroll_to_selected_item(&self) {
+        if self.is_diagnostic_picker() {
+            if let Some(display_index) = self.selected_diagnostic_display_index() {
+                if self
+                    .diagnostic_list_state
+                    .bounds_for_item(display_index)
+                    .is_some()
+                {
+                    self.diagnostic_list_state
+                        .scroll_to_reveal_item(display_index);
+                } else {
+                    self.diagnostic_list_state.scroll_to(ListOffset {
+                        item_ix: display_index,
+                        offset_in_item: px(0.0),
+                    });
+                }
+            }
+        } else {
+            self.list_scroll_handle
+                .scroll_to_item(self.selected_index, ScrollStrategy::Top);
+        }
+    }
+
+    fn scroll_to_first_item(&self) {
+        if self.is_diagnostic_picker() {
+            self.diagnostic_list_state.scroll_to(ListOffset {
+                item_ix: 0,
+                offset_in_item: px(0.0),
+            });
+        } else {
+            self.list_scroll_handle
+                .scroll_to_item(0, ScrollStrategy::Top);
         }
     }
 
@@ -613,7 +755,11 @@ impl PickerView {
                     severity,
                     path,
                     line,
+                    column,
                     message,
+                    source,
+                    code,
+                    tags,
                     ..
                 } => {
                     text.push(' ');
@@ -622,8 +768,22 @@ impl PickerView {
                     text.push_str(path);
                     text.push(':');
                     text.push_str(&line.to_string());
+                    text.push(':');
+                    text.push_str(&column.to_string());
                     text.push(' ');
                     text.push_str(message);
+                    if let Some(source) = source {
+                        text.push(' ');
+                        text.push_str(source);
+                    }
+                    if let Some(code) = code {
+                        text.push(' ');
+                        text.push_str(code);
+                    }
+                    for tag in tags {
+                        text.push(' ');
+                        text.push_str(Self::diagnostic_tag_label(tag));
+                    }
                 }
             }
         }
@@ -652,9 +812,119 @@ impl PickerView {
         }
     }
 
+    fn diagnostic_tag_label(tag: &helix_core::diagnostic::DiagnosticTag) -> &'static str {
+        match tag {
+            helix_core::diagnostic::DiagnosticTag::Unnecessary => "Unnecessary",
+            helix_core::diagnostic::DiagnosticTag::Deprecated => "Deprecated",
+        }
+    }
+
+    fn is_diagnostic_picker(&self) -> bool {
+        !self.items.is_empty()
+            && self
+                .items
+                .iter()
+                .all(|item| matches!(item.columns, Some(ColumnData::Diagnostic { .. })))
+    }
+
+    fn diagnostic_count(&self, severity: Option<helix_core::diagnostic::Severity>) -> usize {
+        self.items
+            .iter()
+            .filter(|item| {
+                matches!(
+                    &item.columns,
+                    Some(ColumnData::Diagnostic { severity: item_severity, .. })
+                        if severity.is_none_or(|severity| severity == *item_severity)
+                )
+            })
+            .count()
+    }
+
+    fn set_diagnostic_filter(
+        &mut self,
+        severity: Option<helix_core::diagnostic::Severity>,
+        cx: &mut Context<Self>,
+    ) {
+        self.diagnostic_filter = severity;
+        self.filter_items(cx);
+        self.selected_index = 0;
+        self.scroll_to_first_item();
+        self.load_preview_for_selected_item(cx);
+        cx.notify();
+    }
+
+    fn diagnostic_filter_chip(
+        &self,
+        severity: Option<helix_core::diagnostic::Severity>,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let selected = self.diagnostic_filter == severity;
+        let count = self.diagnostic_count(severity);
+        let tokens = cx.global::<crate::Theme>().tokens;
+        let border = self.style.modal_style.border;
+        let prompt_text = self.style.modal_style.prompt_text;
+        let selected_background = self.style.modal_style.selected_background;
+
+        div()
+            .id(match severity {
+                None => "diagnostic-filter-all",
+                Some(helix_core::diagnostic::Severity::Error) => "diagnostic-filter-error",
+                Some(helix_core::diagnostic::Severity::Warning) => "diagnostic-filter-warning",
+                Some(helix_core::diagnostic::Severity::Info) => "diagnostic-filter-info",
+                Some(helix_core::diagnostic::Severity::Hint) => "diagnostic-filter-hint",
+            })
+            .debug_selector(move || match severity {
+                None => "diagnostic-filter-all".into(),
+                Some(helix_core::diagnostic::Severity::Error) => "diagnostic-filter-error".into(),
+                Some(helix_core::diagnostic::Severity::Warning) => {
+                    "diagnostic-filter-warning".into()
+                }
+                Some(helix_core::diagnostic::Severity::Info) => "diagnostic-filter-info".into(),
+                Some(helix_core::diagnostic::Severity::Hint) => "diagnostic-filter-hint".into(),
+            })
+            .h_7()
+            .px_2()
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .gap_1()
+            .rounded_sm()
+            .border_1()
+            .border_color(border)
+            .cursor_pointer()
+            .text_size(tokens.sizes.text_sm)
+            .text_color(prompt_text)
+            .when(selected, |this| {
+                this.bg(selected_background)
+                    .text_color(self.style.modal_style.selected_text)
+            })
+            .when_some(severity, |this, severity| {
+                this.child(
+                    svg()
+                        .path(match severity {
+                            helix_core::diagnostic::Severity::Error => "icons/circle-x.svg",
+                            helix_core::diagnostic::Severity::Warning => "icons/triangle-alert.svg",
+                            helix_core::diagnostic::Severity::Info => "icons/info.svg",
+                            helix_core::diagnostic::Severity::Hint => "icons/lightbulb.svg",
+                        })
+                        .size(px(13.0))
+                        .text_color(Self::diagnostic_severity_color(&tokens, severity)),
+                )
+            })
+            .when(severity.is_none(), |this| this.child("All"))
+            .child(count.to_string())
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _event, _window, cx| {
+                    this.set_diagnostic_filter(severity, cx);
+                    cx.stop_propagation();
+                }),
+            )
+    }
+
     fn row_height_for_item(item: &PickerItem) -> Pixels {
         match &item.columns {
-            Some(ColumnData::Diagnostic { .. }) => px(44.0),
+            Some(ColumnData::Diagnostic { .. }) => px(52.0),
             _ => px(32.0),
         }
     }
@@ -714,9 +984,7 @@ impl PickerView {
 
         self.selected_index = new_index;
 
-        // Scroll to keep selection visible - GPUI handles this automatically!
-        self.list_scroll_handle
-            .scroll_to_item(self.selected_index, ScrollStrategy::Top);
+        self.scroll_to_selected_item();
 
         // Load preview for newly selected item
         self.load_preview_for_selected_item(cx);
@@ -769,28 +1037,31 @@ impl PickerView {
         let show_preview = self.show_preview && window_width > min_width_for_preview;
 
         // Calculate fixed dimensions to prevent size changes
-        let total_width = px(800.0); // Fixed width
+        let total_width = if self.is_diagnostic_picker() {
+            px(900.0).min(window_size.width - px(32.0))
+        } else {
+            px(800.0)
+        };
 
         // Calculate height based on items with max 60% of window
-        let item_height = if self
-            .items
-            .iter()
-            .any(|item| matches!(&item.columns, Some(ColumnData::Diagnostic { .. })))
-        {
-            px(44.0)
+        let items_height = if self.is_diagnostic_picker() {
+            self.diagnostic_display_rows
+                .iter()
+                .take(24)
+                .map(|row| match row {
+                    DiagnosticDisplayRow::FileHeader { .. } => px(28.0),
+                    DiagnosticDisplayRow::Diagnostic { .. } => px(52.0),
+                })
+                .fold(px(0.0), |height, row_height| height + row_height)
         } else {
-            px(32.0)
+            let item_count = if self.filtered_indices.is_empty() && self.query.is_empty() {
+                self.items.len()
+            } else {
+                self.filtered_indices.len()
+            };
+            px(32.0) * item_count.min(20) as f32
         };
         let header_footer_height = px(80.0); // Space for search bar, footer, etc.
-
-        // Use filtered items if available, otherwise use all items
-        let item_count = if self.filtered_indices.is_empty() && self.query.is_empty() {
-            self.items.len()
-        } else {
-            self.filtered_indices.len()
-        };
-
-        let items_height = item_height * item_count.min(20) as f32; // Cap at 20 visible items
         let content_height = items_height + header_footer_height;
 
         // Limit to 60% of window height
@@ -1122,6 +1393,165 @@ impl Drop for PickerView {
 impl FocusableModal for PickerView {}
 
 impl PickerView {
+    fn render_diagnostic_file_header(
+        &self,
+        path: String,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        div()
+            .debug_selector(|| "diagnostic-file-header".into())
+            .h(px(28.0))
+            .w_full()
+            .px_3()
+            .flex()
+            .items_center()
+            .flex_shrink_0()
+            .border_b_1()
+            .border_color(self.style.modal_style.border)
+            .truncate()
+            .font_family(Self::ui_font_family(cx))
+            .text_size(cx.global::<crate::Theme>().tokens.sizes.text_xs)
+            .text_color(self.style.modal_style.prompt_text)
+            .child(path)
+            .into_any_element()
+    }
+
+    fn render_diagnostic_item(
+        &self,
+        item: &PickerItem,
+        filtered_index: usize,
+        is_selected: bool,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let Some(ColumnData::Diagnostic {
+            severity,
+            icon_path,
+            line,
+            column,
+            message,
+            source,
+            code,
+            tags,
+            ..
+        }) = item.columns.as_ref()
+        else {
+            return div().into_any_element();
+        };
+
+        let tokens = cx.global::<crate::Theme>().tokens;
+        let icon_color = Self::diagnostic_severity_color(&tokens, *severity);
+        let primary_text = if is_selected {
+            self.style.modal_style.selected_text
+        } else {
+            self.style.modal_style.text
+        };
+        let secondary_text = self.style.modal_style.prompt_text;
+        let message_summary = diagnostic_message_summary(message).to_string();
+        let mut metadata = format!("{line}:{column}");
+        if let Some(source) = source {
+            metadata.push_str("  ");
+            metadata.push_str(source);
+        }
+        if let Some(code) = code {
+            metadata.push_str("  ");
+            metadata.push_str(code);
+        }
+
+        div()
+            .id(("diagnostic-picker-item", filtered_index))
+            .debug_selector(move || format!("diagnostic-row-{filtered_index}"))
+            .relative()
+            .h(px(52.0))
+            .w_full()
+            .flex()
+            .items_center()
+            .cursor_pointer()
+            .when(is_selected, |this| {
+                this.bg(self.style.modal_style.selected_background)
+            })
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |picker, _event, _window, cx| {
+                    picker.selected_index = filtered_index;
+                    picker.confirm_selection(cx);
+                    cx.stop_propagation();
+                }),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .top_0()
+                    .bottom_0()
+                    .w(px(3.0))
+                    .bg(icon_color)
+                    .debug_selector(move || format!("diagnostic-rail-{filtered_index}")),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .h_full()
+                    .pl_3()
+                    .pr_3()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .child(
+                        div()
+                            .w(px(20.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .flex_shrink_0()
+                            .child(
+                                svg()
+                                    .path(icon_path.clone())
+                                    .size(px(16.0))
+                                    .text_color(icon_color),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .font_family(Self::ui_font_family(cx))
+                            .child(
+                                div()
+                                    .w_full()
+                                    .truncate()
+                                    .text_size(tokens.sizes.text_sm)
+                                    .text_color(primary_text)
+                                    .child(message_summary),
+                            )
+                            .child(
+                                div()
+                                    .w_full()
+                                    .truncate()
+                                    .text_size(tokens.sizes.text_xs)
+                                    .text_color(secondary_text)
+                                    .child(metadata),
+                            ),
+                    )
+                    .children(tags.iter().map(|tag| {
+                        div()
+                            .px_2()
+                            .py_0p5()
+                            .flex_shrink_0()
+                            .rounded_sm()
+                            .border_1()
+                            .border_color(self.style.modal_style.border)
+                            .text_size(tokens.sizes.text_xs)
+                            .text_color(secondary_text)
+                            .child(Self::diagnostic_tag_label(tag))
+                    })),
+            )
+            .into_any_element()
+    }
+
     fn render_picker_content(
         &mut self,
         window: &mut Window,
@@ -1161,6 +1591,7 @@ impl PickerView {
         let preview_width = dimensions.preview_width;
         let show_preview = dimensions.show_preview;
         let truncate_row_text = Self::should_truncate_row_text(show_preview);
+        let is_diagnostic_picker = self.is_diagnostic_picker();
         let ui_theme = cx.global::<crate::Theme>();
 
         div()
@@ -1223,38 +1654,91 @@ impl PickerView {
                     this.toggle_preview(cx);
                 },
             ))
-            .child(
-                // Search input with file count display
-                div()
-                    .flex()
-                    .items_center()
-                    .px_3()
-                    .h_10() // Fixed height for search input
-                    .border_b_1()
-                    .border_color(self.style.modal_style.border)
-                    .child(
-                        div()
-                            .flex_1()
-                            .flex()
-                            .items_center()
-                            .child(self.query_input.clone()),
-                    )
-                    .child(
-                        // File count display
-                        div()
-                                    .text_size(cx.global::<crate::Theme>().tokens.sizes.text_sm)
-                            .text_color(self.style.modal_style.prompt_text)
-                            .child(if self.filtered_indices.is_empty() {
-                                "0/0".to_string()
-                            } else {
-                                format!(
-                                    "{}/{}",
-                                    self.selected_index + 1,
-                                    self.filtered_indices.len()
-                                )
-                            }),
-                    ),
-            )
+            .when(is_diagnostic_picker, |this| {
+                this.child(
+                    div()
+                        .h_9()
+                        .px_3()
+                        .flex()
+                        .items_center()
+                        .border_b_1()
+                        .border_color(self.style.modal_style.border)
+                        .text_color(self.style.modal_style.text)
+                        .child(
+                            self.title
+                                .clone()
+                                .unwrap_or_else(|| "Diagnostics".into()),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .px_3()
+                        .h_11()
+                        .border_b_1()
+                        .border_color(self.style.modal_style.border)
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.0))
+                                .flex()
+                                .items_center()
+                                .child(self.query_input.clone()),
+                        )
+                        .child(self.diagnostic_filter_chip(None, cx))
+                        .child(self.diagnostic_filter_chip(
+                            Some(helix_core::diagnostic::Severity::Error),
+                            cx,
+                        ))
+                        .child(self.diagnostic_filter_chip(
+                            Some(helix_core::diagnostic::Severity::Warning),
+                            cx,
+                        ))
+                        .child(self.diagnostic_filter_chip(
+                            Some(helix_core::diagnostic::Severity::Info),
+                            cx,
+                        ))
+                        .child(self.diagnostic_filter_chip(
+                            Some(helix_core::diagnostic::Severity::Hint),
+                            cx,
+                        )),
+                )
+            })
+            .when(!is_diagnostic_picker, |this| {
+                this.child(
+                    // Search input with result count display
+                    div()
+                        .flex()
+                        .items_center()
+                        .px_3()
+                        .h_10()
+                        .border_b_1()
+                        .border_color(self.style.modal_style.border)
+                        .child(
+                            div()
+                                .flex_1()
+                                .flex()
+                                .items_center()
+                                .child(self.query_input.clone()),
+                        )
+                        .child(
+                            div()
+                                .text_size(cx.global::<crate::Theme>().tokens.sizes.text_sm)
+                                .text_color(self.style.modal_style.prompt_text)
+                                .child(if self.filtered_indices.is_empty() {
+                                    "0/0".to_string()
+                                } else {
+                                    format!(
+                                        "{}/{}",
+                                        self.selected_index + 1,
+                                        self.filtered_indices.len()
+                                    )
+                                }),
+                        ),
+                )
+            })
             // Add column headers for buffer picker
             .when(
                 self.items
@@ -1325,7 +1809,65 @@ impl PickerView {
                                         .compact(true),
                                 )
                             })
-                            .when(!self.filtered_indices.is_empty(), |this| {
+                            .when(
+                                is_diagnostic_picker && !self.filtered_indices.is_empty(),
+                                |this| {
+                                    this.child(
+                                        list(
+                                            self.diagnostic_list_state.clone(),
+                                            cx.processor(
+                                                move |picker,
+                                                      display_index: usize,
+                                                      _window,
+                                                      cx| {
+                                                    let Some(display_row) = picker
+                                                        .diagnostic_display_rows
+                                                        .get(display_index)
+                                                        .cloned()
+                                                    else {
+                                                        return div().into_any_element();
+                                                    };
+
+                                                    match display_row {
+                                                        DiagnosticDisplayRow::FileHeader {
+                                                            path,
+                                                        } => picker
+                                                            .render_diagnostic_file_header(path, cx),
+                                                        DiagnosticDisplayRow::Diagnostic {
+                                                            filtered_index,
+                                                        } => {
+                                                            let Some(item_index) = picker
+                                                                .filtered_indices
+                                                                .get(filtered_index)
+                                                                .copied()
+                                                            else {
+                                                                return div().into_any_element();
+                                                            };
+                                                            let Some(item) =
+                                                                picker.items.get(item_index as usize)
+                                                            else {
+                                                                return div().into_any_element();
+                                                            };
+                                                            picker.render_diagnostic_item(
+                                                                item,
+                                                                filtered_index,
+                                                                filtered_index
+                                                                    == picker.selected_index,
+                                                                cx,
+                                                            )
+                                                        }
+                                                    }
+                                                },
+                                            ),
+                                        )
+                                        .w_full()
+                                        .h_full(),
+                                    )
+                                },
+                            )
+                            .when(
+                                !is_diagnostic_picker && !self.filtered_indices.is_empty(),
+                                |this| {
                                 this.child(
                                     uniform_list(
                                         "picker-items",
@@ -1343,7 +1885,6 @@ impl PickerView {
                                                         let item = &picker.items[item_idx];
                                                         let is_selected =
                                                             visible_idx == picker.selected_index;
-
                                                         // Full-width wrapper for selection background
                                                         div()
                                                             .id(("picker-item", visible_idx))
@@ -1352,6 +1893,19 @@ impl PickerView {
                                                             .flex() // Make it a flex container
                                                             .items_center() // Center content vertically
                                                             .cursor_pointer()
+                                                            .when(is_diagnostic_picker, |this| {
+                                                                this.on_click(cx.listener(
+                                                                    move |picker,
+                                                                          _event,
+                                                                          _window,
+                                                                          cx| {
+                                                                        picker.selected_index =
+                                                                            visible_idx;
+                                                                        picker
+                                                                            .confirm_selection(cx);
+                                                                    },
+                                                                ))
+                                                            })
                                                             .when(is_selected, |this| {
                                                                 this.bg(picker
                                                                     .style
@@ -1425,81 +1979,15 @@ impl PickerView {
                                                                                 })
                                                                                 .child(path.clone())
                                                                         )
+                                                                        .into_any_element()
                                                                     }
-                                                                    Some(ColumnData::Diagnostic {
-                                                                        severity,
-                                                                        icon_path,
-                                                                        path,
-                                                                        line,
-                                                                        message,
-                                                                    }) => {
-                                                                        let tokens = cx.global::<crate::Theme>().tokens;
-                                                                        let icon_color = Self::diagnostic_severity_color(
-                                                                            &tokens,
-                                                                            *severity,
-                                                                        );
-                                                                        let primary_text = if is_selected {
-                                                                            picker.style.modal_style.selected_text
-                                                                        } else {
-                                                                            picker.style.modal_style.text
-                                                                        };
-                                                                        let secondary_text = picker.style.modal_style.prompt_text;
-                                                                        let text_sm = tokens.sizes.text_sm;
-
-                                                                        div()
-                                                                            .flex()
-                                                                            .flex_1()
-                                                                            .w_full()
-                                                                            .min_w(px(0.0))
-                                                                            .items_center()
-                                                                            .gap_3()
-                                                                            .when(truncate_row_text, |this| this.overflow_hidden())
-                                                                            .child(
-                                                                                div()
-                                                                                    .w(px(20.0))
-                                                                                    .flex()
-                                                                                    .items_center()
-                                                                                    .justify_center()
-                                                                                    .flex_shrink_0()
-                                                                                    .child(
-                                                                                        svg()
-                                                                                            .path(icon_path.clone())
-                                                                                            .size(px(16.0))
-                                                                                            .text_color(icon_color)
-                                                                                            .flex_shrink_0(),
-                                                                                    ),
-                                                                            )
-                                                                            .child(
-                                                                                div()
-                                                                                    .flex_1()
-                                                                                    .min_w(px(0.0))
-                                                                                    .flex()
-                                                                                    .flex_col()
-                                                                                    .gap_1()
-                                                                                    .when(truncate_row_text, |this| this.overflow_hidden())
-                                                                                    .font_family(Self::ui_font_family(cx))
-                                                                                    .child(
-                                                                                        div()
-                                                                                            .w_full()
-                                                                                            .when(truncate_row_text, |this| {
-                                                                                                this.overflow_hidden().text_ellipsis()
-                                                                                            })
-                                                                                            .text_size(text_sm)
-                                                                                            .text_color(primary_text)
-                                                                                            .child(format!("{path}:{line}")),
-                                                                                    )
-                                                                                    .child(
-                                                                                        div()
-                                                                                            .w_full()
-                                                                                            .when(truncate_row_text, |this| {
-                                                                                                this.overflow_hidden().text_ellipsis()
-                                                                                            })
-                                                                                            .text_size(text_sm)
-                                                                                            .text_color(secondary_text)
-                                                                                            .child(message.clone()),
-                                                                                    ),
-                                                                            )
-                                                                    }
+                                                                    Some(ColumnData::Diagnostic { .. }) => picker
+                                                                        .render_diagnostic_item(
+                                                                            item,
+                                                                            visible_idx,
+                                                                            is_selected,
+                                                                            cx,
+                                                                        ),
                                                                     None => {
                                                                         // File picker or other non-buffer items
                                                                         div()
@@ -1538,6 +2026,7 @@ impl PickerView {
                                                                                     .font_family(Self::ui_font_family(cx))
                                                                                     .child(item.label.clone())
                                                                             )
+                                                                            .into_any_element()
                                                                     }
                                                                 },
                                                             )
@@ -1573,7 +2062,8 @@ impl PickerView {
                                     .h_full() // Use fixed height instead of flex_1
                                     .track_scroll(&self.list_scroll_handle),
                                 )
-                            }),
+                            },
+                            ),
                     )
                     .when(show_preview, |this| {
                         this.child(
@@ -1680,14 +2170,48 @@ impl Render for PickerView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::{TestAppContext, size};
+    use gpui::{Modifiers, TestAppContext, point, size};
     use std::sync::Arc;
+
+    fn diagnostic_item(path: &str, severity: helix_core::diagnostic::Severity) -> PickerItem {
+        PickerItem {
+            label: format!(
+                "{} diagnostic",
+                PickerView::diagnostic_severity_label(severity)
+            )
+            .into(),
+            sublabel: None,
+            data: Arc::new(()),
+            file_path: None,
+            vcs_status: None,
+            columns: Some(ColumnData::Diagnostic {
+                severity,
+                icon_path: "icons/info.svg".into(),
+                path: path.into(),
+                line: 1,
+                column: 1,
+                message: "diagnostic".into(),
+                source: None,
+                code: None,
+                tags: Vec::new(),
+            }),
+        }
+    }
 
     #[test]
     fn str_prefix_at_byte_limit_uses_utf8_boundary() {
         assert_eq!(str_prefix_at_byte_limit("abcdef", 3), "abc");
         assert_eq!(str_prefix_at_byte_limit("éclair", 1), "");
         assert_eq!(str_prefix_at_byte_limit("éclair", 2), "é");
+    }
+
+    #[test]
+    fn diagnostic_message_summary_uses_first_trimmed_line() {
+        assert_eq!(
+            diagnostic_message_summary("  cannot find value\nnot found in this scope  "),
+            "cannot find value"
+        );
+        assert_eq!(diagnostic_message_summary("single line"), "single line");
     }
 
     #[test]
@@ -1725,15 +2249,22 @@ mod tests {
                 icon_path: "icons/triangle-alert.svg".into(),
                 path: "crates/app/src/lib.rs".into(),
                 line: 42,
+                column: 7,
                 message: "unused import".into(),
+                source: Some("rustc".into()),
+                code: Some("unused_imports".into()),
+                tags: vec![helix_core::diagnostic::DiagnosticTag::Unnecessary],
             }),
         };
 
         let search_text = PickerView::item_search_text(&item);
 
         assert!(search_text.contains("warning"));
-        assert!(search_text.contains("crates/app/src/lib.rs:42"));
+        assert!(search_text.contains("crates/app/src/lib.rs:42:7"));
         assert!(search_text.contains("unused import"));
+        assert!(search_text.contains("rustc"));
+        assert!(search_text.contains("unused_imports"));
+        assert!(search_text.contains("Unnecessary"));
     }
 
     #[test]
@@ -1744,6 +2275,143 @@ mod tests {
         assert!(exact > fuzzy);
         assert!(PickerView::fuzzy_score("swf", "Save workspace file").is_some());
         assert!(PickerView::fuzzy_score("fwz", "Save workspace file").is_none());
+    }
+
+    #[gpui::test]
+    fn diagnostic_filter_keeps_only_selected_severity(cx: &mut TestAppContext) {
+        let picker = cx.new(PickerView::new);
+
+        picker.update(cx, |picker, cx| {
+            picker.items = vec![
+                diagnostic_item("src/main.rs", helix_core::diagnostic::Severity::Error),
+                diagnostic_item("src/main.rs", helix_core::diagnostic::Severity::Warning),
+                diagnostic_item("src/lib.rs", helix_core::diagnostic::Severity::Error),
+            ];
+
+            picker.set_diagnostic_filter(Some(helix_core::diagnostic::Severity::Error), cx);
+
+            assert_eq!(picker.filtered_indices, vec![0, 2]);
+            assert_eq!(picker.diagnostic_count(None), 3);
+            assert_eq!(
+                picker.diagnostic_count(Some(helix_core::diagnostic::Severity::Error)),
+                2
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn diagnostic_results_are_grouped_by_path(cx: &mut TestAppContext) {
+        let picker = cx.new(PickerView::new);
+
+        picker.update(cx, |picker, _| {
+            picker.items = vec![
+                diagnostic_item("src/main.rs", helix_core::diagnostic::Severity::Error),
+                diagnostic_item("src/lib.rs", helix_core::diagnostic::Severity::Warning),
+                diagnostic_item("src/main.rs", helix_core::diagnostic::Severity::Info),
+            ];
+            picker.filtered_indices = vec![0, 1, 2];
+
+            picker.group_diagnostics_by_path();
+            picker.rebuild_diagnostic_display_rows();
+
+            assert_eq!(picker.filtered_indices, vec![0, 2, 1]);
+            assert_eq!(
+                picker.diagnostic_display_rows,
+                vec![
+                    DiagnosticDisplayRow::FileHeader {
+                        path: "src/main.rs".into()
+                    },
+                    DiagnosticDisplayRow::Diagnostic { filtered_index: 0 },
+                    DiagnosticDisplayRow::Diagnostic { filtered_index: 1 },
+                    DiagnosticDisplayRow::FileHeader {
+                        path: "src/lib.rs".into()
+                    },
+                    DiagnosticDisplayRow::Diagnostic { filtered_index: 2 },
+                ]
+            );
+            picker.selected_index = 2;
+            assert_eq!(picker.selected_diagnostic_display_index(), Some(4));
+            picker.scroll_to_selected_item();
+            assert_eq!(picker.diagnostic_list_state.logical_scroll_top().item_ix, 4);
+        });
+    }
+
+    #[gpui::test]
+    fn diagnostic_filter_chips_handle_mouse_clicks_inside_overlay(cx: &mut TestAppContext) {
+        struct PickerOverlayHarness {
+            picker: Entity<PickerView>,
+        }
+
+        impl Render for PickerOverlayHarness {
+            fn render(
+                &mut self,
+                _window: &mut Window,
+                _cx: &mut Context<Self>,
+            ) -> impl IntoElement {
+                crate::OverlaySurface::new()
+                    .top(px(0.0))
+                    .on_light_dismiss(|_, _, _| {})
+                    .child(self.picker.clone())
+            }
+        }
+
+        cx.update(|cx| {
+            crate::picker_view::init(cx);
+            crate::text_input::init(cx);
+            cx.set_global(crate::Theme::from_tokens(crate::DesignTokens::dark()));
+            cx.set_global(crate::FocusCoordinator::default());
+            cx.set_global(nucleotide_types::UiFontConfig {
+                family: "Test UI Font".into(),
+                size: 13.0,
+                weight: nucleotide_types::FontWeight::Normal,
+            });
+        });
+
+        let (harness, cx) = cx.add_window_view(|_, cx| {
+            let picker = cx.new(|cx| {
+                PickerView::new(cx)
+                    .with_title("Diagnostics")
+                    .with_preview(false)
+                    .with_items(vec![
+                        diagnostic_item("src/main.rs", helix_core::diagnostic::Severity::Error),
+                        diagnostic_item("src/main.rs", helix_core::diagnostic::Severity::Warning),
+                    ])
+            });
+            PickerOverlayHarness { picker }
+        });
+        cx.run_until_parked();
+
+        let first_rail = cx
+            .debug_bounds("diagnostic-rail-0")
+            .expect("first diagnostic rail should be rendered");
+        let second_rail = cx
+            .debug_bounds("diagnostic-rail-1")
+            .expect("second diagnostic rail should be rendered");
+        assert_eq!(first_rail.size.height, second_rail.size.height);
+        let file_header = cx
+            .debug_bounds("diagnostic-file-header")
+            .expect("diagnostic file header should be rendered");
+        let first_row = cx
+            .debug_bounds("diagnostic-row-0")
+            .expect("first diagnostic row should be rendered");
+        assert!(file_header.bottom() <= first_row.top());
+
+        let error_bounds = cx
+            .debug_bounds("diagnostic-filter-error")
+            .expect("error filter chip should be rendered");
+        cx.simulate_click(
+            point(error_bounds.center().x, error_bounds.center().y),
+            Modifiers::default(),
+        );
+
+        let picker = harness.read_with(cx, |harness, _| harness.picker.clone());
+        picker.read_with(cx, |picker, _| {
+            assert_eq!(
+                picker.diagnostic_filter,
+                Some(helix_core::diagnostic::Severity::Error)
+            );
+            assert_eq!(picker.filtered_indices, vec![0]);
+        });
     }
 
     #[test]
