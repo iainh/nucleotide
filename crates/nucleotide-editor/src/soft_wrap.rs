@@ -148,11 +148,18 @@ pub fn document_soft_wrap_render_plan(
     })
 }
 
-pub fn soft_wrap_render_plan(params: SoftWrapRenderPlanParams<'_>) -> SoftWrapRenderPlan {
+pub fn soft_wrap_render_plan(mut params: SoftWrapRenderPlanParams<'_>) -> SoftWrapRenderPlan {
     let geometry =
         EditorSurfaceGeometry::new(params.bounds, params.gutter_columns, params.cell_width);
     let viewport_height =
         soft_wrap_viewport_height(params.bounds, params.line_height, params.scroll_line_offset);
+    if params.inline_diagnostic_virtual_rows.is_some()
+        && let Some(annotations) = params.text_annotations.as_mut()
+    {
+        // Native diagnostic rows are planned and painted separately. Retaining Helix's
+        // diagnostic line annotations here would reserve the same rows a second time.
+        annotations.clear_line_annotations();
+    }
     let visual_lines = soft_wrap_visual_lines(
         params.text,
         &params.text_format,
@@ -539,8 +546,9 @@ fn build_visual_line(
 mod tests {
     use gpui::{Bounds, Font, Hsla, TextRun, black, blue, font, point, px, size, white};
     use helix_core::{
-        doc_formatter::TextFormat,
-        text_annotations::{InlineAnnotation, TextAnnotations},
+        Position,
+        doc_formatter::{FormattedGrapheme, TextFormat},
+        text_annotations::{InlineAnnotation, LineAnnotation, TextAnnotations},
     };
     use helix_view::view::ViewPosition;
 
@@ -550,6 +558,23 @@ mod tests {
         soft_wrap_viewport_height, soft_wrap_visual_lines, soft_wrap_visual_position,
     };
     use crate::{EditorSurfaceGeometry, line_text::DisplayTextMap};
+
+    struct TwoVirtualRows;
+
+    impl LineAnnotation for TwoVirtualRows {
+        fn process_anchor(&mut self, _grapheme: &FormattedGrapheme) -> usize {
+            usize::MAX
+        }
+
+        fn insert_virtual_lines(
+            &mut self,
+            _line_end_char_idx: usize,
+            _line_end_visual_pos: Position,
+            _doc_line: usize,
+        ) -> Position {
+            Position::new(2, 0)
+        }
+    }
 
     fn text_format() -> TextFormat {
         TextFormat {
@@ -1096,5 +1121,38 @@ mod tests {
         assert_eq!(paint_plans[0].y_offset, px(-5.0));
         assert_eq!(paint_plans[0].text_origin, point(px(132.0), px(36.0)));
         assert!(paint_plans[0].is_cursor_visual_line);
+    }
+
+    #[test]
+    fn render_plan_does_not_double_reserve_native_diagnostic_rows() {
+        let mut annotations = TextAnnotations::default();
+        annotations.add_line_annotation(Box::new(TwoVirtualRows));
+        let native_diagnostic_rows = std::collections::BTreeMap::new();
+
+        let plan = soft_wrap_render_plan(SoftWrapRenderPlanParams {
+            text: "one\ntwo".into(),
+            text_format: TextFormat {
+                soft_wrap: true,
+                viewport_width: 20,
+                ..TextFormat::default()
+            },
+            text_annotations: Some(annotations),
+            view_offset: ViewPosition::default(),
+            bounds: Bounds::new(point(px(0.0), px(0.0)), size(px(200.0), px(100.0))),
+            gutter_columns: 0,
+            cell_width: px(8.0),
+            line_height: px(20.0),
+            scroll_line_offset: px(0.0),
+            inline_diagnostic_virtual_rows: Some(&native_diagnostic_rows),
+            whitespace: None,
+        });
+
+        assert_eq!(
+            plan.visual_lines
+                .iter()
+                .map(|line| line.doc_line)
+                .collect::<Vec<_>>(),
+            vec![0, 1]
+        );
     }
 }
