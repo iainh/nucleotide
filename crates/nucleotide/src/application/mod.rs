@@ -5464,19 +5464,27 @@ impl Application {
             let path = doc.path().map(std::path::Path::to_path_buf);
             let path_label =
                 diagnostic_picker_path_label(path.as_deref(), self.project_directory.as_deref());
+            let text = doc.text();
 
             for diagnostic in doc.diagnostics() {
-                let severity = diagnostic.severity.unwrap_or_default();
+                let offset = diagnostic.range.start.min(text.len_chars());
+                let severity = diagnostic.severity();
                 let severity_label = diagnostic_severity_label(severity);
-                let line = diagnostic.line + 1;
+                let Position { row, col } = helix_core::coords_at_pos(text.slice(..), offset);
+                let line = row + 1;
+                let column = col + 1;
+                let code = diagnostic.code.as_ref().map(|code| match code {
+                    helix_core::diagnostic::NumberOrString::Number(code) => code.to_string(),
+                    helix_core::diagnostic::NumberOrString::String(code) => code.clone(),
+                });
                 let label = format!(
-                    "{severity_label} {path_label}:{line} {}",
+                    "{severity_label} {path_label}:{line}:{column} {}",
                     diagnostic.message
                 );
                 let data = crate::types::DiagnosticLocation {
                     doc_id: *doc_id,
                     path: path.clone(),
-                    offset: diagnostic.range.start,
+                    offset,
                 };
 
                 items.push(crate::picker_view::PickerItem {
@@ -5491,7 +5499,11 @@ impl Application {
                             .to_string(),
                         path: path_label.clone(),
                         line,
+                        column,
                         message: diagnostic.message.clone(),
+                        source: diagnostic.source.clone(),
+                        code,
+                        tags: diagnostic.tags.clone(),
                     }),
                 });
             }
@@ -11532,7 +11544,7 @@ mod tests {
         job::{Callback, Job, Jobs},
         keymap::Keymaps,
     };
-    use helix_view::{graphics::Rect, handlers::Handlers, theme};
+    use helix_view::{editor::Action, graphics::Rect, handlers::Handlers, theme};
     use nucleotide_core::event_bridge;
     use nucleotide_events::completion::{CompletionItem, CompletionItemKind};
     use nucleotide_workspace::{
@@ -11579,6 +11591,7 @@ mod tests {
     enum CapturedUpdate {
         ShowFilePicker,
         ShowBufferPicker,
+        DiagnosticPicker(Vec<Severity>),
         StatusChanged(String, crate::types::Severity),
     }
 
@@ -12834,6 +12847,20 @@ mod tests {
                         .borrow_mut()
                         .push(CapturedUpdate::ShowBufferPicker);
                 }
+                crate::Update::Picker(crate::picker::Picker::Native { items, .. }) => {
+                    let severities = items
+                        .iter()
+                        .filter_map(|item| match &item.columns {
+                            Some(crate::picker_view::ColumnData::Diagnostic {
+                                severity, ..
+                            }) => Some(*severity),
+                            _ => None,
+                        })
+                        .collect();
+                    updates_for_subscription
+                        .borrow_mut()
+                        .push(CapturedUpdate::DiagnosticPicker(severities));
+                }
                 crate::Update::EditorStatus(crate::types::EditorStatus {
                     status: message,
                     severity,
@@ -12848,6 +12875,49 @@ mod tests {
         });
 
         updates
+    }
+
+    #[gpui::test]
+    fn diagnostics_picker_keeps_out_of_bounds_diagnostics(cx: &mut gpui::TestAppContext) {
+        use helix_core::diagnostic::{
+            Diagnostic, DiagnosticProvider, LanguageServerId, Range as DiagnosticRange,
+        };
+
+        let app = new_test_application(cx);
+        let updates = subscribe_application_updates(cx, &app);
+
+        app.update(cx, |app, cx| {
+            let doc_id = app.editor.new_file(Action::VerticalSplit);
+            let diagnostic = Diagnostic {
+                range: DiagnosticRange { start: 10, end: 10 },
+                ends_at_word: false,
+                starts_at_word: false,
+                zero_width: true,
+                line: 0,
+                message: "diagnostic beyond current text".into(),
+                severity: None,
+                code: None,
+                provider: DiagnosticProvider::Lsp {
+                    server_id: LanguageServerId::default(),
+                    identifier: None,
+                },
+                tags: Vec::new(),
+                source: Some("test-lsp".into()),
+                data: None,
+            };
+            app.editor
+                .document_mut(doc_id)
+                .expect("new document")
+                .replace_diagnostics([diagnostic], &[], None);
+
+            app.emit_diagnostics_picker(false, cx);
+        });
+
+        assert!(
+            updates
+                .borrow()
+                .contains(&CapturedUpdate::DiagnosticPicker(vec![Severity::Warning]))
+        );
     }
 
     fn run_event_driven_maintenance(cx: &mut gpui::TestAppContext, app: &Entity<Application>) {
