@@ -176,9 +176,11 @@ pub fn editor_document_frame(params: EditorDocumentFrameParams<'_>) -> EditorDoc
         })
     });
     let soft_wrap_cursor_position = soft_wrap_render_plan.as_ref().and_then(|plan| {
-        let text_annotations = params
+        let mut text_annotations = params
             .view
             .text_annotations(params.document, Some(params.theme));
+        // Match the soft-wrap render plan, which uses Nucleotide's native diagnostic rows.
+        text_annotations.clear_line_annotations();
         soft_wrap_visual_position(
             text.slice(..),
             &plan.text_format,
