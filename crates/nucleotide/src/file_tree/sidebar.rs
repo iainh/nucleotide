@@ -44,6 +44,7 @@ struct ProjectTreeDensityMetrics {
     row_radius_px: f32,
     padding_right_px: f32,
     icon_size_px: f32,
+    disclosure_icon_size_px: f32,
     icon_slot_px: f32,
 }
 
@@ -57,6 +58,7 @@ impl ProjectTreeDensityMetrics {
             row_radius_px: f32::from(metrics.radius),
             padding_right_px: f32::from(metrics.padding_x),
             icon_size_px: f32::from(metrics.icon_size),
+            disclosure_icon_size_px: nucleotide_ui::tokens::SMALL_ICON_SIZE,
             icon_slot_px: f32::from(metrics.icon_slot),
         }
     }
@@ -434,7 +436,7 @@ fn render_chevron(
     metrics: ProjectTreeDensityMetrics,
 ) -> impl IntoElement {
     chevron_icon(if row.is_expanded { "down" } else { "right" })
-        .size(px(metrics.icon_size_px))
+        .size(px(metrics.disclosure_icon_size_px))
         .text_color(chevron_color(row, file_tree_tokens))
 }
 
@@ -820,7 +822,8 @@ mod tests {
         assert_eq!(compact.row_gap_px, 4.0);
         assert_eq!(default.row_gap_px, 4.0);
         assert_eq!(relaxed.row_gap_px, 8.0);
-        assert_eq!(default.icon_size_px, 16.0);
+        assert_eq!(default.icon_size_px, 20.0);
+        assert_eq!(default.disclosure_icon_size_px, 16.0);
         assert_eq!(default.icon_slot_px, 24.0);
     }
 
@@ -1177,7 +1180,8 @@ mod tests {
 
         assert_eq!(metrics.row_height_px, 32.0);
         assert_eq!(metrics.indent_px, 16.0);
-        assert_eq!(metrics.icon_size_px, 16.0);
+        assert_eq!(metrics.icon_size_px, 20.0);
+        assert_eq!(metrics.disclosure_icon_size_px, 16.0);
         assert_eq!(metrics.icon_slot_px, 24.0);
     }
 }

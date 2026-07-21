@@ -109,12 +109,12 @@ struct ButtonMetrics {
 fn button_metrics(size: ButtonSize, tokens: &DesignTokens) -> ButtonMetrics {
     match size {
         ButtonSize::ExtraSmall => ButtonMetrics {
-            height: tokens.sizes.space_6,
+            height: tokens.sizes.space_7,
             padding_x: tokens.sizes.space_2,
             padding_y: tokens.sizes.space_0,
             border_radius: tokens.sizes.radius_sm,
             font_size: tokens.sizes.text_xs,
-            icon_size: tokens.sizes.text_sm,
+            icon_size: px(crate::tokens::SMALL_ICON_SIZE),
             gap: tokens.sizes.space_1,
         },
         ButtonSize::Small => ButtonMetrics {
@@ -123,7 +123,7 @@ fn button_metrics(size: ButtonSize, tokens: &DesignTokens) -> ButtonMetrics {
             padding_y: tokens.sizes.space_0,
             border_radius: tokens.sizes.radius_md,
             font_size: tokens.sizes.text_sm,
-            icon_size: tokens.sizes.text_md,
+            icon_size: px(crate::tokens::STANDARD_ICON_SIZE),
             gap: tokens.sizes.space_1,
         },
         ButtonSize::Medium => ButtonMetrics {
@@ -132,7 +132,7 @@ fn button_metrics(size: ButtonSize, tokens: &DesignTokens) -> ButtonMetrics {
             padding_y: tokens.sizes.space_0,
             border_radius: tokens.sizes.radius_md,
             font_size: tokens.sizes.text_md,
-            icon_size: tokens.sizes.text_lg,
+            icon_size: px(crate::tokens::STANDARD_ICON_SIZE),
             gap: tokens.sizes.space_2,
         },
         ButtonSize::Large => ButtonMetrics {
@@ -141,7 +141,7 @@ fn button_metrics(size: ButtonSize, tokens: &DesignTokens) -> ButtonMetrics {
             padding_y: tokens.sizes.space_0,
             border_radius: tokens.sizes.radius_md,
             font_size: tokens.sizes.text_md,
-            icon_size: tokens.sizes.text_xl,
+            icon_size: px(crate::tokens::STANDARD_ICON_SIZE),
             gap: tokens.sizes.space_2,
         },
         ButtonSize::ExtraLarge => ButtonMetrics {
@@ -150,7 +150,7 @@ fn button_metrics(size: ButtonSize, tokens: &DesignTokens) -> ButtonMetrics {
             padding_y: tokens.sizes.space_0,
             border_radius: tokens.sizes.radius_lg,
             font_size: tokens.sizes.text_lg,
-            icon_size: tokens.sizes.space_6,
+            icon_size: px(crate::tokens::STANDARD_ICON_SIZE),
             gap: tokens.sizes.space_2,
         },
     }
@@ -1188,7 +1188,7 @@ mod tests {
     }
 
     #[test]
-    fn test_button_metrics_follow_compact_gpui_component_scale() {
+    fn test_button_metrics_use_standard_desktop_icon_canvas() {
         let tokens = crate::tokens::DesignTokens::light();
 
         let xs = button_metrics(ButtonSize::ExtraSmall, &tokens);
@@ -1196,14 +1196,15 @@ mod tests {
         let md = button_metrics(ButtonSize::Medium, &tokens);
         let lg = button_metrics(ButtonSize::Large, &tokens);
 
-        assert_eq!(xs.height, tokens.sizes.space_6);
+        assert_eq!(xs.height, tokens.sizes.space_7);
         assert_eq!(sm.height, tokens.sizes.button_height_sm);
         assert_eq!(md.height, tokens.sizes.button_height_md);
         assert_eq!(lg.height, tokens.sizes.button_height_md);
-        assert_eq!(xs.icon_size, tokens.sizes.text_sm);
-        assert_eq!(sm.icon_size, tokens.sizes.text_md);
-        assert_eq!(md.icon_size, tokens.sizes.text_lg);
-        assert_eq!(lg.icon_size, tokens.sizes.text_xl);
+        let standard_icon_size = px(crate::tokens::STANDARD_ICON_SIZE);
+        assert_eq!(xs.icon_size, px(crate::tokens::SMALL_ICON_SIZE));
+        assert_eq!(sm.icon_size, standard_icon_size);
+        assert_eq!(md.icon_size, standard_icon_size);
+        assert_eq!(lg.icon_size, standard_icon_size);
         assert!(sm.padding_x > xs.padding_x);
         assert!(md.padding_x > sm.padding_x);
     }

@@ -4,7 +4,7 @@
 use gpui::{Context, Hsla, IntoElement, ParentElement, Styled, div, px};
 use std::path::Path;
 
-use crate::{FileIcon, Theme};
+use crate::{FileIcon, Theme, tokens::STANDARD_ICON_SIZE};
 use nucleotide_types::VcsStatus;
 
 fn vcs_indicator_size(container_size: f32) -> f32 {
@@ -31,7 +31,7 @@ impl VcsIcon {
         Self {
             file_icon: FileIcon::from_path(path, is_expanded),
             vcs_status: None,
-            container_size: 16.0,
+            container_size: STANDARD_ICON_SIZE,
         }
     }
 
@@ -40,7 +40,7 @@ impl VcsIcon {
         Self {
             file_icon: FileIcon::from_extension(extension),
             vcs_status: None,
-            container_size: 16.0,
+            container_size: STANDARD_ICON_SIZE,
         }
     }
 
@@ -49,7 +49,7 @@ impl VcsIcon {
         Self {
             file_icon: FileIcon::directory(is_expanded),
             vcs_status: None,
-            container_size: 16.0,
+            container_size: STANDARD_ICON_SIZE,
         }
     }
 
@@ -58,7 +58,7 @@ impl VcsIcon {
         Self {
             file_icon: FileIcon::scratch(),
             vcs_status: None,
-            container_size: 16.0,
+            container_size: STANDARD_ICON_SIZE,
         }
     }
 
@@ -67,7 +67,7 @@ impl VcsIcon {
         Self {
             file_icon: FileIcon::symlink(target_exists),
             vcs_status: None,
-            container_size: 16.0,
+            container_size: STANDARD_ICON_SIZE,
         }
     }
 
