@@ -41,7 +41,15 @@ mod density_token_tests {
         assert_eq!(compact.row_height, gpui::px(28.0));
         assert_eq!(comfortable.row_height, gpui::px(32.0));
         assert_eq!(relaxed.row_height, gpui::px(36.0));
-        assert_eq!(comfortable.icon_size, gpui::px(16.0));
+        assert_eq!(compact.icon_size, gpui::px(crate::tokens::SMALL_ICON_SIZE));
+        assert_eq!(
+            comfortable.icon_size,
+            gpui::px(crate::tokens::STANDARD_ICON_SIZE)
+        );
+        assert_eq!(
+            relaxed.icon_size,
+            gpui::px(crate::tokens::STANDARD_ICON_SIZE)
+        );
         assert_eq!(comfortable.icon_slot, gpui::px(24.0));
         assert!(compact.padding_x < comfortable.padding_x);
         assert!(comfortable.padding_x < relaxed.padding_x);

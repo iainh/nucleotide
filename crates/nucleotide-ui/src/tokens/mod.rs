@@ -7,6 +7,11 @@ use gpui::{Hsla, Pixels, hsla, px};
 use nucleotide_appearance::{HelixThemeColors, NativeChromePalette, hsla_from_rgb_u8};
 use nucleotide_logging::debug;
 
+/// Standard desktop icon canvas, matching WinUI's 20 epx glyphs and macOS toolbar symbols.
+pub const STANDARD_ICON_SIZE: f32 = 20.0;
+/// Small icon canvas for compact chrome and secondary disclosure controls.
+pub const SMALL_ICON_SIZE: f32 = 16.0;
+
 /// Shared density presets for rows and compact chrome controls.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ControlDensity {
@@ -33,7 +38,7 @@ impl DensityMetrics {
         match density {
             ControlDensity::Compact => Self {
                 row_height: px(28.0),
-                icon_size: px(14.0),
+                icon_size: px(SMALL_ICON_SIZE),
                 icon_slot: px(20.0),
                 gap: px(4.0),
                 padding_x: px(4.0),
@@ -42,7 +47,7 @@ impl DensityMetrics {
             },
             ControlDensity::Comfortable => Self {
                 row_height: px(32.0),
-                icon_size: px(16.0),
+                icon_size: px(STANDARD_ICON_SIZE),
                 icon_slot: px(24.0),
                 gap: px(4.0),
                 padding_x: px(8.0),
@@ -51,7 +56,7 @@ impl DensityMetrics {
             },
             ControlDensity::Relaxed => Self {
                 row_height: px(36.0),
-                icon_size: px(16.0),
+                icon_size: px(STANDARD_ICON_SIZE),
                 icon_slot: px(24.0),
                 gap: px(8.0),
                 padding_x: px(12.0),

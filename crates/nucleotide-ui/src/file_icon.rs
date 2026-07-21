@@ -4,6 +4,8 @@
 use gpui::{Hsla, IntoElement, Styled, Svg, svg};
 use std::path::Path;
 
+use crate::tokens::STANDARD_ICON_SIZE;
+
 /// File icon component that provides consistent icons across the application
 #[derive(Clone)]
 pub struct FileIcon {
@@ -35,7 +37,7 @@ impl FileIcon {
             extension,
             is_directory,
             is_expanded,
-            size: 16.0, // Default size
+            size: STANDARD_ICON_SIZE,
             color: None,
         }
     }
@@ -46,7 +48,7 @@ impl FileIcon {
             extension: extension.map(|s| s.to_lowercase()),
             is_directory: false,
             is_expanded: false,
-            size: 16.0,
+            size: STANDARD_ICON_SIZE,
             color: None,
         }
     }
@@ -57,7 +59,7 @@ impl FileIcon {
             extension: None,
             is_directory: true,
             is_expanded,
-            size: 16.0,
+            size: STANDARD_ICON_SIZE,
             color: None,
         }
     }
@@ -68,7 +70,7 @@ impl FileIcon {
             extension: Some("scratch".to_string()), // Use special marker for scratch buffers
             is_directory: false,
             is_expanded: false,
-            size: 16.0,
+            size: STANDARD_ICON_SIZE,
             color: None,
         }
     }
@@ -83,7 +85,7 @@ impl FileIcon {
             }),
             is_directory: false,
             is_expanded: false,
-            size: 16.0,
+            size: STANDARD_ICON_SIZE,
             color: None,
         }
     }
