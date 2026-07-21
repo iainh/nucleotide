@@ -1,5 +1,5 @@
 // ABOUTME: Token-integrated checkbox component for binary UI settings.
-// ABOUTME: Renders Lucide-backed checked and unchecked states with GPUI focus handling.
+// ABOUTME: Renders Phosphor-duotone-backed checked and unchecked states with GPUI focus handling.
 
 use crate::tokens::CheckboxTokens;
 use gpui::{

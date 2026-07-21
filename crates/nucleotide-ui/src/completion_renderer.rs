@@ -35,7 +35,7 @@ impl CompletionIcon {
     }
 }
 
-/// Get icon for completion item kind using Lucide SVG icons
+/// Get icon for completion item kind using Phosphor duotone SVG icons
 pub fn get_completion_icon(kind: &CompletionItemKind, theme: &crate::Theme) -> CompletionIcon {
     let svg = create_themed_completion_icon(kind, theme, Some(16.0));
     let color = get_completion_icon_color(kind, theme);
@@ -363,7 +363,7 @@ impl CompletionItemElement {
                 div.hover(|style| style.bg(tokens.editor.selection_secondary))
             });
 
-        // Icon section - using Lucide SVG icons with design tokens
+        // Icon section - using Phosphor duotone SVG icons with design tokens
         let with_icon = base_container
             .when_some(self.render_icon(theme, 12.0, 16.0), |div, icon| {
                 div.child(icon)

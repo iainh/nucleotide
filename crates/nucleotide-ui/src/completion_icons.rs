@@ -1,4 +1,4 @@
-// ABOUTME: Completion icon mapping system using Lucide SVG icons
+// ABOUTME: Completion icon mapping system using Phosphor duotone SVG icons
 // ABOUTME: Maps CompletionItemKind to appropriate SVG icon paths in assets/icons/
 
 use crate::completion_v2::CompletionItemKind;
