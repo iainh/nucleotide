@@ -7,7 +7,7 @@ set -euo pipefail
 
 REMOTE_HELPER_DIR="${NUCL_REMOTE_HELPER_DIR:-target/remote-helpers}"
 CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target}"
-PROFILE="${NUCL_REMOTE_HELPER_PROFILE:-release}"
+PROFILE="${NUCL_REMOTE_HELPER_PROFILE:-remote-helper}"
 
 if ! command -v cargo-zigbuild >/dev/null 2>&1; then
     echo "Error: cargo-zigbuild is required. Install it with 'cargo install --locked cargo-zigbuild' or enter the Nix dev shell." >&2
@@ -36,9 +36,15 @@ build_helper() {
     local artifact="$2"
     local source
     local destination
+    local rustflags="${RUSTFLAGS:-}"
+
+    if [ "${PROFILE}" = "remote-helper" ]; then
+        rustflags="${rustflags:+${rustflags} }-C relocation-model=static"
+    fi
 
     echo "Building ${artifact} for ${target}..."
-    cargo zigbuild "${cargo_profile_args[@]}" -p nucleotide-remote --target "${target}"
+    RUSTFLAGS="${rustflags}" \
+        cargo zigbuild "${cargo_profile_args[@]}" -p nucleotide-remote --target "${target}"
 
     source="${CARGO_TARGET_DIR}/${target}/${target_profile_dir}/nucleotide-remote"
     destination="${REMOTE_HELPER_DIR}/${artifact}"
