@@ -356,7 +356,10 @@ impl DocumentView {
             .as_ref()
             .is_some_and(|pending| pending.matches_snapshot(&snapshot))
         {
-            return BTreeMap::new();
+            return cached_runnable_tasks_for_document(
+                self.runnable_tasks_cache.as_ref(),
+                &snapshot,
+            );
         }
 
         let document = {
@@ -381,12 +384,13 @@ impl DocumentView {
             return BTreeMap::new();
         };
 
-        self.runnable_tasks_cache = None;
         self.runnable_tasks_pending = Some(RunnableTasksPending {
             doc_id: snapshot.doc_id,
             version: snapshot.version,
             path: snapshot.path.clone(),
         });
+        let cached_tasks =
+            cached_runnable_tasks_for_document(self.runnable_tasks_cache.as_ref(), &snapshot);
 
         cx.spawn(async move |this, cx| {
             let task_snapshot = snapshot.clone();
@@ -428,7 +432,7 @@ impl DocumentView {
         })
         .detach();
 
-        BTreeMap::new()
+        cached_tasks
     }
 }
 
@@ -461,9 +465,11 @@ struct RunnableTasksCache {
 
 impl RunnableTasksCache {
     fn matches_snapshot(&self, snapshot: &RunnableDocumentSnapshot) -> bool {
-        self.doc_id == snapshot.doc_id
-            && self.version == snapshot.version
-            && self.path == snapshot.path
+        self.matches_document(snapshot) && self.version == snapshot.version
+    }
+
+    fn matches_document(&self, snapshot: &RunnableDocumentSnapshot) -> bool {
+        self.doc_id == snapshot.doc_id && self.path == snapshot.path
     }
 }
 
@@ -479,6 +485,16 @@ impl RunnableTasksPending {
             && self.version == snapshot.version
             && self.path == snapshot.path
     }
+}
+
+fn cached_runnable_tasks_for_document(
+    cache: Option<&RunnableTasksCache>,
+    snapshot: &RunnableDocumentSnapshot,
+) -> BTreeMap<usize, ResolvedTask> {
+    cache
+        .filter(|cache| cache.matches_document(snapshot))
+        .map(|cache| cache.tasks_by_line.clone())
+        .unwrap_or_default()
 }
 
 fn runnable_tasks_by_line_from_tasks(
@@ -1072,6 +1088,46 @@ mod tests {
 
         assert_eq!(tasks_by_line.len(), 1);
         assert_eq!(tasks_by_line.get(&7), Some(&function_task));
+    }
+
+    #[test]
+    fn cached_remote_runnables_survive_document_version_changes() {
+        let doc_id = DocumentId::default();
+        let path = PathBuf::from("src/main.rs");
+        let task = test_task("Run Test sample", 7, &[]);
+        let cache = RunnableTasksCache {
+            doc_id,
+            version: 1,
+            path: path.clone(),
+            tasks_by_line: BTreeMap::from([(7, task.clone())]),
+        };
+        let edited_snapshot = RunnableDocumentSnapshot {
+            doc_id,
+            version: 2,
+            path,
+        };
+
+        assert_eq!(
+            cached_runnable_tasks_for_document(Some(&cache), &edited_snapshot),
+            BTreeMap::from([(7, task)])
+        );
+    }
+
+    #[test]
+    fn cached_remote_runnables_do_not_cross_documents() {
+        let cache = RunnableTasksCache {
+            doc_id: DocumentId::default(),
+            version: 1,
+            path: PathBuf::from("src/main.rs"),
+            tasks_by_line: BTreeMap::from([(7, test_task("Run Test sample", 7, &[]))]),
+        };
+        let other_snapshot = RunnableDocumentSnapshot {
+            doc_id: DocumentId::default(),
+            version: 2,
+            path: PathBuf::from("src/lib.rs"),
+        };
+
+        assert!(cached_runnable_tasks_for_document(Some(&cache), &other_snapshot).is_empty());
     }
 
     #[test]
