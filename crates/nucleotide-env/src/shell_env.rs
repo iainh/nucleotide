@@ -523,8 +523,25 @@ impl ProjectEnvironment {
             return Ok(None);
         };
 
-        let exported = run_nix_print_dev_env(directory, &plan, baseline_env, cancellation).await?;
-        let mut environment = merge_native_flake_environment(baseline_env, exported);
+        // Remote helpers, notably WSL helpers started with `wsl.exe --exec`, do not
+        // run shell startup files. Single-user Nix installs commonly add `nix` to
+        // PATH from those files, so consult the login shell only when the inherited
+        // environment cannot resolve it.
+        let native_baseline = if resolve_program_from_env_path("nix", baseline_env).is_none()
+            && login_shell_process_environment_supported()
+        {
+            self.login_shell_process_environment_with_cancellation(
+                baseline_env.clone(),
+                cancellation,
+            )
+            .await
+        } else {
+            baseline_env.clone()
+        };
+
+        let exported =
+            run_nix_print_dev_env(directory, &plan, &native_baseline, cancellation).await?;
+        let mut environment = merge_native_flake_environment(&native_baseline, exported);
         environment.insert("ZED_ENVIRONMENT".to_string(), "native-flake".to_string());
 
         let watch_paths = native_flake_watch_paths(directory, &envrc_path, &plan);
@@ -983,8 +1000,11 @@ async fn run_nix_print_dev_env(
     baseline_env: &HashMap<String, String>,
     cancellation: Option<&AtomicBool>,
 ) -> Result<HashMap<String, String>, ShellEnvironmentError> {
-    let nix_binary =
-        resolve_program_from_env_path("nix", baseline_env).unwrap_or_else(|| PathBuf::from("nix"));
+    let nix_binary = resolve_program_from_env_path("nix", baseline_env).ok_or_else(|| {
+        ShellEnvironmentError::NixPrintDevEnvFailed(
+            "nix executable was not found in the inherited or login-shell PATH".to_string(),
+        )
+    })?;
     run_nix_print_dev_env_with_binary(directory, plan, baseline_env, &nix_binary, cancellation)
         .await
 }
@@ -2304,6 +2324,28 @@ esac
             resolve_program_from_env_path("nix", &baseline),
             Some(fake_nix)
         );
+    }
+
+    #[tokio::test]
+    async fn test_run_nix_print_dev_env_reports_missing_nix() {
+        let empty_bin = tempfile::tempdir().unwrap();
+        let project_dir = tempfile::tempdir().unwrap();
+        let baseline =
+            HashMap::from([("PATH".to_string(), empty_bin.path().display().to_string())]);
+        let plan = NativeFlakePlan {
+            flake_args: vec![".".to_string()],
+            watched_files: Vec::new(),
+        };
+
+        let error = run_nix_print_dev_env(project_dir.path(), &plan, &baseline, None)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            ShellEnvironmentError::NixPrintDevEnvFailed(message)
+                if message.contains("nix executable was not found")
+        ));
     }
 
     #[test]
