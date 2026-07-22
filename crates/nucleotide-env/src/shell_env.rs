@@ -527,7 +527,7 @@ impl ProjectEnvironment {
         // run shell startup files. Single-user Nix installs commonly add `nix` to
         // PATH from those files, so consult the login shell only when the inherited
         // environment cannot resolve it.
-        let native_baseline = if resolve_program_from_env_path("nix", baseline_env).is_none()
+        let native_baseline = if resolve_nix_binary(baseline_env).is_none()
             && login_shell_process_environment_supported()
         {
             self.login_shell_process_environment_with_cancellation(
@@ -1000,13 +1000,42 @@ async fn run_nix_print_dev_env(
     baseline_env: &HashMap<String, String>,
     cancellation: Option<&AtomicBool>,
 ) -> Result<HashMap<String, String>, ShellEnvironmentError> {
-    let nix_binary = resolve_program_from_env_path("nix", baseline_env).ok_or_else(|| {
+    let nix_binary = resolve_nix_binary(baseline_env).ok_or_else(|| {
         ShellEnvironmentError::NixPrintDevEnvFailed(
-            "nix executable was not found in the inherited or login-shell PATH".to_string(),
+            "nix executable was not found in PATH or a standard Nix profile".to_string(),
         )
     })?;
     run_nix_print_dev_env_with_binary(directory, plan, baseline_env, &nix_binary, cancellation)
         .await
+}
+
+fn resolve_nix_binary(environment: &HashMap<String, String>) -> Option<PathBuf> {
+    resolve_nix_binary_with_system_profiles(
+        environment,
+        &[
+            Path::new("/nix/var/nix/profiles/default/bin/nix"),
+            Path::new("/run/current-system/sw/bin/nix"),
+        ],
+    )
+}
+
+fn resolve_nix_binary_with_system_profiles(
+    environment: &HashMap<String, String>,
+    system_profiles: &[&Path],
+) -> Option<PathBuf> {
+    resolve_program_from_env_path("nix", environment)
+        .or_else(|| {
+            environment
+                .get("HOME")
+                .map(|home| Path::new(home).join(".nix-profile/bin/nix"))
+                .filter(|candidate| candidate.is_file())
+        })
+        .or_else(|| {
+            system_profiles
+                .iter()
+                .find(|candidate| candidate.is_file())
+                .map(|candidate| candidate.to_path_buf())
+        })
 }
 
 fn resolve_program_from_env_path(
@@ -2326,26 +2355,34 @@ esac
         );
     }
 
-    #[tokio::test]
-    async fn test_run_nix_print_dev_env_reports_missing_nix() {
+    #[test]
+    fn test_resolve_nix_binary_uses_user_profile_outside_path() {
+        let home = tempfile::tempdir().unwrap();
+        let profile_bin = home.path().join(".nix-profile/bin");
+        std::fs::create_dir_all(&profile_bin).unwrap();
+        let fake_nix = profile_bin.join("nix");
+        std::fs::write(&fake_nix, "").unwrap();
+        let baseline = HashMap::from([
+            ("HOME".to_string(), home.path().display().to_string()),
+            ("PATH".to_string(), "/usr/bin:/bin".to_string()),
+        ]);
+
+        assert_eq!(resolve_nix_binary(&baseline), Some(fake_nix));
+    }
+
+    #[test]
+    fn test_resolve_nix_binary_uses_system_profile_outside_path() {
+        let system_profile = tempfile::tempdir().unwrap();
+        let fake_nix = system_profile.path().join("nix");
+        std::fs::write(&fake_nix, "").unwrap();
         let empty_bin = tempfile::tempdir().unwrap();
-        let project_dir = tempfile::tempdir().unwrap();
         let baseline =
             HashMap::from([("PATH".to_string(), empty_bin.path().display().to_string())]);
-        let plan = NativeFlakePlan {
-            flake_args: vec![".".to_string()],
-            watched_files: Vec::new(),
-        };
 
-        let error = run_nix_print_dev_env(project_dir.path(), &plan, &baseline, None)
-            .await
-            .unwrap_err();
-
-        assert!(matches!(
-            error,
-            ShellEnvironmentError::NixPrintDevEnvFailed(message)
-                if message.contains("nix executable was not found")
-        ));
+        assert_eq!(
+            resolve_nix_binary_with_system_profiles(&baseline, &[fake_nix.as_path()]),
+            Some(fake_nix)
+        );
     }
 
     #[test]
