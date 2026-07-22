@@ -413,9 +413,10 @@ mod component_token_tests {
         assert_eq!(tokens.chrome.menu_selected, helix_colors.menu_selected);
         assert_eq!(tokens.chrome.separator_color, helix_colors.separator);
         assert_eq!(tokens.chrome.menu_separator, helix_colors.menu_separator);
-        assert_ne!(titlebar.background, helix_colors.statusline);
+        assert_eq!(titlebar.background, helix_colors.statusline);
         assert_ne!(file_tree.background, helix_colors.gutter_background);
         assert_eq!(status_bar.background_active, helix_colors.statusline);
+        assert_eq!(titlebar.background, status_bar.background_active);
         assert_eq!(
             tab_bar.container_background,
             helix_colors.bufferline_background
