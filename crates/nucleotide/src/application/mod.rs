@@ -8055,7 +8055,10 @@ impl Application {
             .map_err(|error| ProjectLspCommandError::Internal(error.to_string()))
     }
 
-    fn ensure_document_tracked_by_running_servers(&mut self, doc_id: DocumentId) -> usize {
+    pub(crate) fn ensure_document_tracked_by_running_servers(
+        &mut self,
+        doc_id: DocumentId,
+    ) -> usize {
         let workspace_identity = self.workspace_backend.identity();
         let project_directory = self.project_directory.clone();
         let Some((doc_path, doc_url, language_id, configured_server_names)) =
@@ -9999,13 +10002,18 @@ impl Application {
                         cx.emit(crate::Update::ShowFilePickerAt(path));
                     }
                     Ok(NativeOpenFileOutcome::Document(document_read)) => {
-                        if let Err(error) = open_workspace_document_from_read(
+                        match open_workspace_document_from_read(
                             &mut core.editor,
                             document_read,
                             action,
                         ) {
-                            core.editor
-                                .set_error(format!("Open remote file failed: {error:?}"));
+                            Ok(doc_id) => {
+                                core.ensure_document_tracked_by_running_servers(doc_id);
+                            }
+                            Err(error) => {
+                                core.editor
+                                    .set_error(format!("Open remote file failed: {error:?}"));
+                            }
                         }
                     }
                     Err(error) => {
