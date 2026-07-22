@@ -990,7 +990,7 @@ impl Render for PopupMenu {
                     .flex()
                     .flex_col()
                     .items_stretch()
-                    .py(tokens.sizes.space_1)
+                    .p(tokens.sizes.space_1)
                     .when_some(min_width, |this, min_width| this.min_w(min_width))
                     .max_w(self.max_width())
                     .when(self.scrollable, |this| {
