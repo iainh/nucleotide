@@ -10733,6 +10733,7 @@ impl Workspace {
         use crate::tab_bar::{DocumentInfo, TabBar};
         use helix_view::editor::BufferLine;
 
+        let tab_bar_button_size = cx.theme().tokens.sizes.button_height_sm;
         let active_document_focused = self
             .view_manager
             .focused_view_id()
@@ -11148,6 +11149,18 @@ impl Workspace {
                 .end_child(
                     div()
                         .relative()
+                        .size(tab_bar_button_size)
+                        .on_children_prepainted({
+                            let workspace = cx.entity().clone();
+                            move |bounds, _window, cx| {
+                                let Some(bounds) = bounds.first().copied() else {
+                                    return;
+                                };
+                                workspace.update(cx, |workspace, _cx| {
+                                    workspace.tab_bar_split_button_bounds = Some(bounds);
+                                });
+                            }
+                        })
                         .child(
                             Button::icon_only("tab-split-menu", "icons/columns-2.svg")
                                 .variant(ButtonVariant::Secondary)
@@ -11184,21 +11197,6 @@ impl Workspace {
                                         cx.stop_propagation();
                                     }
                                 }),
-                        )
-                        .child(
-                            canvas(
-                                {
-                                    let workspace = cx.entity().clone();
-                                    move |bounds, _window, cx| {
-                                        workspace.update(cx, |workspace, _cx| {
-                                            workspace.tab_bar_split_button_bounds = Some(bounds);
-                                        });
-                                    }
-                                },
-                                |_, _, _, _| {},
-                            )
-                            .absolute()
-                            .size_full(),
                         ),
                 )
         })
