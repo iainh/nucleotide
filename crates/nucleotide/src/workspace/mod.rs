@@ -3667,6 +3667,7 @@ impl Workspace {
         model: &StatusBarModel,
         geometry: StatusBarGeometry,
         status_bar_tokens: &nucleotide_ui::tokens::StatusBarTokens,
+        border_radius: Pixels,
     ) -> gpui::AnyElement {
         let (mode_color, mode_text) = match model.mode {
             helix_view::document::Mode::Normal => (
@@ -3697,7 +3698,7 @@ impl Workspace {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .rounded_full()
+                    .rounded(border_radius)
                     .bg(mode_color)
                     .text_color(mode_text)
                     .font_weight(FontWeight::MEDIUM)
@@ -3857,6 +3858,7 @@ impl Workspace {
         model: &StatusBarModel,
         geometry: StatusBarGeometry,
         status_bar_tokens: &nucleotide_ui::tokens::StatusBarTokens,
+        button_border_radius: Pixels,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let mut context = div().flex_none().h_full().flex().items_center();
@@ -3914,7 +3916,12 @@ impl Workspace {
             .flex_row()
             .items_center()
             .h_full()
-            .child(self.statusbar_mode_item(model, geometry, status_bar_tokens))
+            .child(self.statusbar_mode_item(
+                model,
+                geometry,
+                status_bar_tokens,
+                button_border_radius,
+            ))
             .child(
                 div()
                     .flex_1()
@@ -11514,7 +11521,13 @@ impl Workspace {
             .when(extend_sidebar_into_status_bar, |content| {
                 content.border_t_1().border_color(divider_color)
             })
-            .child(self.statusbar_main_content(&model, geometry, &status_bar_tokens, cx));
+            .child(self.statusbar_main_content(
+                &model,
+                geometry,
+                &status_bar_tokens,
+                sizes.radius_md,
+                cx,
+            ));
 
         let workspace_entity = cx.entity().clone();
         let file_tree_button = Button::icon_only("file-tree-toggle", "icons/folder-tree.svg")
