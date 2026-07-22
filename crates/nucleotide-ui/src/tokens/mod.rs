@@ -743,6 +743,7 @@ impl ChromeTokens {
             helix.statusline_inactive,
             helix.statusline_inactive_foreground,
         );
+        tokens.titlebar_background = helix.statusline;
         tokens.footer_background = helix.statusline;
         tokens.bufferline_background = helix.bufferline_background;
         tokens.bufferline_foreground =
