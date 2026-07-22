@@ -460,7 +460,7 @@ checksum = "ae36dc4177970ef04fde5178d3e2429882def40e57a451f919c098f72baa6cec"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.2",
+ "syn 3.0.3",
 ]
 
 [[package]]
@@ -1006,9 +1006,9 @@ dependencies = [
 
 [[package]]
 name = "clap"
-version = "4.6.3"
+version = "4.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0fb99565819980999fb7b4a1796046a5c949e6d4ff132cf5fadf5a641e20d776"
+checksum = "d91e0c145792ef73a6ad36d27c75ac09f1832222a3c209689d90f534685ee5b7"
 dependencies = [
  "clap_builder",
 ]
@@ -1541,9 +1541,9 @@ dependencies = [
 
 [[package]]
 name = "ctor"
-version = "1.0.9"
+version = "1.0.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a394189d59f9befacce833f337f7b1eca5e9a91221bcdd4d28e0114d96e597b3"
+checksum = "e2e30e509674ef0ec91e21a7735766db37d163d46151b6a361d8b83dd79116bd"
 dependencies = [
  "link-section",
  "linktime-proc-macro",
@@ -3168,9 +3168,9 @@ dependencies = [
 
 [[package]]
 name = "glob"
-version = "0.3.3"
+version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
+checksum = "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6fb39e62b5a833f1eb0b"
 
 [[package]]
 name = "globset"
@@ -4601,9 +4601,9 @@ checksum = "34b357333733e8260735ba5894eb928c02ecc69c78715f01a8019e7fa7f2db4c"
 
 [[package]]
 name = "libc"
-version = "0.2.188"
+version = "0.2.189"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "22053b6a34f84abc97f9129e61334f40174659a1b9bd18c970b83db6a9a6348b"
+checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
 
 [[package]]
 name = "libfuzzer-sys"
@@ -4665,9 +4665,9 @@ checksum = "d4a5ff6bcca6c4867b1c4fd4ef63e4db7436ef363e0ad7531d1558856bae64f4"
 
 [[package]]
 name = "link-section"
-version = "0.19.0"
+version = "0.19.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e333fe507b738576d6da5bb3f1a7d7a1c80307ed9ef31624c057d844c19c93e9"
+checksum = "8dc98458dfe90986c5e2f6ddcf68360c7e5c4252600153e06aa4ee8176c0f8d1"
 
 [[package]]
 name = "linktime-proc-macro"
@@ -5145,7 +5145,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -5209,7 +5209,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-appearance"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "gpui",
  "windows-sys 0.61.2",
@@ -5217,7 +5217,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-core"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "gpui",
@@ -5236,7 +5236,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-editor"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "arc-swap",
  "criterion",
@@ -5268,7 +5268,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-events"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "helix-core",
  "helix-lsp",
@@ -5282,7 +5282,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-logging"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "dirs",
@@ -5297,7 +5297,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-lsp"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -5321,7 +5321,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-lsp-proxy"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -5333,7 +5333,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-process"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "libc",
  "tempfile",
@@ -5362,7 +5362,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-remote"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5387,7 +5387,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-terminal"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "libghostty-vt",
@@ -5397,7 +5397,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-terminal-panel"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "gpui",
  "nucleotide-events",
@@ -5407,7 +5407,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-terminal-view"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "gpui",
  "nucleotide-events",
@@ -5419,7 +5419,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-types"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "gpui",
  "helix-core",
@@ -5429,7 +5429,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-ui"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "gpui",
@@ -5468,7 +5468,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-workspace"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "async-trait",
  "futures",
@@ -6893,7 +6893,7 @@ checksum = "2c9283685feec7d69af75fb0e858d5e7378f33fe4fc699383b2916ab9273e03c"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.2",
+ "syn 3.0.3",
 ]
 
 [[package]]
@@ -7185,7 +7185,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7422,7 +7422,7 @@ checksum = "e7a5d71263a5a7d47b41f6b3f06ba276f10cc18b0931f1799f710578e2309348"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.2",
+ "syn 3.0.3",
 ]
 
 [[package]]
@@ -7467,7 +7467,7 @@ checksum = "8d3b1629de253c70a0508c3899572da79ca359fdab27c7920ff00406df418906"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.2",
+ "syn 3.0.3",
 ]
 
 [[package]]
@@ -8092,9 +8092,9 @@ dependencies = [
 
 [[package]]
 name = "syn"
-version = "3.0.2"
+version = "3.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a207d6d6a2b7fc470b80443726053f18a2481b7e1eee970597051596567987a3"
+checksum = "53e9bae58849f64dfa4f5d5ae372c8341f7305f82a3868709269343628b659a3"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -8252,7 +8252,7 @@ checksum = "43cbfe0cf76104d42a574802844187e84a305e531ed54455f11fbde0f10541cd"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.2",
+ "syn 3.0.3",
 ]
 
 [[package]]
@@ -8417,9 +8417,9 @@ dependencies = [
 
 [[package]]
 name = "tokio-stream"
-version = "0.1.18"
+version = "0.1.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "32da49809aab5c3bc678af03902d4ccddea2a87d028d86392a4b1560c6906c70"
+checksum = "a3d06f0b082ba57c26b79407372e57cf2a1e28124f78e9479fe80322cf53420b"
 dependencies = [
  "futures-core",
  "pin-project-lite",
