@@ -11506,15 +11506,7 @@ impl Workspace {
             status_bar_tokens.background_active
         };
 
-        let leading =
-            div()
-                .size_full()
-                .bg(sidebar_background)
-                .when(self.show_file_tree, |leading| {
-                    leading
-                        .border_r_1()
-                        .border_color(translucent_file_tree_tokens.border)
-                });
+        let leading = div().size_full().bg(sidebar_background);
 
         let content = div()
             .size_full()
