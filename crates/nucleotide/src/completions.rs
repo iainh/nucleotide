@@ -560,6 +560,10 @@ pub(crate) fn workspace_path_completion_query(
     base_dir: &Path,
 ) -> Option<WorkspacePathCompletionQuery> {
     let parts: Vec<&str> = input.split_whitespace().collect();
+    if parts.len() == 1 && !input_ends_with_whitespace(input) {
+        return None;
+    }
+
     let context = ArgumentContext::new(&parts, input)?;
     let command = TYPABLE_COMMAND_LIST
         .iter()
@@ -970,6 +974,14 @@ mod tests {
         let items = get_command_completions_with_cache(&input, Some(&cache));
 
         assert!(!items.iter().any(|item| item.text.as_ref() == expected));
+    }
+
+    #[test]
+    fn workspace_path_completion_does_not_treat_command_alias_as_path_argument() {
+        let base_dir = Path::new("ssh://devbox/home/me/project");
+
+        assert!(workspace_path_completion_query("w", base_dir).is_none());
+        assert!(workspace_path_completion_query("w ", base_dir).is_some());
     }
 
     #[tokio::test]
