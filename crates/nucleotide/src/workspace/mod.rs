@@ -10166,6 +10166,7 @@ impl Workspace {
                                 if is_visible {
                                     core.editor.ensure_cursor_in_view(hydrated_view_id);
                                 }
+                                core.ensure_document_tracked_by_running_servers(doc_id);
                                 cx.emit(crate::Update::Redraw);
                                 cx.notify();
                                 Ok::<_, anyhow::Error>(is_visible.then_some(hydrated_view_id))
@@ -10345,6 +10346,9 @@ impl Workspace {
                 Ok(doc_id) => {
                     info!("Successfully opened file from picker: {path:?}, doc_id: {doc_id:?}");
                     opened_doc_id = Some(doc_id);
+                    if matches!(workspace_backend.identity(), WorkspaceIdentity::Remote(_)) {
+                        core.ensure_document_tracked_by_running_servers(doc_id);
+                    }
 
                     // Log document info
                     if let Some(doc) = core.editor.document(doc_id) {
