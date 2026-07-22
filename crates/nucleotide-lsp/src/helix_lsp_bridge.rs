@@ -15,7 +15,10 @@ use nucleotide_workspace::{WorkspacePathMapping, classify_workspace_location, po
 use serde_json::Value as JsonValue;
 use tokio::sync::broadcast;
 
-use crate::{ProjectLspError, ProjectLspManager};
+use crate::{
+    CustomCommand, CustomNotification, CustomRequest, ProjectLspError, ProjectLspManager,
+    initialization_options_for_server,
+};
 
 // Define a dyn-compatible trait for environment providers using boxed futures
 #[allow(clippy::type_complexity)]
@@ -122,7 +125,9 @@ impl HelixLspBridge {
         }
     }
 
-    /// Send a custom JSON-RPC notification to a server. Prototype: returns Unsupported until helix_lsp exposes it.
+    /// Send an untyped custom JSON-RPC notification to a server.
+    ///
+    /// Prefer [`Self::send_extension_notification`] when a protocol marker exists.
     #[instrument(skip(self, editor), fields(server_id = ?server_id, method = %method))]
     pub async fn send_custom_notification(
         &self,
@@ -131,27 +136,28 @@ impl HelixLspBridge {
         method: &str,
         params: JsonValue,
     ) -> Result<(), ProjectLspError> {
-        // Try to find the target server for logging context
-        if let Some(ls) = editor.language_server_by_id(server_id) {
-            info!(
-                server_name = ls.name(),
-                "Attempting custom LSP notification (prototype)"
-            );
-        } else {
-            return Err(ProjectLspError::ServerCommunication(
-                "Target language server not found".to_string(),
-            ));
-        }
+        let client = editor
+            .language_servers
+            .get_by_id(server_id)
+            .cloned()
+            .ok_or_else(|| {
+                ProjectLspError::ServerCommunication("Target language server not found".to_string())
+            })?;
 
-        // Currently helix_lsp does not expose a generic custom notify surface in our dependency.
-        // Return a clear error so callers know this path requires upstream support.
-        Err(ProjectLspError::ServerCommunication(format!(
-            "Custom notification '{}' not supported by helix-lsp (prototype)",
-            method
-        )))
+        debug!(
+            server_name = client.name(),
+            "Sending custom LSP notification"
+        );
+        client.notify_value(method, params).map_err(|error| {
+            ProjectLspError::ServerCommunication(format!(
+                "Custom notification '{method}' failed: {error}"
+            ))
+        })
     }
 
-    /// Send a custom JSON-RPC request to a server and await a raw JSON response. Prototype stub.
+    /// Send an untyped custom JSON-RPC request and await its raw JSON response.
+    ///
+    /// Prefer [`Self::send_extension_request`] when a protocol marker exists.
     #[instrument(skip(self, editor), fields(server_id = ?server_id, method = %method))]
     pub async fn send_custom_request(
         &self,
@@ -160,21 +166,117 @@ impl HelixLspBridge {
         method: &str,
         params: JsonValue,
     ) -> Result<JsonValue, ProjectLspError> {
-        if let Some(ls) = editor.language_server_by_id(server_id) {
-            info!(
-                server_name = ls.name(),
-                "Attempting custom LSP request (prototype)"
-            );
-        } else {
+        let client = editor
+            .language_servers
+            .get_by_id(server_id)
+            .cloned()
+            .ok_or_else(|| {
+                ProjectLspError::ServerCommunication("Target language server not found".to_string())
+            })?;
+
+        debug!(server_name = client.name(), "Sending custom LSP request");
+        client.request_value(method, params).await.map_err(|error| {
+            ProjectLspError::ServerCommunication(format!(
+                "Custom request '{method}' failed: {error}"
+            ))
+        })
+    }
+
+    pub async fn send_extension_request<R: CustomRequest>(
+        &self,
+        editor: &mut Editor,
+        server_id: LanguageServerId,
+        params: R::Params,
+    ) -> Result<R::Result, ProjectLspError> {
+        let params = serde_json::to_value(params).map_err(|error| {
+            ProjectLspError::ServerCommunication(format!(
+                "Failed to encode extension request '{}': {error}",
+                R::METHOD
+            ))
+        })?;
+        let response = self
+            .send_custom_request(editor, server_id, R::METHOD, params)
+            .await?;
+        serde_json::from_value(response).map_err(|error| {
+            ProjectLspError::ServerCommunication(format!(
+                "Failed to decode extension response '{}': {error}",
+                R::METHOD
+            ))
+        })
+    }
+
+    pub async fn send_extension_notification<N: CustomNotification>(
+        &self,
+        editor: &mut Editor,
+        server_id: LanguageServerId,
+        params: N::Params,
+    ) -> Result<(), ProjectLspError> {
+        let params = serde_json::to_value(params).map_err(|error| {
+            ProjectLspError::ServerCommunication(format!(
+                "Failed to encode extension notification '{}': {error}",
+                N::METHOD
+            ))
+        })?;
+        self.send_custom_notification(editor, server_id, N::METHOD, params)
+            .await
+    }
+
+    /// Execute a typed extension command after feature-detecting it from the
+    /// server's `executeCommandProvider` capability.
+    pub async fn execute_extension_command<C: CustomCommand>(
+        &self,
+        editor: &mut Editor,
+        server_id: LanguageServerId,
+        arguments: Vec<JsonValue>,
+    ) -> Result<C::Result, ProjectLspError> {
+        let client = editor
+            .language_servers
+            .get_by_id(server_id)
+            .cloned()
+            .ok_or_else(|| {
+                ProjectLspError::ServerCommunication("Target language server not found".to_string())
+            })?;
+        if !client.is_initialized() {
             return Err(ProjectLspError::ServerCommunication(
-                "Target language server not found".to_string(),
+                "Target language server is not initialized".to_string(),
             ));
         }
+        let supported = client
+            .capabilities()
+            .execute_command_provider
+            .as_ref()
+            .is_some_and(|options| options.commands.iter().any(|command| command == C::COMMAND));
+        if !supported {
+            return Err(ProjectLspError::ServerCommunication(format!(
+                "Language server did not advertise command '{}'",
+                C::COMMAND
+            )));
+        }
 
-        Err(ProjectLspError::ServerCommunication(format!(
-            "Custom request '{}' not supported by helix-lsp (prototype)",
-            method
-        )))
+        let params = helix_lsp::lsp::ExecuteCommandParams {
+            command: C::COMMAND.to_string(),
+            arguments,
+            work_done_progress_params: Default::default(),
+        };
+        let response = self
+            .send_custom_request(
+                editor,
+                server_id,
+                "workspace/executeCommand",
+                serde_json::to_value(params).map_err(|error| {
+                    ProjectLspError::ServerCommunication(format!(
+                        "Failed to encode extension command '{}': {error}",
+                        C::COMMAND
+                    ))
+                })?,
+            )
+            .await?;
+        serde_json::from_value(response).map_err(|error| {
+            ProjectLspError::ServerCommunication(format!(
+                "Failed to decode extension command '{}': {error}",
+                C::COMMAND
+            ))
+        })
     }
     /// Create a new bridge with environment provider for dynamic environment injection
     pub fn new_with_environment(
@@ -547,11 +649,16 @@ impl HelixLspBridge {
             vec![lsp_workspace_root.clone()]
         };
 
-        let lsp_workspace_context = Some(if remote_path_mapping.is_some() {
+        let mut lsp_workspace_context = if remote_path_mapping.is_some() {
             LspWorkspaceContext::remote(lsp_workspace_root.clone(), host_process_cwd())
         } else {
             LspWorkspaceContext::new(lsp_workspace_root.clone(), true, lsp_workspace_root.clone())
-        });
+        };
+        if let Some(initialization_options) = initialization_options_for_server(server_name) {
+            lsp_workspace_context =
+                lsp_workspace_context.with_initialization_options(initialization_options);
+        }
+        let lsp_workspace_context = Some(lsp_workspace_context);
 
         if let Some(context) = &lsp_workspace_context {
             info!(

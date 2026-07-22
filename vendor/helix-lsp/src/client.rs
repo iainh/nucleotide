@@ -106,6 +106,7 @@ pub struct Client {
     pub(crate) capabilities: OnceCell<lsp::ServerCapabilities>,
     pub(crate) file_operation_interest: OnceLock<FileOperationsInterest>,
     config: Option<Value>,
+    initialization_options: Option<Value>,
     root_path: std::path::PathBuf,
     root_uri: Option<lsp::Url>,
     workspace_folders: Mutex<Vec<lsp::WorkspaceFolder>>,
@@ -266,6 +267,7 @@ impl Client {
         cmd: &str,
         args: &[String],
         config: Option<Value>,
+        initialization_options: Option<Value>,
         server_environment: impl IntoIterator<Item = (impl AsRef<OsStr>, impl AsRef<OsStr>)>,
         root_path: PathBuf,
         root_uri: Option<lsp::Url>,
@@ -317,6 +319,7 @@ impl Client {
             capabilities: OnceCell::new(),
             file_operation_interest: OnceLock::new(),
             config,
+            initialization_options,
             req_timeout,
             root_path,
             root_uri,
@@ -575,13 +578,56 @@ impl Client {
         }
     }
 
+    /// Execute a JSON-RPC request whose method is selected at runtime.
+    ///
+    /// Standard LSP calls should continue to use [`Client::request`]. This raw
+    /// transport is for negotiated server extensions whose methods are not part
+    /// of `helix-lsp-types`.
+    pub fn request_value(
+        &self,
+        method: &str,
+        params: Value,
+    ) -> impl Future<Output = Result<Value>> {
+        let server_tx = self.server_tx.clone();
+        let id = self.next_request_id();
+        let method = method.to_string();
+
+        // Enqueue before constructing the future so request ordering matches
+        // the typed request path.
+        let rx = {
+            let request = jsonrpc::MethodCall {
+                jsonrpc: Some(jsonrpc::Version::V2),
+                id: id.clone(),
+                method,
+                params: Self::value_into_params(params),
+            };
+            let (tx, rx) = channel::<Result<Value>>(1);
+            server_tx
+                .send(Payload::Request {
+                    chan: tx,
+                    value: request,
+                })
+                .map(|()| rx)
+                .map_err(|error| Error::Other(error.into()))
+        };
+        let timeout_secs = self.req_timeout;
+
+        async move {
+            use std::time::Duration;
+            use tokio::time::timeout;
+
+            timeout(Duration::from_secs(timeout_secs), rx?.recv())
+                .await
+                .map_err(|_| Error::Timeout(id))?
+                .ok_or(Error::StreamClosed)?
+        }
+    }
+
     /// Send a RPC notification to the language server.
     pub fn notify<R: lsp::notification::Notification>(&self, params: R::Params)
     where
         R::Params: serde::Serialize,
     {
-        let server_tx = self.server_tx.clone();
-
         let params = match serde_json::to_value(params) {
             Ok(params) => params,
             Err(err) => {
@@ -594,19 +640,26 @@ impl Client {
             }
         };
 
-        let notification = jsonrpc::Notification {
-            jsonrpc: Some(jsonrpc::Version::V2),
-            method: R::METHOD.to_string(),
-            params: Self::value_into_params(params),
-        };
-
-        if let Err(err) = server_tx.send(Payload::Notification(notification)) {
+        if let Err(err) = self.notify_value(R::METHOD, params) {
             log::error!(
                 "Failed to send notification '{}' to server '{}': {err}",
                 R::METHOD,
                 self.name
             );
         }
+    }
+
+    /// Send a JSON-RPC notification whose method is selected at runtime.
+    pub fn notify_value(&self, method: &str, params: Value) -> Result<()> {
+        let notification = jsonrpc::Notification {
+            jsonrpc: Some(jsonrpc::Version::V2),
+            method: method.to_string(),
+            params: Self::value_into_params(params),
+        };
+
+        self.server_tx
+            .send(Payload::Notification(notification))
+            .map_err(|error| Error::Other(error.into()))
     }
 
     /// Reply to a language server RPC call.
@@ -644,8 +697,8 @@ impl Client {
     // -------------------------------------------------------------------------------------------
 
     pub(crate) async fn initialize(&self, enable_snippets: bool) -> Result<lsp::InitializeResult> {
-        if let Some(config) = &self.config {
-            log::info!("Using custom LSP config: {}", config);
+        if self.initialization_options.is_some() {
+            log::info!("Using custom LSP initialization options");
         }
 
         #[allow(deprecated)]
@@ -656,7 +709,7 @@ impl Client {
             // clients will prefer _uri if possible
             root_path: self.root_path.to_str().map(|path| path.to_owned()),
             root_uri: self.root_uri.clone(),
-            initialization_options: self.config.clone(),
+            initialization_options: self.initialization_options.clone(),
             capabilities: lsp::ClientCapabilities {
                 workspace: Some(lsp::WorkspaceClientCapabilities {
                     configuration: Some(true),

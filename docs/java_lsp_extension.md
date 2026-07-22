@@ -1,822 +1,338 @@
-# Eclipse JDT Language Server Extension Implementation Plan
+# Eclipse JDT LS integration architecture
 
-## Overview
+This document records the JDT LS protocol surface and the Nucleotide architecture for consuming it. It was audited in July 2026 against [`eclipse-jdtls/eclipse.jdt.ls` commit `4ce45732`](https://github.com/eclipse-jdtls/eclipse.jdt.ls/commit/4ce45732e9c1816b5807ae8edf6c1c2b70b5cf83). The authoritative JDT LS entry points are:
 
-The Eclipse JDT Language Server (jdtls) is one of the most feature-rich LSP implementations available, providing **100+ custom commands** and **29+ custom LSP methods** that go far beyond the standard LSP specification. These extensions offer comprehensive Java development capabilities that Helix cannot currently access, representing the largest opportunity for Nucleotide to differentiate itself in Java development.
+- [`JDTLanguageServer`](https://github.com/eclipse-jdtls/eclipse.jdt.ls/blob/4ce45732e9c1816b5807ae8edf6c1c2b70b5cf83/org.eclipse.jdt.ls.core/src/org/eclipse/jdt/ls/core/internal/handlers/JDTLanguageServer.java): standard and custom request dispatch.
+- [`InitHandler`](https://github.com/eclipse-jdtls/eclipse.jdt.ls/blob/4ce45732e9c1816b5807ae8edf6c1c2b70b5cf83/org.eclipse.jdt.ls.core/src/org/eclipse/jdt/ls/core/internal/handlers/InitHandler.java): advertised server capabilities.
+- [`JavaProtocolExtensions`](https://github.com/eclipse-jdtls/eclipse.jdt.ls/blob/4ce45732e9c1816b5807ae8edf6c1c2b70b5cf83/org.eclipse.jdt.ls.core/src/org/eclipse/jdt/ls/core/internal/lsp/JavaProtocolExtensions.java): custom `java/*` methods.
+- [`JavaClientConnection`](https://github.com/eclipse-jdtls/eclipse.jdt.ls/blob/4ce45732e9c1816b5807ae8edf6c1c2b70b5cf83/org.eclipse.jdt.ls.core/src/org/eclipse/jdt/ls/core/internal/JavaClientConnection.java): server-to-client extensions.
+- [`plugin.xml`](https://github.com/eclipse-jdtls/eclipse.jdt.ls/blob/4ce45732e9c1816b5807ae8edf6c1c2b70b5cf83/org.eclipse.jdt.ls.core/plugin.xml): built-in `workspace/executeCommand` registrations.
 
-## Current State Analysis
+The old version of this document listed many plausible-looking commands that do not exist in JDT LS. The inventories below intentionally distinguish protocol methods, server commands, client commands, and optional bundle commands.
 
-### Standard LSP Support
+## Design goals and invariants
 
-Eclipse JDT Language Server fully implements all standard LSP methods that Helix supports:
+1. Standard LSP remains language-agnostic. Java uses the same completion, navigation, edit, diagnostics, hierarchy, and progress paths as every other server.
+2. Non-standard transport is generic. Helix exposes raw JSON-RPC request and notification operations; it does not know about Java.
+3. JDT LS wire names live in one adapter. Application and UI code must not scatter `java/*`, `language/*`, or Java command strings.
+4. Stable contracts are strongly typed. Version-sensitive, additive refactoring payloads may cross the adapter as `serde_json::Value` until fixtures establish a stable local model.
+5. Capabilities are truthful. An extended client capability stays `false` until transport, result handling, UI, cancellation, and tests all work end-to-end.
+6. Commands are feature-detected from `executeCommandProvider.commands`; bundle commands must never be inferred from a JDT LS version.
+7. Unknown event kinds and additive JSON fields are tolerated. Unknown commands are not executed.
+8. JDT LS, java-debug, and java-test are separate, version-pinned components.
 
-**Standard Requests:**
-- `initialize`, `completion`, `hover`, `textDocument/definition`
-- `textDocument/references`, `textDocument/formatting`, `textDocument/codeAction`
-- `textDocument/documentSymbol`, `textDocument/semanticTokens`, `textDocument/rename`
-- `textDocument/foldingRange`, `textDocument/signatureHelp`
+## Nucleotide layers
 
-**Standard Notifications:**
-- `initialized`, `textDocument/didOpen`, `textDocument/didChange`
-- `textDocument/didSave`, `textDocument/didClose`
-- `workspace/didChangeConfiguration`, `workspace/didChangeWatchedFiles`
-
-### The Helix Capability Gap
-
-**Helix cannot access any JDT LS extensions** due to:
-
-1. **No Custom Command Support** - Helix doesn't implement `workspace/executeCommand` routing for custom commands
-2. **No Custom Method Support** - Helix doesn't handle non-standard LSP methods like `java/classFileContents`
-3. **Minimal LSP Client** - Helix focuses on standard LSP compliance without extensions
-
-This creates a **massive capability gap** for Java development, where developers lose 70%+ of modern Java IDE functionality.
-
-## Custom Extensions Catalog
-
-### 29+ Custom LSP Methods (Beyond Standard LSP)
-
-These are non-standard LSP methods that require special client support:
-
-| Method | Purpose | Parameters | Response | Priority |
-|--------|---------|------------|----------|----------|
-| `java/classFileContents` | Get decompiled class contents | Class URI | Decompiled source | **High** |
-| `java/projectConfigurationUpdate` | Update project configuration | Project URI | Configuration status | **High** |
-| `java/buildWorkspace` | Trigger workspace build | Build options | Build result | **High** |
-| `java/isTestFile` | Check if file is a test | File URI | Boolean result | Medium |
-| `java/resolveWorkspaceSymbol` | Enhanced symbol resolution | Symbol info | Resolved symbol | Medium |
-| `java/listSourcePaths` | List all source paths | Project URI | Source path list | Medium |
-| `java/getRefactorEdit` | Get refactoring edits | Refactor params | Workspace edit | **High** |
-| `java/projectSourcePaths` | Get project source paths | Project info | Path configuration | Medium |
-| `java/checkHashCodeEqualsStatus` | Check equals/hashCode status | Class info | Implementation status | Low |
-| `java/checkConstructorStatus` | Check constructor availability | Class info | Constructor options | Low |
-| `java/checkDelegateMethodsStatus` | Check delegate method status | Class info | Delegate options | Low |
-| `java/resolveUnimplementedAccessors` | Find missing accessors | Class info | Missing accessor list | Medium |
-
-### 100+ Custom Commands (via `workspace/executeCommand`)
-
-All JDT LS custom commands use the `java.` prefix pattern:
-
-#### Project Management (25+ commands)
-
-| Command | Purpose | Implementation Priority |
-|---------|---------|----------------------|
-| `java.project.import` | Import Java projects into workspace | **High** |
-| `java.project.refreshDiagnostics` | Refresh project diagnostics | **High** |
-| `java.project.updateSourcePath` | Update source path configuration | **High** |
-| `java.project.resolveSourceAttachment` | Attach source code to JAR files | Medium |
-| `java.project.getSettings` | Get project-specific settings | Medium |
-| `java.project.isTestFile` | Check if file is a test file | Medium |
-| `java.project.getAll` | Get all projects in workspace | Medium |
-| `java.project.list` | List project information | Medium |
-| `java.project.getClasspaths` | Get project classpaths | Medium |
-| `java.project.getRuntimeClasspaths` | Get runtime classpaths | Low |
-| `java.project.getOutputPaths` | Get project output paths | Low |
-| `java.project.listSourcePaths` | List all source paths | Low |
-
-#### Code Generation & Refactoring (30+ commands)
-
-| Command | Purpose | Implementation Priority |
-|---------|---------|----------------------|
-| `java.action.generateAccessors` | Generate getters and setters | **High** |
-| `java.action.generateConstructors` | Generate constructors | **High** |
-| `java.action.generateHashCodeEquals` | Generate hashCode and equals methods | **High** |
-| `java.action.generateToString` | Generate toString method | **High** |
-| `java.action.organizeImports` | Organize import statements | **High** |
-| `java.action.overrideImplementMethods` | Override or implement methods | **High** |
-| `java.edit.extractMethod` | Extract method refactoring | **High** |
-| `java.edit.extractVariable` | Extract variable refactoring | **High** |
-| `java.edit.extractField` | Extract field refactoring | Medium |
-| `java.edit.extractConstant` | Extract constant refactoring | Medium |
-| `java.edit.inlineMethod` | Inline method refactoring | Medium |
-| `java.edit.inlineVariable` | Inline variable refactoring | Medium |
-| `java.edit.inlineConstant` | Inline constant refactoring | Medium |
-| `java.edit.moveMethod` | Move method refactoring | Medium |
-| `java.edit.moveField` | Move field refactoring | Medium |
-| `java.edit.renameMethod` | Rename method refactoring | Medium |
-| `java.edit.renameField` | Rename field refactoring | Medium |
-| `java.edit.generateDelegateMethods` | Generate delegate methods | Low |
-| `java.action.addImport` | Add missing imports | Medium |
-| `java.action.removeUnnecessaryImports` | Remove unused imports | Medium |
-
-#### Navigation & Type Hierarchy (15+ commands)
-
-| Command | Purpose | Implementation Priority |
-|---------|---------|----------------------|
-| `java.navigate.openTypeHierarchy` | Open type hierarchy view | **High** |
-| `java.navigate.showTypeHierarchy` | Show type hierarchy | **High** |
-| `java.navigate.showSupertypeHierarchy` | Show supertype hierarchy | Medium |
-| `java.navigate.showSubtypeHierarchy` | Show subtype hierarchy | Medium |
-| `java.navigate.resolveTypeHierarchy` | Resolve type relationships | Medium |
-| `java.navigate.openSuperImplementation` | Navigate to super implementation | **High** |
-| `java.navigate.showReferences` | Show all references | Medium |
-| `java.navigate.showImplementations` | Show implementations | Medium |
-| `java.navigate.peekDefinition` | Peek definition in popup | Medium |
-| `java.navigate.peekTypeHierarchy` | Peek type hierarchy | Low |
-| `java.navigate.peekReferences` | Peek references in popup | Low |
-
-#### Build & Compilation (10+ commands)
-
-| Command | Purpose | Implementation Priority |
-|---------|---------|----------------------|
-| `java.workspace.compile` | Compile entire workspace | **High** |
-| `java.project.build` | Build specific project | **High** |
-| `java.clean.workspace` | Clean workspace build artifacts | Medium |
-| `java.build.refresh` | Refresh build state | Medium |
-| `java.project.refreshDiagnostics` | Refresh project diagnostics | **High** |
-| `java.compile.nullAnalysis` | Run null analysis compilation | Low |
-| `java.build.fullBuild` | Trigger full workspace build | Medium |
-| `java.build.incrementalBuild` | Trigger incremental build | Medium |
-
-#### Configuration & Server Management (20+ commands)
-
-| Command | Purpose | Implementation Priority |
-|---------|---------|----------------------|
-| `java.server.mode.switch` | Switch server mode (standard/lightweight) | **High** |
-| `java.server.restart` | Restart language server | Medium |
-| `java.configuration.updateConfiguration` | Update server configuration | Medium |
-| `java.open.serverLog` | Open server log file | Low |
-| `java.reloadBundles` | Reload server bundles | Low |
-| `java.show.server.task.status` | Show server task status | Low |
-| `java.configuration.runtimeValidation` | Validate runtime configuration | Medium |
-| `java.vm.getAllInstalls` | Get all JVM installations | Medium |
-| `java.execute.workspaceCommand` | Execute workspace-level command | High |
-| `java.configuration.checkUserSettings` | Check user settings validity | Medium |
-
-## Implementation Architecture
-
-### Extension Pattern
-
-Following the same extension pattern established in `docs/lsp_extension.md`:
-
-```rust
-// nucleotide-lsp/src/jdtls/mod.rs
-pub mod protocol;
-pub mod extensions;
-pub mod handlers;
-pub mod ui_integration;
-
-#[async_trait::async_trait]
-pub trait JdtlsExt {
-    // Custom LSP Methods
-    async fn get_class_file_contents(&self, uri: Url) -> Result<String>;
-    async fn update_project_configuration(&self, uri: Url) -> Result<ConfigurationStatus>;
-    async fn build_workspace(&self, options: BuildOptions) -> Result<BuildResult>;
-    async fn is_test_file(&self, uri: Url) -> Result<bool>;
-    
-    // Custom Commands (via workspace/executeCommand)
-    async fn import_projects(&self) -> Result<ImportResult>;
-    async fn generate_accessors(&self, params: GenerateAccessorsParams) -> Result<WorkspaceEdit>;
-    async fn generate_constructors(&self, params: GenerateConstructorsParams) -> Result<WorkspaceEdit>;
-    async fn organize_imports(&self, uri: Url) -> Result<WorkspaceEdit>;
-    async fn open_type_hierarchy(&self, params: TypeHierarchyParams) -> Result<TypeHierarchyResult>;
-    
-    // Server detection
-    fn is_jdtls(&self) -> bool;
-}
+```diagram
+┌────────────────────────────────────────────────────────────────────┐
+│ GPUI/application                                                   │
+│ actions, pickers, panels, virtual documents, edit confirmation     │
+└──────────────────────────────┬─────────────────────────────────────┘
+                               │ typed intent/result
+┌──────────────────────────────▼─────────────────────────────────────┐
+│ nucleotide-lsp                                                    │
+│ generic extension traits + JDT LS protocol adapter + event decode │
+└──────────────────────────────┬─────────────────────────────────────┘
+                               │ typed marker or raw JSON fallback
+┌──────────────────────────────▼─────────────────────────────────────┐
+│ helix-lsp Client                                                  │
+│ standard request<T> + request_value + notify_value + timeouts     │
+└──────────────────────────────┬─────────────────────────────────────┘
+                               │ JSON-RPC 2.0 over stdio
+┌──────────────────────────────▼─────────────────────────────────────┐
+│ JDT LS core                  │ optional trusted OSGi bundles       │
+│ Java model, Maven, Gradle    │ java-debug / java-test commands     │
+└──────────────────────────────┴─────────────────────────────────────┘
 ```
 
-### Protocol Definitions
-
-```rust
-// nucleotide-lsp/src/jdtls/protocol.rs
-use lsp_types::{request::Request, notification::Notification};
-use serde::{Deserialize, Serialize};
-
-// Custom LSP Methods
-pub enum ClassFileContents {}
-impl Request for ClassFileContents {
-    type Params = ClassFileContentsParams;
-    type Result = String;
-    const METHOD: &'static str = "java/classFileContents";
-}
-
-pub enum ProjectConfigurationUpdate {}
-impl Request for ProjectConfigurationUpdate {
-    type Params = ProjectConfigurationParams;
-    type Result = ConfigurationStatus;
-    const METHOD: &'static str = "java/projectConfigurationUpdate";
-}
-
-pub enum BuildWorkspace {}
-impl Request for BuildWorkspace {
-    type Params = BuildOptions;
-    type Result = BuildResult;
-    const METHOD: &'static str = "java/buildWorkspace";
-}
-
-// Custom Commands (using workspace/executeCommand)
-pub enum ImportProjects {}
-impl Request for ImportProjects {
-    type Params = ImportProjectsParams;
-    type Result = ImportResult;
-    const METHOD: &'static str = "workspace/executeCommand";
-    const COMMAND: &'static str = "java.project.import";
-}
-
-pub enum GenerateAccessors {}
-impl Request for GenerateAccessors {
-    type Params = GenerateAccessorsParams;
-    type Result = WorkspaceEdit;
-    const METHOD: &'static str = "workspace/executeCommand";
-    const COMMAND: &'static str = "java.action.generateAccessors";
-}
-
-// Parameter and Result Types
-#[derive(Serialize, Deserialize, Debug)]
-#[serde(rename_all = "camelCase")]
-pub struct ClassFileContentsParams {
-    pub uri: String,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-#[serde(rename_all = "camelCase")]
-pub struct GenerateAccessorsParams {
-    pub text_document: TextDocumentIdentifier,
-    pub range: Range,
-    pub context: GenerateAccessorsContext,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-#[serde(rename_all = "camelCase")]
-pub struct GenerateAccessorsContext {
-    pub generate_getters: bool,
-    pub generate_setters: bool,
-    pub generate_comments: bool,
-    pub visibility: AccessorVisibility,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-#[serde(rename_all = "lowercase")]
-pub enum AccessorVisibility {
-    Public,
-    Protected,
-    Package,
-    Private,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-#[serde(rename_all = "camelCase")]
-pub struct TypeHierarchyParams {
-    pub text_document: TextDocumentIdentifier,
-    pub position: Position,
-    pub resolve: i32, // Number of levels to resolve
-    pub direction: TypeHierarchyDirection,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-#[serde(rename_all = "lowercase")]
-pub enum TypeHierarchyDirection {
-    Supertypes,
-    Subtypes,
-    Both,
-}
-```
-
-### UI Components
-
-#### Project Import Dialog
-
-```rust
-// nucleotide-lsp/src/jdtls/ui_integration.rs
-use nucleotide_ui::{Modal, Button, List, CheckBox};
-
-pub struct ProjectImportDialog {
-    available_projects: Vec<DetectedProject>,
-    selected_projects: HashSet<ProjectPath>,
-    import_in_progress: bool,
-}
-
-impl ProjectImportDialog {
-    pub fn new() -> Self {
-        Self {
-            available_projects: Vec::new(),
-            selected_projects: HashSet::new(),
-            import_in_progress: false,
-        }
-    }
-
-    pub async fn discover_projects(&mut self, lsp_bridge: &HelixLspBridge) -> Result<()> {
-        // Scan workspace for Java projects (Maven, Gradle, Eclipse)
-        self.available_projects = lsp_bridge.discover_java_projects().await?;
-        Ok(())
-    }
-
-    pub async fn import_selected_projects(&mut self, lsp_bridge: &HelixLspBridge) -> Result<()> {
-        self.import_in_progress = true;
-        
-        for project_path in &self.selected_projects {
-            lsp_bridge.import_java_project(project_path.clone()).await?;
-        }
-        
-        self.import_in_progress = false;
-        Ok(())
-    }
-
-    pub fn render(&self, cx: &mut ViewContext<Self>) -> impl IntoElement {
-        Modal::new(cx)
-            .title("Import Java Projects")
-            .content(
-                v_flex()
-                    .child(
-                        List::new()
-                            .children(
-                                self.available_projects.iter().map(|project| {
-                                    h_flex()
-                                        .child(
-                                            CheckBox::new()
-                                                .checked(self.selected_projects.contains(&project.path))
-                                                .on_toggle(|checked, cx| {
-                                                    // Handle project selection
-                                                })
-                                        )
-                                        .child(Label::new(project.name.clone()))
-                                        .child(Label::new(project.project_type.to_string()).color(Color::Muted))
-                                })
-                            )
-                    )
-                    .child(
-                        h_flex()
-                            .child(Button::new("Cancel"))
-                            .child(
-                                Button::new("Import Selected")
-                                    .disabled(self.selected_projects.is_empty() || self.import_in_progress)
-                                    .on_click(|_, cx| {
-                                        // Trigger import
-                                    })
-                            )
-                    )
-            )
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct DetectedProject {
-    pub path: ProjectPath,
-    pub name: String,
-    pub project_type: JavaProjectType,
-    pub description: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-pub enum JavaProjectType {
-    Maven,
-    Gradle,
-    Eclipse,
-    Standalone,
-}
-```
-
-#### Code Generation Panel
-
-```rust
-pub struct CodeGenerationPanel {
-    target_class: Option<ClassInfo>,
-    generation_options: GenerationOptions,
-}
-
-impl CodeGenerationPanel {
-    pub async fn generate_accessors(&mut self, lsp_bridge: &HelixLspBridge) -> Result<()> {
-        if let Some(class_info) = &self.target_class {
-            let params = GenerateAccessorsParams {
-                text_document: class_info.document.clone(),
-                range: class_info.range.clone(),
-                context: GenerateAccessorsContext {
-                    generate_getters: self.generation_options.generate_getters,
-                    generate_setters: self.generation_options.generate_setters,
-                    generate_comments: self.generation_options.generate_comments,
-                    visibility: self.generation_options.accessor_visibility.clone(),
-                },
-            };
-            
-            let edit = lsp_bridge.generate_accessors(params).await?;
-            // Apply workspace edit
-            lsp_bridge.apply_workspace_edit(edit).await?;
-        }
-        Ok(())
-    }
-
-    pub fn render(&self, cx: &mut ViewContext<Self>) -> impl IntoElement {
-        Modal::new(cx)
-            .title("Generate Code")
-            .content(
-                v_flex()
-                    .child(
-                        h_flex()
-                            .child(CheckBox::new().checked(self.generation_options.generate_getters))
-                            .child(Label::new("Generate Getters"))
-                    )
-                    .child(
-                        h_flex()
-                            .child(CheckBox::new().checked(self.generation_options.generate_setters))
-                            .child(Label::new("Generate Setters"))
-                    )
-                    .child(
-                        h_flex()
-                            .child(CheckBox::new().checked(self.generation_options.generate_comments))
-                            .child(Label::new("Generate JavaDoc Comments"))
-                    )
-                    .child(
-                        h_flex()
-                            .child(Label::new("Visibility:"))
-                            .child(
-                                Select::new()
-                                    .options(vec!["public", "protected", "package", "private"])
-                                    .selected(self.generation_options.accessor_visibility.to_string())
-                            )
-                    )
-                    .child(
-                        h_flex()
-                            .child(Button::new("Cancel"))
-                            .child(Button::new("Generate"))
-                    )
-            )
-    }
-}
-```
-
-#### Type Hierarchy Viewer
-
-```rust
-pub struct TypeHierarchyViewer {
-    hierarchy: Option<TypeHierarchy>,
-    root_type: Option<TypeInfo>,
-    expanded_nodes: HashSet<TypeId>,
-    direction: TypeHierarchyDirection,
-}
-
-impl TypeHierarchyViewer {
-    pub async fn load_hierarchy(
-        &mut self, 
-        root_type: TypeInfo,
-        direction: TypeHierarchyDirection,
-        lsp_bridge: &HelixLspBridge
-    ) -> Result<()> {
-        let params = TypeHierarchyParams {
-            text_document: root_type.document.clone(),
-            position: root_type.position.clone(),
-            resolve: 5, // Load 5 levels deep
-            direction: direction.clone(),
-        };
-        
-        self.hierarchy = Some(lsp_bridge.get_type_hierarchy(params).await?);
-        self.root_type = Some(root_type);
-        self.direction = direction;
-        Ok(())
-    }
-
-    pub fn render(&self, cx: &mut ViewContext<Self>) -> impl IntoElement {
-        Panel::new(cx)
-            .title("Type Hierarchy")
-            .content(
-                v_flex()
-                    .child(
-                        h_flex()
-                            .child(Button::new("Supertypes").pressed(matches!(self.direction, TypeHierarchyDirection::Supertypes)))
-                            .child(Button::new("Subtypes").pressed(matches!(self.direction, TypeHierarchyDirection::Subtypes)))
-                            .child(Button::new("Both").pressed(matches!(self.direction, TypeHierarchyDirection::Both)))
-                    )
-                    .child(
-                        if let Some(hierarchy) = &self.hierarchy {
-                            self.render_hierarchy_tree(hierarchy, cx)
-                        } else {
-                            div().child(Label::new("No hierarchy loaded"))
-                        }
-                    )
-            )
-    }
-
-    fn render_hierarchy_tree(&self, hierarchy: &TypeHierarchy, cx: &ViewContext<Self>) -> impl IntoElement {
-        // Render tree structure with expand/collapse functionality
-        TreeView::new()
-            .root(hierarchy.root.clone())
-            .expanded_nodes(self.expanded_nodes.clone())
-            .on_node_click(|type_info, cx| {
-                // Navigate to type definition
-            })
-            .on_node_expand(|type_id, expanded, cx| {
-                // Handle expansion state
-            })
-    }
-}
-```
-
-### Event System Integration
-
-```rust
-// Add to nucleotide-events/src/lsp.rs
-#[derive(Debug, Clone)]
-pub enum JdtlsEvent {
-    // Project Management
-    ProjectImportRequested {
-        workspace_uri: Url,
-    },
-    ProjectImportCompleted {
-        imported_projects: Vec<ProjectInfo>,
-    },
-    
-    // Code Generation
-    GenerateAccessorsRequested {
-        document_id: DocumentId,
-        range: Range,
-        options: GenerateAccessorsContext,
-    },
-    GenerateConstructorsRequested {
-        document_id: DocumentId,
-        class_info: ClassInfo,
-    },
-    CodeGenerationCompleted {
-        workspace_edit: WorkspaceEdit,
-    },
-    
-    // Navigation
-    TypeHierarchyRequested {
-        document_id: DocumentId,
-        position: Position,
-        direction: TypeHierarchyDirection,
-    },
-    TypeHierarchyLoaded {
-        hierarchy: TypeHierarchy,
-    },
-    
-    // Build System
-    WorkspaceBuildRequested,
-    WorkspaceBuildCompleted {
-        result: BuildResult,
-    },
-    
-    // Decompilation
-    DecompileClassRequested {
-        class_uri: Url,
-    },
-    DecompileClassCompleted {
-        decompiled_source: String,
-    },
-}
-```
-
-### Command Integration
-
-```rust
-// Add to nucleotide/src/actions.rs
-
-/// Import Java projects into workspace
-pub fn import_java_projects(cx: &mut WindowContext) {
-    let event = JdtlsEvent::ProjectImportRequested {
-        workspace_uri: get_workspace_uri(cx),
-    };
-    cx.emit(event);
-}
-
-/// Generate getters and setters for current class
-pub fn generate_accessors(cx: &mut WindowContext) {
-    if let Some((doc_id, range)) = get_current_selection(cx) {
-        let event = JdtlsEvent::GenerateAccessorsRequested {
-            document_id: doc_id,
-            range,
-            options: GenerateAccessorsContext::default(),
-        };
-        cx.emit(event);
-    }
-}
-
-/// Show type hierarchy for symbol at cursor
-pub fn show_type_hierarchy(cx: &mut WindowContext) {
-    if let Some((doc_id, position)) = get_cursor_position(cx) {
-        let event = JdtlsEvent::TypeHierarchyRequested {
-            document_id: doc_id,
-            position,
-            direction: TypeHierarchyDirection::Both,
-        };
-        cx.emit(event);
-    }
-}
-
-/// Organize imports in current file
-pub fn organize_imports(cx: &mut WindowContext) {
-    let event = JdtlsEvent::OrganizeImportsRequested {
-        document_id: get_current_document_id(cx),
-    };
-    cx.emit(event);
-}
-
-/// Build entire workspace
-pub fn build_workspace(cx: &mut WindowContext) {
-    let event = JdtlsEvent::WorkspaceBuildRequested;
-    cx.emit(event);
-}
-
-/// Decompile class file at cursor
-pub fn decompile_class(cx: &mut WindowContext) {
-    if let Some(class_uri) = get_class_uri_at_cursor(cx) {
-        let event = JdtlsEvent::DecompileClassRequested { class_uri };
-        cx.emit(event);
-    }
-}
-```
-
-## Implementation Phases
-
-### Phase 1: Foundation & Project Management (Weeks 1-4)
-
-**High Priority Features:**
-- [ ] Set up JDT LS extension architecture
-- [ ] Implement core protocol definitions
-- [ ] Add project import functionality
-- [ ] Create project management UI
-- [ ] Implement workspace compilation
-
-**Deliverables:**
-- Basic project import dialog
-- Workspace build commands
-- Project configuration management
-- Source path management
-
-### Phase 2: Code Generation & Refactoring (Weeks 5-8)
-
-**High Priority Features:**
-- [ ] Generate accessors (getters/setters)
-- [ ] Generate constructors
-- [ ] Generate hashCode/equals/toString
-- [ ] Organize imports
-- [ ] Basic refactoring (extract method/variable)
-
-**Deliverables:**
-- Code generation dialog with options
-- Refactoring command integration
-- Import organization automation
-
-### Phase 3: Navigation & Type Hierarchy (Weeks 9-12)
-
-**Medium Priority Features:**
-- [ ] Type hierarchy viewer
-- [ ] Enhanced navigation (super implementation)
-- [ ] Reference and implementation finding
-- [ ] Symbol resolution improvements
-
-**Deliverables:**
-- Interactive type hierarchy tree view
-- Enhanced go-to commands
-- Reference browser
-
-### Phase 4: Advanced Features & Polish (Weeks 13-16)
-
-**Advanced Features:**
-- [ ] Decompiled class file viewing
-- [ ] Advanced refactoring operations
-- [ ] Build system integration
-- [ ] Server management UI
-- [ ] Configuration management
-
-**Deliverables:**
-- Decompilation viewer
-- Advanced refactoring dialogs
-- Build output panel
-- Settings management UI
-
-## Benefits for Nucleotide Users
-
-### Immediate Value (Phase 1)
-1. **Project Management** - Import and manage Java projects (Maven, Gradle, Eclipse)
-2. **Build Integration** - Compile workspace with error reporting
-3. **Configuration** - Proper Java project setup and source path management
-
-### Medium-term Value (Phases 2-3)
-1. **Code Generation** - Generate boilerplate code (getters, setters, constructors)
-2. **Refactoring** - Extract methods, variables, and constants
-3. **Navigation** - Type hierarchy browsing and enhanced go-to functionality
-4. **Import Management** - Automatic import organization and cleanup
-
-### Long-term Value (Phase 4)
-1. **Decompilation** - View decompiled class files for library code
-2. **Advanced Refactoring** - Complex code transformations and restructuring
-3. **Build System** - Full integration with Maven/Gradle builds
-4. **IDE-class Features** - Match or exceed traditional Java IDE capabilities
-
-## Impact Analysis
-
-### Developer Productivity Improvements
-
-**Time Savings:**
-- **Project Setup**: 80% reduction in manual configuration
-- **Code Generation**: 90% reduction in boilerplate writing
-- **Refactoring**: 70% improvement in refactoring speed
-- **Navigation**: 60% faster code exploration
-
-**Quality Improvements:**
-- **Consistency**: Generated code follows established patterns
-- **Standards**: Automatic adherence to Java conventions
-- **Maintenance**: Easier code updates through refactoring tools
-
-### Competitive Position
-
-**Vs Terminal Helix:**
-- **Massive advantage** in Java development productivity
-- **Professional-grade** Java development capabilities
-- **IDE-class features** while maintaining modal editing
-
-**Vs Traditional Java IDEs:**
-- **Modal editing efficiency** with full IDE capabilities
-- **Modern UI/UX** with GPUI rendering
-- **Lightweight** compared to Eclipse/IntelliJ
-
-**Vs VS Code:**
-- **Superior modal editing** experience
-- **Native performance** without Electron overhead
-- **Integrated terminal** with better keyboard workflow
-
-## Technical Considerations
-
-### Performance Optimization
-
-**Caching Strategies:**
-- Cache type hierarchy results for unchanged code
-- Implement incremental project updates
-- Use smart invalidation for build artifacts
-
-**Memory Management:**
-- Stream large decompiled files instead of loading entirely
-- Implement pagination for large type hierarchies
-- Use weak references for UI state management
-
-### Error Handling
-
-**Graceful Degradation:**
-- Fall back to standard LSP when extensions fail
-- Provide clear error messages for failed operations
-- Implement retry mechanisms for transient failures
-
-**User Experience:**
-- Show progress indicators for long-running operations
-- Provide cancellation for user-interrupted commands
-- Display meaningful error messages with suggested actions
-
-## Configuration
-
-### User Settings
-
-```toml
-# ~/.config/helix/nucleotide.toml
-[lsp.jdtls]
-# Enable JDT LS extensions
-enable_extensions = true
-
-# Project management
-auto_import_projects = true
-show_project_import_dialog = true
-
-# Code generation preferences
-[lsp.jdtls.code_generation]
-generate_comments = true
-accessor_visibility = "public"
-constructor_visibility = "public"
-
-# Build settings
-[lsp.jdtls.build]
-auto_build_on_save = true
-show_build_progress = true
-build_output_panel = "bottom"
-
-# UI preferences
-[lsp.jdtls.ui]
-type_hierarchy_panel_size = "medium"
-decompile_viewer_font_size = 12
-```
-
-### Server Configuration
-
-```json
-// JDT LS initialization options
-{
-  "settings": {
-    "java": {
-      "configuration": {
-        "updateBuildConfiguration": "automatic"
-      },
-      "compile": {
-        "nullAnalysis": {
-          "mode": "automatic"
-        }
-      },
-      "completion": {
-        "favoriteStaticMembers": [
-          "org.junit.Assert.*",
-          "org.junit.jupiter.api.Assertions.*"
-        ]
-      }
-    }
-  }
-}
-```
-
-## Conclusion
-
-The Eclipse JDT Language Server extensions represent the **largest single opportunity** for Nucleotide to differentiate itself in Java development. With over 100 custom commands and 29 custom LSP methods, implementing even a subset of these features would provide:
-
-1. **Transformative Developer Experience** - From basic text editing to full IDE capabilities
-2. **Competitive Advantage** - Superior Java development compared to any modal editor
-3. **Enterprise Appeal** - Professional-grade Java development tools
-4. **Market Differentiation** - Unique combination of modal editing + IDE features
-
-The phased implementation approach ensures that high-impact features like project management and code generation are delivered early, while advanced features like decompilation and complex refactoring can be added incrementally based on user feedback and demand.
-
-This implementation would establish Nucleotide as the premier choice for Java developers who want both the efficiency of modal editing and the productivity of modern IDE features.
+Implemented source boundaries:
+
+- `vendor/helix-lsp/src/client.rs`: runtime-selected request/notification transport.
+- `vendor/helix-lsp/src/lib.rs`: initialize-only option overlays, kept separate from `workspace/configuration` settings.
+- `crates/nucleotide-lsp/src/extensions.rs`: generic typed request, notification, command, and inbound event contracts.
+- `crates/nucleotide-lsp/src/jdtls/protocol.rs`: JDT method, command, model, and code-action-kind catalog.
+- `crates/nucleotide-lsp/src/jdtls/mod.rs`: server matching, conservative capabilities, and custom notification decoding.
+- `crates/nucleotide-lsp/src/helix_lsp_bridge.rs`: typed bridge and advertised-command check.
+- `crates/nucleotide/src/application/mod.rs`: presentation of normalized status, actionable messages, events, and progress.
+
+## Standard LSP surface implemented by JDT LS
+
+JDT LS statically advertises a feature when the client says dynamic registration is unavailable. It dynamically registers many features when the client truthfully advertises dynamic registration. Nucleotide currently advertises dynamic registration only for watched files, which lets JDT LS return the other capabilities statically and avoids unsupported registration traffic.
+
+### Lifecycle, synchronization, and diagnostics
+
+| Direction | Methods | Notes |
+| --- | --- | --- |
+| Client → server | `initialize`, `initialized`, `shutdown`, `exit` | Initialization imports the Eclipse workspace asynchronously. `Started` and `ServiceReady` are distinct milestones. |
+| Client → server | `$/setTrace`, `$/cancelRequest` | Trace is a JDT LS no-op; asynchronous operations honor cancellation. |
+| Client → server | `textDocument/didOpen`, `didChange`, `didClose`, `didSave` | Incremental sync; saves include text. |
+| Client → server | `textDocument/willSaveWaitUntil` | Java save actions/cleanups; advertised only when supported by the client. |
+| Server → client | `textDocument/publishDiagnostics` | Push diagnostics only. JDT LS does not implement pull diagnostics. |
+
+JDT LS may advertise `willSave`, but its implementation is effectively a no-op. It has no notebook service.
+
+### Language intelligence and navigation
+
+| Capability | Requests |
+| --- | --- |
+| Completion | `textDocument/completion`, `completionItem/resolve` |
+| Hover/signatures | `textDocument/hover`, `textDocument/signatureHelp` |
+| Navigation | `textDocument/definition`, `declaration`, `typeDefinition`, `implementation`, `references` |
+| Document structure | `textDocument/documentHighlight`, `documentSymbol`, `foldingRange`, `selectionRange` |
+| Workspace symbols | `workspace/symbol` |
+| Inlay hints | `textDocument/inlayHint` (no resolve) |
+| Semantic tokens | `textDocument/semanticTokens/full` only; no range or delta |
+
+### Editing, refactoring, and source actions
+
+| Capability | Requests |
+| --- | --- |
+| Formatting | `textDocument/formatting`, `rangeFormatting`, `onTypeFormatting` |
+| Rename | `textDocument/prepareRename`, `rename` |
+| File refactor | `workspace/willRenameFiles` for Java files/folders |
+| Code actions | `textDocument/codeAction`, `codeAction/resolve` |
+| Code lenses | `textDocument/codeLens`, `codeLens/resolve` |
+
+On-type formatting triggers on `;`, newline, and `}`. Workspace edits may contain text edits plus create/rename/delete resource operations and must be applied atomically according to the negotiated failure mode.
+
+### Hierarchies
+
+| Capability | Requests |
+| --- | --- |
+| Call hierarchy | `textDocument/prepareCallHierarchy`, `callHierarchy/incomingCalls`, `callHierarchy/outgoingCalls` |
+| Type hierarchy | `textDocument/prepareTypeHierarchy`, `typeHierarchy/supertypes`, `typeHierarchy/subtypes` |
+
+The legacy `java.navigate.openTypeHierarchy` command remains for compatibility, but new UI should use the standard type-hierarchy protocol.
+
+### Workspace and server-to-client requests
+
+| Direction | Methods |
+| --- | --- |
+| Client → server | `workspace/didChangeConfiguration`, `didChangeWatchedFiles`, `didChangeWorkspaceFolders`, `executeCommand` |
+| Server → client | `workspace/applyEdit`, `workspace/configuration`, `client/registerCapability`, `client/unregisterCapability` |
+| Server → client | `window/logMessage`, `showMessage`, `showMessageRequest`, `window/workDoneProgress/create`, `$/progress` |
+| Server → client | `workspace/inlayHint/refresh`, `workspace/codeLens/refresh`, `telemetry/event` when negotiated/configured |
+
+Nucleotide resolves dotted `workspace/configuration` sections (for example `java.format.enabled`) rather than returning the entire configuration object for every item.
+
+## Custom top-level methods: client to JDT LS
+
+There are 29 core top-level extensions: 26 requests and 3 notifications. The marker types are centralized in `jdtls/protocol.rs`.
+
+### Project, content, and search
+
+| Method | Kind | Params → result |
+| --- | --- | --- |
+| `java/classFileContents` | request | `TextDocumentIdentifier → string` |
+| `java/projectConfigurationUpdate` | notification, deprecated | `TextDocumentIdentifier` |
+| `java/projectConfigurationsUpdate` | notification | `{ identifiers[] }` |
+| `java/buildWorkspace` | request | `boolean → 0 FAILED | 1 SUCCEED | 2 WITH_ERROR | 3 CANCELLED` |
+| `java/buildProjects` | request | project identifiers/full-build flag → build status |
+| `java/cleanup` | request | `TextDocumentIdentifier → WorkspaceEdit` |
+| `java/searchSymbols` | request | query/project/source/max-results filter → `SymbolInformation[]` |
+| `java/findLinks` | request | document position/link type → locations with display metadata |
+| `java/extendedDocumentSymbol` | request | `DocumentSymbolParams → ExtendedDocumentSymbol[]` |
+| `java/validateDocument` | notification | `{ textDocument }` |
+
+### Source generation
+
+| Inspect request | Apply request | Purpose |
+| --- | --- | --- |
+| `java/listOverridableMethods` | `java/addOverridableMethods` | Override/implement methods |
+| `java/checkHashCodeEqualsStatus` | `java/generateHashCodeEquals` | Generate `equals`/`hashCode` |
+| `java/checkToStringStatus` | `java/generateToString` | Generate `toString` |
+| `java/resolveUnimplementedAccessors` | `java/generateAccessors` | Generate getters/setters |
+| `java/checkConstructorsStatus` | `java/generateConstructors` | Generate constructors |
+| `java/checkDelegateMethodsStatus` | `java/generateDelegateMethods` | Generate delegate methods |
+| — | `java/organizeImports` | Resolve and organize imports |
+
+These are multi-step protocols. The client first obtains candidates, presents selection/configuration UI, then sends selected opaque IDs back to JDT LS. Nucleotide must not reconstruct Java bindings locally.
+
+### Advanced refactoring
+
+| Method | Purpose |
+| --- | --- |
+| `java/getRefactorEdit` | Compute extract/assign/move/change-signature/introduce-parameter/interface edits and status. |
+| `java/getChangeSignatureInfo` | Obtain method, parameter, return, modifier, and exception metadata. |
+| `java/inferSelection` | Infer valid extract-method/variable/field source ranges. |
+| `java/getMoveDestinations` | Obtain valid package/type/resource move targets. |
+| `java/move` | Compute the selected move refactor. |
+| `java/checkExtractInterfaceStatus` | Obtain extract-interface candidates; edit comes from `getRefactorEdit`. |
+
+Wire-visible refactor discriminators include `extractVariableAllOccurrence`, `extractVariable`, `assignVariable`, `assignField`, `extractMethod`, `extractConstant`, `convertVariableToField`, `extractField`, `moveFile`, `moveInstanceMethod`, `moveStaticMember`, `moveType`, `invertVariable`, `convertAnonymousClassToNestedCommand`, `introduceParameter`, `extractInterface`, and `changeSignature`.
+
+## Core `workspace/executeCommand` IDs
+
+JDT LS commands are open-ended: trusted OSGi bundles can contribute more IDs. Core currently registers these commands:
+
+### Editing and content
+
+- `java.edit.organizeImports`
+- `java.edit.stringFormatting`
+- `java.edit.handlePasteEvent`
+- `java.edit.smartSemicolonDetection`
+- `java.completion.onDidSelect`
+- `java.decompile`
+- `java.getFullyQualifiedName`
+- `java.project.resolveText`
+
+### Projects, source, and classpaths
+
+- `java.project.resolveSourceAttachment`
+- `java.project.updateSourceAttachment`
+- `java.project.addToSourcePath`
+- `java.project.removeFromSourcePath`
+- `java.project.listSourcePaths`
+- `java.project.getSettings`
+- `java.project.getClasspaths`
+- `java.project.updateClassPaths`
+- `java.project.updateSettings`
+- `java.project.isTestFile`
+- `java.project.getAll`
+- `java.project.refreshDiagnostics`
+- `java.project.import`
+- `java.project.changeImportedProjects`
+- `java.project.resolveStackTraceLocation`
+- `java.project.upgradeGradle`
+- `java.project.resolveWorkspaceSymbol`
+- `java.project.updateJdk`
+- `java.project.createModuleInfo`
+
+### Hierarchy, runtime, bundles, and support
+
+- `java.navigate.openTypeHierarchy`
+- `java.navigate.resolveTypeHierarchy`
+- `java.protobuf.generateSources`
+- `java.reloadBundles`
+- `java.vm.getAllInstalls`
+- `java.getTroubleshootingInfo`
+
+`HelixLspBridge::execute_extension_command` verifies an ID against the initialized server's advertised command list before sending it. Code-action commands are not assumed to be server commands: many `java.action.*Prompt` IDs are client UI callbacks.
+
+## JDT LS server-to-client extensions
+
+| Method | Kind | Behavior |
+| --- | --- | --- |
+| `language/status` | notification | Lifecycle/project status (`Starting`, `Started`, `ServiceReady`, `Error`, and others). |
+| `language/actionableNotification` | notification | Severity, message, data, and client/server commands. |
+| `language/eventNotification` | notification | Project/classpath/source/build events. |
+| `language/progressReport` | notification | Legacy progress; prefer standard work-done progress. |
+| `workspace/executeClientCommand` | request | Server asks the editor to execute a client callback and return a value. |
+| `workspace/notify` | notification | Generic command-shaped client notification. |
+
+Known domain events are:
+
+| Code | Name | Typical invalidation |
+| ---: | --- | --- |
+| 100 | `ClasspathUpdated` | Classpaths, launch/test models |
+| 200 | `ProjectsImported` | Project list, symbols, tests |
+| 210 | `ProjectsDeleted` | Project list, symbols, tests |
+| 300 | `IncompatibleGradleJdkIssue` | Runtime/build configuration warning |
+| 400 | `UpgradeGradleWrapper` | Gradle wrapper action |
+| 500 | `SourceInvalidated` | Open/cached `jdt:` virtual documents |
+| 600 | `PreviewFeaturesNotAllowed` | Language-level configuration warning |
+
+Nucleotide decodes numeric and string event representations and tolerates unknown kinds. It displays status/actionable text, maps legacy progress into normal LSP progress, and refuses unadvertised client commands. `executeClientCommandSupport` remains false until command handlers have an allowlist and non-blocking response path.
+
+## Extended initialization capabilities
+
+JDT LS reads these under `initializationOptions.extendedClientCapabilities`:
+
+- Content/editing: `snippetEditSupport`, `classFileContentsSupport`, `resolveAdditionalTextEditsSupport`, `nonStandardJavaFormatting`.
+- Generation UI: `overrideMethodsPromptSupport`, `hashCodeEqualsPromptSupport`, `advancedOrganizeImportsSupport`, `generateToStringPromptSupport`, `advancedGenerateAccessorsSupport`, `generateConstructorsPromptSupport`, `generateDelegateMethodsPromptSupport`.
+- Refactoring UI: `advancedExtractRefactoringSupport`, `extractInterfaceSupport`, `inferSelectionSupport`, `advancedIntroduceParameterRefactoringSupport`, `moveRefactoringSupport`.
+- Project/runtime UI: `advancedUpgradeGradleSupport`, `gradleChecksumWrapperPromptSupport`, `actionableNotificationSupported`, `actionableRuntimeNotificationSupport`.
+- Client ownership/callbacks: `clientHoverProvider`, `clientDocumentSymbolProvider`, `executeClientCommandSupport`, `onCompletionItemSelectedCommand`.
+- Lifecycle/compatibility: `progressReportProvider`, `shouldLanguageServerExitOnShutdown`, `canUseInternalSettings`, `skipProjectConfiguration`, `skipTextEventPropagation`, `excludedMarkerTypes`.
+
+The adapter currently sets callback/UI capabilities to false. This is deliberate. Enabling a boolean changes what JDT LS emits and can replace a simple edit with a multi-step client-owned flow.
+
+JDT LS also accepts top-level initialization options for `bundles`, `workspaceFolders`, `settings`, `triggerFiles`, and `projectConfigurations`. Nucleotide merges its capability overlay over user options, preserving Java settings and explicitly configured trusted bundles. Initialization-only fields are not returned from `workspace/configuration`.
+
+## Custom code-action kinds
+
+JDT LS extends standard `CodeActionKind` with:
+
+- `source.generate`
+- `source.generate.accessors`
+- `source.generate.hashCodeEquals`
+- `source.generate.toString`
+- `source.generate.constructors`
+- `source.generate.delegateMethods`
+- `source.generate.finalModifiers`
+- `source.overrideMethods`
+- `source.sortMembers`
+- `refactor.extract.function`
+- `refactor.extract.constant`
+- `refactor.extract.variable`
+- `refactor.extract.field`
+- `refactor.extract.interface`
+- `refactor.move`
+- `refactor.assign.variable`
+- `refactor.assign.field`
+- `refactor.introduce.parameter`
+- `refactor.change.signature`
+- `quickassist`
+
+The strings are cataloged in `jdtls/protocol.rs`. `refactor.extract.function` is intentionally not renamed to `.method`; clients depend on the historical value.
+
+## Core versus optional components
+
+### Core JDT LS
+
+Core supplies the Java model, Maven/Gradle/Eclipse/invisible-project import, completion, diagnostics, navigation, formatting, hierarchy, inlay hints, semantic tokens, source generation, refactoring, class-file content, source attachment, and FernFlower decompilation.
+
+### Java debug
+
+Debugging is not LSP. The [`microsoft/java-debug`](https://github.com/microsoft/java-debug) bundle contributes `vscode.java.*` launch-resolution commands to JDT LS, while a separate Debug Adapter Protocol process supplies breakpoints, stepping, threads, stack frames, variables, evaluation, and hot-code replacement.
+
+A supportable integration requires:
+
+- a pinned JDT LS + java-debug bundle compatibility set;
+- trusted bundle path configuration;
+- typed wrappers only for the `vscode.java.*` commands Nucleotide uses;
+- a separate DAP client/lifecycle and Java launch UI.
+
+### Java tests
+
+The [`microsoft/vscode-java-test`](https://github.com/microsoft/vscode-java-test) bundle contributes `vscode.java.test.*` discovery, navigation, generation, JUnit-argument, path, and coverage-detail commands. The client still owns the test tree, run/debug orchestration, process/result lifecycle, and coverage UI.
+
+Core `java.project.isTestFile` only classifies a source file; it is not test discovery or execution.
+
+## Nucleotide delivery matrix
+
+| Area | Current foundation | UI/product work still required |
+| --- | --- | --- |
+| Java startup | Maven/Gradle markers produce `ProjectType::Java`; configured `jdtls` starts eagerly. | JDK/JDT LS installation discovery, unique data-directory policy, recovery UI. |
+| Standard basics | Sync, push diagnostics, completion/resolve, hover, navigation, references, symbols, code actions, inlay hints, workspace edits, configuration, messages, and progress use generic paths. | Polish stale-result cancellation and Java-specific acceptance fixtures. |
+| Standard advanced | Helix LSP types/capabilities exist. | Signature UI, rename UI, formatting actions, document highlights, code lenses, semantic-token rendering, folding/selection UX, call/type hierarchy panels. |
+| Custom outbound | Raw transport plus typed request/notification/command traits; all core IDs centralized. | Application actions and multi-step selection dialogs. |
+| Custom inbound | Status, actionable text, domain events, and legacy progress are normalized. | Action buttons, event-driven cache invalidation, client command request handlers. |
+| Class files | Typed `java/classFileContents` request exists. | Read-only `jdt:` virtual-document provider, navigation routing, source invalidation refresh. |
+| Build/projects | Build/project request and command contracts exist. | Build controls, project/classpath/source-attachment UI. |
+| Refactoring/generation | Method and code-action contracts exist. | Candidate dialogs, previews, edit confirmation, follow-up rename. |
+| Debug/tests | Bundle command transport is generic. | Versioned bundle registry, DAP, test model, run/debug/results/coverage UI. |
+
+## Recommended rollout order
+
+1. **Finish standard LSP parity first.** Rename, formatting, signature help, semantic tokens, code lenses, and standard call/type hierarchy benefit every language and unlock much of JDT LS without Java-specific code.
+2. **Class-file virtual documents.** Implement `jdt:` routing, `java/classFileContents`, read-only buffers, and `SourceInvalidated`. This is essential for library navigation.
+3. **Project/runtime/build controls.** Surface service readiness, project import, JDK selection, build status, source paths, classpaths, source attachments, and troubleshooting.
+4. **Generation flows.** Add override/accessor/constructor/`toString`/`equals` dialogs one protocol pair at a time, enabling each extended capability only with its UI.
+5. **Advanced refactoring.** Build a reusable candidate/preview/apply/follow-up-rename workflow around `getRefactorEdit`, selection inference, and move destinations.
+6. **Debug and tests.** Introduce a trusted, pinned bundle registry, then separate DAP and test-controller subsystems.
+
+Every feature should ship with recorded JSON fixtures from the pinned server set, a malformed/additive payload test, cancellation/stale-response coverage, and a multi-file workspace-edit test where applicable.
+
+## Configuration and operational requirements
+
+- Launch one JDT LS process per logical workspace and never share its Eclipse `-data` directory concurrently.
+- Keep the server JVM, project runtimes (`java.configuration.runtimes`), and Gradle JVM (`java.import.gradle.java.home`) distinct.
+- Send Java settings under the server's expected `java`/`settings.java` structure and preserve unknown keys.
+- Let JDT LS own Maven/Gradle import and rebuild policy; do not duplicate build-model parsing in the editor.
+- Load only explicitly trusted bundle JARs. Bundle loading executes code inside the JDT LS process.
+- Pin and integration-test JDT LS, java-debug, and java-test versions together.
+- Use advertised capabilities and command IDs at runtime; version checks are a fallback, not feature detection.
+- Keep standard progress as the default. Legacy `language/progressReport` is compatibility input, not the preferred advertised path.
+
+This architecture makes the protocol surface reachable without pretending the IntelliJ-class experience is complete. The remaining work is intentionally product-facing: reusable standard LSP views, safe multi-step Java workflows, virtual class files, and separate debug/test systems rather than more transport special cases.

@@ -168,6 +168,9 @@ fn project_status_types_from_lsp_project_type(
         nucleotide_events::ProjectType::JavaScript => {
             vec![project_status_type("javascript", "JavaScript", "JS", 0.85)]
         }
+        nucleotide_events::ProjectType::Java => {
+            vec![project_status_type("java", "Java", "J", 0.95)]
+        }
         nucleotide_events::ProjectType::Python => {
             vec![project_status_type("python", "Python", "Py", 0.9)]
         }

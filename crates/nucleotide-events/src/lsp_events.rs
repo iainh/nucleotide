@@ -86,6 +86,7 @@ pub enum ProjectType {
     Rust,
     TypeScript,
     JavaScript,
+    Java,
     Python,
     Go,
     C,

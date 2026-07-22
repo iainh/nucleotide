@@ -722,6 +722,8 @@ impl ProjectDetector {
             || project_lower.contains("node")
         {
             ProjectType::JavaScript
+        } else if project_lower.contains("java") {
+            ProjectType::Java
         } else if project_lower.contains("python") || project_lower.contains("py") {
             ProjectType::Python
         } else if project_lower.contains("go") {
@@ -745,6 +747,15 @@ impl ProjectDetector {
         // Check for specific project markers
         if workspace_root.join("Cargo.toml").exists() {
             return Ok(ProjectType::Rust);
+        }
+
+        if workspace_root.join("pom.xml").exists()
+            || workspace_root.join("build.gradle").exists()
+            || workspace_root.join("build.gradle.kts").exists()
+            || workspace_root.join("settings.gradle").exists()
+            || workspace_root.join("settings.gradle.kts").exists()
+        {
+            return Ok(ProjectType::Java);
         }
 
         if workspace_root.join("package.json").exists() {
@@ -856,6 +867,7 @@ impl ProjectDetector {
             ProjectType::Rust => vec!["rust-analyzer".to_string()],
             ProjectType::TypeScript => vec!["typescript-language-server".to_string()],
             ProjectType::JavaScript => vec!["typescript-language-server".to_string()],
+            ProjectType::Java => vec!["jdtls".to_string()],
             ProjectType::Python => vec!["pyright".to_string()],
             ProjectType::Go => vec!["gopls".to_string()],
             ProjectType::C => vec!["clangd".to_string()],
@@ -884,6 +896,7 @@ impl ProjectDetector {
             ProjectType::Rust => "rust".to_string(),
             ProjectType::TypeScript => "typescript".to_string(),
             ProjectType::JavaScript => "javascript".to_string(),
+            ProjectType::Java => "java".to_string(),
             ProjectType::Python => "python".to_string(),
             ProjectType::Go => "go".to_string(),
             ProjectType::C => "c".to_string(),
@@ -1027,6 +1040,17 @@ mod tests {
         let servers = detector.get_language_servers_for_project(&ProjectType::TypeScript);
 
         assert_eq!(servers, vec!["typescript-language-server".to_string()]);
+    }
+
+    #[test]
+    fn test_project_detector_java_mapping() {
+        let detector = ProjectDetector::new(nucleotide_types::ProjectMarkersConfig::default());
+
+        assert_eq!(
+            detector.get_language_servers_for_project(&ProjectType::Java),
+            vec!["jdtls".to_string()]
+        );
+        assert_eq!(detector.get_primary_language_id(&ProjectType::Java), "java");
     }
 
     #[test]

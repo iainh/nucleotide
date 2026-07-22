@@ -5279,6 +5279,7 @@ dependencies = [
  "nucleotide-types",
  "nucleotide-workspace",
  "rand 0.10.2",
+ "serde",
  "serde_json",
  "slotmap",
  "thiserror 2.0.19",

@@ -17,6 +17,7 @@ use helix_core::syntax::config::{
     LanguageConfiguration, LanguageServerConfiguration, LanguageServerFeatures, RootMarkers,
 };
 use helix_stdx::path;
+use serde_json::Value;
 use slotmap::SlotMap;
 use tokio::sync::mpsc::UnboundedReceiver;
 
@@ -40,6 +41,11 @@ pub struct LspWorkspaceContext {
     pub workspace_is_cwd: bool,
     pub process_cwd: PathBuf,
     pub skip_required_root_patterns: bool,
+    /// Options added to the language-server configuration for `initialize` only.
+    ///
+    /// Frontends use this for server-specific protocol capabilities without
+    /// incorrectly returning those capabilities from `workspace/configuration`.
+    pub initialization_options: Option<Value>,
 }
 
 impl LspWorkspaceContext {
@@ -53,6 +59,7 @@ impl LspWorkspaceContext {
             workspace_is_cwd,
             process_cwd,
             skip_required_root_patterns: false,
+            initialization_options: None,
         }
     }
 
@@ -62,7 +69,13 @@ impl LspWorkspaceContext {
             workspace_is_cwd: false,
             process_cwd,
             skip_required_root_patterns: true,
+            initialization_options: None,
         }
+    }
+
+    pub fn with_initialization_options(mut self, initialization_options: Value) -> Self {
+        self.initialization_options = Some(initialization_options);
+        self
     }
 }
 
@@ -1079,6 +1092,10 @@ fn start_client(
     let process_cwd = workspace_context
         .map(|context| context.process_cwd.clone())
         .unwrap_or_else(|| root_path.clone());
+    let initialization_options = merge_initialization_options(
+        ls_config.config.clone(),
+        workspace_context.and_then(|context| context.initialization_options.clone()),
+    );
 
     if !workspace_context.is_some_and(|context| context.skip_required_root_patterns) {
         if let Some(globset) = &ls_config.required_root_patterns {
@@ -1099,6 +1116,7 @@ fn start_client(
         &ls_config.command,
         &ls_config.args,
         ls_config.config.clone(),
+        initialization_options,
         &ls_config.environment,
         root_path,
         root_uri,
@@ -1135,6 +1153,29 @@ fn start_client(
     });
 
     Ok(NewClient(client, incoming))
+}
+
+fn merge_initialization_options(base: Option<Value>, overlay: Option<Value>) -> Option<Value> {
+    match (base, overlay) {
+        (None, None) => None,
+        (Some(base), None) => Some(base),
+        (None, Some(overlay)) => Some(overlay),
+        (Some(mut base), Some(overlay)) => {
+            merge_json_value(&mut base, overlay);
+            Some(base)
+        }
+    }
+}
+
+fn merge_json_value(base: &mut Value, overlay: Value) {
+    match (base, overlay) {
+        (Value::Object(base), Value::Object(overlay)) => {
+            for (key, value) in overlay {
+                merge_json_value(base.entry(key).or_insert(Value::Null), value);
+            }
+        }
+        (base, overlay) => *base = overlay,
+    }
 }
 
 fn root_uri_for_startup(
@@ -1245,9 +1286,9 @@ pub fn find_lsp_workspace(
 #[cfg(test)]
 mod tests {
     use super::{
-        find_lsp_workspace, lsp, root_uri_for_startup, util::*, workspace_for_context,
-        LanguageServerId, LspProgressMap, LspWorkspaceContext, OffsetEncoding, ProgressStatus,
-        Registry,
+        find_lsp_workspace, lsp, merge_initialization_options, root_uri_for_startup, util::*,
+        workspace_for_context, LanguageServerId, LspProgressMap, LspWorkspaceContext,
+        OffsetEncoding, ProgressStatus, Registry,
     };
     use arc_swap::ArcSwap;
     use helix_core::Rope;
@@ -1257,6 +1298,27 @@ mod tests {
         sync::Arc,
         time::{Duration, SystemTime, UNIX_EPOCH},
     };
+
+    #[test]
+    fn initialization_options_overlay_preserves_user_settings() {
+        let options = merge_initialization_options(
+            Some(serde_json::json!({
+                "settings": { "java": { "format": { "enabled": true } } },
+                "bundles": ["debug.jar"]
+            })),
+            Some(serde_json::json!({
+                "extendedClientCapabilities": { "executeClientCommandSupport": false }
+            })),
+        )
+        .unwrap();
+
+        assert_eq!(options["settings"]["java"]["format"]["enabled"], true);
+        assert_eq!(options["bundles"][0], "debug.jar");
+        assert_eq!(
+            options["extendedClientCapabilities"]["executeClientCommandSupport"],
+            false
+        );
+    }
 
     #[test]
     fn progress_report_promotes_created_token_to_visible_progress() {
@@ -1536,6 +1598,11 @@ while True:
         payload = json.dumps(response).encode()
         sys.stdout.buffer.write(("Content-Length: %d\r\n\r\n" % len(payload)).encode() + payload)
         sys.stdout.buffer.flush()
+    elif message.get("method") == "custom/echo":
+        response = {"jsonrpc": "2.0", "id": message["id"], "result": message.get("params")}
+        payload = json.dumps(response).encode()
+        sys.stdout.buffer.write(("Content-Length: %d\r\n\r\n" % len(payload)).encode() + payload)
+        sys.stdout.buffer.flush()
     elif message.get("method") == "shutdown":
         response = {"jsonrpc": "2.0", "id": message["id"], "result": None}
         payload = json.dumps(response).encode()
@@ -1603,8 +1670,19 @@ while True:
         .await
         .unwrap();
 
+        client
+            .notify_value("custom/notify", serde_json::json!({ "ready": true }))
+            .unwrap();
+        let response = client
+            .request_value("custom/echo", serde_json::json!({ "value": 42 }))
+            .await
+            .unwrap();
+        assert_eq!(response, serde_json::json!({ "value": 42 }));
+
         let log = fs::read_to_string(&log_path).unwrap();
         assert!(log.contains("\"method\": \"initialize\""));
+        assert!(log.contains("\"method\": \"custom/echo\""));
+        assert!(log.contains("\"method\": \"custom/notify\""));
         assert!(log.contains(project_root.to_string_lossy().as_ref()));
         assert!(!log.contains("textDocument/didOpen"));
 
@@ -1613,13 +1691,25 @@ while True:
         tokio::time::timeout(Duration::from_secs(2), removed.wait_shutdown_flushed())
             .await
             .unwrap();
-        drop(removed);
-        drop(client);
 
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let log = fs::read_to_string(&log_path).unwrap();
+                if log.contains("\"method\": \"shutdown\"")
+                    && log.contains("\"method\": \"exit\"")
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
         let log = fs::read_to_string(&log_path).unwrap();
         assert!(log.contains("\"method\": \"shutdown\""));
         assert!(log.contains("\"method\": \"exit\""));
+        drop(removed);
+        drop(client);
 
         let remote_root = PathBuf::from("/home/me/remote-project");
         let mut remote_registry = Registry::new(loader.clone());

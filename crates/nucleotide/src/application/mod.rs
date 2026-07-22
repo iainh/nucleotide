@@ -52,8 +52,9 @@ use helix_view::{
 };
 use nucleotide_events::{ProjectLspCommand, ProjectLspCommandError};
 use nucleotide_lsp::{
-    HelixLspBridge, LspLaunchProxy, LspLaunchProxyProvider, ProjectEnvironmentSource,
-    ProjectLspManager, ProjectServerLifecycle, ServerStatus,
+    ExtensionMessageSeverity, HelixLspBridge, LspLaunchProxy, LspLaunchProxyProvider,
+    ProjectEnvironmentSource, ProjectLspManager, ProjectServerLifecycle,
+    ServerExtensionNotification, ServerStatus,
 };
 use nucleotide_workspace::{
     DirectoryListing, FileKind, FileRead, FileStat, FileVersion, ProcessSpec, ReadOptions,
@@ -560,6 +561,35 @@ fn workspace_diagnostic_refresh_reply(
             message: format!("Invalid workspace/diagnostic/refresh params: {err}"),
             data: None,
         })
+}
+
+fn lsp_configuration_value(
+    config: Option<&serde_json::Value>,
+    section: Option<&str>,
+) -> serde_json::Value {
+    let Some(config) = config else {
+        return serde_json::Value::Null;
+    };
+    let Some(section) = section.filter(|section| !section.is_empty()) else {
+        return config.clone();
+    };
+
+    fn resolve<'a>(value: &'a serde_json::Value, section: &str) -> Option<&'a serde_json::Value> {
+        value.get(section).or_else(|| {
+            section
+                .split('.')
+                .try_fold(value, |current, segment| current.get(segment))
+        })
+    }
+
+    resolve(config, section)
+        .or_else(|| {
+            config
+                .get("settings")
+                .and_then(|value| resolve(value, section))
+        })
+        .cloned()
+        .unwrap_or(serde_json::Value::Null)
 }
 
 #[allow(dead_code)]
@@ -4066,12 +4096,122 @@ impl Application {
         }
     }
 
+    fn handle_server_extension_notification(
+        &mut self,
+        server_id: helix_lsp::LanguageServerId,
+        server_name: &str,
+        notification: ServerExtensionNotification,
+        cx: &mut gpui::Context<crate::Core>,
+    ) {
+        match notification {
+            ServerExtensionNotification::Status {
+                status_type,
+                message,
+            } => {
+                let severity = if status_type.eq_ignore_ascii_case("error") {
+                    crate::types::Severity::Error
+                } else {
+                    crate::types::Severity::Info
+                };
+                let message = if message.is_empty() {
+                    format!("{server_name}: {status_type}")
+                } else {
+                    message
+                };
+                self.set_editor_status_feedback(cx, message, severity);
+            }
+            ServerExtensionNotification::Actionable {
+                severity,
+                message,
+                data: _,
+                commands,
+            } => {
+                let severity = match severity {
+                    ExtensionMessageSeverity::Hint => crate::types::Severity::Hint,
+                    ExtensionMessageSeverity::Info => crate::types::Severity::Info,
+                    ExtensionMessageSeverity::Warning => crate::types::Severity::Warning,
+                    ExtensionMessageSeverity::Error => crate::types::Severity::Error,
+                };
+                if !commands.is_empty() {
+                    debug!(
+                        server_id = ?server_id,
+                        command_count = commands.len(),
+                        "Language-server extension actionable notification includes commands; displaying message only"
+                    );
+                }
+                self.set_editor_status_feedback(cx, message, severity);
+            }
+            ServerExtensionNotification::Event { event_type, data } => {
+                info!(
+                    server_id = ?server_id,
+                    event_type = %event_type,
+                    has_data = data.is_some(),
+                    "Received language-server extension event"
+                );
+                if matches!(
+                    event_type.as_str(),
+                    "IncompatibleGradleJdkIssue"
+                        | "UpgradeGradleWrapper"
+                        | "PreviewFeaturesNotAllowed"
+                ) {
+                    self.set_editor_status_feedback(
+                        cx,
+                        format!("{server_name}: {event_type}"),
+                        crate::types::Severity::Warning,
+                    );
+                }
+            }
+            ServerExtensionNotification::Progress {
+                token,
+                title,
+                message,
+                percentage,
+                complete,
+            } => {
+                let token = lsp::NumberOrString::String(token);
+                if complete {
+                    self.lsp_progress.end_progress(server_id, &token);
+                } else if self.lsp_progress.progress(server_id, &token).is_some() {
+                    self.lsp_progress.update(
+                        server_id,
+                        token,
+                        lsp::WorkDoneProgressReport {
+                            cancellable: None,
+                            message,
+                            percentage,
+                        },
+                    );
+                } else {
+                    self.lsp_progress.begin(
+                        server_id,
+                        token,
+                        lsp::WorkDoneProgressBegin {
+                            title,
+                            cancellable: None,
+                            message,
+                            percentage,
+                        },
+                    );
+                }
+            }
+            ServerExtensionNotification::Command { command, arguments } => {
+                warn!(
+                    server_id = ?server_id,
+                    command = %command,
+                    argument_count = arguments.len(),
+                    "Ignoring unadvertised language-server client command"
+                );
+            }
+        }
+    }
+
     /// Handle language server message, adapted from Helix's implementation
-    #[instrument(skip(self, call))]
+    #[instrument(skip(self, call, cx))]
     pub fn handle_language_server_message(
         &mut self,
         call: helix_lsp::Call,
         server_id: helix_lsp::LanguageServerId,
+        cx: &mut gpui::Context<crate::Core>,
     ) {
         use helix_lsp::lsp::notification::Notification as _;
         use helix_lsp::{Call, MethodCall, Notification};
@@ -4113,6 +4253,31 @@ impl Application {
                         &server_name_for_log,
                         &format!("{:?}", params),
                     );
+                }
+                match nucleotide_lsp::decode_server_notification(
+                    &server_name_for_log,
+                    &method,
+                    params.clone().into(),
+                ) {
+                    Ok(Some(notification)) => {
+                        self.handle_server_extension_notification(
+                            server_id,
+                            &server_name_for_log,
+                            notification,
+                            cx,
+                        );
+                        return;
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        error!(
+                            server_id = ?server_id,
+                            method = %method,
+                            error = %error,
+                            "Failed to decode language-server extension notification"
+                        );
+                        return;
+                    }
                 }
                 let notification = match Notification::parse(&method, params) {
                     Ok(notification) => notification,
@@ -4248,6 +4413,27 @@ impl Application {
                         self.editor
                             .handle_lsp_diagnostics(&provider, uri, version, diagnostics);
                         trace!("DIAG: Forwarded diagnostics to Helix editor for application");
+                    }
+                    Notification::ShowMessage(params) => {
+                        let severity = if params.typ == lsp::MessageType::ERROR {
+                            crate::types::Severity::Error
+                        } else if params.typ == lsp::MessageType::WARNING {
+                            crate::types::Severity::Warning
+                        } else if params.typ == lsp::MessageType::INFO {
+                            crate::types::Severity::Info
+                        } else {
+                            crate::types::Severity::Hint
+                        };
+                        self.set_editor_status_feedback(cx, params.message, severity);
+                    }
+                    Notification::LogMessage(params) => {
+                        if params.typ == lsp::MessageType::ERROR {
+                            error!(server_id = ?server_id, message = %params.message, "Language server log");
+                        } else if params.typ == lsp::MessageType::WARNING {
+                            warn!(server_id = ?server_id, message = %params.message, "Language server log");
+                        } else {
+                            debug!(server_id = ?server_id, message = %params.message, "Language server log");
+                        }
                     }
                     Notification::ProgressMessage(params) => {
                         use helix_lsp::lsp;
@@ -4414,11 +4600,13 @@ impl Application {
                             lang.config().cloned()
                         };
 
-                        let mut result = Vec::with_capacity(params.items.len());
-                        for _item in &params.items {
-                            // Mirror Helix behavior: return the same config per requested item section
-                            result.push(cfg_value.clone().unwrap_or(serde_json::Value::Null));
-                        }
+                        let result = params
+                            .items
+                            .iter()
+                            .map(|item| {
+                                lsp_configuration_value(cfg_value.as_ref(), item.section.as_deref())
+                            })
+                            .collect::<Vec<_>>();
 
                         debug!(
                             server_id = ?server_id,
@@ -5855,7 +6043,7 @@ impl Application {
                     call_type = ?std::mem::discriminant(&call),
                     "Received EditorEvent::LanguageServerMessage"
                 );
-                self.handle_language_server_message(call, id);
+                self.handle_language_server_message(call, id, cx);
                 self.sync_lsp_state(cx);
                 cx.emit(crate::Update::Redraw);
             }
@@ -11086,6 +11274,17 @@ fn project_lsp_plan_from_names(names: &[String]) -> nucleotide_events::ProjectLs
     let has = |name: &str| names.iter().any(|candidate| candidate == name);
     let project_type = if has("Cargo.toml") {
         ProjectType::Rust
+    } else if [
+        "pom.xml",
+        "build.gradle",
+        "build.gradle.kts",
+        "settings.gradle",
+        "settings.gradle.kts",
+    ]
+    .into_iter()
+    .any(has)
+    {
+        ProjectType::Java
     } else if has("tsconfig.json") {
         ProjectType::TypeScript
     } else if has("package.json") {
@@ -11126,6 +11325,7 @@ fn project_lsp_plan_from_names(names: &[String]) -> nucleotide_events::ProjectLs
         ProjectType::JavaScript => {
             add_language("javascript", ProjectLanguageEvidence::EagerProject)
         }
+        ProjectType::Java => add_language("java", ProjectLanguageEvidence::EagerProject),
         ProjectType::Python => add_language("python", ProjectLanguageEvidence::EagerProject),
         ProjectType::Go => add_language("go", ProjectLanguageEvidence::EagerProject),
         ProjectType::C => add_language("c", ProjectLanguageEvidence::EagerProject),
@@ -11226,6 +11426,7 @@ fn discovered_language_id_for_name(name: &str) -> Option<&'static str> {
         "py" | "pyi" => Some("python"),
         "ts" | "tsx" => Some("typescript"),
         "js" | "jsx" | "mjs" | "cjs" => Some("javascript"),
+        "java" => Some("java"),
         "json" => Some("json"),
         "yaml" | "yml" => Some("yaml"),
         "c" | "h" => Some("c"),
@@ -11253,6 +11454,15 @@ fn detect_project_type_from_workspace(workspace_root: &Path) -> nucleotide_event
 
     if workspace_root.join("Cargo.toml").exists() {
         return ProjectType::Rust;
+    }
+
+    if workspace_root.join("pom.xml").exists()
+        || workspace_root.join("build.gradle").exists()
+        || workspace_root.join("build.gradle.kts").exists()
+        || workspace_root.join("settings.gradle").exists()
+        || workspace_root.join("settings.gradle.kts").exists()
+    {
+        return ProjectType::Java;
     }
 
     if workspace_root.join("tsconfig.json").exists() {
@@ -11324,6 +11534,16 @@ fn detect_project_type_from_workspace_listing(
         return ProjectType::Rust;
     }
 
+    if has_marker(&[
+        "pom.xml",
+        "build.gradle",
+        "build.gradle.kts",
+        "settings.gradle",
+        "settings.gradle.kts",
+    ]) {
+        return ProjectType::Java;
+    }
+
     if has_marker(&["tsconfig.json"]) {
         return ProjectType::TypeScript;
     }
@@ -11359,6 +11579,7 @@ fn language_servers_for_project_type(project_type: &nucleotide_events::ProjectTy
         ProjectType::TypeScript | ProjectType::JavaScript => {
             vec!["typescript-language-server".to_string()]
         }
+        ProjectType::Java => vec!["jdtls".to_string()],
         ProjectType::Python => vec!["pylsp".to_string()],
         ProjectType::Go => vec!["gopls".to_string()],
         ProjectType::C | ProjectType::Cpp => vec!["clangd".to_string()],
@@ -11382,6 +11603,7 @@ fn primary_language_id_for_project_type(project_type: &nucleotide_events::Projec
         ProjectType::Rust => "rust".to_string(),
         ProjectType::TypeScript => "typescript".to_string(),
         ProjectType::JavaScript => "javascript".to_string(),
+        ProjectType::Java => "java".to_string(),
         ProjectType::Python => "python".to_string(),
         ProjectType::Go => "go".to_string(),
         ProjectType::C => "c".to_string(),
@@ -11401,6 +11623,7 @@ fn project_server_language_id(
             nucleotide_events::ProjectType::JavaScript => "javascript".to_string(),
             _ => "typescript".to_string(),
         },
+        "jdtls" | "eclipse-jdtls" | "eclipse.jdt.ls" => "java".to_string(),
         "pylsp" | "pyright" => "python".to_string(),
         "gopls" => "go".to_string(),
         "clangd" => match project_type {
@@ -11516,10 +11739,10 @@ mod tests {
         lsp_completion_insert_text, lsp_completion_insert_text_format,
         lsp_completion_items_from_response, lsp_completion_items_from_response_for_server,
         lsp_completion_resolve_supported, lsp_completion_response_is_incomplete,
-        lsp_diagnostic_document_uri, lsp_location_from_location, lsp_location_path_from_url,
-        lsp_symbol_picker, native_open_file_with_backend, native_symbol_item_from_lsp,
-        navigation_display_path, open_loading_workspace_document, open_workspace_document,
-        path_completion_items, path_completion_items_from_listing,
+        lsp_configuration_value, lsp_diagnostic_document_uri, lsp_location_from_location,
+        lsp_location_path_from_url, lsp_symbol_picker, native_open_file_with_backend,
+        native_symbol_item_from_lsp, navigation_display_path, open_loading_workspace_document,
+        open_workspace_document, path_completion_items, path_completion_items_from_listing,
         probe_available_language_server_commands, project_health_status, project_lsp_config,
         project_lsp_plan_from_names, project_server_language_id, read_workspace_document,
         remote_lsp_project_root_for_document, remote_lsp_root_uri_matches_document_workspace,
@@ -11831,6 +12054,39 @@ mod tests {
             .expect_err("non-unit refresh params should be rejected");
 
         assert_eq!(err.code, helix_lsp::jsonrpc::ErrorCode::InvalidParams);
+    }
+
+    #[test]
+    fn lsp_configuration_value_resolves_dotted_sections() {
+        let config = serde_json::json!({
+            "settings": {
+                "java": {
+                    "format": { "enabled": true },
+                    "home": "/opt/jdk"
+                }
+            }
+        });
+
+        assert_eq!(
+            lsp_configuration_value(Some(&config), Some("java.format.enabled")),
+            serde_json::Value::Bool(true)
+        );
+        assert_eq!(
+            lsp_configuration_value(Some(&config), Some("java.missing")),
+            serde_json::Value::Null
+        );
+    }
+
+    #[test]
+    fn java_build_markers_create_an_eager_java_lsp_plan() {
+        let names = vec!["pom.xml".to_string(), "package.json".to_string()];
+        let plan = project_lsp_plan_from_names(&names);
+
+        assert_eq!(plan.project_type, nucleotide_events::ProjectType::Java);
+        assert!(plan.languages.iter().any(|language| {
+            language.language_id == "java"
+                && language.evidence == nucleotide_events::ProjectLanguageEvidence::EagerProject
+        }));
     }
 
     #[test]
