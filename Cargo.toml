@@ -24,6 +24,7 @@ members = [
 ]
 exclude = [
     "vendor/block-0.1.6",
+    "vendor/velopack-1.2.0",
     "vendor/zed",
 ]
 resolver = "2"
@@ -121,6 +122,8 @@ helix-stdx = { path = "vendor/helix-stdx" }
 helix-view = { path = "vendor/helix-view" }
 
 [patch.crates-io]
+# Use system trust so enterprise TLS interception certificates are honored.
+velopack = { path = "vendor/velopack-1.2.0" }
 # Zed workspace crates rely on these patched async primitives. Patches in
 # dependency workspaces are ignored by Cargo, so mirror the required entries here.
 async-process = { git = "https://github.com/zed-industries/async-process.git", rev = "0b6d6713570af61806e1e5cb40e0f757cb93fd9d" }
