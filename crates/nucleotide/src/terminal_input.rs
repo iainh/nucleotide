@@ -67,7 +67,7 @@ pub fn send_terminal_input<C: gpui::AppContext>(
         } else {
             app.terminal_runtime
                 .dispatch(&TerminalEvent::Input { id, bytes });
-            false
+            true
         }
     })
 }

@@ -4,14 +4,13 @@ use nucleotide_events::v2::terminal::TerminalId;
 
 #[cfg(feature = "emulator")]
 use gpui::AppContext;
-#[cfg(feature = "emulator")]
 use gpui::prelude::FluentBuilder;
 #[cfg(feature = "emulator")]
+use gpui::{Bounds, Hsla, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, hsla, rgb};
 use gpui::{
-    Bounds, Hsla, InteractiveElement, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    Pixels, hsla, rgb,
+    Context, FocusHandle, FontWeight, InteractiveElement, IntoElement, MouseButton, ParentElement,
+    Render, Styled, Window, div,
 };
-use gpui::{Context, FontWeight, IntoElement, ParentElement, Render, Styled, Window, div};
 #[cfg(feature = "emulator")]
 use nucleotide_terminal::frame::{
     Cell, DEFAULT_BACKGROUND, DEFAULT_FOREGROUND, FramePayload, GridDiff, GridSnapshot,
@@ -702,6 +701,7 @@ impl nucleotide_ui::scrollbar::ScrollableHandle for TerminalScrollHandle {
 /// A simple GPUI component that renders a TerminalViewModel as text lines.
 pub struct TerminalView {
     pub model: Arc<Mutex<TerminalViewModel>>,
+    focus: FocusHandle,
     #[cfg(feature = "emulator")]
     rows: Vec<gpui::Entity<TerminalRowView>>,
     #[cfg(feature = "emulator")]
@@ -711,6 +711,7 @@ pub struct TerminalView {
 impl TerminalView {
     pub fn new(
         model: Arc<Mutex<TerminalViewModel>>,
+        focus: FocusHandle,
         #[allow(unused)] cx: &mut Context<Self>,
     ) -> Self {
         #[cfg(feature = "emulator")]
@@ -753,6 +754,7 @@ impl TerminalView {
 
         Self {
             model,
+            focus,
             #[cfg(feature = "emulator")]
             rows: Vec::new(),
             #[cfg(feature = "emulator")]
@@ -770,6 +772,7 @@ impl Render for TerminalView {
         let failure = { lock_or_recover(self.model.as_ref()).spawn_failure() };
 
         if let Some(failure) = failure {
+            let focus = self.focus.clone();
             let mut failure_content = div()
                 .flex()
                 .flex_col()
@@ -780,6 +783,11 @@ impl Render for TerminalView {
                 .p_3()
                 .gap_2()
                 .text_size(tokens.sizes.text_sm)
+                .track_focus(&self.focus)
+                .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                    focus.focus(window, cx);
+                    cx.stop_propagation();
+                })
                 .child(
                     div()
                         .font_weight(FontWeight::MEDIUM)
@@ -878,12 +886,14 @@ impl Render for TerminalView {
 
             let selection_model = self.model.clone();
             let mouse_down_bounds = Rc::clone(&content_bounds);
+            let focus = self.focus.clone();
             let interactive_content = interactive_content.on_mouse_down(
                 MouseButton::Left,
-                move |event: &MouseDownEvent, _window, cx| {
+                move |event: &MouseDownEvent, window, cx| {
                     let Some(bounds) = mouse_down_bounds.get() else {
                         return;
                     };
+                    focus.focus(window, cx);
                     let mut model = lock_or_recover(selection_model.as_ref());
                     if let Some(position) = model.cell_position_for_pointer(bounds, event.position)
                     {
@@ -934,6 +944,7 @@ impl Render for TerminalView {
                 .min_h(gpui::px(0.0))
                 .overflow_hidden()
                 .bg(default_bg)
+                .track_focus(&self.focus)
                 .on_children_prepainted({
                     let content_bounds = Rc::clone(&content_bounds);
                     move |bounds, _window, _cx| {
@@ -964,6 +975,7 @@ impl Render for TerminalView {
             .flex_row()
             .size_full()
             .bg(default_bg)
+            .track_focus(&self.focus)
             .child(content);
 
         wrapper
@@ -1094,9 +1106,68 @@ impl TerminalAnsiPalette {
 #[cfg(all(test, feature = "emulator"))]
 mod tests {
     use super::*;
-    use gpui::{point, px};
+    use gpui::{App, MouseButton, TestAppContext, point, px};
     use nucleotide_terminal::frame::ansi_color;
     use nucleotide_ui::scrollbar::ScrollableHandle;
+
+    fn install_test_globals(cx: &mut App) {
+        cx.set_global(nucleotide_ui::Theme::from_tokens(DesignTokens::dark()));
+        cx.set_global(nucleotide_types::EditorFontConfig {
+            family: "monospace".to_string(),
+            size: 14.0,
+            weight: nucleotide_types::FontWeight::Normal,
+            line_height: 20.0,
+        });
+    }
+
+    #[gpui::test]
+    fn terminal_surface_focuses_before_consuming_selection_click(cx: &mut TestAppContext) {
+        cx.update(install_test_globals);
+
+        let mut model = TerminalViewModel::new(TerminalId(1));
+        model.set_snapshot(GridSnapshot {
+            rows: vec![vec![Cell {
+                ch: 'a',
+                fg: DEFAULT_FOREGROUND,
+                bg: DEFAULT_BACKGROUND,
+                bold: false,
+                italic: false,
+                underline: false,
+                inverse: false,
+            }]],
+            cols: 1,
+            rows_len: 1,
+            cursor_row: 0,
+            cursor_col: 0,
+            title: None,
+            history_size: 0,
+            display_offset: 0,
+            input_mode: TerminalInputMode::default(),
+        });
+        model.cell_width = 8.0;
+        model.cell_height = 20.0;
+        let model = Arc::new(Mutex::new(model));
+
+        let (view, cx) = cx.add_window_view(|_, cx| {
+            let focus = cx.focus_handle();
+            TerminalView::new(model.clone(), focus, cx)
+        });
+
+        cx.update(|window, cx| {
+            assert!(!view.read(cx).focus.is_focused(window));
+        });
+
+        cx.simulate_mouse_down(
+            point(px(4.0), px(10.0)),
+            MouseButton::Left,
+            gpui::Modifiers::none(),
+        );
+
+        cx.update(|window, cx| {
+            assert!(view.read(cx).focus.is_focused(window));
+            assert!(lock_or_recover(model.as_ref()).mouse_selecting);
+        });
+    }
 
     fn scroll_model(history_size: usize, display_offset: usize) -> Arc<Mutex<TerminalViewModel>> {
         let mut model = TerminalViewModel::new(TerminalId(1));

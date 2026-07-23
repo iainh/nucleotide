@@ -1029,6 +1029,7 @@ pub struct Workspace {
     notifications: Entity<NotificationView>,
     last_notified_editor_status: Option<EditorStatus>,
     focus_handle: FocusHandle,
+    needs_focus_restore: bool,
     statusbar_lsp_focus: FocusHandle,
     statusbar_file_tree_focus: FocusHandle,
     statusbar_terminal_focus: FocusHandle,
@@ -1131,12 +1132,8 @@ pub struct Workspace {
     embedded_terminal_panel: Option<gpui::Entity<nucleotide_terminal_panel::TerminalPanel>>,
     // Cwd used to spawn the active terminal session.
     terminal_cwd: Option<PathBuf>,
-    // Focus handle for embedded terminal to capture keyboard input
-    terminal_focus: gpui::FocusHandle,
     // Request to focus terminal on next render (when toggled on via button)
     terminal_focus_pending: bool,
-    // Track whether terminal should capture keys (set on click in terminal area)
-    terminal_active: bool,
     // Cache last applied editor size to avoid redundant resizes each frame
     last_editor_size: Option<(u16, u16)>,
     last_terminal_bounds: Option<(TerminalId, TerminalBounds)>,
@@ -2779,7 +2776,7 @@ impl Workspace {
         let height = self.basic_terminal_height;
         let workspace = cx.entity().clone();
         let entity = cx.new(|cx| {
-            let mut p = nucleotide_terminal_panel::TerminalPanel::new(terminal_id, height)
+            let mut p = nucleotide_terminal_panel::TerminalPanel::new(terminal_id, height, cx)
                 .on_close(move |id, _window, cx| {
                     workspace.update(cx, |workspace, cx| {
                         workspace.close_terminal_panel_session(id, cx);
@@ -2789,7 +2786,40 @@ impl Workspace {
             p.initialize(cx);
             p
         });
+        if let Some(coordinator) = cx.try_global::<nucleotide_ui::FocusCoordinator>().cloned() {
+            coordinator.set_terminal_focus(entity.focus_handle(cx));
+        }
         self.embedded_terminal_panel = Some(entity);
+    }
+
+    fn register_terminal_focus(&self, cx: &mut Context<Self>) {
+        let Some(focus) = self.terminal_focus_handle(cx) else {
+            return;
+        };
+        if let Some(coordinator) = cx.try_global::<nucleotide_ui::FocusCoordinator>().cloned() {
+            coordinator.set_terminal_focus(focus);
+        }
+    }
+
+    fn terminal_focus_handle(&self, cx: &App) -> Option<FocusHandle> {
+        self.embedded_terminal_panel
+            .as_ref()
+            .map(|panel| panel.focus_handle(cx))
+    }
+
+    fn terminal_is_focused(&self, window: &Window, cx: &App) -> bool {
+        self.terminal_panel_visible
+            && self
+                .terminal_focus_handle(cx)
+                .is_some_and(|focus| focus.is_focused(window))
+    }
+
+    fn focus_terminal_panel(&self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(focus) = self.terminal_focus_handle(cx) else {
+            return false;
+        };
+        window.focus(&focus, cx);
+        true
     }
 
     fn open_terminal_panel_at(&mut self, cwd: Option<PathBuf>, cx: &mut Context<Self>) {
@@ -2810,7 +2840,6 @@ impl Workspace {
         self.set_embedded_terminal_panel(id, cx);
         self.terminal_panel_visible = true;
         self.terminal_focus_pending = true;
-        self.terminal_active = true;
         cx.notify();
         id
     }
@@ -2830,22 +2859,31 @@ impl Workspace {
         self.set_embedded_terminal_panel(id, cx);
         self.terminal_panel_visible = true;
         self.terminal_focus_pending = true;
-        self.terminal_active = true;
         cx.notify();
         id
     }
 
-    fn hide_terminal_panel(&mut self) {
+    fn hide_terminal_panel(&mut self, cx: &mut Context<Self>) {
         self.terminal_panel_visible = false;
         self.terminal_focus_pending = false;
-        self.terminal_active = false;
         self.last_terminal_bounds = None;
-        self.view_manager.set_needs_focus_restore(true);
+        self.needs_focus_restore = true;
+        if let Some(focus) = self.terminal_focus_handle(cx)
+            && let Some(coordinator) = cx.try_global::<nucleotide_ui::FocusCoordinator>().cloned()
+        {
+            coordinator.clear_terminal_focus_if(&focus);
+        }
     }
 
-    fn clear_terminal_panel_session(&mut self) {
+    fn clear_terminal_panel_session(&mut self, cx: &mut Context<Self>) {
         let cleared_id = self.terminal_id;
+        let panel_focus = self.terminal_focus_handle(cx);
         self.embedded_terminal_panel = None;
+        if let Some(focus) = panel_focus
+            && let Some(coordinator) = cx.try_global::<nucleotide_ui::FocusCoordinator>().cloned()
+        {
+            coordinator.clear_terminal_focus_if(&focus);
+        }
         self.terminal_id = None;
         self.terminal_cwd = None;
         if let Some(id) = cleared_id {
@@ -2883,7 +2921,6 @@ impl Workspace {
                 self.finish_background_activity(activity_id, cx);
             }
             self.terminal_focus_pending = false;
-            self.terminal_active = false;
             let status_message = match (status, code) {
                 (RunStatus::Finished, Some(0) | None) => "Runnable finished".to_string(),
                 (RunStatus::Failed, Some(exit_code)) => {
@@ -2909,8 +2946,8 @@ impl Workspace {
             return;
         }
 
-        self.hide_terminal_panel();
-        self.clear_terminal_panel_session();
+        self.hide_terminal_panel(cx);
+        self.clear_terminal_panel_session(cx);
         cx.notify();
     }
 
@@ -3013,7 +3050,7 @@ impl Workspace {
     fn toggle_terminal_panel(&mut self, cx: &mut Context<Self>) {
         // Basic layout: toggle visibility of embedded bottom panel
         if self.terminal_panel_visible {
-            self.hide_terminal_panel();
+            self.hide_terminal_panel(cx);
             cx.notify();
             return;
         }
@@ -3040,9 +3077,9 @@ impl Workspace {
         }
 
         self.terminal_panel_visible = true;
+        self.register_terminal_focus(cx);
         // Ask render to focus the terminal on the next frame
         self.terminal_focus_pending = true;
-        self.terminal_active = true;
         cx.notify();
     }
 
@@ -4337,7 +4374,7 @@ impl Workspace {
         }
 
         if should_focus {
-            self.view_manager.set_needs_focus_restore(false);
+            self.needs_focus_restore = false;
         }
 
         cx.notify();
@@ -5222,7 +5259,7 @@ impl Workspace {
             self.execute_raw_command(command, cx);
         }
         if self.view_manager.focused_view_id().is_some() {
-            self.view_manager.set_needs_focus_restore(true);
+            self.needs_focus_restore = true;
         }
         cx.notify();
     }
@@ -5340,7 +5377,7 @@ impl Workspace {
             &overlay,
             |workspace, _overlay, _event: &DismissEvent, cx| {
                 // Mark that we need to restore focus in the next render
-                workspace.view_manager.set_needs_focus_restore(true);
+                workspace.needs_focus_restore = true;
 
                 // Check if completion was dismissed and manage context
                 let has_completion = workspace.overlay.read(cx).has_completion();
@@ -5498,6 +5535,7 @@ impl Workspace {
             notifications,
             last_notified_editor_status: None,
             focus_handle,
+            needs_focus_restore: false,
             statusbar_lsp_focus: cx.focus_handle(),
             statusbar_file_tree_focus: cx.focus_handle(),
             statusbar_terminal_focus: cx.focus_handle(),
@@ -5592,9 +5630,7 @@ impl Workspace {
             basic_terminal_height: 220.0,
             embedded_terminal_panel: None,
             terminal_cwd: None,
-            terminal_focus: cx.focus_handle(),
             terminal_focus_pending: false,
-            terminal_active: false,
             // Performance cache for editor sizing
             last_editor_size: None,
             last_terminal_bounds: None,
@@ -5618,7 +5654,7 @@ impl Workspace {
         workspace.recompute_theme_colors(cx);
 
         // Set initial focus restore state
-        workspace.view_manager.set_needs_focus_restore(true);
+        workspace.needs_focus_restore = true;
 
         // Note: Completion handling is now done directly via event-driven approach
 
@@ -5627,7 +5663,7 @@ impl Workspace {
 
         // Auto-focus the first document view on startup
         if workspace.view_manager.focused_view_id().is_some() {
-            workspace.view_manager.set_needs_focus_restore(true);
+            workspace.needs_focus_restore = true;
         }
 
         // Setup LSP state subscription for project status updates
@@ -6497,7 +6533,7 @@ impl Workspace {
         let finished_resize = self.split_pane_resize.take().is_some();
 
         if finished_resize && self.view_manager.focused_view_id().is_some() {
-            self.view_manager.set_needs_focus_restore(true);
+            self.needs_focus_restore = true;
         }
 
         if finished_resize || stopped_drag {
@@ -6591,7 +6627,7 @@ impl Workspace {
         });
 
         if self.view_manager.focused_view_id().is_some() {
-            self.view_manager.set_needs_focus_restore(true);
+            self.needs_focus_restore = true;
         }
         cx.notify();
     }
@@ -6916,7 +6952,7 @@ impl Workspace {
     fn handle_key(&mut self, ev: &KeyDownEvent, window: &Window, cx: &mut Context<Self>) {
         // If embedded terminal is focused, route all keys to it and stop here.
         // Terminal visibility alone must not steal editor input.
-        if self.terminal_panel_visible && self.terminal_focus.is_focused(window) {
+        if self.terminal_is_focused(window, cx) {
             if let Some(panel) = &self.embedded_terminal_panel {
                 let id = panel.read(cx).active;
                 let bytes = crate::terminal_input::encode_key_event_for_terminal(id, ev);
@@ -10112,7 +10148,7 @@ impl Workspace {
             });
         }
         if should_focus && self.view_manager.focused_view_id().is_some() {
-            self.view_manager.set_needs_focus_restore(true);
+            self.needs_focus_restore = true;
         }
         cx.notify();
 
@@ -10282,7 +10318,7 @@ impl Workspace {
             });
         }
         if should_focus && self.view_manager.focused_view_id().is_some() {
-            self.view_manager.set_needs_focus_restore(true);
+            self.needs_focus_restore = true;
         }
         cx.notify();
     }
@@ -10465,7 +10501,7 @@ impl Workspace {
 
         // Only focus the editor if requested (not when opening from file tree)
         if should_focus && self.view_manager.focused_view_id().is_some() {
-            self.view_manager.set_needs_focus_restore(true);
+            self.needs_focus_restore = true;
         }
 
         // Force a redraw
@@ -10667,7 +10703,7 @@ impl Workspace {
                 // pending keymap payload.
                 self.info_hidden = true;
                 self.update_key_hints(cx);
-                self.view_manager.set_needs_focus_restore(true);
+                self.needs_focus_restore = true;
                 cx.notify();
             }
             crate::Update::ShouldQuit => {
@@ -10752,9 +10788,8 @@ impl Workspace {
             .is_some_and(|doc_view| doc_view.focus_handle(cx).contains_focused(window, cx));
         let tab_bar_menu_focused = self.any_tab_bar_menu_open();
         let workspace_focused = self.focus_handle.contains_focused(window, cx);
-        let terminal_pane_focused = self.terminal_focus.is_focused(window)
-            || self.terminal_focus_pending
-            || self.terminal_active;
+        let terminal_pane_focused =
+            self.terminal_is_focused(window, cx) || self.terminal_focus_pending;
         let editor_pane_focused = workspace_focused || active_document_focused;
         let show_focused_tab_bar_buttons =
             editor_pane_focused || terminal_pane_focused || tab_bar_menu_focused;
@@ -13811,7 +13846,7 @@ impl Workspace {
     fn send_helix_key(&mut self, key: &str, cx: &mut Context<Self>) {
         // Ensure an editor view has focus
         if self.view_manager.focused_view_id().is_some() {
-            self.view_manager.set_needs_focus_restore(true);
+            self.needs_focus_restore = true;
         }
 
         // Parse the key string and send it to Helix
@@ -13839,7 +13874,7 @@ impl Workspace {
             return;
         }
         if self.view_manager.focused_view_id().is_some() {
-            self.view_manager.set_needs_focus_restore(true);
+            self.needs_focus_restore = true;
         }
         self.input
             .update(cx, |_, cx| cx.emit(InputEvent::semantic(action)));
@@ -14263,8 +14298,8 @@ impl Render for Workspace {
             }
             && self.run_output_terminal != Some(id)
         {
-            self.hide_terminal_panel();
-            self.clear_terminal_panel_session();
+            self.hide_terminal_panel(cx);
+            self.clear_terminal_panel_session(cx);
         }
 
         // Fallback: full refresh if any pending flag remains
@@ -14285,15 +14320,15 @@ impl Render for Workspace {
         // report not focused, leaving the app with no key receiver. This block ensures
         // that after overlay teardown, we always regain a valid focus target without a click.
         if self.overlay.read(cx).is_empty() && !self.modal_layer.read(cx).has_active_modal() {
-            let ws_focused = self.focus_handle.is_focused(window);
-            let overlay_focused = self.overlay.focus_handle(cx).is_focused(window);
+            let ws_focused = self.focus_handle.contains_focused(window, cx);
+            let overlay_focused = self.overlay.focus_handle(cx).contains_focused(window, cx);
 
             let (doc_focus_handle, doc_focused) = if let Some(id) =
                 self.view_manager.focused_view_id()
                 && let Some(doc_view) = self.view_manager.get_document_view(&id)
             {
                 let fh = doc_view.focus_handle(cx);
-                (Some(fh.clone()), fh.is_focused(window))
+                (Some(fh.clone()), fh.contains_focused(window, cx))
             } else {
                 (None, false)
             };
@@ -14301,11 +14336,12 @@ impl Render for Workspace {
             let file_tree_focused = self
                 .file_tree
                 .as_ref()
-                .map(|ft| ft.focus_handle(cx).is_focused(window))
+                .map(|ft| ft.focus_handle(cx).contains_focused(window, cx))
                 .unwrap_or(false);
 
-            // Consider embedded terminal focus as a valid target
-            let terminal_focused = self.terminal_focus.is_focused(window);
+            let terminal_focused = self
+                .terminal_focus_handle(cx)
+                .is_some_and(|focus| focus.contains_focused(window, cx));
 
             if !ws_focused
                 && !overlay_focused
@@ -14313,12 +14349,13 @@ impl Render for Workspace {
                 && !file_tree_focused
                 && !terminal_focused
             {
-                // First, nudge caret into the document view if we have one.
                 if let Some(fh) = doc_focus_handle {
                     window.focus(&fh, cx);
+                } else if let Some(file_tree) = &self.file_tree {
+                    window.focus(&file_tree.focus_handle(cx), cx);
+                } else {
+                    window.focus(&self.focus_handle, cx);
                 }
-                // Then ensure global key routing via workspace root.
-                window.focus(&self.focus_handle, cx);
             }
         }
 
@@ -14378,29 +14415,15 @@ impl Render for Workspace {
         }
 
         // Handle focus restoration if needed
-        if self.view_manager.needs_focus_restore() {
+        if self.needs_focus_restore {
             if self.view_manager.get_focused_document_view().is_some() {
                 self.view_manager.focus_editor_area(cx, window);
-            } else if let Some(coord) = cx.try_global::<nucleotide_ui::FocusCoordinator>().cloned()
-            {
-                let _ = coord.focus_first(
-                    window,
-                    cx,
-                    &[
-                        nucleotide_ui::FocusRole::Terminal,
-                        nucleotide_ui::FocusRole::FileTree,
-                    ],
-                );
+            } else if let Some(file_tree) = &self.file_tree {
+                window.focus(&file_tree.focus_handle(cx), cx);
             } else {
                 window.focus(&self.focus_handle, cx);
             }
-            self.view_manager.set_needs_focus_restore(false);
-        }
-
-        // If terminal was toggled on via button, focus it now
-        if self.terminal_panel_visible && self.terminal_focus_pending {
-            window.focus(&self.terminal_focus, cx);
-            self.terminal_focus_pending = false;
+            self.needs_focus_restore = false;
         }
         let (focused_file_name, native_metadata) = self.focused_native_window_metadata(cx);
 
@@ -14791,11 +14814,8 @@ impl Render for Workspace {
                     cx.notify();
                 }
 
-                // Clicking elsewhere deactivates terminal input capture
-                workspace.terminal_active = false;
-
                 // Ensure workspace regains focus when clicked, so global shortcuts work
-                workspace.view_manager.set_needs_focus_restore(true);
+                workspace.needs_focus_restore = true;
                 cx.notify();
             }),
         );
@@ -15406,15 +15426,8 @@ impl Render for Workspace {
                                             div()
                                                 .size_full()
                                                 .overflow_hidden()
-                                                .track_focus(&self.terminal_focus)
-                                                .on_mouse_down(MouseButton::Left, cx.listener(|this: &mut Workspace, _ev: &MouseDownEvent, window, cx| {
-                                                    window.focus(&this.terminal_focus, cx);
-                                                    this.terminal_active = true;
-                                                    cx.notify();
-                                                    cx.stop_propagation();
-                                                }))
                                                 .on_key_down(cx.listener(|this: &mut Workspace, event: &gpui::KeyDownEvent, window, cx| {
-                                                    if this.terminal_focus.is_focused(window) {
+                                                    if this.terminal_is_focused(window, cx) {
                                                         this.handle_key(event, window, cx);
                                                     }
                                                 }))
@@ -15630,7 +15643,7 @@ impl Render for Workspace {
 
         // If terminal was toggled on via button, focus it now (after elements are built)
         if self.terminal_panel_visible && self.terminal_focus_pending {
-            window.focus(&self.terminal_focus, cx);
+            self.focus_terminal_panel(window, cx);
             self.terminal_focus_pending = false;
         }
 

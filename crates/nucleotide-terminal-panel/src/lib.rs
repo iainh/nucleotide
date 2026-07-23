@@ -1,8 +1,8 @@
 // ABOUTME: Bottom terminal panel with chrome, title, actions, and terminal view mounting
 
 use gpui::{
-    App, AppContext, Context, Entity, FontWeight, IntoElement, ParentElement, Render, Styled,
-    Window, div, px, svg,
+    App, AppContext, Context, Entity, FocusHandle, Focusable, FontWeight, InteractiveElement,
+    IntoElement, MouseButton, ParentElement, Render, Styled, Window, div, px, svg,
 };
 use nucleotide_events::v2::terminal::TerminalId;
 use nucleotide_terminal_view::{TerminalView, get_view_model};
@@ -26,17 +26,19 @@ pub struct TerminalPanel {
     pub active: TerminalId,
     pub height_px: f32,
     pub view_entity: Option<Entity<nucleotide_terminal_view::TerminalView>>,
+    focus: FocusHandle,
     title: String,
     title_poll_started: bool,
     on_close: Option<CloseHandler>,
 }
 
 impl TerminalPanel {
-    pub fn new(active: TerminalId, height_px: f32) -> Self {
+    pub fn new(active: TerminalId, height_px: f32, cx: &mut Context<Self>) -> Self {
         Self {
             active,
             height_px,
             view_entity: None,
+            focus: cx.focus_handle(),
             title: terminal_display_title(active),
             title_poll_started: false,
             on_close: None,
@@ -57,7 +59,8 @@ impl TerminalPanel {
         if self.view_entity.is_none()
             && let Some(model) = get_view_model(self.active)
         {
-            let created = cx.new(|cx| TerminalView::new(model, cx));
+            let focus = self.focus.clone();
+            let created = cx.new(|cx| TerminalView::new(model, focus, cx));
             self.view_entity = Some(created);
         }
     }
@@ -93,6 +96,12 @@ impl TerminalPanel {
     }
 }
 
+impl Focusable for TerminalPanel {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
+        self.focus.clone()
+    }
+}
+
 fn terminal_display_title(id: TerminalId) -> String {
     get_view_model(id)
         .map(|model| {
@@ -112,7 +121,8 @@ impl Render for TerminalPanel {
         if self.view_entity.is_none()
             && let Some(model) = get_view_model(self.active)
         {
-            let created = cx.new(|cx| TerminalView::new(model, cx));
+            let focus = self.focus.clone();
+            let created = cx.new(|cx| TerminalView::new(model, focus, cx));
             self.view_entity = Some(created);
         }
 
@@ -124,6 +134,7 @@ impl Render for TerminalPanel {
         let title = self.title.clone();
         let terminal_id = self.active;
         let close_handler = self.on_close.clone();
+        let panel_focus = self.focus.clone();
 
         let mut close_button = Button::icon_only(
             format!("terminal-panel-close-{}", terminal_id.0),
@@ -175,7 +186,11 @@ impl Render for TerminalPanel {
             .border_t_1()
             .border_color(border)
             .flex()
-            .flex_col();
+            .flex_col()
+            .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                panel_focus.focus(window, cx);
+                cx.stop_propagation();
+            });
 
         container = container.child(header);
 

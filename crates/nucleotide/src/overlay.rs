@@ -657,12 +657,23 @@ impl OverlayView {
         panel: Entity<nucleotide_terminal_panel::TerminalPanel>,
         cx: &mut Context<Self>,
     ) {
-        self.terminal_panel = Some(panel);
+        if let Some(previous) = self.terminal_panel.replace(panel.clone())
+            && let Some(coordinator) = cx.try_global::<nucleotide_ui::FocusCoordinator>().cloned()
+        {
+            coordinator.clear_terminal_focus_if(&previous.focus_handle(cx));
+        }
+        if let Some(coordinator) = cx.try_global::<nucleotide_ui::FocusCoordinator>().cloned() {
+            coordinator.set_terminal_focus(panel.focus_handle(cx));
+        }
         cx.notify();
     }
 
     pub fn hide_terminal_panel(&mut self, cx: &mut Context<Self>) {
-        self.terminal_panel = None;
+        if let Some(panel) = self.terminal_panel.take()
+            && let Some(coordinator) = cx.try_global::<nucleotide_ui::FocusCoordinator>().cloned()
+        {
+            coordinator.clear_terminal_focus_if(&panel.focus_handle(cx));
+        }
         cx.notify();
     }
 
@@ -1137,8 +1148,7 @@ impl OverlayView {
             }
             crate::Update::TerminalPanel(panel) => {
                 nucleotide_logging::info!("TERMINAL: Showing Terminal panel overlay");
-                self.terminal_panel = Some(panel.clone());
-                cx.notify();
+                self.show_terminal_panel(panel.clone(), cx);
             }
             crate::Update::Picker(picker) => {
                 nucleotide_logging::trace!("DIAG: Overlay Update::Picker received");
@@ -2225,21 +2235,9 @@ impl Render for OverlayView {
         }
 
         // Terminal panel - docked at bottom
-        if self.terminal_panel.is_some() {
+        if let Some(panel) = self.terminal_panel.clone() {
             {
-                // Ensure we have a persistent focus handle for the terminal panel area via coordinator
-                let coordinator = cx
-                    .try_global::<nucleotide_ui::FocusCoordinator>()
-                    .cloned()
-                    .unwrap_or_else(|| {
-                        let c = nucleotide_ui::FocusCoordinator::default();
-                        cx.set_global(c.clone());
-                        c
-                    });
-                if coordinator.terminal_focus().is_none() {
-                    coordinator.set_terminal_focus(cx.focus_handle());
-                }
-                let panel_focus = coordinator.terminal_focus().unwrap();
+                let panel_focus = panel.focus_handle(cx);
                 let panel_focus_for_keys = panel_focus.clone();
 
                 // Sync from window-level resize state
@@ -2436,11 +2434,11 @@ impl Render for OverlayView {
                                         .as_deref(),
                                     Ok("1") | Ok("true") | Ok("yes") | Ok("on")
                                 );
-                                let mut c = div()
-                                    .size_full()
-                                    .overflow_hidden()
-                                    .bg(cx.theme().tokens.editor.background)
-                                    .track_focus(&panel_focus);
+                                let mut c = div().size_full().overflow_hidden().bg(cx
+                                    .theme()
+                                    .tokens
+                                    .editor
+                                    .background);
                                 if debug {
                                     let theme = cx.global::<nucleotide_ui::Theme>();
                                     c = c
