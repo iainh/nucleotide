@@ -85,6 +85,20 @@ impl FocusCoordinator {
         }
     }
 
+    pub fn clear_terminal_focus(&self) {
+        if let Ok(mut slot) = self.terminal.write() {
+            *slot = None;
+        }
+    }
+
+    pub fn clear_terminal_focus_if(&self, focus: &FocusHandle) {
+        if let Ok(mut slot) = self.terminal.write()
+            && slot.as_ref() == Some(focus)
+        {
+            *slot = None;
+        }
+    }
+
     pub fn terminal_focus(&self) -> Option<FocusHandle> {
         self.terminal.read().ok().and_then(|g| g.clone())
     }
@@ -229,10 +243,12 @@ mod tests {
         coordinator.clear_picker_focus();
         coordinator.clear_prompt_focus();
         coordinator.clear_completion_focus();
+        coordinator.clear_terminal_focus();
 
         assert!(coordinator.picker_focus().is_none());
         assert!(coordinator.prompt_focus().is_none());
         assert!(coordinator.completion_focus().is_none());
+        assert!(coordinator.terminal_focus().is_none());
     }
 
     struct FocusTraversalHarness {

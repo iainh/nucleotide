@@ -16,9 +16,6 @@ pub struct ViewManager {
 
     /// Currently focused view ID
     focused_view_id: Option<ViewId>,
-
-    /// Whether focus needs to be restored after operations
-    needs_focus_restore: bool,
 }
 
 impl ViewManager {
@@ -27,7 +24,6 @@ impl ViewManager {
         Self {
             documents: HashMap::new(),
             focused_view_id: None,
-            needs_focus_restore: false,
         }
     }
 
@@ -49,16 +45,6 @@ impl ViewManager {
     /// Set the focused view ID
     pub fn set_focused_view_id(&mut self, view_id: Option<ViewId>) {
         self.focused_view_id = view_id;
-    }
-
-    /// Check if focus needs to be restored
-    pub fn needs_focus_restore(&self) -> bool {
-        self.needs_focus_restore
-    }
-
-    /// Set whether focus needs to be restored
-    pub fn set_needs_focus_restore(&mut self, needs_restore: bool) {
-        self.needs_focus_restore = needs_restore;
     }
 
     /// Insert a document view
@@ -137,7 +123,6 @@ impl ViewManager {
     pub fn clear_views(&mut self) {
         self.documents.clear();
         self.focused_view_id = None;
-        self.needs_focus_restore = false;
     }
 
     /// Get the number of active document views
@@ -166,12 +151,11 @@ mod tests {
         let manager = ViewManager::new();
         assert!(manager.focused_view_id().is_none());
         assert_eq!(manager.view_count(), 0);
-        assert!(!manager.needs_focus_restore());
     }
 
     #[test]
     fn test_view_manager_focus_tracking() {
-        let mut manager = ViewManager::new();
+        let manager = ViewManager::new();
         let view_id = ViewId::default();
 
         // Initially no focused view
@@ -180,19 +164,14 @@ mod tests {
         // Can't test actual focus handling without GPUI context
         // but we can test the basic state management
         assert!(!manager.has_view(&view_id));
-
-        manager.set_needs_focus_restore(true);
-        assert!(manager.needs_focus_restore());
     }
 
     #[test]
     fn test_view_manager_clear() {
         let mut manager = ViewManager::new();
-        manager.set_needs_focus_restore(true);
 
         manager.clear_views();
         assert!(manager.focused_view_id().is_none());
         assert_eq!(manager.view_count(), 0);
-        assert!(!manager.needs_focus_restore());
     }
 }
