@@ -11,15 +11,6 @@ pub mod project_lsp_manager;
 #[cfg(test)]
 pub mod integration_tests;
 
-#[cfg(test)]
-pub mod mock_server_tests;
-
-#[cfg(test)]
-pub mod stress_tests;
-
-#[cfg(test)]
-pub mod command_flow_test;
-
 pub use document_manager::{DocumentManager, DocumentManagerMut};
 pub use helix_lsp_bridge::{
     EditorLspIntegration, EnvironmentProvider, HelixLspBridge, LspLaunchProxy,

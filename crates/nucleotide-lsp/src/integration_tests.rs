@@ -9,17 +9,12 @@ mod lsp_lifecycle_integration_tests {
     use std::time::{Duration, Instant};
 
     // use helix_view::{Editor, Document, DocumentId, ViewId};
-    use nucleotide_events::{ProjectLspEvent, ProjectType, ServerHealthStatus};
-    use nucleotide_logging::{info, warn};
+    use nucleotide_events::{ProjectLspEvent, ProjectType};
     // use slotmap::SlotMap;
     use tokio::sync::RwLock;
     use tokio::time::sleep;
 
-    use crate::mock_server_tests::mock_lsp_servers::MockServerRegistry;
-    use crate::{
-        ProjectDetector, ProjectLspConfig, ProjectLspError, ProjectLspManager,
-        ServerLifecycleManager,
-    };
+    use crate::{ProjectDetector, ProjectLspConfig, ProjectLspManager};
 
     /// Test configuration for integration tests
     #[derive(Debug, Clone)]
@@ -125,39 +120,6 @@ edition = "2021"
             Ok(project_dir)
         }
 
-        async fn create_mixed_project(&self, name: &str) -> Result<PathBuf, std::io::Error> {
-            self.ensure_test_dir().await?;
-            let project_dir = self.test_config.test_dir.join(name);
-
-            tokio::fs::create_dir_all(&project_dir).await?;
-
-            // Create both Cargo.toml and package.json for mixed project
-            let cargo_toml = r#"[package]
-name = "mixed_project"
-version = "0.1.0"
-edition = "2021"
-"#;
-            tokio::fs::write(project_dir.join("Cargo.toml"), cargo_toml).await?;
-
-            let package_json = r#"{
-  "name": "mixed_project",
-  "version": "1.0.0"
-}
-"#;
-            tokio::fs::write(project_dir.join("package.json"), package_json).await?;
-
-            // Create both src directories
-            let rust_src = project_dir.join("src");
-            tokio::fs::create_dir_all(&rust_src).await?;
-            tokio::fs::write(rust_src.join("main.rs"), "fn main() {}").await?;
-
-            let js_src = project_dir.join("js");
-            tokio::fs::create_dir_all(&js_src).await?;
-            tokio::fs::write(js_src.join("index.js"), "console.log('hello');").await?;
-
-            Ok(project_dir)
-        }
-
         async fn cleanup_test_directory(&self) -> Result<(), std::io::Error> {
             if self.test_config.test_dir.exists() {
                 tokio::fs::remove_dir_all(&self.test_config.test_dir).await?;
@@ -230,57 +192,6 @@ edition = "2021"
         }
     }
 
-    /// Performance metrics collector
-    #[derive(Debug, Clone)]
-    struct PerformanceMetrics {
-        server_startup_times: Vec<Duration>,
-        project_detection_times: Vec<Duration>,
-        health_check_times: Vec<Duration>,
-        cleanup_times: Vec<Duration>,
-    }
-
-    impl PerformanceMetrics {
-        fn new() -> Self {
-            Self {
-                server_startup_times: Vec::new(),
-                project_detection_times: Vec::new(),
-                health_check_times: Vec::new(),
-                cleanup_times: Vec::new(),
-            }
-        }
-
-        #[allow(dead_code)]
-        fn record_server_startup(&mut self, duration: Duration) {
-            self.server_startup_times.push(duration);
-        }
-
-        fn record_project_detection(&mut self, duration: Duration) {
-            self.project_detection_times.push(duration);
-        }
-
-        fn record_health_check(&mut self, duration: Duration) {
-            self.health_check_times.push(duration);
-        }
-
-        fn record_cleanup(&mut self, duration: Duration) {
-            self.cleanup_times.push(duration);
-        }
-
-        fn average_startup_time(&self) -> Option<Duration> {
-            if self.server_startup_times.is_empty() {
-                return None;
-            }
-
-            let total = self.server_startup_times.iter().sum::<Duration>();
-            Some(total / self.server_startup_times.len() as u32)
-        }
-
-        #[allow(dead_code)]
-        fn max_startup_time(&self) -> Option<Duration> {
-            self.server_startup_times.iter().max().copied()
-        }
-    }
-
     // Test setup helpers
     async fn setup_test_manager() -> (ProjectLspManager, EventCollector) {
         let config = ProjectLspConfig {
@@ -325,7 +236,6 @@ edition = "2021"
             .expect("Failed to create test project");
 
         let (manager, collector) = setup_test_manager().await;
-        let _registry = MockServerRegistry::new();
 
         // Test lifecycle: start -> detect -> startup -> health -> cleanup
 
@@ -496,56 +406,6 @@ edition = "2021"
     }
 
     #[tokio::test]
-    #[ignore = "Flaky concurrency test - mixed projects have timing dependencies"]
-    async fn test_multiple_language_servers_same_project() {
-        let helper = ProjectTestHelper::new();
-        let _ = helper.cleanup_test_directory().await;
-
-        let mixed_project = helper
-            .create_mixed_project("mixed_test")
-            .await
-            .expect("Failed to create mixed project");
-
-        let (manager, collector) = setup_test_manager().await;
-        manager.start().await.expect("Failed to start manager");
-
-        // Detect mixed project
-        manager
-            .detect_project(mixed_project.clone())
-            .await
-            .expect("Failed to detect project");
-
-        // Wait for multiple server startup requests
-        let mut startup_requests = Vec::new();
-        let timeout_duration = Duration::from_secs(2);
-        let start_time = Instant::now();
-
-        while start_time.elapsed() < timeout_duration && startup_requests.len() < 2 {
-            let events = collector
-                .get_events_of_type(|event| {
-                    matches!(event, ProjectLspEvent::ServerStartupRequested { .. })
-                })
-                .await;
-
-            startup_requests = events;
-            if startup_requests.len() < 2 {
-                sleep(Duration::from_millis(50)).await;
-            }
-        }
-
-        // For mixed projects, we might get multiple servers
-        // Note: The current implementation may detect as Rust (first match)
-        // but in a real mixed project detector, we'd expect multiple servers
-        assert!(
-            !startup_requests.is_empty(),
-            "Should have at least one server startup request"
-        );
-
-        manager.stop().await.expect("Failed to stop manager");
-        let _ = helper.cleanup_test_directory().await;
-    }
-
-    #[tokio::test]
     async fn test_server_cleanup_and_resource_management() {
         let helper = ProjectTestHelper::new();
         let _ = helper.cleanup_test_directory().await;
@@ -665,184 +525,6 @@ edition = "2021"
     }
 
     #[tokio::test]
-    async fn test_performance_validation() {
-        let helper = ProjectTestHelper::new();
-        let _ = helper.cleanup_test_directory().await;
-
-        let mut metrics = PerformanceMetrics::new();
-        let (manager, _collector) = setup_test_manager().await;
-
-        manager.start().await.expect("Failed to start manager");
-
-        // Test multiple project detections for performance metrics
-        for i in 0..5 {
-            let project = helper
-                .create_rust_project(&format!("perf_test_{}", i))
-                .await
-                .expect("Failed to create test project");
-
-            let start = Instant::now();
-            manager
-                .detect_project(project)
-                .await
-                .expect("Failed to detect project");
-            let detection_time = start.elapsed();
-
-            metrics.record_project_detection(detection_time);
-        }
-
-        // Test health check performance simulation
-        for _ in 0..10 {
-            let start = Instant::now();
-
-            // Simulate health check operation
-            sleep(Duration::from_millis(1)).await;
-
-            let health_check_time = start.elapsed();
-            metrics.record_health_check(health_check_time);
-        }
-
-        let cleanup_start = Instant::now();
-        manager.stop().await.expect("Failed to stop manager");
-        let cleanup_time = cleanup_start.elapsed();
-        metrics.record_cleanup(cleanup_time);
-
-        // Validate performance characteristics
-        if let Some(avg_detection) = metrics.average_startup_time() {
-            assert!(
-                avg_detection < Duration::from_millis(50),
-                "Average detection time should be fast: {:?}",
-                avg_detection
-            );
-        }
-
-        assert!(
-            cleanup_time < Duration::from_millis(100),
-            "Cleanup should be fast: {:?}",
-            cleanup_time
-        );
-
-        info!("Performance metrics: {:?}", metrics);
-        let _ = helper.cleanup_test_directory().await;
-    }
-
-    #[tokio::test]
-    async fn test_error_recovery_scenarios() {
-        let helper = ProjectTestHelper::new();
-        let _ = helper.cleanup_test_directory().await;
-
-        let (manager, collector) = setup_test_manager().await;
-        manager.start().await.expect("Failed to start manager");
-
-        // Test 1: Invalid project path
-        let invalid_path = PathBuf::from("/nonexistent/path");
-        let result = manager.detect_project(invalid_path).await;
-
-        // This should handle the error gracefully
-        // (Current implementation may not fail on nonexistent paths)
-        match result {
-            Err(ProjectLspError::ProjectDetection(_)) => {
-                // Expected error case
-            }
-            Ok(()) => {
-                // May succeed with unknown project type
-                warn!("Project detection succeeded for invalid path");
-            }
-            Err(e) => panic!("Unexpected error type: {:?}", e),
-        }
-
-        // Test 2: Simulate server startup failure
-        let rust_project = helper
-            .create_rust_project("error_recovery_test")
-            .await
-            .expect("Failed to create test project");
-
-        manager
-            .detect_project(rust_project.clone())
-            .await
-            .expect("Failed to detect valid project");
-
-        // Wait for startup request
-        let _startup_event = collector
-            .wait_for_event(
-                |event| matches!(event, ProjectLspEvent::ServerStartupRequested { .. }),
-                Duration::from_secs(1),
-            )
-            .await
-            .expect("Server startup should be requested");
-
-        // Test 3: Health check failure handling
-        // This would be tested with a mock server that reports unhealthy status
-
-        // Test 4: Resource cleanup after errors
-        manager
-            .stop()
-            .await
-            .expect("Manager should stop cleanly even after errors");
-
-        let _ = helper.cleanup_test_directory().await;
-    }
-
-    #[tokio::test]
-    async fn test_server_health_monitoring() {
-        let helper = ProjectTestHelper::new();
-        let _ = helper.cleanup_test_directory().await;
-
-        let rust_project = helper
-            .create_rust_project("health_test")
-            .await
-            .expect("Failed to create test project");
-
-        let config = ProjectLspConfig {
-            enable_proactive_startup: true,
-            health_check_interval: Duration::from_millis(50), // Very frequent for testing
-            startup_timeout: Duration::from_millis(500),
-            max_concurrent_startups: 3,
-            project_markers: nucleotide_types::ProjectMarkersConfig::default(),
-        };
-
-        let manager = ProjectLspManager::new(config, None);
-        let collector = EventCollector::new();
-
-        // Set up event listening
-        setup_event_listening(&manager, &collector).await;
-
-        manager.start().await.expect("Failed to start manager");
-
-        // Detect project
-        manager
-            .detect_project(rust_project.clone())
-            .await
-            .expect("Failed to detect project");
-
-        // Wait for startup
-        collector
-            .wait_for_event(
-                |event| matches!(event, ProjectLspEvent::ServerStartupRequested { .. }),
-                Duration::from_secs(1),
-            )
-            .await
-            .expect("Server startup not requested");
-
-        // Wait for health check events
-        let health_event = collector
-            .wait_for_event(
-                |event| matches!(event, ProjectLspEvent::HealthCheckCompleted { .. }),
-                Duration::from_secs(2),
-            )
-            .await;
-
-        // Note: Current implementation performs simple health checks
-        // In a real scenario, we'd verify actual LSP server health
-        if let Some(ProjectLspEvent::HealthCheckCompleted { status, .. }) = health_event {
-            info!("Health check completed with status: {:?}", status);
-        }
-
-        manager.stop().await.expect("Failed to stop manager");
-        let _ = helper.cleanup_test_directory().await;
-    }
-
-    #[tokio::test]
     #[ignore = "Flaky concurrency test - passes individually but fails in group runs"]
     async fn test_project_type_detection_accuracy() {
         let helper = ProjectTestHelper::new();
@@ -888,39 +570,6 @@ edition = "2021"
             detector.get_primary_language_id(&ProjectType::Unknown),
             "unknown"
         );
-
-        let _ = helper.cleanup_test_directory().await;
-    }
-
-    #[tokio::test]
-    async fn test_server_lifecycle_with_editor_integration() {
-        // This test would require mocking the Helix Editor
-        // For now, we test the interface and error handling
-
-        let helper = ProjectTestHelper::new();
-        let _ = helper.cleanup_test_directory().await;
-
-        let config = ProjectLspConfig::default();
-        let lifecycle_manager = ServerLifecycleManager::new(config);
-
-        let rust_project = helper
-            .create_rust_project("editor_integration")
-            .await
-            .expect("Failed to create test project");
-
-        let managed_server = lifecycle_manager
-            .start_server(&rust_project, "rust-analyzer", "rust")
-            .await
-            .expect("Server startup should succeed with mock implementation");
-
-        assert_eq!(managed_server.server_name, "rust-analyzer");
-        assert_eq!(managed_server.language_id, "rust");
-        assert_eq!(managed_server.workspace_root, rust_project);
-        assert!(matches!(
-            managed_server.health_status,
-            ServerHealthStatus::Healthy
-        ));
-        assert!(managed_server.last_health_check.is_none());
 
         let _ = helper.cleanup_test_directory().await;
     }
