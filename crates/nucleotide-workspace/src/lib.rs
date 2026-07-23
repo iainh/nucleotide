@@ -3943,18 +3943,16 @@ fn kill_timed_out_process(child: &mut Child, path: &Path) -> Result<()> {
 
 #[cfg(unix)]
 fn kill_process_group(process_id: u32) -> std::io::Result<()> {
-    let status = Command::new("kill")
-        .arg("-KILL")
-        .arg(format!("-{process_id}"))
-        .status()?;
-
-    if status.success() {
-        Ok(())
-    } else {
-        Err(std::io::Error::other(format!(
-            "kill process group exited with {status}"
-        )))
+    let process_id = libc::pid_t::try_from(process_id)
+        .map_err(|_| std::io::Error::other("child process ID did not fit in pid_t"))?;
+    // SAFETY: `process_id` belongs to the child that this module just spawned. Negating it asks
+    // POSIX `kill` to signal that process group; SIGKILL requires no shared-memory access.
+    let result = unsafe { libc::kill(-process_id, libc::SIGKILL) };
+    if result == 0 {
+        return Ok(());
     }
+
+    Err(std::io::Error::last_os_error())
 }
 
 fn read_limited<R: Read>(mut reader: R, limit: usize) -> std::io::Result<(Vec<u8>, bool)> {
