@@ -3535,7 +3535,10 @@ mod tests {
             &mut jobs,
         );
 
-        assert_eq!(focused_document_text(&editor), "aXbc\n");
+        assert_eq!(
+            focused_document_text(&editor),
+            format!("aXbc{}", helix_core::NATIVE_LINE_ENDING.as_str())
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -3559,7 +3562,10 @@ mod tests {
             &mut jobs,
         );
 
-        assert_eq!(focused_document_text(&editor), "aXXbc\n");
+        assert_eq!(
+            focused_document_text(&editor),
+            format!("aXXbc{}", helix_core::NATIVE_LINE_ENDING.as_str())
+        );
         assert_eq!(editor.count, None);
     }
 
@@ -3615,7 +3621,10 @@ mod tests {
             &mut jobs,
         );
 
-        assert_eq!(focused_document_text(&editor), "aXbc\n");
+        assert_eq!(
+            focused_document_text(&editor),
+            format!("aXbc{}", helix_core::NATIVE_LINE_ENDING.as_str())
+        );
         assert_eq!(editor.mode(), Mode::Insert);
     }
 
@@ -3640,7 +3649,11 @@ mod tests {
             &mut jobs,
         );
 
-        assert_eq!(focused_document_text(&editor), "aX\nbc\n");
+        let line_ending = helix_core::NATIVE_LINE_ENDING.as_str();
+        assert_eq!(
+            focused_document_text(&editor),
+            format!("aX{line_ending}bc{line_ending}")
+        );
         assert_eq!(editor.mode(), Mode::Insert);
     }
 
@@ -3665,7 +3678,10 @@ mod tests {
             &mut jobs,
         );
 
-        assert_eq!(focused_document_text(&editor), "abXcd\n");
+        assert_eq!(
+            focused_document_text(&editor),
+            format!("abXcd{}", helix_core::NATIVE_LINE_ENDING.as_str())
+        );
         assert_eq!(editor.mode(), Mode::Normal);
     }
 
