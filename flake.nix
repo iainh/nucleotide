@@ -14,7 +14,7 @@
     crane.url = "github:ipetkov/crane";
 
     ghostty = {
-      url = "github:ghostty-org/ghostty/fdbf9ff3a31d7531b691cb49c98fc465a1a503a0";
+      url = "github:ghostty-org/ghostty/a887df42c56f6de86c0fe6da9c4eeca37931e083";
       flake = false;
     };
 
@@ -53,7 +53,7 @@
         ];
 
         # Keep Cargo metadata, local development, Nix, and CI on one compiler.
-        rustVersion = "1.95.0";
+        rustVersion = "1.96.0";
         rustToolchain = pkgs.rust-bin.stable.${rustVersion}.default.override {
           extensions = [
             "clippy"
@@ -68,14 +68,14 @@
 
         # Dependency management following Helix patterns
         inherit (pkgs) lib stdenv;
-        # libghostty-vt-sys 0.2.0 requires Zig 0.15.2 exactly. Use nixpkgs'
+        # libghostty-vt-sys 0.2.1 requires Zig 0.15.2 exactly. Use nixpkgs'
         # patched package so Zig can locate Nix-provided libc headers.
         zig_0_15_2 =
           assert pkgs.zig_0_15.version == "0.15.2";
           pkgs.zig_0_15;
         ghosttyZigDeps = pkgs.callPackage "${ghostty}/build.zig.zon.nix" {
           zig_0_15 = zig_0_15_2;
-          name = "ghostty-cache-libghostty-vt-sys-0.2.0";
+          name = "ghostty-cache-libghostty-vt-sys-0.2.1";
         };
 
         # Keep Nix's cc wrapper so library paths and SDK flags are preserved,
