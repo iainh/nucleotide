@@ -32,7 +32,7 @@ pub use workspace_file_ops::WorkspaceFileOpHandler;
 use arc_swap::{ArcSwap, access::Map};
 use futures_util::{
     future::{BoxFuture, FutureExt},
-    stream::{FuturesOrdered, StreamExt},
+    stream::{FuturesOrdered, FuturesUnordered, StreamExt},
 };
 use helix_core::{
     Position, Range, Rope, RopeSlice, Selection, Uri, pos_at_coords, syntax,
@@ -543,23 +543,299 @@ fn document_lsp_identifier(doc: &Document) -> Option<lsp::TextDocumentIdentifier
     doc.url().map(lsp::TextDocumentIdentifier::new)
 }
 
-fn is_workspace_diagnostic_refresh_method(method: &str) -> bool {
-    use helix_lsp::lsp::request::Request as _;
-
-    method == lsp::request::WorkspaceDiagnosticRefresh::METHOD
+#[derive(Debug, Default)]
+struct PullDiagnosticsHandler {
+    document_ids: HashSet<DocumentId>,
 }
 
-fn workspace_diagnostic_refresh_reply(
-    params: helix_lsp::jsonrpc::Params,
-) -> Result<serde_json::Value, helix_lsp::jsonrpc::Error> {
-    params
-        .parse::<()>()
-        .map(|()| serde_json::Value::Null)
-        .map_err(|err| helix_lsp::jsonrpc::Error {
-            code: helix_lsp::jsonrpc::ErrorCode::InvalidParams,
-            message: format!("Invalid workspace/diagnostic/refresh params: {err}"),
-            data: None,
+impl helix_event::AsyncHook for PullDiagnosticsHandler {
+    type Event = helix_view::handlers::lsp::PullDiagnosticsEvent;
+
+    fn handle_event(
+        &mut self,
+        event: Self::Event,
+        _timeout: Option<tokio::time::Instant>,
+    ) -> Option<tokio::time::Instant> {
+        self.document_ids.insert(event.document_id);
+        Some(tokio::time::Instant::now() + Duration::from_millis(250))
+    }
+
+    fn finish_debounce(&mut self) {
+        let document_ids = std::mem::take(&mut self.document_ids);
+        helix_term::job::dispatch_blocking(move |editor, _| {
+            for document_id in document_ids {
+                request_document_diagnostics(editor, document_id);
+            }
+        });
+    }
+}
+
+#[derive(Debug, Default)]
+struct PullAllDocumentsDiagnosticsHandler {
+    language_servers: HashSet<LanguageServerId>,
+}
+
+impl helix_event::AsyncHook for PullAllDocumentsDiagnosticsHandler {
+    type Event = helix_view::handlers::lsp::PullAllDocumentsDiagnosticsEvent;
+
+    fn handle_event(
+        &mut self,
+        event: Self::Event,
+        _timeout: Option<tokio::time::Instant>,
+    ) -> Option<tokio::time::Instant> {
+        self.language_servers.extend(event.language_servers);
+        Some(tokio::time::Instant::now() + Duration::from_secs(1))
+    }
+
+    fn finish_debounce(&mut self) {
+        let language_servers = std::mem::take(&mut self.language_servers);
+        helix_term::job::dispatch_blocking(move |editor, _| {
+            let document_ids: Vec<_> = editor.documents.keys().copied().collect();
+            for document_id in document_ids {
+                request_document_diagnostics_for_language_servers(
+                    editor,
+                    document_id,
+                    language_servers.clone(),
+                );
+            }
+        });
+    }
+}
+
+fn register_pull_diagnostic_hooks(handlers: &Handlers) {
+    use helix_event::{register_hook, send_blocking};
+    use helix_view::events::{DocumentDidChange, DocumentDidOpen, LanguageServerInitialized};
+    use helix_view::handlers::lsp::{PullAllDocumentsDiagnosticsEvent, PullDiagnosticsEvent};
+
+    let pull_diagnostics = handlers.pull_diagnostics.clone();
+    let pull_all_documents_diagnostics = handlers.pull_all_documents_diagnostics.clone();
+    register_hook!(move |event: &mut DocumentDidChange<'_>| {
+        if event.ghost_transaction
+            || !event.doc.has_language_server_with_feature(
+                syntax::config::LanguageServerFeature::PullDiagnostics,
+            )
+        {
+            return Ok(());
+        }
+
+        event.doc.pull_diagnostic_controller.cancel();
+        send_blocking(
+            &pull_diagnostics,
+            PullDiagnosticsEvent {
+                document_id: event.doc.id(),
+            },
+        );
+
+        let language_servers = event
+            .doc
+            .language_servers_with_feature(syntax::config::LanguageServerFeature::PullDiagnostics)
+            .filter(|language_server| {
+                language_server
+                    .capabilities()
+                    .diagnostic_provider
+                    .as_ref()
+                    .is_some_and(|provider| match provider {
+                        lsp::DiagnosticServerCapabilities::Options(options) => {
+                            options.inter_file_dependencies
+                        }
+                        lsp::DiagnosticServerCapabilities::RegistrationOptions(options) => {
+                            options.diagnostic_options.inter_file_dependencies
+                        }
+                    })
+            })
+            .map(|language_server| language_server.id())
+            .collect();
+        send_blocking(
+            &pull_all_documents_diagnostics,
+            PullAllDocumentsDiagnosticsEvent { language_servers },
+        );
+        Ok(())
+    });
+
+    register_hook!(move |event: &mut DocumentDidOpen<'_>| {
+        request_document_diagnostics(event.editor, event.doc);
+        Ok(())
+    });
+
+    register_hook!(move |event: &mut LanguageServerInitialized<'_>| {
+        request_all_document_diagnostics_for_language_server(event.editor, event.server_id);
+        Ok(())
+    });
+}
+
+fn request_all_document_diagnostics_for_language_server(
+    editor: &mut Editor,
+    server_id: LanguageServerId,
+) {
+    let document_ids: Vec<_> = editor
+        .documents
+        .values()
+        .filter(|doc| doc.supports_language_server(server_id))
+        .map(Document::id)
+        .collect();
+
+    for document_id in document_ids {
+        request_document_diagnostics(editor, document_id);
+    }
+}
+
+fn request_document_diagnostics(editor: &mut Editor, document_id: DocumentId) {
+    let Some(doc) = editor.document(document_id) else {
+        return;
+    };
+
+    let language_servers = doc
+        .language_servers_with_feature(syntax::config::LanguageServerFeature::PullDiagnostics)
+        .map(|language_server| language_server.id())
+        .collect();
+
+    request_document_diagnostics_for_language_servers(editor, document_id, language_servers);
+}
+
+fn request_document_diagnostics_for_language_servers(
+    editor: &mut Editor,
+    document_id: DocumentId,
+    language_servers: HashSet<LanguageServerId>,
+) {
+    let Some(doc) = editor.document_mut(document_id) else {
+        return;
+    };
+
+    let cancel = doc.pull_diagnostic_controller.restart();
+    let mut futures: FuturesUnordered<_> = language_servers
+        .iter()
+        .filter_map(|server_id| {
+            doc.language_servers()
+                .find(|language_server| language_server.id() == *server_id)
         })
+        .filter_map(|language_server| {
+            let server_id = language_server.id();
+            let request = language_server.text_document_diagnostic(
+                doc.identifier(),
+                doc.previous_diagnostic_ids.get(&server_id).cloned(),
+            )?;
+            let identifier = language_server
+                .capabilities()
+                .diagnostic_provider
+                .as_ref()
+                .and_then(|provider| match provider {
+                    lsp::DiagnosticServerCapabilities::Options(options) => {
+                        options.identifier.clone()
+                    }
+                    lsp::DiagnosticServerCapabilities::RegistrationOptions(options) => {
+                        options.diagnostic_options.identifier.clone()
+                    }
+                });
+            let provider = helix_core::diagnostic::DiagnosticProvider::Lsp {
+                server_id,
+                identifier,
+            };
+            let uri = doc.uri()?;
+
+            Some(async move { (request.await, provider, uri) })
+        })
+        .collect();
+
+    if futures.is_empty() {
+        return;
+    }
+
+    tokio::spawn(async move {
+        let mut retry_language_servers = HashSet::new();
+        loop {
+            match helix_event::cancelable_future(futures.next(), &cancel).await {
+                Some(Some((Ok(result), provider, uri))) => {
+                    helix_term::job::dispatch(move |editor, _| {
+                        handle_pull_diagnostics_response(
+                            editor,
+                            result,
+                            provider,
+                            uri,
+                            document_id,
+                        );
+                    })
+                    .await;
+                }
+                Some(Some((Err(err), provider, _))) => {
+                    let Some(server_id) = provider.language_server_id() else {
+                        continue;
+                    };
+                    let cancellation_data = if let helix_lsp::Error::Rpc(error) = err {
+                        error.data.and_then(|data| {
+                            serde_json::from_value::<lsp::DiagnosticServerCancellationData>(data)
+                                .ok()
+                        })
+                    } else {
+                        error!(server_id = ?server_id, error = %err, "Pull diagnostic request failed");
+                        continue;
+                    };
+
+                    if cancellation_data.is_some_and(|data| data.retrigger_request) {
+                        retry_language_servers.insert(server_id);
+                    }
+                }
+                Some(None) => break,
+                None => return,
+            }
+        }
+
+        if !retry_language_servers.is_empty() {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            helix_term::job::dispatch(move |editor, _| {
+                request_document_diagnostics_for_language_servers(
+                    editor,
+                    document_id,
+                    retry_language_servers,
+                );
+            })
+            .await;
+        }
+    });
+}
+
+fn handle_pull_diagnostics_response(
+    editor: &mut Editor,
+    result: lsp::DocumentDiagnosticReportResult,
+    provider: helix_core::diagnostic::DiagnosticProvider,
+    uri: Uri,
+    document_id: DocumentId,
+) {
+    let lsp::DocumentDiagnosticReportResult::Report(report) = result else {
+        return;
+    };
+
+    let result_id = match report {
+        lsp::DocumentDiagnosticReport::Full(report) => {
+            editor.handle_lsp_diagnostics(
+                &provider,
+                uri,
+                None,
+                report.full_document_diagnostic_report.items,
+            );
+            report.full_document_diagnostic_report.result_id
+        }
+        lsp::DocumentDiagnosticReport::Unchanged(report) => {
+            Some(report.unchanged_document_diagnostic_report.result_id)
+        }
+    };
+
+    let Some(document) = editor.document_mut(document_id) else {
+        return;
+    };
+    let Some(server_id) = provider.language_server_id() else {
+        return;
+    };
+
+    match result_id {
+        Some(result_id) => {
+            document
+                .previous_diagnostic_ids
+                .insert(server_id, result_id);
+        }
+        None => {
+            document.previous_diagnostic_ids.remove(&server_id);
+        }
+    }
 }
 
 #[allow(dead_code)]
@@ -4343,36 +4619,7 @@ impl Application {
                     "Handling LSP method call"
                 );
 
-                // Parse and handle method calls like Helix does. Some LSP 3.17
-                // server-to-client requests are present in lsp-types but not in
-                // helix_lsp::MethodCall yet, so handle those by raw method name
-                // before the generic parser classifies them as unhandled.
-                let reply = match MethodCall::parse(&method, params.clone()) {
-                    Err(helix_lsp::Error::Unhandled)
-                        if is_workspace_diagnostic_refresh_method(&method) =>
-                    {
-                        let reply = workspace_diagnostic_refresh_reply(params);
-                        match &reply {
-                            Ok(_) => {
-                                debug!(
-                                    server_id = ?server_id,
-                                    method = %method,
-                                    id = ?id,
-                                    "Acknowledged workspace diagnostic refresh request"
-                                );
-                            }
-                            Err(err) => {
-                                error!(
-                                    server_id = ?server_id,
-                                    method = %method,
-                                    id = ?id,
-                                    error = %err,
-                                    "Malformed workspace diagnostic refresh request"
-                                );
-                            }
-                        }
-                        reply
-                    }
+                let reply = match MethodCall::parse(&method, params) {
                     Err(helix_lsp::Error::Unhandled) => {
                         error!(
                             server_id = ?server_id,
@@ -4405,6 +4652,19 @@ impl Application {
                         let token = params.token.clone();
                         self.lsp_progress.create(server_id, params.token);
                         debug!(server_id = ?server_id, token = ?token, "Created work done progress");
+                        Ok(serde_json::Value::Null)
+                    }
+                    Ok(MethodCall::WorkspaceDiagnosticRefresh) => {
+                        request_all_document_diagnostics_for_language_server(
+                            &mut self.editor,
+                            server_id,
+                        );
+                        debug!(
+                            server_id = ?server_id,
+                            method = %method,
+                            id = ?id,
+                            "Refreshing pull diagnostics for language server"
+                        );
                         Ok(serde_json::Value::Null)
                     }
                     Ok(MethodCall::WorkspaceConfiguration(params)) => {
@@ -9438,8 +9698,9 @@ pub fn init_editor(
     let (auto_save_tx, _auto_save_rx) = tokio::sync::mpsc::channel(1);
     let (doc_colors_tx, _doc_colors_rx) = tokio::sync::mpsc::channel(1);
     let (doc_links_tx, _doc_links_rx) = tokio::sync::mpsc::channel(1);
-    let (pull_diagnostics_tx, _pull_diagnostics_rx) = tokio::sync::mpsc::channel(1);
-    let (pull_all_diagnostics_tx, _pull_all_diagnostics_rx) = tokio::sync::mpsc::channel(1);
+    use helix_event::AsyncHook as _;
+    let pull_diagnostics_tx = PullDiagnosticsHandler::default().spawn();
+    let pull_all_diagnostics_tx = PullAllDocumentsDiagnosticsHandler::default().spawn();
     let (code_action_hint_tx, _code_action_hint_rx) = tokio::sync::mpsc::channel(1);
     // Create a dummy completion channel since Helix CompletionHandler expects one
     // We'll register our own hooks to capture completion results directly
@@ -9459,6 +9720,7 @@ pub fn init_editor(
 
     // Register handler hooks to enable LSP features
     helix_view::handlers::register_hooks(&handlers);
+    register_pull_diagnostic_hooks(&handlers);
 
     // Initialize event bridge system for Helix -> GPUI event forwarding
     let (bridge_tx, bridge_rx) = event_bridge::create_bridge_channel();
@@ -11520,22 +11782,21 @@ mod tests {
         diagnostic_picker_path_label, diagnostic_severity_label,
         discover_project_languages_with_backend, file_picker_current_directory,
         home_requires_login_shell_capture, hydrate_workspace_document_from_read,
-        is_workspace_diagnostic_refresh_method, local_path_completion_context,
-        lsp_completion_insert_text, lsp_completion_insert_text_format,
-        lsp_completion_items_from_response, lsp_completion_items_from_response_for_server,
-        lsp_completion_resolve_supported, lsp_completion_response_is_incomplete,
-        lsp_diagnostic_document_uri, lsp_location_from_location, lsp_location_path_from_url,
-        lsp_symbol_picker, native_open_file_with_backend, native_symbol_item_from_lsp,
-        navigation_display_path, open_loading_workspace_document, open_workspace_document,
-        path_completion_items, path_completion_items_from_listing,
-        probe_available_language_server_commands, project_health_status, project_lsp_config,
-        project_lsp_plan_from_names, project_server_language_id, read_workspace_document,
-        remote_lsp_project_root_for_document, remote_lsp_root_uri_matches_document_workspace,
-        remote_native_file_uri, retain_servers_with_available_commands,
-        should_stat_picker_root_with_backend, should_use_native_save_for_settings_file,
-        should_use_workspace_syntax_symbol_fallback, startup_path_should_open_as_file,
-        str_prefix_at_byte_limit, suppress_shadowed_buffer_word_completion_items,
-        syntax_symbol_kind_from_capture_name, workspace_diagnostic_refresh_reply,
+        local_path_completion_context, lsp_completion_insert_text,
+        lsp_completion_insert_text_format, lsp_completion_items_from_response,
+        lsp_completion_items_from_response_for_server, lsp_completion_resolve_supported,
+        lsp_completion_response_is_incomplete, lsp_diagnostic_document_uri,
+        lsp_location_from_location, lsp_location_path_from_url, lsp_symbol_picker,
+        native_open_file_with_backend, native_symbol_item_from_lsp, navigation_display_path,
+        open_loading_workspace_document, open_workspace_document, path_completion_items,
+        path_completion_items_from_listing, probe_available_language_server_commands,
+        project_health_status, project_lsp_config, project_lsp_plan_from_names,
+        project_server_language_id, read_workspace_document, remote_lsp_project_root_for_document,
+        remote_lsp_root_uri_matches_document_workspace, remote_native_file_uri,
+        retain_servers_with_available_commands, should_stat_picker_root_with_backend,
+        should_use_native_save_for_settings_file, should_use_workspace_syntax_symbol_fallback,
+        startup_path_should_open_as_file, str_prefix_at_byte_limit,
+        suppress_shadowed_buffer_word_completion_items, syntax_symbol_kind_from_capture_name,
     };
     use crate::test_utils::test_support::{
         TestUpdate, create_counting_channel, create_test_diagnostic_events,
@@ -11813,32 +12074,17 @@ mod tests {
     }
 
     #[test]
-    fn workspace_diagnostic_refresh_method_matches_lsp_constant() {
-        assert!(is_workspace_diagnostic_refresh_method(
-            "workspace/diagnostic/refresh"
+    fn workspace_diagnostic_refresh_parses_as_typed_method_call() {
+        let method_call = helix_lsp::MethodCall::parse(
+            "workspace/diagnostic/refresh",
+            helix_lsp::jsonrpc::Params::None,
+        )
+        .expect("workspace diagnostic refresh should be supported");
+
+        assert!(matches!(
+            method_call,
+            helix_lsp::MethodCall::WorkspaceDiagnosticRefresh
         ));
-        assert!(!is_workspace_diagnostic_refresh_method(
-            "workspace/diagnostic"
-        ));
-    }
-
-    #[test]
-    fn workspace_diagnostic_refresh_reply_accepts_unit_params() {
-        let reply = workspace_diagnostic_refresh_reply(helix_lsp::jsonrpc::Params::None)
-            .expect("unit refresh params");
-
-        assert_eq!(reply, serde_json::Value::Null);
-    }
-
-    #[test]
-    fn workspace_diagnostic_refresh_reply_rejects_non_unit_params() {
-        let mut params = serde_json::Map::new();
-        params.insert("unexpected".to_string(), serde_json::Value::Bool(true));
-
-        let err = workspace_diagnostic_refresh_reply(helix_lsp::jsonrpc::Params::Map(params))
-            .expect_err("non-unit refresh params should be rejected");
-
-        assert_eq!(err.code, helix_lsp::jsonrpc::ErrorCode::InvalidParams);
     }
 
     #[test]
