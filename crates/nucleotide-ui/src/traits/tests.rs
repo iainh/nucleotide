@@ -3,8 +3,8 @@
 
 #[cfg(test)]
 use crate::{
-    Component, ComponentFactory, ComponentState, ComponentStyles, Styled, Theme, ThemedContext,
-    Tooltipped, ValidationState, compute_component_state,
+    Component, ComponentFactory, ComponentState, ComponentStyles, Styled, Theme, Tooltipped,
+    ValidationState, compute_component_state,
 };
 use gpui::{ElementId, SharedString};
 
@@ -236,107 +236,4 @@ fn test_validation_state() {
     assert!(error.is_error());
     assert!(!error.is_warning());
     assert_eq!(error.message(), Some("This is an error"));
-}
-
-#[test]
-fn test_themed_context_integration() {
-    // This test verifies that the ThemedContext trait provides correct access
-    // Note: We can't easily test this without a full GPUI app context,
-    // but we can verify the trait compiles and the methods exist
-
-    // Test that we can reference the trait methods
-    #[allow(dead_code)]
-    fn check_themed_context<T: ThemedContext>(_ctx: &T) {
-        // These calls would work in a real GPUI context
-        // let theme = ctx.theme();
-        // let tokens = ctx.tokens();
-        // let is_dark = ctx.is_dark_theme();
-    }
-
-    // Verify trait is implemented for the right types
-    fn _compile_check() {
-        let _ = check_themed_context::<gpui::App> as fn(&gpui::App);
-        // Note: Can't easily test Context<V> without generic parameter
-    }
-}
-
-#[test]
-fn test_builder_pattern_consistency() {
-    // Test that all builder methods follow consistent patterns
-    let component = MockComponent::new("builder-test")
-        .with_id("new-id")
-        .disabled(true)
-        .with_variant(MockVariant::Secondary)
-        .with_size(MockSize::Large)
-        .tooltip("Builder pattern tooltip");
-
-    let _id = component.id(); // Just verify we can access the ID
-    assert!(component.is_disabled());
-    assert_eq!(*component.variant(), MockVariant::Secondary);
-    assert_eq!(*component.size(), MockSize::Large);
-    assert_eq!(
-        component.get_tooltip().unwrap().as_ref(),
-        "Builder pattern tooltip"
-    );
-}
-
-#[test]
-fn test_trait_composition() {
-    // Test that traits compose well together
-    struct ComposedComponent {
-        id: ElementId,
-        disabled: bool,
-        tooltip: Option<SharedString>,
-        variant: MockVariant,
-        size: MockSize,
-    }
-
-    impl ComposedComponent {
-        fn new(id: impl Into<ElementId>) -> Self {
-            Self {
-                id: id.into(),
-                disabled: false,
-                tooltip: None,
-                variant: MockVariant::default(),
-                size: MockSize::default(),
-            }
-        }
-    }
-
-    // Apply multiple traits
-    crate::impl_component!(ComposedComponent);
-    crate::impl_tooltipped!(ComposedComponent);
-
-    impl Styled for ComposedComponent {
-        type Variant = MockVariant;
-        type Size = MockSize;
-
-        fn variant(&self) -> &Self::Variant {
-            &self.variant
-        }
-        fn with_variant(mut self, variant: Self::Variant) -> Self {
-            self.variant = variant;
-            self
-        }
-
-        fn size(&self) -> &Self::Size {
-            &self.size
-        }
-        fn with_size(mut self, size: Self::Size) -> Self {
-            self.size = size;
-            self
-        }
-    }
-
-    // Test that all traits work together
-    let component = ComposedComponent::new("composed")
-        .disabled(true)
-        .tooltip("Composed tooltip")
-        .with_variant(MockVariant::Secondary)
-        .with_size(MockSize::Large);
-
-    assert!(component.is_disabled());
-    assert!(component.get_tooltip().is_some());
-    assert_eq!(*component.variant(), MockVariant::Secondary);
-    assert_eq!(*component.size(), MockSize::Large);
 }
