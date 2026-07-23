@@ -43,7 +43,7 @@ if ! command -v rustup >/dev/null 2>&1; then
 fi
 
 echo "Installing the repository's pinned Rust toolchain..."
-rustup toolchain install 1.95.0 \
+rustup toolchain install 1.96.0 \
   --profile minimal \
   --component clippy \
   --component rustfmt \
