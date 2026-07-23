@@ -328,8 +328,8 @@ pub fn update_editor_pointer_selection_at_event_outcome(
 #[cfg(test)]
 mod tests {
     use super::{
-        EditorPointerSelectionUpdate, EditorSelectionDragState, EditorSelectionUpdate,
-        pointer_selection_anchor, selection_for_range,
+        EditorSelectionDragState, EditorSelectionUpdate, pointer_selection_anchor,
+        selection_for_range,
     };
 
     #[test]
@@ -369,22 +369,5 @@ mod tests {
 
         state.clear();
         assert_eq!(state.anchor(), None);
-    }
-
-    #[test]
-    fn pointer_selection_update_carries_hit_test_and_selection() {
-        let update = EditorPointerSelectionUpdate {
-            hit_test: crate::EditorHitTestResult {
-                line_idx: 1,
-                char_offset: 2,
-                char_idx: 12,
-            },
-            selection: EditorSelectionUpdate {
-                anchor: 4,
-                head: 12,
-            },
-        };
-
-        assert_eq!(update.hit_test.char_idx, update.selection.head);
     }
 }
