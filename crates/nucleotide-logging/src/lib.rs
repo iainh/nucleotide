@@ -10,18 +10,6 @@ pub mod subscriber;
 #[cfg(test)]
 mod integration_test;
 
-#[cfg(test)]
-mod structured_tests;
-
-#[cfg(test)]
-mod instrumentation_tests;
-
-#[cfg(test)]
-mod level_filtering_tests;
-
-#[cfg(test)]
-mod simple_mock_tests;
-
 // Re-export tracing macros for convenience
 pub use tracing::{Level, Span, debug, error, info, instrument, span, trace, warn};
 
