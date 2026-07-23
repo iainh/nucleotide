@@ -326,7 +326,7 @@ impl EditorInputBridge {
                     &MappableCommand::yank_to_clipboard,
                     &MappableCommand::delete_selection,
                 ],
-                EditorSemanticAction::Paste => &[&MappableCommand::paste_clipboard_after],
+                EditorSemanticAction::Paste => &[],
                 EditorSemanticAction::SelectAll => &[&MappableCommand::select_all],
                 EditorSemanticAction::FindNext => &[&MappableCommand::search_next],
                 EditorSemanticAction::FindPrevious => &[&MappableCommand::search_prev],
@@ -344,8 +344,14 @@ impl EditorInputBridge {
                     jobs,
                 };
                 let mut last_mode = context.editor.mode();
-                for command in commands {
-                    execute_native_command(command, &mut context, &mut last_mode);
+                if action == EditorSemanticAction::Paste {
+                    self.native_commands.prepare_non_key_paste(&mut context);
+                    execute_clipboard_paste(&mut context, &mut last_mode);
+                    context.editor.count = None;
+                } else {
+                    for command in commands {
+                        execute_native_command(command, &mut context, &mut last_mode);
+                    }
                 }
                 std::mem::take(&mut context.callback)
             };
@@ -486,6 +492,23 @@ impl NativeCommandInput {
 
     fn take_reset_diff_change_executed(&mut self) -> bool {
         std::mem::take(&mut self.reset_diff_change_executed)
+    }
+
+    fn prepare_non_key_paste(&mut self, context: &mut commands::Context<'_>) {
+        context.editor.status_msg = None;
+        context.editor.reset_idle_timer();
+
+        let null_key = KeyEvent {
+            code: KeyCode::Null,
+            modifiers: KeyModifiers::empty(),
+        };
+        if let Some((on_next_key, _)) = self.on_next_key.take() {
+            on_next_key(context, null_key);
+        }
+        let _ = self.keymaps.get(context.editor.mode(), null_key);
+        context.editor.autoinfo = self.keymaps.sticky().map(|node| node.infobox());
+        context.on_next_key_callback = None;
+        context.count = context.editor.count;
     }
 
     fn handle_key(
@@ -730,9 +753,9 @@ impl NativeCommandInput {
                     return NativeCommandResult::Handled(Vec::new());
                 }
 
-                if let Some(command) = native_insert_shortcut_command(key) {
+                if is_native_insert_paste_shortcut(key) {
                     let mut last_mode = mode;
-                    execute_native_command(command, context, &mut last_mode);
+                    execute_clipboard_paste(context, &mut last_mode);
                     self.current_insert_replay.keys.push(key);
                     return NativeCommandResult::Handled(Vec::new());
                 }
@@ -1207,6 +1230,11 @@ fn execute_editor_semantic_action(
             request: NativePromptRequest::Search,
         };
     }
+    if action == EditorSemanticAction::Paste {
+        let mut last_mode = context.editor.mode();
+        execute_clipboard_paste(context, &mut last_mode);
+        return NativeCommandResult::Handled(Vec::new());
+    }
     let commands: &[&MappableCommand] = match action {
         EditorSemanticAction::Undo => &[&MappableCommand::undo],
         EditorSemanticAction::Redo => &[&MappableCommand::redo],
@@ -1215,7 +1243,7 @@ fn execute_editor_semantic_action(
             &MappableCommand::yank_to_clipboard,
             &MappableCommand::delete_selection,
         ],
-        EditorSemanticAction::Paste => &[&MappableCommand::paste_clipboard_after],
+        EditorSemanticAction::Paste => unreachable!(),
         EditorSemanticAction::SelectAll => &[&MappableCommand::select_all],
         EditorSemanticAction::FindNext => &[&MappableCommand::search_next],
         EditorSemanticAction::FindPrevious => &[&MappableCommand::search_prev],
@@ -1228,6 +1256,41 @@ fn execute_editor_semantic_action(
         execute_native_command(command, context, &mut last_mode);
     }
     NativeCommandResult::Handled(Vec::new())
+}
+
+fn execute_clipboard_paste(context: &mut commands::Context<'_>, last_mode: &mut Mode) {
+    let mode = context.editor.mode();
+    if mode == Mode::Normal {
+        execute_native_command(&MappableCommand::paste_clipboard_before, context, last_mode);
+        return;
+    }
+
+    // Helix's bracketed-paste path uses Paste::Cursor in Insert and Select modes.
+    // That implementation is crate-private, but insert_register reaches the same
+    // paste path. Resolve its register callback immediately with the clipboard
+    // register rather than leaving the editor waiting for another key.
+    let previous_autoinfo = context.editor.autoinfo.take();
+    MappableCommand::insert_register.execute(context);
+    if let Some((paste_register, _)) = context.on_next_key_callback.take() {
+        paste_register(
+            context,
+            KeyEvent {
+                code: KeyCode::Char('+'),
+                modifiers: KeyModifiers::empty(),
+            },
+        );
+    }
+    context.editor.autoinfo = previous_autoinfo;
+
+    if mode == Mode::Select {
+        context.editor.mode = Mode::Normal;
+        helix_event::dispatch(OnModeSwitch {
+            old_mode: Mode::Select,
+            new_mode: Mode::Normal,
+            cx: context,
+        });
+        *last_mode = Mode::Normal;
+    }
 }
 
 fn finalize_native_command(
@@ -2022,16 +2085,14 @@ fn native_insert_completion_command(command: &MappableCommand) -> bool {
     matches!(command.name(), "completion")
 }
 
-fn native_insert_shortcut_command(key: KeyEvent) -> Option<&'static MappableCommand> {
-    match key {
+fn is_native_insert_paste_shortcut(key: KeyEvent) -> bool {
+    matches!(
+        key,
         KeyEvent {
             code: KeyCode::Char(ch),
             modifiers,
-        } if ch.eq_ignore_ascii_case(&'v') && modifiers == KeyModifiers::CONTROL => {
-            Some(&MappableCommand::paste_clipboard_after)
-        }
-        _ => None,
-    }
+        } if ch.eq_ignore_ascii_case(&'v') && modifiers == KeyModifiers::CONTROL
+    )
 }
 
 fn canonicalize_key(key: &mut KeyEvent) {
@@ -2389,6 +2450,10 @@ mod tests {
         let doc_id = editor.tree.try_get(view_id).unwrap().doc;
         let doc = editor.document_mut(doc_id).unwrap();
         doc.set_selection(view_id, Selection::point(cursor));
+    }
+
+    fn set_test_clipboard(editor: &mut Editor, value: &str) {
+        editor.registers.write('+', vec![value.to_owned()]).unwrap();
     }
 
     fn set_test_cursor_line(editor: &mut Editor, line: usize) {
@@ -3414,16 +3479,14 @@ mod tests {
     }
 
     #[test]
-    fn native_insert_shortcut_maps_ctrl_v_to_clipboard_paste() {
-        assert_eq!(
-            native_insert_shortcut_command(KeyEvent::from_str("C-v").unwrap()),
-            Some(&MappableCommand::paste_clipboard_after)
-        );
-        assert_eq!(
-            native_insert_shortcut_command(KeyEvent::from_str("C-S-v").unwrap()),
-            Some(&MappableCommand::paste_clipboard_after)
-        );
-        assert_eq!(native_insert_shortcut_command(plain_char_key('v')), None);
+    fn native_insert_shortcut_recognizes_ctrl_v_as_clipboard_paste() {
+        assert!(is_native_insert_paste_shortcut(
+            KeyEvent::from_str("C-v").unwrap()
+        ));
+        assert!(is_native_insert_paste_shortcut(
+            KeyEvent::from_str("C-S-v").unwrap()
+        ));
+        assert!(!is_native_insert_paste_shortcut(plain_char_key('v')));
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -3450,6 +3513,160 @@ mod tests {
         assert_eq!(text_after_paste, text_before_paste);
         assert!(!text_after_paste.contains('v'));
         assert_eq!(editor.mode(), Mode::Insert);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn semantic_paste_uses_helix_before_placement_in_normal_mode() {
+        let config = Config {
+            clipboard_provider: ClipboardProvider::None,
+            ..Default::default()
+        };
+        let mut editor = test_editor_with_text_and_config("abc", config);
+        set_test_selection(&mut editor, 1, 2);
+        set_test_clipboard(&mut editor, "X");
+        let mut bridge = EditorInputBridge::new(Keymaps::default());
+        let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));
+        let mut jobs = Jobs::new();
+
+        bridge.handle_semantic_action(
+            EditorSemanticAction::Paste,
+            &mut compositor,
+            &mut editor,
+            &mut jobs,
+        );
+
+        assert_eq!(focused_document_text(&editor), "aXbc\n");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn semantic_paste_applies_and_clears_helix_count() {
+        let config = Config {
+            clipboard_provider: ClipboardProvider::None,
+            ..Default::default()
+        };
+        let mut editor = test_editor_with_text_and_config("abc", config);
+        set_test_selection(&mut editor, 1, 2);
+        set_test_clipboard(&mut editor, "X");
+        editor.count = NonZeroUsize::new(2);
+        let mut bridge = EditorInputBridge::new(Keymaps::default());
+        let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));
+        let mut jobs = Jobs::new();
+
+        bridge.handle_semantic_action(
+            EditorSemanticAction::Paste,
+            &mut compositor,
+            &mut editor,
+            &mut jobs,
+        );
+
+        assert_eq!(focused_document_text(&editor), "aXXbc\n");
+        assert_eq!(editor.count, None);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn semantic_paste_cancels_pending_helix_key_sequence() {
+        let config = Config {
+            clipboard_provider: ClipboardProvider::None,
+            ..Default::default()
+        };
+        let mut editor = test_editor_with_text_and_config("abc", config);
+        set_test_clipboard(&mut editor, "X");
+        let mut bridge = EditorInputBridge::new(Keymaps::default());
+        let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));
+        let mut jobs = Jobs::new();
+
+        handle_key_str(
+            &mut bridge,
+            &mut editor,
+            &mut compositor,
+            &mut jobs,
+            "space",
+        );
+        assert!(!bridge.native_commands.keymaps.pending().is_empty());
+
+        bridge.handle_semantic_action(
+            EditorSemanticAction::Paste,
+            &mut compositor,
+            &mut editor,
+            &mut jobs,
+        );
+
+        assert!(bridge.native_commands.keymaps.pending().is_empty());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn semantic_paste_uses_helix_cursor_placement_in_insert_mode() {
+        let config = Config {
+            clipboard_provider: ClipboardProvider::None,
+            ..Default::default()
+        };
+        let mut editor = test_editor_with_text_and_config("abc", config);
+        editor.mode = Mode::Insert;
+        set_test_selection(&mut editor, 2, 1);
+        set_test_clipboard(&mut editor, "X");
+        let mut bridge = EditorInputBridge::new(Keymaps::default());
+        let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));
+        let mut jobs = Jobs::new();
+
+        bridge.handle_semantic_action(
+            EditorSemanticAction::Paste,
+            &mut compositor,
+            &mut editor,
+            &mut jobs,
+        );
+
+        assert_eq!(focused_document_text(&editor), "aXbc\n");
+        assert_eq!(editor.mode(), Mode::Insert);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn semantic_linewise_paste_stays_at_helix_insert_cursor() {
+        let config = Config {
+            clipboard_provider: ClipboardProvider::None,
+            ..Default::default()
+        };
+        let mut editor = test_editor_with_text_and_config("abc", config);
+        editor.mode = Mode::Insert;
+        set_test_selection(&mut editor, 2, 1);
+        set_test_clipboard(&mut editor, "X\n");
+        let mut bridge = EditorInputBridge::new(Keymaps::default());
+        let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));
+        let mut jobs = Jobs::new();
+
+        bridge.handle_semantic_action(
+            EditorSemanticAction::Paste,
+            &mut compositor,
+            &mut editor,
+            &mut jobs,
+        );
+
+        assert_eq!(focused_document_text(&editor), "aX\nbc\n");
+        assert_eq!(editor.mode(), Mode::Insert);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn semantic_paste_uses_cursor_and_exits_helix_select_mode() {
+        let config = Config {
+            clipboard_provider: ClipboardProvider::None,
+            ..Default::default()
+        };
+        let mut editor = test_editor_with_text_and_config("abcd", config);
+        editor.mode = Mode::Select;
+        set_test_selection(&mut editor, 1, 3);
+        set_test_clipboard(&mut editor, "X");
+        let mut bridge = EditorInputBridge::new(Keymaps::default());
+        let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));
+        let mut jobs = Jobs::new();
+
+        bridge.handle_semantic_action(
+            EditorSemanticAction::Paste,
+            &mut compositor,
+            &mut editor,
+            &mut jobs,
+        );
+
+        assert_eq!(focused_document_text(&editor), "abXcd\n");
+        assert_eq!(editor.mode(), Mode::Normal);
     }
 
     #[test]
