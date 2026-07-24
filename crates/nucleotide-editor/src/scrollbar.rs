@@ -21,6 +21,15 @@ type ScrollCallback = Rc<dyn Fn(&EditorViewport, ViewportScrollUpdate, &mut App)
 
 pub use nucleotide_types::scrollbar::ScrollbarThumb as EditorScrollbarThumb;
 
+const SCROLLBAR_MARKER_HEIGHT: Pixels = px(2.0);
+const SCROLLBAR_MARKER_WIDTH: Pixels = px(10.0);
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EditorScrollbarMarker {
+    pub position: f32,
+    pub color: Hsla,
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 enum EditorThumbState {
     #[default]
@@ -112,6 +121,7 @@ pub struct EditorScrollbar {
     axis: Axis,
     on_scroll: Option<ScrollCallback>,
     thumb_color: Hsla,
+    markers: Vec<EditorScrollbarMarker>,
 }
 
 #[derive(Clone, Copy)]
@@ -152,6 +162,7 @@ impl EditorScrollbar {
             axis,
             on_scroll: None,
             thumb_color: hsla(0.0, 0.0, 0.72, 1.0),
+            markers: Vec::new(),
         }
     }
 
@@ -170,6 +181,11 @@ impl EditorScrollbar {
 
     pub fn with_thumb_color(mut self, thumb_color: Hsla) -> Self {
         self.thumb_color = thumb_color;
+        self
+    }
+
+    pub fn with_markers(mut self, markers: Vec<EditorScrollbarMarker>) -> Self {
+        self.markers = markers;
         self
     }
 }
@@ -324,6 +340,21 @@ impl RenderOnce for EditorScrollbar {
             .track_bounds()
             .map(|bounds| bounds.size.along(self.axis))
             .unwrap_or_else(|| self.viewport.viewport_bounds().size.along(self.axis));
+        if self.axis == Axis::Vertical {
+            for marker in &self.markers {
+                let top = scrollbar_marker_top(marker.position, track_length);
+                track = track.child(
+                    div()
+                        .absolute()
+                        .left((SCROLLBAR_THICKNESS - SCROLLBAR_MARKER_WIDTH) / 2.0)
+                        .top(top)
+                        .w(SCROLLBAR_MARKER_WIDTH)
+                        .h(SCROLLBAR_MARKER_HEIGHT)
+                        .rounded(px(1.0))
+                        .bg(marker.color),
+                );
+            }
+        }
         if let Some(thumb) = editor_scrollbar_thumb(
             track_length,
             self.viewport.viewport_bounds().size.along(self.axis),
@@ -393,6 +424,12 @@ fn thumb_geometry_for_bounds(
 
 fn with_alpha(color: Hsla, alpha: f32) -> Hsla {
     hsla(color.h, color.s, color.l, alpha.clamp(0.0, 1.0))
+}
+
+fn scrollbar_marker_top(position: f32, track_length: Pixels) -> Pixels {
+    let max_top = (track_length - SCROLLBAR_MARKER_HEIGHT).max(px(0.0));
+    (track_length * position.clamp(0.0, 1.0) - SCROLLBAR_MARKER_HEIGHT / 2.0)
+        .clamp(px(0.0), max_top)
 }
 
 fn apply_scrollbar_pointer(
@@ -485,7 +522,7 @@ mod tests {
 
     use super::{
         EditorScrollbar, EditorScrollbarState, EditorScrollbarThumb, editor_scrollbar_thumb,
-        scroll_position_for_scrollbar_pointer,
+        scroll_position_for_scrollbar_pointer, scrollbar_marker_top,
     };
     use crate::EditorViewport;
 
@@ -541,6 +578,13 @@ mod tests {
             scroll_position_for_scrollbar_pointer(px(200.0), px(800.0), thumb, px(100.0), px(20.0));
 
         assert_eq!(scroll_y, px(400.0));
+    }
+
+    #[test]
+    fn diagnostic_marker_position_is_centered_and_clamped_to_track() {
+        assert_eq!(scrollbar_marker_top(0.5, px(200.0)), px(99.0));
+        assert_eq!(scrollbar_marker_top(0.0, px(200.0)), px(0.0));
+        assert_eq!(scrollbar_marker_top(1.0, px(200.0)), px(198.0));
     }
 
     #[gpui::test]

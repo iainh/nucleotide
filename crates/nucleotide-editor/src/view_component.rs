@@ -10,7 +10,7 @@ use gpui::{
 };
 
 use crate::{
-    CursorOverlayPlan, EditorDocumentElement, EditorLayout, EditorSurface,
+    CursorOverlayPlan, EditorDocumentElement, EditorLayout, EditorScrollbarMarker, EditorSurface,
     EditorSurfacePointerEvent, EditorViewState, EditorViewport, ViewportScrollUpdate,
     selection::EditorPointerSelectionPhase,
 };
@@ -52,6 +52,7 @@ pub struct NativeEditorView<P> {
     paint: P,
     focus: Option<FocusHandle>,
     scrollbar_thumb_color: Option<Hsla>,
+    scrollbar_markers: Vec<EditorScrollbarMarker>,
     on_scroll: Option<ScrollCallback>,
     on_key_down: Option<KeyDownCallback>,
     on_cursor_overlay: Option<CursorOverlayCallback>,
@@ -85,6 +86,7 @@ where
             paint,
             focus: None,
             scrollbar_thumb_color: None,
+            scrollbar_markers: Vec::new(),
             on_scroll: None,
             on_key_down: None,
             on_cursor_overlay: None,
@@ -97,6 +99,11 @@ where
 
     pub fn scrollbar_thumb_color(mut self, color: Hsla) -> Self {
         self.scrollbar_thumb_color = Some(color);
+        self
+    }
+
+    pub fn scrollbar_markers(mut self, markers: Vec<EditorScrollbarMarker>) -> Self {
+        self.scrollbar_markers = markers;
         self
     }
 
@@ -200,6 +207,7 @@ where
             mut paint,
             focus,
             scrollbar_thumb_color,
+            scrollbar_markers,
             on_scroll,
             on_key_down,
             on_cursor_overlay,
@@ -249,6 +257,7 @@ where
         if let Some(scrollbar_thumb_color) = scrollbar_thumb_color {
             editor_surface = editor_surface.scrollbar_thumb_color(scrollbar_thumb_color);
         }
+        editor_surface = editor_surface.scrollbar_markers(scrollbar_markers);
 
         if let Some(on_scroll) = on_scroll {
             editor_surface = editor_surface.on_scroll(move |viewport, update, cx| {

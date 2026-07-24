@@ -11,7 +11,7 @@ use helix_core::diagnostic::Severity;
 use helix_view::{Document, Theme};
 use nucleotide_logging::error;
 
-use crate::{GutterLine, style::helix_color_to_hsla};
+use crate::{EditorScrollbarMarker, GutterLine, style::helix_color_to_hsla};
 
 pub type DiagnosticSeverityByLine = BTreeMap<usize, Severity>;
 
@@ -98,6 +98,25 @@ pub fn diagnostic_severity_by_line(document: &Document) -> DiagnosticSeverityByL
     }
 
     severities
+}
+
+pub fn diagnostic_scrollbar_markers(
+    severity_by_line: &DiagnosticSeverityByLine,
+    total_lines: usize,
+    colors: DiagnosticSeverityIconColors,
+) -> Vec<EditorScrollbarMarker> {
+    if total_lines == 0 {
+        return Vec::new();
+    }
+
+    severity_by_line
+        .iter()
+        .filter(|(line, _)| **line < total_lines)
+        .map(|(line, severity)| EditorScrollbarMarker {
+            position: (*line as f32 + 0.5) / total_lines as f32,
+            color: colors.color_for(*severity),
+        })
+        .collect()
 }
 
 pub fn diagnostic_severity_theme_key(severity: Severity) -> &'static str {
@@ -291,6 +310,44 @@ mod tests {
             diagnostic_severity_theme_key(Severity::Hint),
             "diagnostic.hint"
         );
+    }
+
+    #[test]
+    fn scrollbar_markers_map_lines_to_colored_document_positions() {
+        let colors = test_icon_colors();
+        let mut severities = DiagnosticSeverityByLine::new();
+        severities.insert(0, Severity::Error);
+        severities.insert(49, Severity::Warning);
+        severities.insert(99, Severity::Hint);
+
+        let markers = diagnostic_scrollbar_markers(&severities, 100, colors);
+
+        assert_eq!(
+            markers,
+            vec![
+                EditorScrollbarMarker {
+                    position: 0.005,
+                    color: colors.error,
+                },
+                EditorScrollbarMarker {
+                    position: 0.495,
+                    color: colors.warning,
+                },
+                EditorScrollbarMarker {
+                    position: 0.995,
+                    color: colors.hint,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn scrollbar_markers_ignore_lines_outside_document() {
+        let mut severities = DiagnosticSeverityByLine::new();
+        severities.insert(5, Severity::Info);
+
+        assert!(diagnostic_scrollbar_markers(&severities, 5, test_icon_colors()).is_empty());
+        assert!(diagnostic_scrollbar_markers(&severities, 0, test_icon_colors()).is_empty());
     }
 
     #[test]
