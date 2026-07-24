@@ -11,7 +11,8 @@ use gpui::{
 };
 
 use crate::{
-    EditorScrollbar, EditorScrollbarState, EditorViewport, LineLayoutCache, ViewportScrollUpdate,
+    EditorScrollbar, EditorScrollbarMarker, EditorScrollbarState, EditorViewport, LineLayoutCache,
+    ViewportScrollUpdate,
 };
 use nucleotide_types::scrollbar::SCROLLBAR_THICKNESS;
 
@@ -76,6 +77,7 @@ pub struct EditorSurface {
     child: AnyElement,
     focus: Option<FocusHandle>,
     scrollbar_thumb_color: Hsla,
+    scrollbar_markers: Vec<EditorScrollbarMarker>,
     on_key_down: Option<KeyDownCallback>,
     on_scroll: Option<ScrollCallback>,
     on_mouse_down: Option<PointerCallback>,
@@ -105,6 +107,7 @@ impl EditorSurface {
             child: child.into_any_element(),
             focus: None,
             scrollbar_thumb_color: hsla(0.0, 0.0, 0.72, 1.0),
+            scrollbar_markers: Vec::new(),
             on_key_down: None,
             on_scroll: None,
             on_mouse_down: None,
@@ -115,6 +118,11 @@ impl EditorSurface {
 
     pub fn scrollbar_thumb_color(mut self, color: Hsla) -> Self {
         self.scrollbar_thumb_color = color;
+        self
+    }
+
+    pub fn scrollbar_markers(mut self, markers: Vec<EditorScrollbarMarker>) -> Self {
+        self.scrollbar_markers = markers;
         self
     }
 
@@ -169,7 +177,8 @@ impl EditorSurface {
             self.viewport.clone(),
             self.vertical_scrollbar_state.clone(),
         )
-        .with_thumb_color(self.scrollbar_thumb_color);
+        .with_thumb_color(self.scrollbar_thumb_color)
+        .with_markers(self.scrollbar_markers.clone());
 
         if let Some(on_scroll) = self.on_scroll.clone() {
             scrollbar = scrollbar.on_scroll(move |viewport, update, cx| {

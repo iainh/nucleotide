@@ -25,7 +25,8 @@ use nucleotide_editor::{
     EditorLayout, EditorPointerSelectionPhase, EditorSurfacePointerEvent, EditorViewLayoutSnapshot,
     EditorViewState, NativeEditorFramePalette, NativeEditorFrameRenderParams,
     NativeEditorFrameThemeStyles, NativeEditorView, ViewportScrollUpdate,
-    log_pointer_selection_outcome, render_native_editor_frame, run_gutter_extra_columns,
+    diagnostic_scrollbar_markers, diagnostic_severity_by_line, log_pointer_selection_outcome,
+    render_native_editor_frame, run_gutter_extra_columns,
 };
 
 fn handle_editor_pointer_selection(
@@ -571,6 +572,29 @@ impl Render for DocumentView {
             let is_focused = self.is_focused;
             let input = self.input.clone();
             let scrollbar_thumb_color = cx.ui_theme().tokens.editor.focus_ring;
+            let tokens = cx.theme().tokens;
+            let diagnostic_colors = DiagnosticSeverityIconColors {
+                error: tokens.editor.diagnostic_error,
+                warning: tokens.editor.diagnostic_warning,
+                info: tokens.editor.diagnostic_info,
+                hint: tokens.editor.diagnostic_hint,
+            };
+            let scrollbar_markers = {
+                let core = core.read(cx);
+                core.editor
+                    .tree
+                    .try_get(view_id)
+                    .and_then(|view| core.editor.documents.get(&view.doc))
+                    .map(|document| {
+                        let severity_by_line = diagnostic_severity_by_line(document);
+                        diagnostic_scrollbar_markers(
+                            &severity_by_line,
+                            document.text().len_lines(),
+                            diagnostic_colors,
+                        )
+                    })
+                    .unwrap_or_default()
+            };
 
             let mut editor_content = NativeEditorView::new(
                 cx.entity_id(),
@@ -592,6 +616,7 @@ impl Render for DocumentView {
                 },
             )
             .scrollbar_thumb_color(scrollbar_thumb_color)
+            .scrollbar_markers(scrollbar_markers)
             .track_focus(focus.clone());
 
             if let Some(input) = input {

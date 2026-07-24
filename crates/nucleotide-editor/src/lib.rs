@@ -56,9 +56,9 @@ pub use diagnostics::{
     DiagnosticGutterMarkerPaintPlan, DiagnosticGutterMarkerPaintPlanParams,
     DiagnosticGutterMarkersPaintParams, DiagnosticMarkerPaintStyle, DiagnosticMarkerPlan,
     DiagnosticSeverityByLine, DiagnosticSeverityIconColors, diagnostic_gutter_marker_paint_plan,
-    diagnostic_marker_paint_style, diagnostic_marker_plan, diagnostic_severity_by_line,
-    diagnostic_severity_color, diagnostic_severity_icon_path, diagnostic_severity_theme_key,
-    paint_diagnostic_gutter_markers, paint_diagnostic_marker,
+    diagnostic_marker_paint_style, diagnostic_marker_plan, diagnostic_scrollbar_markers,
+    diagnostic_severity_by_line, diagnostic_severity_color, diagnostic_severity_icon_path,
+    diagnostic_severity_theme_key, paint_diagnostic_gutter_markers, paint_diagnostic_marker,
 };
 pub use document_element::EditorDocumentElement;
 pub use document_frame::{EditorDocumentFrame, EditorDocumentFrameParams, editor_document_frame};
@@ -130,8 +130,8 @@ pub use run_gutter::{
 };
 pub use scroll_manager::ScrollManager;
 pub use scrollbar::{
-    EditorScrollbar, EditorScrollbarState, EditorScrollbarThumb, editor_scrollbar_thumb,
-    scroll_position_for_scrollbar_pointer,
+    EditorScrollbar, EditorScrollbarMarker, EditorScrollbarState, EditorScrollbarThumb,
+    editor_scrollbar_thumb, scroll_position_for_scrollbar_pointer,
 };
 pub use selection::{
     EditorPointerSelectionOutcome, EditorPointerSelectionPhase, EditorPointerSelectionUpdate,
