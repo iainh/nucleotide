@@ -38,6 +38,7 @@ jobs:
         with:
           key: windows-x86_64-release
           cache-workspace-crates: true
+          save-if: false
 
       - name: Build release binary
         run: cargo build --release -p nucleotide --bins

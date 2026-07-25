@@ -25,9 +25,6 @@ jobs:
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@a7ad9c4f0c65208097f4d34f3cfa1913b80cce5c
 
-      - name: Setup Nix cache
-        uses: DeterminateSystems/magic-nix-cache-action@76aaf8814cdb385b86597c32b8c51b66b69b0839
-
       - name: Build Linux remote helpers
         run: nix develop .#ci --command build-remote-helpers
 
@@ -36,7 +33,7 @@ jobs:
         with:
           name: linux-remote-helpers
           path: target/remote-helpers/nucleotide-remote-linux-*
-          retention-days: 7
+          retention-days: 1
 
   build:
     name: Build macOS app
@@ -73,6 +70,7 @@ jobs:
         with:
           key: macos-aarch64-release
           cache-workspace-crates: true
+          save-if: false
       
       - name: Build release binary
         run: |
@@ -138,4 +136,4 @@ jobs:
         with:
           name: nucleotide-macos-aarch64
           path: Nucleotide-aarch64.app.tar.gz
-          retention-days: 7
+          retention-days: 1

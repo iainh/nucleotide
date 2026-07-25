@@ -111,13 +111,11 @@ jobs:
         with:
           key: linux-release
           cache-workspace-crates: true
+          save-if: false
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@a7ad9c4f0c65208097f4d34f3cfa1913b80cce5c
 
-      - name: Setup Nix cache
-        uses: DeterminateSystems/magic-nix-cache-action@76aaf8814cdb385b86597c32b8c51b66b69b0839
-      
       - name: Install dependencies
         run: |
           sudo apt-get update
@@ -218,6 +216,7 @@ jobs:
         with:
           key: macos-aarch64-release
           cache-workspace-crates: true
+          save-if: false
 
       - name: Install Metal Toolchain
         run: |
@@ -620,6 +619,7 @@ jobs:
         with:
           key: windows-release
           cache-workspace-crates: true
+          save-if: false
 
       - name: Build release binary
         run: >-
