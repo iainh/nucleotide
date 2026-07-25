@@ -104,6 +104,7 @@ jobs:
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
         with:
           version: 0.15.2
+          use-cache: false
 
       - name: Cache Rust artifacts
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
@@ -169,12 +170,14 @@ jobs:
         with:
           name: linux-build
           path: nucleotide-linux-x86_64.tar.gz
+          retention-days: 1
 
       - name: Upload Linux remote helpers
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: linux-remote-helpers
           path: target/remote-helpers/nucleotide-remote-linux-*
+          retention-days: 1
 
   build-macos:
     name: Build macOS ARM64
@@ -208,6 +211,7 @@ jobs:
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
         with:
           version: 0.15.2
+          use-cache: false
 
       - name: Cache Rust artifacts
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
@@ -275,6 +279,7 @@ jobs:
           path: |
             Nucleotide-aarch64.app.tar.gz
             target/aarch64-apple-darwin/release/nucleotide-update-smoke
+          retention-days: 1
 
   package-macos:
     name: Package macOS ARM64
@@ -495,6 +500,7 @@ jobs:
         with:
           name: macos-velopack
           path: target/release/bundle/velopack-macos/*
+          retention-days: 1
 
       - name: Remove Apple signing keychain
         if: always()
@@ -539,6 +545,7 @@ jobs:
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
         with:
           version: 0.15.2
+          use-cache: false
 
       - name: Install .NET SDK
         uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9
@@ -745,6 +752,7 @@ jobs:
         with:
           name: windows-build
           path: target/release/bundle/velopack-windows/*
+          retention-days: 1
 
       - name: Remove Windows signing certificate
         if: always()
