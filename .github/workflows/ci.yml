@@ -54,10 +54,6 @@ jobs:
         if: runner.os == 'macOS'
         uses: DeterminateSystems/nix-installer-action@a7ad9c4f0c65208097f4d34f3cfa1913b80cce5c
 
-      - name: Setup Nix cache
-        if: runner.os == 'macOS'
-        uses: DeterminateSystems/magic-nix-cache-action@76aaf8814cdb385b86597c32b8c51b66b69b0839
-
       - name: Cache Rust artifacts
         # libghostty-vt-sys builds its Zig library for the detected host CPU on
         # native builds. Reusing that artifact on another Windows runner can
@@ -67,6 +63,7 @@ jobs:
         with:
           key: ${{ matrix.target }}
           cache-workspace-crates: true
+          save-if: false
       
       - name: Run tests on Windows
         if: runner.os == 'Windows'
@@ -95,6 +92,7 @@ jobs:
         with:
           key: remote-fixtures
           cache-workspace-crates: true
+          save-if: false
 
       - name: Run remote transport fixtures
         run: cargo test -p nucleotide-remote --locked --test v5_external_fixtures --test v5_loopback_fixtures
@@ -135,6 +133,7 @@ jobs:
         with:
           key: ${{ matrix.target }}
           cache-workspace-crates: true
+          save-if: false
 
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
@@ -174,6 +173,7 @@ jobs:
         with:
           key: layering
           cache-workspace-crates: true
+          save-if: false
       
       - name: Install system dependencies
         run: |
@@ -265,6 +265,7 @@ jobs:
         with:
           key: unused-deps-nightly-2026-07-01
           cache-workspace-crates: true
+          save-if: false
       
       - name: Check for unused dependencies
         run: cargo +nightly-2026-07-01 udeps --all-targets --workspace
