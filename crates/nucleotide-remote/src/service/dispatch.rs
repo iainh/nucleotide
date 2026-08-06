@@ -117,6 +117,16 @@ where
                 .capabilities
                 .push("process_sessions_v1".to_string());
         }
+        #[cfg(target_os = "linux")]
+        if !concurrent_info
+            .capabilities
+            .iter()
+            .any(|capability| capability == "pty_sessions_v1")
+        {
+            concurrent_info
+                .capabilities
+                .push("pty_sessions_v1".to_string());
+        }
         let handshake = protocol_v5::server_handshake(&mut io, &concurrent_info)
             .context("v5 handshake failed")?;
         let shared_session = Arc::new(Mutex::new(protocol_v5::ProtocolSession::new(
@@ -289,7 +299,7 @@ where
                                         )?;
                                         $session.send_response_with_priority(
                                             stream_id,
-                                            "process.session",
+                                            process_sessions.get(stream_id).map_or("process.session", |s| s.method),
                                             protocol_v5::MessageRole::FinalResponse,
                                             true,
                                             priority,
@@ -299,7 +309,7 @@ where
                                     Err(error) => self.send_v5_remote_error(
                                         $session,
                                         stream_id,
-                                        "process.session",
+                                        process_sessions.get(stream_id).map_or("process.session", |s| s.method),
                                         error,
                                     )?,
                                 }
@@ -569,6 +579,53 @@ where
                             let mut acknowledge_data = true;
                             if let Some(stream_event) = event.stream_event {
                                 let session_event = match stream_event {
+                                    #[cfg(target_os = "linux")]
+                                    protocol_v5::StreamEvent::Headers {
+                                        stream_id,
+                                        role: protocol_v5::MessageRole::Request,
+                                        priority,
+                                        envelope,
+                                    } if envelope.method == "pty.session" => {
+                                        if process_sessions.len() >= V5_PROCESS_SESSION_LIMIT {
+                                            process_sessions.install_tombstone(stream_id);
+                                            self.send_v5_remote_error(
+                                                &mut session,
+                                                stream_id,
+                                                "pty.session",
+                                                RemoteError {
+                                                    code: "resource_exhausted".to_string(),
+                                                    message:
+                                                        "combined process/PTY session limit reached"
+                                                            .to_string(),
+                                                    diagnostic: None,
+                                                },
+                                            )?;
+                                        } else {
+                                            let payload = envelope
+                                                .inline_request_payload()
+                                                .map(ToOwned::to_owned)
+                                                .unwrap_or_default();
+                                            match self.start_v5_pty_session(
+                                                scope,
+                                                stream_id,
+                                                priority,
+                                                payload,
+                                                output_events.clone(),
+                                            ) {
+                                                Ok(pty) => process_sessions.insert(stream_id, pty),
+                                                Err(error) => {
+                                                    process_sessions.install_tombstone(stream_id);
+                                                    self.send_v5_remote_error(
+                                                        &mut session,
+                                                        stream_id,
+                                                        "pty.session",
+                                                        error,
+                                                    )?;
+                                                }
+                                            }
+                                        }
+                                        None
+                                    }
                                     protocol_v5::StreamEvent::Headers {
                                         stream_id,
                                         role: protocol_v5::MessageRole::Request,
@@ -629,7 +686,12 @@ where
                                             session
                                                 .acknowledge_data(stream_id, uncompressed_len)?;
                                             acknowledge_data = false;
-                                        } else if channel != protocol_v5::DataChannel::Stdin {
+                                        } else if channel != protocol_v5::DataChannel::Stdin
+                                            && !(channel == protocol_v5::DataChannel::PtyControl
+                                                && process_sessions
+                                                    .get(stream_id)
+                                                    .is_some_and(|s| s.method == "pty.session"))
+                                        {
                                             session
                                                 .acknowledge_data(stream_id, uncompressed_len)?;
                                             if let Some(process_session) =
@@ -641,11 +703,13 @@ where
                                             self.send_v5_remote_error(
                                                 &mut session,
                                                 stream_id,
-                                                "process.session",
+                                                process_sessions
+                                                    .get(stream_id)
+                                                    .map_or("process.session", |s| s.method),
                                                 RemoteError {
                                                     code: "invalid_request".to_string(),
                                                     message:
-                                                        "process.session accepts only stdin DATA"
+                                                        "session received an invalid DATA channel"
                                                             .to_string(),
                                                     diagnostic: None,
                                                 },
@@ -654,14 +718,20 @@ where
                                         } else if let Some(process_session) =
                                             process_sessions.get(stream_id)
                                         {
-                                            if process_session
-                                                .input
-                                                .try_send(V5ProcessSessionInput::Data {
+                                            let message = if channel
+                                                == protocol_v5::DataChannel::PtyControl
+                                            {
+                                                V5ProcessSessionInput::PtyControl {
                                                     body,
                                                     credit: uncompressed_len,
-                                                })
-                                                .is_err()
-                                            {
+                                                }
+                                            } else {
+                                                V5ProcessSessionInput::Data {
+                                                    body,
+                                                    credit: uncompressed_len,
+                                                }
+                                            };
+                                            if process_session.input.try_send(message).is_err() {
                                                 session.acknowledge_data(
                                                     stream_id,
                                                     uncompressed_len,

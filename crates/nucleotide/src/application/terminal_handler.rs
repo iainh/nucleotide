@@ -3,8 +3,10 @@
 use nucleotide_events::v2::terminal::{Event as TerminalEvent, TerminalId};
 use nucleotide_logging::{error, info};
 use std::collections::HashMap;
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
 use std::sync::{
-    Arc, Mutex, MutexGuard,
+    Arc, Condvar, Mutex, MutexGuard,
     atomic::{AtomicBool, Ordering},
 };
 use std::time::Duration;
@@ -13,8 +15,162 @@ use std::time::Duration;
 use nucleotide_terminal::TerminalBounds;
 #[cfg(feature = "terminal-emulator-core")]
 use nucleotide_terminal::session::ControlMsg;
+use nucleotide_terminal::session::{
+    ExternalTerminalCompletion, ExternalTerminalControl, ExternalTerminalParts,
+};
 use nucleotide_terminal::session::{TerminalSession, TerminalSessionCfg};
 use nucleotide_terminal_view::{TerminalViewModel, register_view_model};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+#[derive(Clone)]
+pub struct RemoteTerminalSessionProvider {
+    display_root: PathBuf,
+    native_root: PathBuf,
+    launcher: Arc<dyn nucleotide_remote::RemotePtySessionLauncher>,
+}
+
+impl RemoteTerminalSessionProvider {
+    pub fn from_connection(
+        connection: &nucleotide_remote::WorkspaceBackendConnection,
+    ) -> Option<Self> {
+        connection
+            .pty_session_launcher
+            .as_ref()
+            .map(|launcher| Self {
+                display_root: connection.location.display_root().to_path_buf(),
+                native_root: connection.location.native_root().to_path_buf(),
+                launcher: Arc::clone(launcher),
+            })
+    }
+
+    pub fn handles(&self, workspace: &Path, cwd: &Path) -> bool {
+        workspace.starts_with(&self.display_root) && cwd.starts_with(&self.display_root)
+    }
+
+    fn native_path(&self, path: &Path) -> anyhow::Result<PathBuf> {
+        if !path.starts_with(&self.display_root) {
+            anyhow::bail!("terminal cwd is outside the connected remote workspace");
+        }
+        Ok(
+            nucleotide_workspace::WorkspacePathMapping::new(&self.display_root, &self.native_root)
+                .to_native_path(path),
+        )
+    }
+
+    fn launch(
+        &self,
+        id: TerminalId,
+        cwd: &Path,
+        command: nucleotide_remote::PtySessionCommand,
+        env: &[(String, String)],
+    ) -> anyhow::Result<(
+        TerminalSession,
+        tokio::sync::mpsc::Receiver<nucleotide_terminal::frame::FramePayload>,
+    )> {
+        let parts = self.launcher.launch(nucleotide_remote::PtySessionRequest {
+            command,
+            cwd: self.native_path(cwd)?,
+            environment: nucleotide_remote::ProjectEnvironmentSelection::WorkspaceOrNearest {
+                anchor: self.native_root.clone(),
+            },
+            env_overrides: env.iter().cloned().collect(),
+            cols: 80,
+            rows: 24,
+            pixel_width: 0,
+            pixel_height: 0,
+        })?;
+        let completion = BlockingCompletion::new(parts.completion);
+        let external = ExternalTerminalParts {
+            reader: Box::new(BlockingReader(parts.output)),
+            writer: Box::new(BlockingWriter(parts.input)),
+            control: Box::new(RemoteControl(parts.control)),
+            completion: Box::new(completion),
+            lifecycle: Some(parts.lifecycle),
+        };
+        Ok(TerminalSession::from_external(id.0, external, 80, 24))
+    }
+}
+
+struct BlockingReader(nucleotide_remote::RemoteProcessSessionReader);
+impl Read for BlockingReader {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        futures_executor::block_on(self.0.read(buffer))
+    }
+}
+
+struct BlockingWriter(nucleotide_remote::RemoteProcessSessionWriter);
+impl Write for BlockingWriter {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        futures_executor::block_on(self.0.write(buffer))
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        futures_executor::block_on(self.0.flush())
+    }
+}
+
+struct RemoteControl(Box<dyn nucleotide_remote::RemotePtySessionControl>);
+impl ExternalTerminalControl for RemoteControl {
+    fn resize(&self, cols: u16, rows: u16) -> std::io::Result<()> {
+        self.0
+            .resize(cols, rows, 0, 0)
+            .map_err(std::io::Error::other)
+    }
+    fn cancel(&self) -> std::io::Result<()> {
+        self.0.cancel();
+        Ok(())
+    }
+}
+
+type CompletionResult = Result<Option<i32>, String>;
+struct BlockingCompletion {
+    result: Arc<(Mutex<Option<CompletionResult>>, Condvar)>,
+}
+impl BlockingCompletion {
+    fn new(completion: nucleotide_remote::RemoteProcessSessionCompletionFuture) -> Self {
+        let result = Arc::new((Mutex::new(None), Condvar::new()));
+        let worker_result = Arc::clone(&result);
+        std::thread::spawn(move || {
+            let completed = futures_executor::block_on(completion)
+                .map(|completion| completion.status_code)
+                .map_err(|error| error.to_string());
+            let (lock, wake) = &*worker_result;
+            *lock
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(completed);
+            wake.notify_all();
+        });
+        Self { result }
+    }
+}
+impl ExternalTerminalCompletion for BlockingCompletion {
+    fn try_exit_code(&mut self) -> std::io::Result<Option<i32>> {
+        let result = self
+            .result
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match result.as_ref() {
+            None => Ok(None),
+            Some(Ok(code)) => Ok(*code),
+            Some(Err(error)) => Err(std::io::Error::other(error.clone())),
+        }
+    }
+    fn wait_exit_code(&mut self) -> std::io::Result<Option<i32>> {
+        let (lock, wake) = &*self.result;
+        let mut result = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        while result.is_none() {
+            result = wake
+                .wait(result)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+        match result.as_ref().unwrap() {
+            Ok(code) => Ok(*code),
+            Err(error) => Err(std::io::Error::other(error.clone())),
+        }
+    }
+}
 
 /// Shared map of terminal input senders, allowing the UI thread to bypass the
 /// event queue and write keystrokes directly to the PTY background writer.
@@ -24,6 +180,7 @@ pub type TerminalInputSenders = Arc<Mutex<HashMap<TerminalId, std::sync::mpsc::S
 pub struct TerminalRuntimeHandle {
     inner: Arc<Mutex<TerminalRuntimeHandler>>,
     input_senders: TerminalInputSenders,
+    remote_provider: Arc<Mutex<Option<RemoteTerminalSessionProvider>>>,
 }
 
 impl TerminalRuntimeHandle {
@@ -33,10 +190,56 @@ impl TerminalRuntimeHandle {
         Self {
             inner: Arc::new(Mutex::new(handler)),
             input_senders,
+            remote_provider: Arc::new(Mutex::new(None)),
         }
     }
 
     pub fn dispatch(&self, event: &TerminalEvent) {
+        let service_spawn = match event {
+            TerminalEvent::ServiceSpawnRequested {
+                id,
+                cwd,
+                shell,
+                env,
+            } => Some((
+                *id,
+                cwd.as_path(),
+                nucleotide_remote::PtySessionCommand::LoginShell {
+                    shell: shell.clone(),
+                },
+                env.as_slice(),
+            )),
+            TerminalEvent::ServiceCommandSpawnRequested {
+                id,
+                cwd,
+                program,
+                args,
+                env,
+            } => Some((
+                *id,
+                cwd.as_path(),
+                nucleotide_remote::PtySessionCommand::Command {
+                    program: program.clone(),
+                    args: args.clone(),
+                },
+                env.as_slice(),
+            )),
+            _ => None,
+        };
+        if let Some((id, cwd, command, env)) = service_spawn {
+            let provider = self
+                .remote_provider
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            match self.inner.lock() {
+                Ok(mut handler) => handler.handle_service_spawn(id, cwd, command, env, provider),
+                Err(poisoned) => poisoned
+                    .into_inner()
+                    .handle_service_spawn(id, cwd, command, env, provider),
+            }
+            return;
+        }
         match self.inner.lock() {
             Ok(mut handler) => handler.handle_event(event),
             Err(poisoned) => {
@@ -52,6 +255,29 @@ impl TerminalRuntimeHandle {
             .ok()
             .and_then(|senders| senders.get(&id).cloned())
             .is_some_and(|sender| sender.send(bytes).is_ok())
+    }
+
+    pub fn set_remote_provider(&self, provider: Option<RemoteTerminalSessionProvider>) {
+        *self
+            .remote_provider
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = provider;
+    }
+
+    pub fn handles_remote_terminal(&self, workspace: &Path, cwd: &Path) -> bool {
+        self.remote_provider
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .is_some_and(|provider| provider.handles(workspace, cwd))
+    }
+
+    pub fn has_remote_terminal_provider_for(&self, workspace: &Path) -> bool {
+        self.remote_provider
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .is_some_and(|provider| workspace.starts_with(&provider.display_root))
     }
 }
 
@@ -229,20 +455,35 @@ impl TerminalRuntimeHandler {
     #[allow(clippy::await_holding_lock)]
     fn handle_spawn(&mut self, id: TerminalId, cfg: &TerminalSessionCfg) {
         let cfg = cfg.clone();
+        match futures_executor::block_on(TerminalSession::spawn(id.0, cfg.clone())) {
+            Ok((session, rx)) => self.register_session(id, cfg, session, rx),
+            Err(error) => self.register_spawn_failure(id, &cfg, error),
+        }
+    }
+
+    fn register_spawn_failure(
+        &self,
+        id: TerminalId,
+        cfg: &TerminalSessionCfg,
+        error: anyhow::Error,
+    ) {
         let view = Arc::new(Mutex::new(TerminalViewModel::new(id)));
         register_view_model(id, view.clone());
+        let details = terminal_spawn_failure_details(cfg, &error);
+        lock_view_model(view.as_ref(), id, "set_spawn_failure")
+            .set_spawn_failure("Terminal session failed to start", details);
+        error!(terminal_id=?id, error=%error, "Failed to spawn terminal session");
+    }
 
-        let (session, mut rx) =
-            match futures_executor::block_on(TerminalSession::spawn(id.0, cfg.clone())) {
-                Ok(pair) => pair,
-                Err(e) => {
-                    let details = terminal_spawn_failure_details(&cfg, &e);
-                    lock_view_model(view.as_ref(), id, "set_spawn_failure")
-                        .set_spawn_failure("Terminal session failed to start", details);
-                    error!(terminal_id=?id, error=%e, "Failed to spawn terminal session");
-                    return;
-                }
-            };
+    fn register_session(
+        &mut self,
+        id: TerminalId,
+        _cfg: TerminalSessionCfg,
+        session: TerminalSession,
+        mut rx: tokio::sync::mpsc::Receiver<nucleotide_terminal::frame::FramePayload>,
+    ) {
+        let view = Arc::new(Mutex::new(TerminalViewModel::new(id)));
+        register_view_model(id, view.clone());
 
         #[cfg(feature = "terminal-emulator-core")]
         {
@@ -301,13 +542,14 @@ impl TerminalRuntimeHandler {
         if let Ok(mut guard) = view.lock() {
             guard.set_input_sender(tx.clone());
         }
-        let session_for_input = session_arc.clone();
+        let input_handle = session_arc
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .input_handle();
         let input_task = std::thread::spawn(move || {
             while let Ok(bytes) = rx_input.recv() {
                 // Best-effort synchronous write; no block_on overhead
-                if let Ok(guard) = session_for_input.lock() {
-                    let _ = guard.write_sync(&bytes);
-                }
+                let _ = input_handle.write_sync(&bytes);
             }
         });
 
@@ -333,6 +575,33 @@ impl TerminalRuntimeHandler {
         );
         self.apply_pending_resize(id);
         info!(terminal_id=?id, "Terminal session spawned and consumer started");
+    }
+
+    fn handle_service_spawn(
+        &mut self,
+        id: TerminalId,
+        cwd: &Path,
+        command: nucleotide_remote::PtySessionCommand,
+        env: &[(String, String)],
+        provider: Option<RemoteTerminalSessionProvider>,
+    ) {
+        let cfg = TerminalSessionCfg {
+            cwd: Some(cwd.to_path_buf()),
+            ..Default::default()
+        };
+        let Some(provider) = provider else {
+            let view = Arc::new(Mutex::new(TerminalViewModel::new(id)));
+            register_view_model(id, view.clone());
+            lock_view_model(&view, id, "set_spawn_failure").set_spawn_failure(
+                "Terminal session failed to start",
+                vec!["The connected workspace does not provide service-owned PTYs".into()],
+            );
+            return;
+        };
+        match provider.launch(id, cwd, command, env) {
+            Ok((session, rx)) => self.register_session(id, cfg, session, rx),
+            Err(error) => self.register_spawn_failure(id, &cfg, error),
+        }
     }
 
     fn handle_resize(
@@ -461,6 +730,10 @@ impl TerminalRuntimeHandler {
                 };
                 self.handle_spawn(*id, &cfg);
             }
+            TerminalEvent::ServiceSpawnRequested { .. }
+            | TerminalEvent::ServiceCommandSpawnRequested { .. } => {
+                unreachable!("service terminal events are intercepted by TerminalRuntimeHandle")
+            }
             TerminalEvent::Resized {
                 id,
                 cols,
@@ -504,6 +777,58 @@ impl Default for TerminalRuntimeHandler {
 #[cfg(all(test, feature = "terminal-emulator-core"))]
 mod tests {
     use super::*;
+
+    struct UnusedLauncher;
+
+    impl nucleotide_remote::RemotePtySessionLauncher for UnusedLauncher {
+        fn launch(
+            &self,
+            _request: nucleotide_remote::RemotePtySessionRequest,
+        ) -> Result<nucleotide_remote::RemotePtySessionParts, nucleotide_remote::RemoteClientError>
+        {
+            panic!("capability tests must not launch a session")
+        }
+    }
+
+    fn test_remote_provider() -> RemoteTerminalSessionProvider {
+        RemoteTerminalSessionProvider {
+            display_root: PathBuf::from("remote-workspace"),
+            native_root: PathBuf::from("/workspace"),
+            launcher: Arc::new(UnusedLauncher),
+        }
+    }
+
+    #[test]
+    fn remote_provider_requires_workspace_and_cwd_mapping() {
+        let provider = test_remote_provider();
+
+        assert!(provider.handles(
+            Path::new("remote-workspace"),
+            Path::new("remote-workspace/src")
+        ));
+        assert!(!provider.handles(Path::new("remote-workspace"), Path::new("other-workspace")));
+        assert_eq!(
+            provider
+                .native_path(Path::new("remote-workspace/src"))
+                .unwrap(),
+            PathBuf::from("/workspace/src")
+        );
+        assert!(provider.native_path(Path::new("other-workspace")).is_err());
+    }
+
+    #[test]
+    fn runtime_provider_can_be_installed_and_cleared() {
+        let runtime = TerminalRuntimeHandle::new();
+        runtime.set_remote_provider(Some(test_remote_provider()));
+        assert!(runtime.has_remote_terminal_provider_for(Path::new("remote-workspace")));
+        assert!(runtime.handles_remote_terminal(
+            Path::new("remote-workspace"),
+            Path::new("remote-workspace/src")
+        ));
+
+        runtime.set_remote_provider(None);
+        assert!(!runtime.has_remote_terminal_provider_for(Path::new("remote-workspace")));
+    }
 
     #[test]
     fn metrics_resize_still_applies_when_cell_metrics_change() {

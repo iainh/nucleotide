@@ -27,6 +27,23 @@ pub enum Event {
         env: Vec<(String, String)>,
     },
 
+    /// Request a login shell from the connected workspace PTY service.
+    ServiceSpawnRequested {
+        id: TerminalId,
+        cwd: PathBuf,
+        shell: Option<String>,
+        env: Vec<(String, String)>,
+    },
+
+    /// Request a command from the connected workspace PTY service.
+    ServiceCommandSpawnRequested {
+        id: TerminalId,
+        cwd: PathBuf,
+        program: String,
+        args: Vec<String>,
+        env: Vec<(String, String)>,
+    },
+
     /// Terminal viewport resized with explicit cell metrics.
     Resized {
         id: TerminalId,

@@ -273,6 +273,9 @@ Compatibility rules:
 
 - Major versions must match.
 - Minor versions are additive and capability-gated.
+- Protocol 5.1 adds Linux helper capability `pty_sessions_v1`, method `pty.session`, and
+  `DataChannel::PtyControl = 6`. PTY control bodies are bounded protobuf messages containing only
+  resize dimensions. Stdin remains raw `Stdin` DATA and combined PTY output uses `Stdout`.
 - `capabilities` lists optional features the client can use; `required_capabilities` lists features the client refuses to run without.
 - If the helper does not understand v5, the client fails the connection with an actionable helper update or reinstall diagnostic.
 - If a v5 helper lacks `watch`, the client keeps the existing remote polling path.

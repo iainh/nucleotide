@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 pub const PROTOCOL_MAJOR: u32 = 5;
-pub const PROTOCOL_MINOR: u32 = 0;
+pub const PROTOCOL_MINOR: u32 = 1;
 pub const FRAME_MAGIC: [u8; 4] = *b"NUC2";
 pub const FRAME_HEADER_VERSION: u16 = 2;
 pub const FRAME_HEADER_LEN: usize = 48;
@@ -4426,6 +4426,8 @@ pub enum DataChannel {
     Stderr = 3,
     FileBody = 4,
     SearchPayload = 5,
+    /// Typed, bounded terminal controls. Added in protocol 5.1; existing values are stable.
+    PtyControl = 6,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
@@ -4651,7 +4653,9 @@ impl ServerHandshakeInfo {
         let mut capabilities = default_client_capabilities();
         // The legacy serial service cannot drive full-duplex process sessions. Production's
         // concurrent entry point opts in explicitly after constructing this common hello.
-        capabilities.retain(|capability| capability != "process_sessions_v1");
+        capabilities.retain(|capability| {
+            capability != "process_sessions_v1" && capability != "pty_sessions_v1"
+        });
         Self {
             helper_version: env!("CARGO_PKG_VERSION").to_string(),
             os: std::env::consts::OS.to_string(),
@@ -5291,6 +5295,69 @@ pub struct DataEnvelope {
     pub uncompressed_len: u64,
 }
 
+/// Body carried by [`DataChannel::PtyControl`]. Only resize is currently defined.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PtyControl {
+    #[prost(message, optional, tag = "1")]
+    pub resize: Option<PtyResize>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PtyResize {
+    #[prost(uint32, tag = "1")]
+    pub cols: u32,
+    #[prost(uint32, tag = "2")]
+    pub rows: u32,
+    #[prost(uint32, tag = "3")]
+    pub pixel_width: u32,
+    #[prost(uint32, tag = "4")]
+    pub pixel_height: u32,
+}
+
+#[cfg(test)]
+mod pty_protocol_tests {
+    use super::*;
+    use prost::Message;
+
+    #[test]
+    fn pty_channel_is_additive_and_resize_roundtrips() {
+        assert_eq!(DataChannel::Stdin as i32, 1);
+        assert_eq!(DataChannel::Stdout as i32, 2);
+        assert_eq!(DataChannel::Stderr as i32, 3);
+        assert_eq!(DataChannel::FileBody as i32, 4);
+        assert_eq!(DataChannel::SearchPayload as i32, 5);
+        assert_eq!(DataChannel::PtyControl as i32, 6);
+        let control = PtyControl {
+            resize: Some(PtyResize {
+                cols: 132,
+                rows: 43,
+                pixel_width: 0,
+                pixel_height: 0,
+            }),
+        };
+        assert_eq!(
+            PtyControl::decode(control.encode_to_vec().as_slice()).unwrap(),
+            control
+        );
+    }
+
+    #[test]
+    fn clients_offer_pty_sessions_but_common_server_hello_does_not_advertise_them() {
+        assert!(
+            ClientHello::nucleotide("test")
+                .capabilities
+                .iter()
+                .any(|capability| capability == "pty_sessions_v1")
+        );
+        assert!(
+            !ServerHandshakeInfo::current("/workspace")
+                .capabilities
+                .iter()
+                .any(|capability| capability == "pty_sessions_v1")
+        );
+    }
+}
+
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct WindowUpdate {
     #[prost(uint64, tag = "1")]
@@ -5333,6 +5400,7 @@ pub fn default_client_capabilities() -> Vec<String> {
         "streaming_write",
         "process_streams",
         "process_sessions_v1",
+        "pty_sessions_v1",
         "watch",
         "watch_overflow",
         "directory_not_modified",

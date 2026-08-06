@@ -97,7 +97,7 @@ pub mod session {
     use std::collections::BTreeMap;
     use std::io::{Read, Write};
     use std::path::{Path, PathBuf};
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, Condvar, Mutex};
     use tokio::sync::mpsc::{self, Receiver};
 
     use crate::frame::FramePayload;
@@ -127,11 +127,65 @@ pub mod session {
         pub rows: Option<u16>,
     }
 
+    /// Resize and cancellation operations for an externally owned terminal transport.
+    /// Implementations must not serialize these operations with blocking reads or writes.
+    pub trait ExternalTerminalControl: Send + Sync {
+        fn resize(&self, cols: u16, rows: u16) -> std::io::Result<()>;
+        fn cancel(&self) -> std::io::Result<()>;
+    }
+
+    /// Completion source for an externally owned terminal transport.
+    pub trait ExternalTerminalCompletion: Send {
+        fn try_exit_code(&mut self) -> std::io::Result<Option<i32>>;
+        fn wait_exit_code(&mut self) -> std::io::Result<Option<i32>>;
+    }
+
+    /// The independent pieces of an external (for example remote) terminal transport.
+    pub struct ExternalTerminalParts {
+        pub reader: Box<dyn Read + Send>,
+        pub writer: Box<dyn Write + Send>,
+        pub control: Box<dyn ExternalTerminalControl>,
+        pub completion: Box<dyn ExternalTerminalCompletion>,
+        /// Retains transport resources for at least as long as the session.
+        pub lifecycle: Option<Box<dyn Send>>,
+    }
+
+    enum SessionBackend {
+        Local {
+            master: Box<dyn portable_pty::MasterPty + Send>,
+            child: Box<dyn portable_pty::Child + Send>,
+        },
+        External {
+            control: Box<dyn ExternalTerminalControl>,
+            completion: Box<dyn ExternalTerminalCompletion>,
+            _lifecycle: Option<Box<dyn Send>>,
+        },
+    }
+
+    #[derive(Clone)]
+    pub struct TerminalInputHandle {
+        writer: Arc<Mutex<Option<Box<dyn Write + Send>>>>,
+    }
+
+    impl TerminalInputHandle {
+        pub fn write_sync(&self, bytes: &[u8]) -> std::io::Result<()> {
+            let mut guard = self
+                .writer
+                .lock()
+                .map_err(|_| std::io::Error::other("terminal writer lock poisoned"))?;
+            let writer = guard.as_mut().ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::BrokenPipe, "terminal writer closed")
+            })?;
+            writer.write_all(bytes)?;
+            writer.flush()
+        }
+    }
+
     pub struct TerminalSession {
         id: u64,
-        master: Box<dyn portable_pty::MasterPty + Send>,
-        child: Box<dyn portable_pty::Child + Send>,
-        writer: Arc<Mutex<Box<dyn Write + Send>>>,
+        backend: SessionBackend,
+        writer: Arc<Mutex<Option<Box<dyn Write + Send>>>>,
+        output_eof: Arc<(Mutex<bool>, Condvar)>,
         #[cfg(feature = "emulator")]
         control_tx: std::sync::mpsc::Sender<ControlMsg>,
     }
@@ -171,145 +225,67 @@ pub mod session {
                 .with_context(|| format!("spawn terminal command: {}", command_label))?;
 
             // IO endpoints
-            let mut reader = pair.master.try_clone_reader().context("clone PTY reader")?;
+            let reader = pair.master.try_clone_reader().context("clone PTY reader")?;
             let writer = pair.master.take_writer().context("take PTY writer")?;
 
-            let writer = Arc::new(Mutex::new(writer));
-
-            // Create output channel and blocking read loop
-            let (tx, rx) = mpsc::channel::<FramePayload>(1024);
-
-            // Control channel for emulator (resize with metrics)
-            #[cfg(feature = "emulator")]
-            let (control_tx, control_rx) = std::sync::mpsc::channel::<ControlMsg>();
-
-            #[cfg(feature = "emulator")]
-            {
-                use crate::engine::Engine;
-                use std::time::{Duration, Instant};
-                let engine_writer = writer.clone();
-
-                // Spawn a reader thread so PTY reads don't block control message
-                // processing (e.g. scroll commands while the terminal is idle).
-                let (data_tx, data_rx) = std::sync::mpsc::channel::<Vec<u8>>();
-                std::thread::spawn(move || {
-                    let mut buf = vec![0u8; 8192];
-                    loop {
-                        match reader.read(&mut buf) {
-                            Ok(0) => break,
-                            Ok(n) => {
-                                if data_tx.send(buf[..n].to_vec()).is_err() {
-                                    break;
-                                }
-                            }
-                            Err(_) => break,
-                        }
-                    }
-                });
-
-                tokio::task::spawn_blocking(move || {
-                    let mut engine = Engine::new(
-                        cfg.cols.unwrap_or(80),
-                        cfg.rows.unwrap_or(24),
-                        Some(engine_writer),
-                    );
-                    let mut last_emit = Instant::now();
-                    let window = Duration::from_millis(16); // ~60 FPS cap
-                    let mut needs_frame = false;
-                    loop {
-                        // Handle any pending control messages
-                        while let Ok(msg) = control_rx.try_recv() {
-                            match msg {
-                                ControlMsg::Resize {
-                                    cols,
-                                    rows,
-                                    cell_width: cw,
-                                    cell_height: ch,
-                                } => {
-                                    engine.resize_with_metrics(cols, rows, cw, ch);
-                                    needs_frame = true;
-                                }
-                                ControlMsg::Scroll { delta } => {
-                                    engine.scroll_display(delta);
-                                    needs_frame = true;
-                                }
-                            }
-                        }
-                        // Try to receive data with a short timeout
-                        match data_rx.recv_timeout(Duration::from_millis(8)) {
-                            Ok(data) => {
-                                engine.feed_bytes(&data);
-                                while let Ok(more) = data_rx.try_recv() {
-                                    engine.feed_bytes(&more);
-                                }
-                                needs_frame = true;
-                            }
-                            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-                            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                                if let Some(frame) = engine.take_frame() {
-                                    let _ = tx.try_send(frame);
-                                }
-                                break;
-                            }
-                        }
-                        // Rate-limited frame emission
-                        if needs_frame && last_emit.elapsed() >= window {
-                            if engine
-                                .take_frame()
-                                .is_some_and(|frame| tx.try_send(frame).is_err())
-                            {
-                                break;
-                            }
-                            last_emit = Instant::now();
-                            needs_frame = false;
-                        }
-                    }
-                });
-            }
-
-            #[cfg(not(feature = "emulator"))]
-            {
-                tokio::task::spawn_blocking(move || {
-                    let mut buf = vec![0u8; 8192];
-                    loop {
-                        match reader.read(&mut buf) {
-                            Ok(0) => break, // EOF
-                            Ok(n) => {
-                                if tx.try_send(FramePayload::Raw(buf[..n].to_vec())).is_err() {
-                                    break;
-                                }
-                            }
-                            Err(_) => break,
-                        }
-                    }
-                });
-            }
+            let writer = Arc::new(Mutex::new(Some(writer)));
+            let pipeline = setup_pipeline(reader, writer.clone(), size.cols, size.rows);
 
             let session = Self {
                 id,
-                master: pair.master,
-                child,
+                backend: SessionBackend::Local {
+                    master: pair.master,
+                    child,
+                },
                 writer,
+                output_eof: pipeline.output_eof,
                 #[cfg(feature = "emulator")]
-                control_tx,
+                control_tx: pipeline.control_tx,
             };
 
-            Ok((session, rx))
+            Ok((session, pipeline.rx))
+        }
+
+        /// Construct a session around transport resources owned by an adapter.
+        pub fn from_external(
+            id: u64,
+            parts: ExternalTerminalParts,
+            cols: u16,
+            rows: u16,
+        ) -> (Self, Receiver<FramePayload>) {
+            let writer = Arc::new(Mutex::new(Some(parts.writer)));
+            let pipeline = setup_pipeline(parts.reader, writer.clone(), cols, rows);
+            (
+                Self {
+                    id,
+                    backend: SessionBackend::External {
+                        control: parts.control,
+                        completion: parts.completion,
+                        _lifecycle: parts.lifecycle,
+                    },
+                    writer,
+                    output_eof: pipeline.output_eof,
+                    #[cfg(feature = "emulator")]
+                    control_tx: pipeline.control_tx,
+                },
+                pipeline.rx,
+            )
         }
 
         pub async fn write(&self, bytes: &[u8]) -> std::io::Result<()> {
             self.write_sync(bytes)
         }
 
+        pub fn input_handle(&self) -> TerminalInputHandle {
+            TerminalInputHandle {
+                writer: Arc::clone(&self.writer),
+            }
+        }
+
         /// Synchronous write — preferred for the input hot-path since the
         /// underlying PTY writer is blocking anyway.
         pub fn write_sync(&self, bytes: &[u8]) -> std::io::Result<()> {
-            let mut guard = self
-                .writer
-                .lock()
-                .map_err(|_| std::io::Error::other("terminal writer lock poisoned"))?;
-            guard.write_all(bytes)?;
-            guard.flush()
+            self.input_handle().write_sync(bytes)
         }
 
         pub async fn resize(&self, cols: u16, rows: u16) -> std::io::Result<()> {
@@ -319,7 +295,12 @@ pub mod session {
                 pixel_width: 0,
                 pixel_height: 0,
             };
-            self.master.resize(size).map_err(std::io::Error::other)
+            match &self.backend {
+                SessionBackend::Local { master, .. } => {
+                    master.resize(size).map_err(std::io::Error::other)
+                }
+                SessionBackend::External { control, .. } => control.resize(cols, rows),
+            }
         }
 
         /// Get a clone of the control channel sender (emulator feature only)
@@ -330,13 +311,22 @@ pub mod session {
 
         pub async fn kill(&mut self) -> Result<()> {
             // Attempt graceful termination, then force kill
-            // Drop writer to send HUP on Unix; then kill if still alive
-            match self.writer.lock() {
-                Ok(writer) => drop(writer),
-                Err(poisoned) => drop(poisoned.into_inner()),
+            // Remote cancellation must happen before waiting for a potentially
+            // backpressured writer lock. It wakes the protocol writer and reader.
+            if let SessionBackend::External { control, .. } = &self.backend {
+                control.cancel()?;
             }
-            // portable-pty's Child provides kill()
-            self.child.kill().ok();
+            // Drop writer to send HUP on Unix; then kill if still alive.
+            match self.writer.lock() {
+                Ok(mut writer) => drop(writer.take()),
+                Err(poisoned) => drop(poisoned.into_inner().take()),
+            }
+            match &mut self.backend {
+                SessionBackend::Local { child, .. } => {
+                    child.kill().ok();
+                }
+                SessionBackend::External { .. } => {}
+            }
             Ok(())
         }
 
@@ -345,18 +335,161 @@ pub mod session {
         }
 
         pub fn wait_exit_code(&mut self) -> Option<i32> {
-            self.child
-                .wait()
-                .ok()
-                .and_then(|status| i32::try_from(status.exit_code()).ok())
+            match &mut self.backend {
+                SessionBackend::Local { child, .. } => child
+                    .wait()
+                    .ok()
+                    .and_then(|s| i32::try_from(s.exit_code()).ok()),
+                SessionBackend::External { completion, .. } => {
+                    let code = completion.wait_exit_code().ok().flatten();
+                    let (lock, cv) = &*self.output_eof;
+                    let mut eof = lock.lock().ok()?;
+                    while !*eof {
+                        eof = cv.wait(eof).ok()?;
+                    }
+                    code
+                }
+            }
         }
 
         pub fn try_exit_code(&mut self) -> Option<i32> {
-            self.child
-                .try_wait()
-                .ok()
-                .flatten()
-                .and_then(|status| i32::try_from(status.exit_code()).ok())
+            match &mut self.backend {
+                SessionBackend::Local { child, .. } => child
+                    .try_wait()
+                    .ok()
+                    .flatten()
+                    .and_then(|s| i32::try_from(s.exit_code()).ok()),
+                SessionBackend::External { completion, .. } => {
+                    if !self.output_eof.0.lock().map(|e| *e).unwrap_or(false) {
+                        return None;
+                    }
+                    completion.try_exit_code().ok().flatten()
+                }
+            }
+        }
+    }
+
+    struct Pipeline {
+        rx: Receiver<FramePayload>,
+        output_eof: Arc<(Mutex<bool>, Condvar)>,
+        #[cfg(feature = "emulator")]
+        control_tx: std::sync::mpsc::Sender<ControlMsg>,
+    }
+
+    fn setup_pipeline(
+        mut reader: Box<dyn Read + Send>,
+        writer: Arc<Mutex<Option<Box<dyn Write + Send>>>>,
+        cols: u16,
+        rows: u16,
+    ) -> Pipeline {
+        #[cfg(not(feature = "emulator"))]
+        let _ = (&writer, cols, rows);
+        let (tx, rx) = mpsc::channel(1024);
+        let output_eof = Arc::new((Mutex::new(false), Condvar::new()));
+        #[cfg(not(feature = "emulator"))]
+        let eof_for_reader = output_eof.clone();
+
+        #[cfg(feature = "emulator")]
+        let (control_tx, control_rx) = std::sync::mpsc::channel();
+
+        #[cfg(feature = "emulator")]
+        {
+            use crate::engine::Engine;
+            use std::time::{Duration, Instant};
+            let (data_tx, data_rx) = std::sync::mpsc::channel::<Vec<u8>>();
+            let eof_after_parse = output_eof.clone();
+            std::thread::spawn(move || {
+                let mut buf = vec![0; 8192];
+                while let Ok(n) = reader.read(&mut buf) {
+                    if n == 0 {
+                        break;
+                    }
+                    // Keep draining to a real transport EOF even if the frame
+                    // consumer (and consequently the parser) has gone away.
+                    let _ = data_tx.send(buf[..n].to_vec());
+                }
+            });
+            tokio::task::spawn_blocking(move || {
+                let mut engine = Engine::new(cols, rows, Some(writer));
+                let mut last_emit = Instant::now();
+                let window = Duration::from_millis(16);
+                let mut needs_frame = false;
+                loop {
+                    while let Ok(msg) = control_rx.try_recv() {
+                        match msg {
+                            ControlMsg::Resize {
+                                cols,
+                                rows,
+                                cell_width,
+                                cell_height,
+                            } => {
+                                engine.resize_with_metrics(cols, rows, cell_width, cell_height);
+                                needs_frame = true;
+                            }
+                            ControlMsg::Scroll { delta } => {
+                                engine.scroll_display(delta);
+                                needs_frame = true;
+                            }
+                        }
+                    }
+                    match data_rx.recv_timeout(Duration::from_millis(8)) {
+                        Ok(data) => {
+                            engine.feed_bytes(&data);
+                            while let Ok(more) = data_rx.try_recv() {
+                                engine.feed_bytes(&more);
+                            }
+                            needs_frame = true;
+                        }
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                            if let Some(frame) = engine.take_frame() {
+                                let _ = tx.try_send(frame);
+                            }
+                            break;
+                        }
+                    }
+                    if needs_frame && last_emit.elapsed() >= window {
+                        if engine
+                            .take_frame()
+                            .is_some_and(|frame| tx.try_send(frame).is_err())
+                        {
+                            break;
+                        }
+                        last_emit = Instant::now();
+                        needs_frame = false;
+                    }
+                }
+                // Completion is observable only after every queued byte has
+                // passed through the parser and its final frame was emitted.
+                let (lock, cv) = &*eof_after_parse;
+                if let Ok(mut eof) = lock.lock() {
+                    *eof = true;
+                    cv.notify_all();
+                }
+            });
+        }
+
+        #[cfg(not(feature = "emulator"))]
+        tokio::task::spawn_blocking(move || {
+            let mut buf = vec![0; 8192];
+            while let Ok(n) = reader.read(&mut buf) {
+                if n == 0 {
+                    break;
+                }
+                let _ = tx.try_send(FramePayload::Raw(buf[..n].to_vec()));
+            }
+            let (lock, cv) = &*eof_for_reader;
+            if let Ok(mut eof) = lock.lock() {
+                *eof = true;
+                cv.notify_all();
+            }
+        });
+
+        Pipeline {
+            rx,
+            output_eof,
+            #[cfg(feature = "emulator")]
+            control_tx,
         }
     }
 
@@ -525,6 +658,130 @@ pub mod session {
     fn is_cmd_shell(shell: &str) -> bool {
         let file_name = shell.rsplit(['/', '\\']).next().unwrap_or(shell);
         file_name.eq_ignore_ascii_case("cmd") || file_name.eq_ignore_ascii_case("cmd.exe")
+    }
+
+    #[cfg(test)]
+    mod external_tests {
+        use super::*;
+        use std::io;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct BlockingReader {
+            first: bool,
+            cancelled: Arc<(Mutex<bool>, Condvar)>,
+        }
+
+        impl Read for BlockingReader {
+            fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+                if self.first {
+                    self.first = false;
+                    let bytes = b"external-output";
+                    buf[..bytes.len()].copy_from_slice(bytes);
+                    return Ok(bytes.len());
+                }
+                let (lock, cv) = &*self.cancelled;
+                let mut cancelled = lock.lock().unwrap();
+                while !*cancelled {
+                    cancelled = cv.wait(cancelled).unwrap();
+                }
+                Ok(0)
+            }
+        }
+
+        struct CapturingWriter(Arc<Mutex<Vec<u8>>>);
+
+        impl Write for CapturingWriter {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        struct FakeControl {
+            cancelled: Arc<(Mutex<bool>, Condvar)>,
+            resized: Arc<Mutex<Vec<(u16, u16)>>>,
+            cancel_called: Arc<AtomicBool>,
+        }
+
+        impl ExternalTerminalControl for FakeControl {
+            fn resize(&self, cols: u16, rows: u16) -> io::Result<()> {
+                self.resized.lock().unwrap().push((cols, rows));
+                Ok(())
+            }
+            fn cancel(&self) -> io::Result<()> {
+                self.cancel_called.store(true, Ordering::SeqCst);
+                let (lock, cv) = &*self.cancelled;
+                *lock.lock().unwrap() = true;
+                cv.notify_all();
+                Ok(())
+            }
+        }
+
+        struct Complete;
+        impl ExternalTerminalCompletion for Complete {
+            fn try_exit_code(&mut self) -> io::Result<Option<i32>> {
+                Ok(Some(9))
+            }
+            fn wait_exit_code(&mut self) -> io::Result<Option<i32>> {
+                Ok(Some(9))
+            }
+        }
+
+        #[tokio::test]
+        async fn external_transport_forwards_io_control_and_gates_completion_on_eof() {
+            let cancelled = Arc::new((Mutex::new(false), Condvar::new()));
+            let written = Arc::new(Mutex::new(Vec::new()));
+            let resized = Arc::new(Mutex::new(Vec::new()));
+            let cancel_called = Arc::new(AtomicBool::new(false));
+            let parts = ExternalTerminalParts {
+                reader: Box::new(BlockingReader {
+                    first: true,
+                    cancelled: cancelled.clone(),
+                }),
+                writer: Box::new(CapturingWriter(written.clone())),
+                control: Box::new(FakeControl {
+                    cancelled,
+                    resized: resized.clone(),
+                    cancel_called: cancel_called.clone(),
+                }),
+                completion: Box::new(Complete),
+                lifecycle: None,
+            };
+            let (mut session, mut frames) = TerminalSession::from_external(71, parts, 80, 24);
+
+            session.write_sync(b"input").unwrap();
+            session.resize(100, 40).await.unwrap();
+            let frame = tokio::time::timeout(std::time::Duration::from_secs(1), frames.recv())
+                .await
+                .unwrap();
+            assert!(
+                frame.is_some(),
+                "external output should enter the shared parser pipeline"
+            );
+            assert_eq!(&*written.lock().unwrap(), b"input");
+            assert_eq!(&*resized.lock().unwrap(), &[(100, 40)]);
+            assert_eq!(
+                session.try_exit_code(),
+                None,
+                "completion must wait for output EOF"
+            );
+
+            tokio::time::timeout(std::time::Duration::from_secs(1), session.kill())
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(cancel_called.load(Ordering::SeqCst));
+            tokio::time::timeout(std::time::Duration::from_secs(1), async {
+                while frames.recv().await.is_some() {}
+            })
+            .await
+            .unwrap();
+            assert_eq!(session.try_exit_code(), Some(9));
+            assert_eq!(session.wait_exit_code(), Some(9));
+        }
     }
 
     #[cfg(test)]
@@ -830,14 +1087,14 @@ pub mod engine {
         render_state: Option<RenderState<'static>>,
         row_iter: Option<RowIterator<'static>>,
         cell_iter: Option<CellIterator<'static>>,
-        pty_writer: Option<Arc<Mutex<Box<dyn Write + Send>>>>,
+        pty_writer: Option<Arc<Mutex<Option<Box<dyn Write + Send>>>>>,
     }
 
     impl Engine {
         pub fn new(
             cols: u16,
             rows: u16,
-            pty_writer: Option<Arc<Mutex<Box<dyn Write + Send>>>>,
+            pty_writer: Option<Arc<Mutex<Option<Box<dyn Write + Send>>>>>,
         ) -> Self {
             let cols = cols.max(1);
             let rows = rows.max(1);
@@ -1038,7 +1295,9 @@ pub mod engine {
 
             if let Some(writer) = self.pty_writer.clone() {
                 let _ = terminal.on_pty_write(move |_terminal, data| {
-                    if let Ok(mut writer) = writer.lock() {
+                    if let Ok(mut writer) = writer.lock()
+                        && let Some(writer) = writer.as_mut()
+                    {
                         let _ = writer.write_all(data);
                         let _ = writer.flush();
                     }

@@ -1399,7 +1399,7 @@ pub enum ProjectEnvironmentSelection {
     },
 }
 
-/// Opening metadata for a future full-duplex process session.
+/// Opening metadata for a full-duplex piped process session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProcessSessionRequest {
     pub program: String,
@@ -1417,6 +1417,32 @@ pub struct ProcessSessionCompletion {
     pub status_code: Option<i32>,
     pub success: bool,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PtySessionCommand {
+    LoginShell { shell: Option<String> },
+    Command { program: String, args: Vec<String> },
+}
+
+/// Opening metadata for a service-owned pseudo-terminal.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PtySessionRequest {
+    pub command: PtySessionCommand,
+    #[serde(serialize_with = "serialize_posix_path")]
+    pub cwd: PathBuf,
+    pub environment: ProjectEnvironmentSelection,
+    #[serde(default)]
+    pub env_overrides: BTreeMap<String, String>,
+    pub cols: u16,
+    pub rows: u16,
+    #[serde(default)]
+    pub pixel_width: u16,
+    #[serde(default)]
+    pub pixel_height: u16,
+}
+
+pub type PtySessionCompletion = ProcessSessionCompletion;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProcessOutputResponse {

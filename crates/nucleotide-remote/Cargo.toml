@@ -23,6 +23,7 @@ nucleotide-process = { workspace = true, features = ["tokio"] }
 nucleotide-workspace.workspace = true
 notify.workspace = true
 prost.workspace = true
+portable-pty = "0.9"
 regex.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

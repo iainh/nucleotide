@@ -7,6 +7,8 @@ pub mod terminal_handler;
 pub mod workspace_file_ops;
 
 #[cfg(feature = "terminal-emulator-core")]
+pub use terminal_handler::RemoteTerminalSessionProvider;
+#[cfg(feature = "terminal-emulator-core")]
 pub use terminal_handler::TerminalRuntimeHandle;
 #[cfg(not(feature = "terminal-emulator-core"))]
 #[derive(Clone, Default)]
@@ -23,6 +25,18 @@ impl TerminalRuntimeHandle {
         &self,
         _id: nucleotide_events::v2::terminal::TerminalId,
         _bytes: Vec<u8>,
+    ) -> bool {
+        false
+    }
+
+    pub fn has_remote_terminal_provider_for(&self, _workspace: &std::path::Path) -> bool {
+        false
+    }
+
+    pub fn handles_remote_terminal(
+        &self,
+        _workspace: &std::path::Path,
+        _cwd: &std::path::Path,
     ) -> bool {
         false
     }
@@ -2167,6 +2181,8 @@ impl Application {
 
     pub(crate) fn set_workspace_backend(&mut self, workspace_backend: WorkspaceBackendHandle) {
         self.workspace_backend = workspace_backend.clone();
+        #[cfg(feature = "terminal-emulator-core")]
+        self.terminal_runtime.set_remote_provider(None);
         self.remote_lsp_session_provider = None;
         if let Some(system) = &self.project_lsp_system {
             system.bridge.set_remote_session_provider(None);
@@ -2185,7 +2201,11 @@ impl Application {
         connection: nucleotide_remote::WorkspaceBackendConnection,
     ) {
         let provider = service_remote_lsp_session_provider(&connection);
+        #[cfg(feature = "terminal-emulator-core")]
+        let terminal_provider = RemoteTerminalSessionProvider::from_connection(&connection);
         self.set_workspace_backend(connection.backend);
+        #[cfg(feature = "terminal-emulator-core")]
+        self.terminal_runtime.set_remote_provider(terminal_provider);
         self.remote_lsp_session_provider = provider.clone();
         if let Some(system) = &self.project_lsp_system {
             system.bridge.set_remote_session_provider(provider);
@@ -9670,6 +9690,9 @@ pub fn init_editor(
         &gui_config,
     )?;
     let remote_lsp_session_provider = service_remote_lsp_session_provider(&workspace_connection);
+    #[cfg(feature = "terminal-emulator-core")]
+    let remote_terminal_session_provider =
+        RemoteTerminalSessionProvider::from_connection(&workspace_connection);
     let workspace_backend = workspace_connection.backend;
 
     let mut theme_parent_dirs = vec![helix_loader::config_dir()];
@@ -9993,6 +10016,8 @@ pub fn init_editor(
         WorkspaceFileOpHandler::new(workspace_backend.clone(), file_op_runtime);
 
     let terminal_runtime = TerminalRuntimeHandle::new();
+    #[cfg(feature = "terminal-emulator-core")]
+    terminal_runtime.set_remote_provider(remote_terminal_session_provider);
 
     Ok(Application {
         editor,
@@ -13176,6 +13201,7 @@ mod tests {
                 config: gui_config,
                 helix_config_arc: helix_config,
                 project_lsp_system: None,
+                remote_lsp_session_provider: None,
                 project_lsp_command_tx: Some(project_lsp_command_tx),
                 project_lsp_command_rx: Some(project_lsp_command_rx),
                 project_lsp_initialization_attempted: true,
