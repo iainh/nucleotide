@@ -4,7 +4,15 @@
 use super::*;
 
 pub(crate) enum V5ProcessSessionInput {
-    Data { body: Vec<u8>, credit: u64 },
+    Data {
+        body: Vec<u8>,
+        credit: u64,
+    },
+    PtyControl {
+        #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+        body: Vec<u8>,
+        credit: u64,
+    },
     End,
     Reset,
 }
@@ -12,7 +20,8 @@ pub(crate) enum V5ProcessSessionInput {
 pub(crate) struct V5ProcessSession {
     pub(crate) input: mpsc::SyncSender<V5ProcessSessionInput>,
     pub(crate) cancellation: WorkspaceCancellationToken,
-    eof: Arc<AtomicBool>,
+    pub(crate) eof: Arc<AtomicBool>,
+    pub(crate) method: &'static str,
     pub(crate) finished: bool,
     pub(crate) peer_ended: bool,
 }
@@ -48,6 +57,7 @@ impl V5ProcessSessionRegistry {
                 input,
                 cancellation: WorkspaceCancellationToken::new(),
                 eof: Arc::new(AtomicBool::new(false)),
+                method: "process.session",
                 finished: true,
                 peer_ended: false,
             },
@@ -118,6 +128,7 @@ impl<B: WorkspaceBackend> WorkspaceService<B> {
             input,
             cancellation,
             eof,
+            method: "process.session",
             finished: false,
             peer_ended: false,
         })
@@ -263,7 +274,7 @@ impl<B: WorkspaceBackend> WorkspaceService<B> {
         send_session_terminal(&output, stream_id, priority, result, &cancellation);
     }
 
-    fn prepare_v5_process_session(
+    pub(crate) fn prepare_v5_process_session(
         &self,
         request: &ProcessSessionRequest,
     ) -> std::result::Result<(PathBuf, PathBuf, BTreeMap<String, String>), RemoteError> {
@@ -350,7 +361,7 @@ impl<B: WorkspaceBackend> WorkspaceService<B> {
     }
 }
 
-enum SessionPipeResult {
+pub(crate) enum SessionPipeResult {
     Data(protocol_v5::DataChannel, Vec<u8>),
     Closed,
 }
@@ -363,7 +374,7 @@ enum SessionStdinResult {
     Closed,
 }
 
-fn spawn_session_pipe(
+pub(crate) fn spawn_session_pipe(
     mut pipe: impl Read + Send + 'static,
     channel: protocol_v5::DataChannel,
     sender: mpsc::SyncSender<SessionPipeResult>,
@@ -419,6 +430,12 @@ fn session_stdin_loop(
                 let _ = done.send(SessionStdinResult::Settled {
                     bytes: credit,
                     disposition,
+                });
+            }
+            V5ProcessSessionInput::PtyControl { credit, .. } => {
+                let _ = done.send(SessionStdinResult::Settled {
+                    bytes: credit,
+                    disposition: SessionInputDisposition::Discarded,
                 });
             }
             V5ProcessSessionInput::End => {
@@ -531,14 +548,14 @@ fn insert_session_environment(env: &mut BTreeMap<String, String>, key: String, v
     }
     env.insert(key, value);
 }
-fn session_error(code: impl Into<String>, message: impl Into<String>) -> RemoteError {
+pub(crate) fn session_error(code: impl Into<String>, message: impl Into<String>) -> RemoteError {
     RemoteError {
         code: code.into(),
         message: message.into(),
         diagnostic: None,
     }
 }
-fn send_session_terminal(
+pub(crate) fn send_session_terminal(
     output: &V5ServeOutputSender,
     stream_id: u64,
     priority: protocol_v5::Priority,

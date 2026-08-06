@@ -2,10 +2,12 @@
 // ABOUTME: Splits stdin and output while retaining protocol flow credit until reads consume it
 
 use super::*;
+use prost::Message;
 use std::future::Future;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 const PROCESS_SESSION_METHOD: &str = "process.session";
+const PTY_SESSION_METHOD: &str = "pty.session";
 const PROCESS_SESSION_STDIN_LIMIT: usize = 256 * 1024;
 
 /// Protocol-independent input used by application code to start a piped process.
@@ -49,6 +51,43 @@ pub trait RemotePipedProcessSessionLauncher: Send + Sync {
     ) -> std::result::Result<RemotePipedProcessSessionParts, RemoteClientError>;
 }
 
+/// Protocol-independent PTY launch request. Unlike a process session, output is a single
+/// terminal byte stream and the service owns the pseudo-terminal and child lifecycle.
+pub type RemotePtySessionRequest = PtySessionRequest;
+
+pub struct RemotePtySessionParts {
+    pub input: RemoteProcessSessionWriter,
+    pub output: RemoteProcessSessionReader,
+    pub completion: RemoteProcessSessionCompletionFuture,
+    pub control: Box<dyn RemotePtySessionControl>,
+    /// Keeps both the protocol stream guard and the exact reconnecting transport alive until
+    /// terminal teardown. Dropping this guard cancels the remote PTY.
+    pub lifecycle: Box<dyn Send>,
+}
+
+/// Synchronous, object-safe controls which can be called by a terminal UI thread. `wait` reports
+/// child exit, but PTY output may still be buffered; callers must read `output` to EOF before
+/// treating all output as delivered. Cancellation kills and reaps the portable-pty child/process
+/// group where supported. A fully daemonized descendant which creates a new process group/session
+/// can escape that containment; teardown remains bounded and never waits for its inherited slave.
+pub trait RemotePtySessionControl: Send + Sync {
+    fn resize(
+        &self,
+        cols: u16,
+        rows: u16,
+        pixel_width: u16,
+        pixel_height: u16,
+    ) -> std::result::Result<(), RemoteClientError>;
+    fn cancel(&self);
+}
+
+pub trait RemotePtySessionLauncher: Send + Sync {
+    fn launch(
+        &self,
+        request: RemotePtySessionRequest,
+    ) -> std::result::Result<RemotePtySessionParts, RemoteClientError>;
+}
+
 pub(crate) struct RemoteV5ProcessSessionLauncher {
     client: Arc<RemoteWorkspaceV5ReconnectingClient>,
 }
@@ -58,6 +97,27 @@ struct RemoteV5ProcessSessionLifecycle {
     // RemoteProcessSession uses a weak transport reference. Retain the exact client shared with
     // WorkspaceBackendConnection so extracting session parts cannot close the backend early.
     _client: Arc<RemoteWorkspaceV5ReconnectingClient>,
+}
+
+struct RemoteV5PtyControl {
+    core: Arc<V5ProcessSessionCore<ChildProcessV5Writer>>,
+    _client: Arc<RemoteWorkspaceV5ReconnectingClient>,
+}
+
+impl RemotePtySessionControl for RemoteV5PtyControl {
+    fn resize(
+        &self,
+        cols: u16,
+        rows: u16,
+        pixel_width: u16,
+        pixel_height: u16,
+    ) -> std::result::Result<(), RemoteClientError> {
+        self.core
+            .send_pty_resize(cols, rows, pixel_width, pixel_height)
+    }
+    fn cancel(&self) {
+        self.core.cancel("PTY session cancelled");
+    }
 }
 
 impl RemoteV5ProcessSessionLauncher {
@@ -85,6 +145,29 @@ impl RemotePipedProcessSessionLauncher for RemoteV5ProcessSessionLauncher {
             stdout: Box::pin(session.stdout),
             stderr: Box::pin(session.stderr),
             completion: Box::pin(session.completion),
+            lifecycle: Box::new(RemoteV5ProcessSessionLifecycle {
+                _guard: session.lifecycle,
+                _client: Arc::clone(&self.client),
+            }),
+        })
+    }
+}
+
+impl RemotePtySessionLauncher for RemoteV5ProcessSessionLauncher {
+    fn launch(
+        &self,
+        request: RemotePtySessionRequest,
+    ) -> std::result::Result<RemotePtySessionParts, RemoteClientError> {
+        let session = self.client.open_pty_session(request)?;
+        let control = RemoteV5PtyControl {
+            core: Arc::clone(&session.lifecycle.core),
+            _client: Arc::clone(&self.client),
+        };
+        Ok(RemotePtySessionParts {
+            input: Box::pin(session.stdin),
+            output: Box::pin(session.stdout),
+            completion: Box::pin(session.completion),
+            control: Box::new(control),
             lifecycle: Box::new(RemoteV5ProcessSessionLifecycle {
                 _guard: session.lifecycle,
                 _client: Arc::clone(&self.client),
@@ -126,6 +209,61 @@ pub(crate) struct V5ProcessSessionCore<W> {
     stream_id: u64,
     ended: AtomicBool,
     reset: AtomicBool,
+}
+
+impl<W: Write> V5ProcessSessionCore<W> {
+    fn send_pty_resize(
+        &self,
+        cols: u16,
+        rows: u16,
+        pixel_width: u16,
+        pixel_height: u16,
+    ) -> std::result::Result<(), RemoteClientError> {
+        let body = protocol_v5::PtyControl {
+            resize: Some(protocol_v5::PtyResize {
+                cols: cols.into(),
+                rows: rows.into(),
+                pixel_width: pixel_width.into(),
+                pixel_height: pixel_height.into(),
+            }),
+        }
+        .encode_to_vec();
+        let shared = self
+            .shared
+            .upgrade()
+            .ok_or(RemoteClientError::Disconnected)?;
+        shared
+            .session
+            .lock()
+            .map_err(v5_client_lock_error)?
+            .send_owned_data(
+                self.stream_id,
+                protocol_v5::DataChannel::PtyControl,
+                body,
+                protocol_v5::Priority::UserInput,
+            )?;
+        wake_v5_client_writer(&shared)
+    }
+    fn cancel(&self, reason: &str) {
+        if self.reset.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        // RESET has no response guarantee (especially after connection loss). Settle all local
+        // readers and completion immediately rather than depending on the peer.
+        self.mailbox.fail(RemoteClientError::TransportClosed {
+            cause: reason.to_string(),
+        });
+        if let Some(shared) = self.shared.upgrade() {
+            if let Ok(mut session) = shared.session.lock() {
+                let _ = session.reset_stream(
+                    self.stream_id,
+                    protocol_v5::RESET_CANCELLED,
+                    reason.to_string(),
+                );
+            }
+            let _ = wake_v5_client_writer(&shared);
+        }
+    }
 }
 pub(crate) struct V5ProcessSessionMailbox {
     state: Mutex<V5ProcessSessionState>,
@@ -453,9 +591,15 @@ impl Future for RemoteProcessSessionCompletion {
 
 impl<W> Drop for RemoteProcessSessionGuard<W> {
     fn drop(&mut self) {
+        if self.core.mailbox.terminal() {
+            return;
+        }
         if self.core.reset.swap(true, Ordering::AcqRel) {
             return;
         }
+        self.core.mailbox.fail(RemoteClientError::TransportClosed {
+            cause: "process session handle dropped".to_string(),
+        });
         let Some(shared) = self.core.shared.upgrade() else {
             return;
         };
@@ -489,12 +633,36 @@ where
                 "remote helper does not support process_sessions_v1".to_string(),
             ));
         }
-        let payload = serde_json::to_vec(&request)?;
+        self.open_session(PROCESS_SESSION_METHOD, serde_json::to_vec(&request)?)
+    }
+
+    pub fn open_pty_session(
+        &self,
+        request: PtySessionRequest,
+    ) -> std::result::Result<RemoteProcessSession<W>, RemoteClientError> {
+        if !self
+            .server_hello
+            .capabilities
+            .iter()
+            .any(|capability| capability == "pty_sessions_v1")
+        {
+            return Err(RemoteClientError::Protocol(
+                "remote helper does not support pty_sessions_v1".to_string(),
+            ));
+        }
+        self.open_session(PTY_SESSION_METHOD, serde_json::to_vec(&request)?)
+    }
+
+    fn open_session(
+        &self,
+        method: &'static str,
+        payload: Vec<u8>,
+    ) -> std::result::Result<RemoteProcessSession<W>, RemoteClientError> {
         let mailbox = Arc::new(V5ProcessSessionMailbox::new());
         let stream_id = {
             let mut session = self.shared.session.lock().map_err(v5_client_lock_error)?;
             let stream_id = session.open_full_duplex_request(
-                PROCESS_SESSION_METHOD,
+                method,
                 protocol_v5::RequestOptions::default(),
                 payload,
             )?;

@@ -884,6 +884,25 @@ impl ReconnectingRemoteWorkspaceProtocolClient<RemoteWorkspaceV5ChildClient> {
             Err(error) => Err(error),
         }
     }
+
+    /// PTY sessions, like process sessions, are never replayed across reconnects.
+    pub(crate) fn open_pty_session(
+        &self,
+        request: PtySessionRequest,
+    ) -> std::result::Result<RemoteProcessSession<ChildProcessV5Writer>, RemoteClientError> {
+        let client = self.current_client()?;
+        match client.open_pty_session(request) {
+            Ok(session) => Ok(session),
+            Err(error) if remote_client_error_requires_reconnect(&error) => {
+                if let Err(reconnect_error) = self.reconnect_if_current_with_attempt(&client, None)
+                {
+                    tracing::warn!(%reconnect_error, %error, "Failed to heal PTY-session transport");
+                }
+                Err(error)
+            }
+            Err(error) => Err(error),
+        }
+    }
 }
 
 impl<C> RemoteWorkspaceProtocolClient for ReconnectingRemoteWorkspaceProtocolClient<C>

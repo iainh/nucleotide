@@ -139,7 +139,7 @@ const DEFAULT_SSH_SERVER_ALIVE_COUNT_MAX: u32 = 3;
 const DEFAULT_RELEASE_TAG_PREFIX: &str = "v";
 const RELEASE_CHECKSUMS_ASSET: &str = "SHA256SUMS";
 /// Bump when a same-package-version helper must be redeployed for compatibility.
-pub const REMOTE_HELPER_REVISION: u32 = 3;
+pub const REMOTE_HELPER_REVISION: u32 = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HelperVersionInfo {

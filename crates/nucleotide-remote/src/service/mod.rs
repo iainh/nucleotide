@@ -8,6 +8,8 @@ mod dispatch;
 mod file;
 mod process;
 mod process_session;
+#[cfg(target_os = "linux")]
+mod pty_session;
 mod runtime;
 mod search;
 mod watch;

@@ -279,6 +279,7 @@ impl<R: Read, W: Write> RemoteWorkspaceV5Client<R, W> {
                         }
                         protocol_v5::DataChannel::Stdout => stdout.extend(body),
                         protocol_v5::DataChannel::Stderr => stderr.extend(body),
+                        protocol_v5::DataChannel::PtyControl => {}
                     }
                 }
                 protocol_v5::StreamEvent::EndStream { .. } => {

@@ -662,7 +662,7 @@ pub(crate) fn spawn_child_process_workspace_backend_with_startup_context(
     command: &RemoteServiceCommand,
     startup: &RemoteStartupContext,
 ) -> Result<(WorkspaceBackendHandle, HelloResponse)> {
-    let (backend, hello, _) =
+    let (backend, hello, _, _) =
         spawn_child_process_workspace_backend_with_session_launcher(identity, command, startup)?;
     Ok((backend, hello))
 }
@@ -675,6 +675,7 @@ pub(crate) fn spawn_child_process_workspace_backend_with_session_launcher(
     WorkspaceBackendHandle,
     HelloResponse,
     Option<Arc<dyn RemotePipedProcessSessionLauncher>>,
+    Option<Arc<dyn RemotePtySessionLauncher>>,
 )> {
     startup.check()?;
     tracing::info!(
@@ -796,11 +797,20 @@ pub(crate) fn spawn_child_process_workspace_backend_with_session_launcher(
         .iter()
         .any(|capability| capability == "process_sessions_v1");
     let reconnecting_client = Arc::new(reconnecting_client);
-    let launcher = process_sessions.then(|| {
+    let process_launcher = process_sessions.then(|| {
         Arc::new(RemoteV5ProcessSessionLauncher::new(Arc::clone(
             &reconnecting_client,
         ))) as Arc<dyn RemotePipedProcessSessionLauncher>
     });
+    let pty_launcher = hello
+        .capabilities
+        .iter()
+        .any(|capability| capability == "pty_sessions_v1")
+        .then(|| {
+            Arc::new(RemoteV5ProcessSessionLauncher::new(Arc::clone(
+                &reconnecting_client,
+            ))) as Arc<dyn RemotePtySessionLauncher>
+        });
     let backend = RemoteWorkspaceBackendImpl::from_shared_protocol_client(
         identity.clone(),
         reconnecting_client,
@@ -819,7 +829,7 @@ pub(crate) fn spawn_child_process_workspace_backend_with_session_launcher(
         "V5 remote workspace service hello completed"
     );
 
-    Ok((Arc::new(backend), hello, launcher))
+    Ok((Arc::new(backend), hello, process_launcher, pty_launcher))
 }
 
 #[async_trait]

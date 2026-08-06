@@ -1953,6 +1953,7 @@ impl V5ResponseAccumulator {
                     }
                     protocol_v5::DataChannel::Stdout => self.stdout.extend(body),
                     protocol_v5::DataChannel::Stderr => self.stderr.extend(body),
+                    protocol_v5::DataChannel::PtyControl => {}
                 }
                 None
             }
@@ -2055,7 +2056,8 @@ impl V5RawResponseAccumulator {
                     protocol_v5::DataChannel::FileBody
                     | protocol_v5::DataChannel::Stdin
                     | protocol_v5::DataChannel::Stdout
-                    | protocol_v5::DataChannel::Stderr => {
+                    | protocol_v5::DataChannel::Stderr
+                    | protocol_v5::DataChannel::PtyControl => {
                         return Some(Err(RemoteClientError::Protocol(format!(
                             "unexpected v5 raw response data channel: {channel:?}"
                         ))));

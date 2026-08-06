@@ -5374,6 +5374,7 @@ dependencies = [
  "nucleotide-logging",
  "nucleotide-process",
  "nucleotide-workspace",
+ "portable-pty",
  "prost",
  "regex",
  "serde",

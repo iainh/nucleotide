@@ -2629,6 +2629,22 @@ impl Workspace {
             )
         };
         self.handle.spawn(async move {
+            if let (Some(workspace_root), Some(service_cwd)) =
+                (workspace_root.as_deref(), cwd.as_deref())
+                && terminal_runtime.has_remote_terminal_provider_for(workspace_root)
+            {
+                terminal_runtime.dispatch(&TerminalEvent::ServiceSpawnRequested {
+                    id,
+                    cwd: service_cwd.to_path_buf(),
+                    shell: shell.clone(),
+                    env: extra_env.clone(),
+                });
+                if let Some(bytes) = initial_input {
+                    terminal_runtime.dispatch(&TerminalEvent::Input { id, bytes });
+                }
+                return;
+            }
+
             let remote_proxy = Self::remote_terminal_proxy_command_async(
                 workspace_root,
                 cwd.clone(),
@@ -2716,6 +2732,20 @@ impl Workspace {
             )
         };
         self.handle.spawn(async move {
+            if let (Some(workspace_root), Some(service_cwd)) =
+                (workspace_root.as_deref(), cwd.as_deref())
+                && terminal_runtime.has_remote_terminal_provider_for(workspace_root)
+            {
+                terminal_runtime.dispatch(&TerminalEvent::ServiceCommandSpawnRequested {
+                    id,
+                    cwd: service_cwd.to_path_buf(),
+                    program: program.clone(),
+                    args: args.clone(),
+                    env: extra_env.clone(),
+                });
+                return;
+            }
+
             let remote_proxy = Self::remote_terminal_proxy_command_async(
                 workspace_root,
                 cwd.clone(),

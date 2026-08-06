@@ -1729,6 +1729,8 @@ pub struct WorkspaceBackendConnection {
     pub hello: Option<HelloResponse>,
     /// Present only when the connected helper negotiated `process_sessions_v1`.
     pub process_session_launcher: Option<Arc<dyn RemotePipedProcessSessionLauncher>>,
+    /// Present only when the connected helper negotiated `pty_sessions_v1`.
+    pub pty_session_launcher: Option<Arc<dyn RemotePtySessionLauncher>>,
 }
 
 pub fn remote_workspace_identity_for_location(
@@ -2040,7 +2042,7 @@ pub(crate) fn connect_workspace_backend_for_location_with_optional_progress(
                 .as_deref()
                 .unwrap_or(&options.remote_helper_path);
             let command = local_service_command(helper_path, path);
-            let (backend, hello, process_session_launcher) =
+            let (backend, hello, process_session_launcher, pty_session_launcher) =
                 spawn_child_process_workspace_backend_with_session_launcher(
                     RemoteWorkspaceIdentity {
                         kind: RemoteWorkspaceKind::Other("local-service".to_string()),
@@ -2062,6 +2064,7 @@ pub(crate) fn connect_workspace_backend_for_location_with_optional_progress(
                 location,
                 hello: Some(hello),
                 process_session_launcher,
+                pty_session_launcher,
             });
         }
 
@@ -2070,6 +2073,7 @@ pub(crate) fn connect_workspace_backend_for_location_with_optional_progress(
             location,
             hello: None,
             process_session_launcher: None,
+            pty_session_launcher: None,
         });
     }
 
@@ -2091,7 +2095,7 @@ pub(crate) fn connect_workspace_backend_for_location_with_optional_progress(
         &location,
         Some(display_root.display().to_string()),
     );
-    let (backend, hello, process_session_launcher) =
+    let (backend, hello, process_session_launcher, pty_session_launcher) =
         match spawn_child_process_workspace_backend_with_session_launcher(
             identity.clone(),
             &command,
@@ -2151,6 +2155,7 @@ pub(crate) fn connect_workspace_backend_for_location_with_optional_progress(
         location,
         hello: Some(hello),
         process_session_launcher,
+        pty_session_launcher,
     })
 }
 

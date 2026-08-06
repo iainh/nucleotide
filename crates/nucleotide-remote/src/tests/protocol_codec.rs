@@ -487,7 +487,8 @@ fn decode_v5_service_response(
                     protocol_v5::DataChannel::FileBody
                     | protocol_v5::DataChannel::Stdout
                     | protocol_v5::DataChannel::Stderr
-                    | protocol_v5::DataChannel::Stdin => body.extend_from_slice(&frame.body),
+                    | protocol_v5::DataChannel::Stdin
+                    | protocol_v5::DataChannel::PtyControl => body.extend_from_slice(&frame.body),
                 }
             }
             _ => {}

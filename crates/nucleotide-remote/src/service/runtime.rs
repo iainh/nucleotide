@@ -944,7 +944,8 @@ impl V5ServiceRequest {
             protocol_v5::DataChannel::FileBody
             | protocol_v5::DataChannel::Stdin
             | protocol_v5::DataChannel::Stdout
-            | protocol_v5::DataChannel::Stderr => self.body.extend(bytes),
+            | protocol_v5::DataChannel::Stderr
+            | protocol_v5::DataChannel::PtyControl => self.body.extend(bytes),
         }
     }
 
@@ -963,7 +964,8 @@ impl V5ServiceRequest {
             protocol_v5::DataChannel::FileBody
             | protocol_v5::DataChannel::Stdin
             | protocol_v5::DataChannel::Stdout
-            | protocol_v5::DataChannel::Stderr => (
+            | protocol_v5::DataChannel::Stderr
+            | protocol_v5::DataChannel::PtyControl => (
                 &mut self.received_body_bytes,
                 V5_MAX_REQUEST_BODY_BYTES,
                 "body",
