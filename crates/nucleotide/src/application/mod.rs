@@ -53,7 +53,7 @@ use helix_view::{
 use nucleotide_events::{ProjectLspCommand, ProjectLspCommandError};
 use nucleotide_lsp::{
     HelixLspBridge, LspLaunchProxy, LspLaunchProxyProvider, ProjectEnvironmentSource,
-    ProjectLspManager, ProjectServerLifecycle, ServerStatus,
+    ProjectLspManager, ProjectServerLifecycle, RemoteLspSessionProvider, ServerStatus,
 };
 use nucleotide_workspace::{
     DirectoryListing, FileKind, FileRead, FileStat, FileVersion, ProcessSpec, ReadOptions,
@@ -415,6 +415,86 @@ impl LspLaunchProxyProvider for RemoteLspLaunchProxyProvider {
             cleanup_paths: vec![shim_path, shim_dir],
             description: command.display_context(),
         }))
+    }
+}
+
+/// Adapts the negotiated workspace service session capability to Helix's
+/// externally-owned stdio transport.
+struct ServiceRemoteLspSessionProvider {
+    display_root: PathBuf,
+    native_root: PathBuf,
+    launcher: Arc<dyn nucleotide_remote::RemotePipedProcessSessionLauncher>,
+}
+
+struct ServiceRemoteLspLifecycle {
+    // Drop order is intentional: cancellation guard first, then completion.
+    _lifecycle: Box<dyn Send>,
+    _completion: nucleotide_remote::RemoteProcessSessionCompletionFuture,
+}
+
+fn service_remote_lsp_session_provider(
+    connection: &nucleotide_remote::WorkspaceBackendConnection,
+) -> Option<Arc<dyn RemoteLspSessionProvider>> {
+    connection
+        .process_session_launcher
+        .as_ref()
+        .map(|launcher| {
+            Arc::new(ServiceRemoteLspSessionProvider {
+                display_root: connection.location.display_root().to_path_buf(),
+                native_root: connection.location.native_root().to_path_buf(),
+                launcher: Arc::clone(launcher),
+            }) as Arc<dyn RemoteLspSessionProvider>
+        })
+}
+
+impl RemoteLspSessionProvider for ServiceRemoteLspSessionProvider {
+    fn handles_workspace(&self, workspace_root: &Path) -> bool {
+        workspace_root.starts_with(&self.display_root)
+    }
+
+    fn start_remote_lsp_session(
+        &self,
+        workspace_root: &Path,
+        _server_name: &str,
+        command: &str,
+        args: &[String],
+        process_cwd: &Path,
+        environment: &HashMap<String, String>,
+    ) -> Result<helix_lsp::ExternalTransport, Box<dyn std::error::Error + Send + Sync>> {
+        let native_workspace_root = nucleotide_workspace::WorkspacePathMapping::new(
+            self.display_root.clone(),
+            self.native_root.clone(),
+        )
+        .to_native_path(workspace_root);
+        // The bridge gives direct sessions native cwd. Keep accepting a display
+        // path here so the adapter remains robust when called directly in tests.
+        let native_cwd = if process_cwd.starts_with(&self.display_root) {
+            nucleotide_workspace::WorkspacePathMapping::new(
+                self.display_root.clone(),
+                self.native_root.clone(),
+            )
+            .to_native_path(process_cwd)
+        } else {
+            process_cwd.to_path_buf()
+        };
+        let parts = self
+            .launcher
+            .launch(nucleotide_remote::RemotePipedProcessSessionRequest {
+                program: command.to_string(),
+                args: args.to_vec(),
+                cwd: native_cwd,
+                environment_anchor: native_workspace_root,
+                env_overrides: environment.clone().into_iter().collect(),
+            })?;
+        Ok(helix_lsp::ExternalTransport {
+            stdin: Box::new(parts.stdin),
+            stdout: Box::new(parts.stdout),
+            stderr: Box::new(parts.stderr),
+            lifecycle_guard: Box::new(ServiceRemoteLspLifecycle {
+                _lifecycle: parts.lifecycle,
+                _completion: parts.completion,
+            }),
+        })
     }
 }
 
@@ -1966,6 +2046,7 @@ pub struct Application {
     pub config: crate::config::Config,
     pub helix_config_arc: Arc<ArcSwap<helix_term::config::Config>>,
     project_lsp_system: Option<ProjectLspSystem>,
+    remote_lsp_session_provider: Option<Arc<dyn RemoteLspSessionProvider>>,
     pub project_lsp_command_tx:
         Option<tokio::sync::mpsc::UnboundedSender<nucleotide_events::ProjectLspCommand>>,
     pub project_lsp_command_rx:
@@ -2086,7 +2167,9 @@ impl Application {
 
     pub(crate) fn set_workspace_backend(&mut self, workspace_backend: WorkspaceBackendHandle) {
         self.workspace_backend = workspace_backend.clone();
+        self.remote_lsp_session_provider = None;
         if let Some(system) = &self.project_lsp_system {
+            system.bridge.set_remote_session_provider(None);
             system
                 .environment_provider
                 .set_workspace_backend(workspace_backend.clone());
@@ -2095,6 +2178,18 @@ impl Application {
             .set_save_handler(Some(Arc::new(WorkspaceDocumentSaveHandler::new(
                 workspace_backend,
             ))));
+    }
+
+    pub(crate) fn set_workspace_backend_connection(
+        &mut self,
+        connection: nucleotide_remote::WorkspaceBackendConnection,
+    ) {
+        let provider = service_remote_lsp_session_provider(&connection);
+        self.set_workspace_backend(connection.backend);
+        self.remote_lsp_session_provider = provider.clone();
+        if let Some(system) = &self.project_lsp_system {
+            system.bridge.set_remote_session_provider(provider);
+        }
     }
 
     pub(crate) fn set_editor_status_feedback(
@@ -7092,6 +7187,7 @@ impl Application {
             env_provider.clone(),
             launch_proxy_provider,
         );
+        helix_bridge.set_remote_session_provider(self.remote_lsp_session_provider.clone());
         self.project_lsp_system = Some(ProjectLspSystem {
             manager: project_manager.clone(),
             bridge: helix_bridge.clone(),
@@ -9393,7 +9489,22 @@ pub(crate) fn workspace_backend_for_project_directory_with_bootstrap_progress_an
     progress: &dyn Fn(nucleotide_remote::RemoteDeploymentProgress),
     startup: &nucleotide_remote::RemoteStartupContext,
 ) -> Result<WorkspaceBackendHandle, Error> {
-    workspace_backend_for_project_directory_with_bootstrap(
+    workspace_backend_connection_for_project_directory_with_bootstrap_progress_and_startup_context(
+        project_directory,
+        bootstrap,
+        progress,
+        startup,
+    )
+    .map(|connection| connection.backend)
+}
+
+pub(crate) fn workspace_backend_connection_for_project_directory_with_bootstrap_progress_and_startup_context(
+    project_directory: Option<&Path>,
+    bootstrap: &nucleotide_remote::RemoteWorkspaceBootstrap,
+    progress: &dyn Fn(nucleotide_remote::RemoteDeploymentProgress),
+    startup: &nucleotide_remote::RemoteStartupContext,
+) -> Result<nucleotide_remote::WorkspaceBackendConnection, Error> {
+    workspace_backend_connection_for_project_directory_with_bootstrap(
         project_directory,
         bootstrap,
         Some(progress),
@@ -9401,31 +9512,27 @@ pub(crate) fn workspace_backend_for_project_directory_with_bootstrap_progress_an
     )
 }
 
-fn workspace_backend_for_project_directory_with_options(
-    project_directory: Option<&Path>,
-    options: &nucleotide_remote::RemoteWorkspaceBackendOptions,
-    progress_handler: Option<&dyn Fn(nucleotide_remote::RemoteDeploymentProgress)>,
-    startup: Option<&nucleotide_remote::RemoteStartupContext>,
-) -> Result<WorkspaceBackendHandle, Error> {
-    let bootstrap = nucleotide_remote::RemoteWorkspaceBootstrap::new(options.clone());
-    workspace_backend_for_project_directory_with_bootstrap(
-        project_directory,
-        &bootstrap,
-        progress_handler,
-        startup,
-    )
-}
-
-fn workspace_backend_for_project_directory_with_bootstrap(
+fn workspace_backend_connection_for_project_directory_with_bootstrap(
     project_directory: Option<&Path>,
     bootstrap: &nucleotide_remote::RemoteWorkspaceBootstrap,
     progress_handler: Option<&dyn Fn(nucleotide_remote::RemoteDeploymentProgress)>,
     startup: Option<&nucleotide_remote::RemoteStartupContext>,
-) -> Result<WorkspaceBackendHandle, Error> {
+) -> Result<nucleotide_remote::WorkspaceBackendConnection, Error> {
     let Some(project_directory) = project_directory else {
-        return Ok(local_workspace_backend());
+        return nucleotide_remote::connect_workspace_backend_for_location(
+            classify_workspace_location(Path::new(".")),
+            bootstrap.options(),
+        );
     };
+    connect_workspace_backend_connection(project_directory, bootstrap, progress_handler, startup)
+}
 
+fn connect_workspace_backend_connection(
+    project_directory: &Path,
+    bootstrap: &nucleotide_remote::RemoteWorkspaceBootstrap,
+    progress_handler: Option<&dyn Fn(nucleotide_remote::RemoteDeploymentProgress)>,
+    startup: Option<&nucleotide_remote::RemoteStartupContext>,
+) -> Result<nucleotide_remote::WorkspaceBackendConnection, Error> {
     let location = classify_workspace_location(project_directory);
     let display_root = location.display_root().to_path_buf();
     let native_root = location.native_root().to_path_buf();
@@ -9483,15 +9590,21 @@ fn workspace_backend_for_project_directory_with_bootstrap(
         }
     }
 
-    Ok(connection.backend)
+    Ok(connection)
 }
 
-pub(crate) fn workspace_backend_for_project_directory_with_config(
+pub(crate) fn workspace_backend_connection_for_project_directory_with_config(
     project_directory: Option<&Path>,
     config: &crate::config::Config,
-) -> Result<WorkspaceBackendHandle, Error> {
+) -> Result<nucleotide_remote::WorkspaceBackendConnection, Error> {
     let options = config.remote_workspace_backend_options();
-    workspace_backend_for_project_directory_with_options(project_directory, &options, None, None)
+    let bootstrap = nucleotide_remote::RemoteWorkspaceBootstrap::new(options);
+    workspace_backend_connection_for_project_directory_with_bootstrap(
+        project_directory,
+        &bootstrap,
+        None,
+        None,
+    )
 }
 
 pub fn init_editor(
@@ -9552,10 +9665,12 @@ pub fn init_editor(
             None
         }
     };
-    let workspace_backend = workspace_backend_for_project_directory_with_config(
+    let workspace_connection = workspace_backend_connection_for_project_directory_with_config(
         project_directory.as_deref(),
         &gui_config,
     )?;
+    let remote_lsp_session_provider = service_remote_lsp_session_provider(&workspace_connection);
+    let workspace_backend = workspace_connection.backend;
 
     let mut theme_parent_dirs = vec![helix_loader::config_dir()];
     theme_parent_dirs.extend(helix_loader::runtime_dirs().iter().cloned());
@@ -9892,6 +10007,7 @@ pub fn init_editor(
         config: gui_config,
         helix_config_arc: config,
         project_lsp_system: None,
+        remote_lsp_session_provider,
         project_lsp_command_tx: Some(project_lsp_command_tx),
         project_lsp_command_rx: Some(project_lsp_command_rx),
         project_lsp_initialization_attempted: false,

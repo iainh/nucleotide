@@ -1,21 +1,22 @@
 use crate::{
-    jsonrpc,
+    Error, LanguageServerId, Result, jsonrpc,
     lsp::{self, notification::Notification as _},
-    Error, LanguageServerId, Result,
 };
 use anyhow::Context;
 use log::{error, info};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::{
-    io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, BufWriter},
-    process::{ChildStderr, ChildStdin, ChildStdout},
+    io::{
+        AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt,
+        BufReader, BufWriter,
+    },
     sync::{
-        mpsc::{unbounded_channel, Sender, UnboundedReceiver, UnboundedSender},
         Mutex, Notify,
+        mpsc::{Sender, UnboundedReceiver, UnboundedSender, unbounded_channel},
     },
 };
 
@@ -54,9 +55,9 @@ pub struct Transport {
 impl Transport {
     #[allow(clippy::type_complexity)]
     pub fn start(
-        server_stdout: BufReader<ChildStdout>,
-        server_stdin: BufWriter<ChildStdin>,
-        server_stderr: BufReader<ChildStderr>,
+        server_stdout: Box<dyn AsyncRead + Unpin + Send>,
+        server_stdin: Box<dyn AsyncWrite + Unpin + Send>,
+        server_stderr: Box<dyn AsyncRead + Unpin + Send>,
         id: LanguageServerId,
         name: String,
     ) -> (
@@ -84,13 +85,13 @@ impl Transport {
 
         tokio::spawn(Self::recv(
             transport.clone(),
-            server_stdout,
+            BufReader::new(server_stdout),
             client_tx.clone(),
         ));
-        tokio::spawn(Self::err(transport.clone(), server_stderr));
+        tokio::spawn(Self::err(transport.clone(), BufReader::new(server_stderr)));
         tokio::spawn(Self::send(
             transport,
-            server_stdin,
+            BufWriter::new(server_stdin),
             client_tx,
             client_rx,
             inject_rx,
@@ -172,7 +173,7 @@ impl Transport {
 
     async fn send_payload_to_server(
         &self,
-        server_stdin: &mut BufWriter<ChildStdin>,
+        server_stdin: &mut (impl AsyncWrite + Unpin + Send),
         payload: Payload,
     ) -> Result<()> {
         //TODO: reuse string
@@ -193,7 +194,7 @@ impl Transport {
 
     async fn send_string_to_server(
         &self,
-        server_stdin: &mut BufWriter<ChildStdin>,
+        server_stdin: &mut (impl AsyncWrite + Unpin + Send),
         request: String,
         language_server_name: &str,
     ) -> Result<()> {
@@ -286,7 +287,7 @@ impl Transport {
 
     async fn recv(
         transport: Arc<Self>,
-        mut server_stdout: BufReader<ChildStdout>,
+        mut server_stdout: impl AsyncBufRead + Unpin + Send,
         client_tx: UnboundedSender<(LanguageServerId, jsonrpc::Call)>,
     ) {
         let mut recv_buffer = String::new();
@@ -352,7 +353,7 @@ impl Transport {
         }
     }
 
-    async fn err(transport: Arc<Self>, mut server_stderr: BufReader<ChildStderr>) {
+    async fn err(transport: Arc<Self>, mut server_stderr: impl AsyncBufRead + Unpin + Send) {
         let mut recv_buffer = String::new();
         loop {
             match Self::recv_server_error(&mut server_stderr, &mut recv_buffer, &transport.name)
@@ -369,7 +370,7 @@ impl Transport {
 
     async fn send(
         transport: Arc<Self>,
-        mut server_stdin: BufWriter<ChildStdin>,
+        mut server_stdin: impl AsyncWrite + Unpin + Send,
         client_tx: UnboundedSender<(LanguageServerId, jsonrpc::Call)>,
         mut client_rx: UnboundedReceiver<Payload>,
         mut inject_rx: UnboundedReceiver<Payload>,

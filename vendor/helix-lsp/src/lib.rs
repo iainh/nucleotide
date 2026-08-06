@@ -18,6 +18,7 @@ use helix_core::syntax::config::{
 };
 use helix_stdx::path;
 use slotmap::SlotMap;
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc::UnboundedReceiver;
 
 use std::{
@@ -34,6 +35,25 @@ pub type Result<T, E = Error> = core::result::Result<T, E>;
 pub type LanguageServerName = String;
 pub use helix_core::diagnostic::LanguageServerId;
 
+/// Stdio and lifetime ownership for a language server started outside Helix.
+pub struct ExternalTransport {
+    pub stdin: Box<dyn AsyncWrite + Unpin + Send>,
+    pub stdout: Box<dyn AsyncRead + Unpin + Send>,
+    pub stderr: Box<dyn AsyncRead + Unpin + Send>,
+    /// Retained until the Client is dropped. Dropping it may cancel the session.
+    pub lifecycle_guard: Box<dyn Send>,
+}
+
+pub trait ExternalTransportProvider: Send + Sync {
+    fn provide(
+        &self,
+        command: &str,
+        args: &[String],
+        process_cwd: &Path,
+        environment: &HashMap<String, String>,
+    ) -> Result<Option<ExternalTransport>>;
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LspWorkspaceContext {
     pub workspace_root: PathBuf,
@@ -43,11 +63,7 @@ pub struct LspWorkspaceContext {
 }
 
 impl LspWorkspaceContext {
-    pub fn new(
-        workspace_root: PathBuf,
-        workspace_is_cwd: bool,
-        process_cwd: PathBuf,
-    ) -> Self {
+    pub fn new(workspace_root: PathBuf, workspace_is_cwd: bool, process_cwd: PathBuf) -> Self {
         Self {
             workspace_root,
             workspace_is_cwd,
@@ -127,8 +143,8 @@ pub mod util {
     use super::*;
     use helix_core::line_ending::{line_end_byte_index, line_end_char_index};
     use helix_core::snippets::{RenderedSnippet, Snippet, SnippetRenderCtx};
-    use helix_core::{chars, RopeSlice};
-    use helix_core::{diagnostic::NumberOrString, Range, Rope, Selection, Tendril, Transaction};
+    use helix_core::{Range, Rope, Selection, Tendril, Transaction, diagnostic::NumberOrString};
+    use helix_core::{RopeSlice, chars};
 
     /// Converts a diagnostic in the document to [`lsp::Diagnostic`].
     ///
@@ -680,6 +696,7 @@ impl Registry {
         root_dirs: &[PathBuf],
         enable_snippets: bool,
         workspace_context: Option<&LspWorkspaceContext>,
+        external_transport_provider: Option<&dyn ExternalTransportProvider>,
     ) -> Result<Arc<Client>, StartupError> {
         let syn_loader = self.syn_loader.load();
         let config = syn_loader
@@ -696,6 +713,7 @@ impl Registry {
                 root_dirs,
                 enable_snippets,
                 workspace_context,
+                external_transport_provider,
             )
             .map(|client| {
                 self.incoming.push(UnboundedReceiverStream::new(client.1));
@@ -734,6 +752,7 @@ impl Registry {
             root_dirs,
             enable_snippets,
             None,
+            None,
         ) {
             Ok(client) => client,
             Err(StartupError::NoRequiredRootFound) => return None,
@@ -767,13 +786,7 @@ impl Registry {
         root_dirs: &'a [PathBuf],
         enable_snippets: bool,
     ) -> impl Iterator<Item = (LanguageServerName, Result<Arc<Client>>)> + 'a {
-        self.get_with_workspace_context(
-            language_config,
-            doc_path,
-            root_dirs,
-            enable_snippets,
-            None,
-        )
+        self.get_with_workspace_context(language_config, doc_path, root_dirs, enable_snippets, None)
     }
 
     pub fn get_with_workspace_context<'a>(
@@ -818,6 +831,7 @@ impl Registry {
                     root_dirs,
                     enable_snippets,
                     workspace_context,
+                    None,
                 ) {
                     Ok(client) => {
                         self.inner_by_name
@@ -880,6 +894,62 @@ impl Registry {
             root_dirs,
             enable_snippets,
             workspace_context,
+            None,
+        ) {
+            Ok(client) => {
+                self.inner_by_name
+                    .entry(features.name.clone())
+                    .or_default()
+                    .push(client.clone());
+                Some(Ok(client))
+            }
+            Err(StartupError::NoRequiredRootFound) => None,
+            Err(StartupError::Error(error)) => Some(Err(error)),
+        }
+    }
+
+    pub fn get_named_with_workspace_context_and_transport_provider(
+        &mut self,
+        language_config: &LanguageConfiguration,
+        server_name: &str,
+        doc_path: Option<&Path>,
+        root_dirs: &[PathBuf],
+        enable_snippets: bool,
+        workspace_context: Option<&LspWorkspaceContext>,
+        provider: Option<&dyn ExternalTransportProvider>,
+    ) -> Option<Result<Arc<Client>>> {
+        let features = language_config
+            .language_servers
+            .iter()
+            .find(|f| f.name == server_name)?;
+        if let Some(clients) = self.inner_by_name.get(server_name) {
+            if clients.is_empty() {
+                return None;
+            }
+            if let Some((_, client)) = clients.iter().enumerate().find(|(index, client)| {
+                let roots = language_config
+                    .workspace_lsp_roots
+                    .as_deref()
+                    .unwrap_or(root_dirs);
+                client.try_add_doc(
+                    &language_config.roots,
+                    roots,
+                    doc_path,
+                    *index == 0,
+                    workspace_context,
+                )
+            }) {
+                return Some(Ok(client.clone()));
+            }
+        }
+        match self.start_client(
+            features.name.clone(),
+            language_config,
+            doc_path,
+            root_dirs,
+            enable_snippets,
+            workspace_context,
+            provider,
         ) {
             Ok(client) => {
                 self.inner_by_name
@@ -1018,8 +1088,7 @@ impl LspProgressMap {
                     };
                 }
                 ProgressStatus::Started {
-                    progress: current,
-                    ..
+                    progress: current, ..
                 } => *current = progress,
             },
             Entry::Vacant(entry) => {
@@ -1056,6 +1125,7 @@ fn start_client(
     root_dirs: &[PathBuf],
     enable_snippets: bool,
     workspace_context: Option<&LspWorkspaceContext>,
+    external_transport_provider: Option<&dyn ExternalTransportProvider>,
 ) -> Result<NewClient, StartupError> {
     let (workspace, workspace_is_cwd) = workspace_for_context(workspace_context);
     let root = if doc_path.is_none() && workspace_context.is_some() {
@@ -1089,24 +1159,49 @@ fn start_client(
                 .any(|entry| globset.is_match(entry))
             {
                 // TODO: also show the globset that should be matched: https://github.com/BurntSushi/ripgrep/issues/3274
-                warn!("The lsp {name:?} tried to start at {root_path:?} but failed to match it's 'required_root_patterns'");
+                warn!(
+                    "The lsp {name:?} tried to start at {root_path:?} but failed to match it's 'required_root_patterns'"
+                );
                 return Err(StartupError::NoRequiredRootFound);
             }
         }
     }
 
-    let (client, incoming, initialize_notify) = Client::start(
-        &ls_config.command,
-        &ls_config.args,
-        ls_config.config.clone(),
-        &ls_config.environment,
-        root_path,
-        root_uri,
-        process_cwd,
-        id,
-        name,
-        ls_config.timeout,
-    )?;
+    let external = external_transport_provider
+        .map(|provider| {
+            provider.provide(
+                &ls_config.command,
+                &ls_config.args,
+                &process_cwd,
+                &ls_config.environment,
+            )
+        })
+        .transpose()?
+        .flatten();
+    let (client, incoming, initialize_notify) = if let Some(transport) = external {
+        Client::start_with_transport(
+            transport,
+            ls_config.config.clone(),
+            root_path,
+            root_uri,
+            id,
+            name,
+            ls_config.timeout,
+        )?
+    } else {
+        Client::start(
+            &ls_config.command,
+            &ls_config.args,
+            ls_config.config.clone(),
+            &ls_config.environment,
+            root_path,
+            root_uri,
+            process_cwd,
+            id,
+            name,
+            ls_config.timeout,
+        )?
+    };
 
     let client = Arc::new(client);
 
@@ -1245,9 +1340,8 @@ pub fn find_lsp_workspace(
 #[cfg(test)]
 mod tests {
     use super::{
-        find_lsp_workspace, lsp, root_uri_for_startup, util::*, workspace_for_context,
         LanguageServerId, LspProgressMap, LspWorkspaceContext, OffsetEncoding, ProgressStatus,
-        Registry,
+        Registry, find_lsp_workspace, lsp, root_uri_for_startup, util::*, workspace_for_context,
     };
     use arc_swap::ArcSwap;
     use helix_core::Rope;
@@ -1501,10 +1595,8 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "helix-project-lsp-{}-{unique}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("helix-project-lsp-{}-{unique}", std::process::id()));
         let bin_dir = root.join("bin");
         let project_root = root.join("project");
         let log_path = root.join("lsp.jsonl");
@@ -1578,11 +1670,7 @@ while True:
             .language_configs()
             .find(|language| language.language_id == "rust")
             .unwrap();
-        let context = LspWorkspaceContext::new(
-            project_root.clone(),
-            true,
-            project_root.clone(),
-        );
+        let context = LspWorkspaceContext::new(project_root.clone(), true, project_root.clone());
         let client = registry
             .get_named_with_workspace_context(
                 language,
@@ -1651,7 +1739,9 @@ while True:
         let initialize_positions = lines
             .iter()
             .enumerate()
-            .filter_map(|(index, line)| line.contains("\"method\": \"initialize\"").then_some(index))
+            .filter_map(|(index, line)| {
+                line.contains("\"method\": \"initialize\"").then_some(index)
+            })
             .collect::<Vec<_>>();
         let first_shutdown = lines
             .iter()

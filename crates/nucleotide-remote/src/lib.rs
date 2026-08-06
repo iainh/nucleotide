@@ -95,6 +95,8 @@ const V5_FILE_BODY_WORKER_LIMIT: usize = 8;
 const V5_SEARCH_WORKER_LIMIT: usize = 2;
 const V5_GIT_ENV_WORKER_LIMIT: usize = 4;
 const V5_PROCESS_WORKER_LIMIT: usize = 4;
+const V5_PROCESS_SESSION_LIMIT: usize = 8;
+const V5_PROCESS_SESSION_INGRESS_CAPACITY: usize = 16;
 const V5_DEFAULT_WATCH_EVENTS_PER_BATCH: usize = 500;
 const V5_MAX_WATCH_EVENTS_PER_BATCH: usize = 4_096;
 const V5_WATCH_BATCH_PAYLOAD_BUDGET: usize = 48 * 1024;
@@ -137,7 +139,7 @@ const DEFAULT_SSH_SERVER_ALIVE_COUNT_MAX: u32 = 3;
 const DEFAULT_RELEASE_TAG_PREFIX: &str = "v";
 const RELEASE_CHECKSUMS_ASSET: &str = "SHA256SUMS";
 /// Bump when a same-package-version helper must be redeployed for compatibility.
-pub const REMOTE_HELPER_REVISION: u32 = 2;
+pub const REMOTE_HELPER_REVISION: u32 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HelperVersionInfo {

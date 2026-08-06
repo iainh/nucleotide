@@ -864,6 +864,28 @@ where
     }
 }
 
+impl ReconnectingRemoteWorkspaceProtocolClient<RemoteWorkspaceV5ChildClient> {
+    /// Opens exactly once on the current physical connection. A failed or disconnected session
+    /// is terminal and is never replayed; a later call can use the connection healed here.
+    pub(crate) fn open_process_session(
+        &self,
+        request: ProcessSessionRequest,
+    ) -> std::result::Result<RemoteProcessSession<ChildProcessV5Writer>, RemoteClientError> {
+        let client = self.current_client()?;
+        match client.open_process_session(request) {
+            Ok(session) => Ok(session),
+            Err(error) if remote_client_error_requires_reconnect(&error) => {
+                if let Err(reconnect_error) = self.reconnect_if_current_with_attempt(&client, None)
+                {
+                    tracing::warn!(%reconnect_error, %error, "Failed to heal process-session transport");
+                }
+                Err(error)
+            }
+            Err(error) => Err(error),
+        }
+    }
+}
+
 impl<C> RemoteWorkspaceProtocolClient for ReconnectingRemoteWorkspaceProtocolClient<C>
 where
     C: RemoteWorkspaceProtocolClient + 'static,

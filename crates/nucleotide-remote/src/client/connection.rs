@@ -68,6 +68,11 @@ pub(crate) fn run_v5_client_reader<R, W>(
                             }
                         }
                         signal_v5_client_heartbeat(&shared);
+                        if let Ok(waiters) = shared.process_session_waiters.lock() {
+                            for pending in waiters.values() {
+                                pending.mailbox.wake();
+                            }
+                        }
                         let data_credit = event.data_credit();
                         let acknowledge_data = event
                             .stream_event
@@ -891,6 +896,7 @@ where
         // remainder of this bounded flush batch.
         let mut processed_frames = 0;
         let mut wrote_frame = false;
+        let mut flushed_session_stdin = Vec::new();
         while processed_frames < V5_CLIENT_WRITE_BATCH_FRAMES {
             let Some(mut frame) = shared
                 .session
@@ -938,6 +944,21 @@ where
                 })?;
             let limits = writer.limits;
             protocol_v5::write_frame_unflushed_with_limits(&mut writer.writer, &frame, limits)?;
+            if frame.frame_type == protocol_v5::FrameType::Data
+                && frame
+                    .decode_control::<protocol_v5::DataEnvelope>()
+                    .is_ok_and(|envelope| {
+                        envelope.channel == protocol_v5::DataChannel::Stdin as i32
+                    })
+                && let Some(mailbox) = shared
+                    .process_session_waiters
+                    .lock()
+                    .map_err(v5_client_lock_error)?
+                    .get(&frame.stream_id)
+                    .map(|pending| Arc::clone(&pending.mailbox))
+            {
+                flushed_session_stdin.push((mailbox, frame.body.len()));
+            }
             {
                 shared
                     .session
@@ -958,6 +979,9 @@ where
         }
         if wrote_frame {
             writer.writer.flush()?;
+            for (mailbox, bytes) in flushed_session_stdin {
+                mailbox.stdin_physically_flushed(bytes);
+            }
         }
         if processed_frames < V5_CLIENT_WRITE_BATCH_FRAMES {
             return Ok(());
@@ -1358,6 +1382,88 @@ where
     if matches!(&event, protocol_v5::StreamEvent::ResetStream { .. }) {
         release_v5_outbound_request_reservation(shared, stream_id);
     }
+    let is_process_session = shared
+        .process_session_waiters
+        .lock()
+        .map(|waiters| waiters.contains_key(&stream_id))
+        .unwrap_or(false);
+    if is_process_session {
+        let mut waiters = match shared.process_session_waiters.lock() {
+            Ok(waiters) => waiters,
+            Err(_) => return false,
+        };
+        let pending = waiters
+            .get_mut(&stream_id)
+            .expect("checked process-session waiter");
+        let acknowledge = match event {
+            protocol_v5::StreamEvent::Data {
+                channel: protocol_v5::DataChannel::Stdout,
+                body,
+                ..
+            } => {
+                pending.mailbox.output(false, body);
+                false
+            }
+            protocol_v5::StreamEvent::Data {
+                channel: protocol_v5::DataChannel::Stderr,
+                body,
+                ..
+            } => {
+                pending.mailbox.output(true, body);
+                false
+            }
+            protocol_v5::StreamEvent::Data {
+                channel: protocol_v5::DataChannel::Unspecified,
+                body,
+                ..
+            } => {
+                pending.payload.extend(body);
+                true
+            }
+            protocol_v5::StreamEvent::Headers {
+                role: protocol_v5::MessageRole::FinalError,
+                envelope,
+                ..
+            } => {
+                pending.final_error = v5_final_error_from_envelope(envelope).ok();
+                true
+            }
+            protocol_v5::StreamEvent::EndStream { .. } => {
+                let pending = waiters
+                    .remove(&stream_id)
+                    .expect("process-session waiter exists");
+                let result = if let Some(error) = pending.final_error {
+                    Err(RemoteClientError::Remote(error))
+                } else {
+                    serde_json::from_slice::<ProcessSessionCompletion>(&pending.payload)
+                        .map_err(RemoteClientError::Json)
+                };
+                pending.mailbox.complete(result);
+                true
+            }
+            protocol_v5::StreamEvent::ResetStream {
+                code, diagnostic, ..
+            } => {
+                let pending = waiters
+                    .remove(&stream_id)
+                    .expect("process-session waiter exists");
+                pending.mailbox.fail(RemoteClientError::Remote(RemoteError {
+                    code,
+                    message: "v5 process session reset".to_string(),
+                    diagnostic: (!diagnostic.is_empty()).then_some(diagnostic),
+                }));
+                true
+            }
+            protocol_v5::StreamEvent::Headers { .. } => true,
+            protocol_v5::StreamEvent::Data { channel, .. } => {
+                pending.mailbox.fail(RemoteClientError::Protocol(format!(
+                    "unexpected {channel:?} DATA on process session"
+                )));
+                true
+            }
+        };
+        return acknowledge;
+    }
     let is_file_stream = shared
         .file_waiters
         .lock()
@@ -1650,6 +1756,15 @@ where
     for (_, pending) in process_waiters {
         let error = transport_closed_before_final_error(make_error());
         pending.mailbox.fail(error);
+    }
+    let process_session_waiters = match shared.process_session_waiters.lock() {
+        Ok(mut waiters) => std::mem::take(&mut *waiters),
+        Err(poisoned) => std::mem::take(&mut *poisoned.into_inner()),
+    };
+    for (_, pending) in process_session_waiters {
+        pending
+            .mailbox
+            .fail(transport_closed_before_final_error(make_error()));
     }
     let completed_file_streams = match shared.completed_file_streams.lock() {
         Ok(mut completed) => std::mem::take(&mut *completed),

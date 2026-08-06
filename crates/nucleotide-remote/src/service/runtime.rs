@@ -277,6 +277,23 @@ pub(crate) enum V5ServeOutputEvent {
         body: Vec<u8>,
         priority: protocol_v5::Priority,
     },
+    SessionStreamData {
+        stream_id: u64,
+        channel: protocol_v5::DataChannel,
+        body: Vec<u8>,
+        priority: protocol_v5::Priority,
+    },
+    SessionInputSettled {
+        stream_id: u64,
+        bytes: u64,
+        disposition: SessionInputDisposition,
+        priority: protocol_v5::Priority,
+    },
+    SessionTerminal {
+        stream_id: u64,
+        priority: protocol_v5::Priority,
+        result: std::result::Result<ProcessSessionCompletion, RemoteError>,
+    },
     PartialResponse {
         stream_id: u64,
         method: String,
@@ -301,9 +318,11 @@ pub(crate) enum V5ServeQueueError {
 #[derive(Clone)]
 pub(crate) struct V5ServeOutputSender {
     sender: mpsc::SyncSender<V5ServeOutputEvent>,
+    stream_sender: Option<mpsc::SyncSender<V5ServeOutputEvent>>,
     ready_events: mpsc::Sender<V5ServeEvent>,
     ready: Arc<AtomicBool>,
     pub(crate) pending_count: Arc<AtomicU64>,
+    pub(crate) pending_stream_count: Arc<AtomicU64>,
     pub(crate) completion_budget: V5ConnectionByteBudget,
 }
 
@@ -314,11 +333,23 @@ impl V5ServeOutputSender {
     ) -> Self {
         Self {
             sender,
+            stream_sender: None,
             ready_events,
             ready: Arc::new(AtomicBool::new(false)),
             pending_count: Arc::new(AtomicU64::new(0)),
+            pending_stream_count: Arc::new(AtomicU64::new(0)),
             completion_budget: V5ConnectionByteBudget::new(V5_SERVE_COMPLETION_BYTE_BUDGET),
         }
+    }
+
+    pub(crate) fn new_with_stream_lane(
+        sender: mpsc::SyncSender<V5ServeOutputEvent>,
+        stream_sender: mpsc::SyncSender<V5ServeOutputEvent>,
+        ready_events: mpsc::Sender<V5ServeEvent>,
+    ) -> Self {
+        let mut output = Self::new(sender, ready_events);
+        output.stream_sender = Some(stream_sender);
+        output
     }
 
     #[cfg(test)]
@@ -329,9 +360,11 @@ impl V5ServeOutputSender {
     ) -> Self {
         Self {
             sender,
+            stream_sender: None,
             ready_events,
             ready: Arc::new(AtomicBool::new(false)),
             pending_count: Arc::new(AtomicU64::new(0)),
+            pending_stream_count: Arc::new(AtomicU64::new(0)),
             completion_budget,
         }
     }
@@ -362,9 +395,25 @@ impl V5ServeOutputSender {
                 max: V5_SERVE_OUTPUT_EVENT_MAX_RETAINED_BYTES,
             });
         }
-        self.pending_count.fetch_add(1, Ordering::AcqRel);
-        if self.sender.send(event).is_err() {
-            self.mark_delivered();
+        let stream_lane = matches!(
+            event,
+            V5ServeOutputEvent::SessionStreamData { .. }
+                | V5ServeOutputEvent::SessionInputSettled { .. }
+                | V5ServeOutputEvent::SessionTerminal { .. }
+        ) && self.stream_sender.is_some();
+        let pending = if stream_lane {
+            &self.pending_stream_count
+        } else {
+            &self.pending_count
+        };
+        pending.fetch_add(1, Ordering::AcqRel);
+        let sender = if stream_lane {
+            self.stream_sender.as_ref().unwrap()
+        } else {
+            &self.sender
+        };
+        if sender.send(event).is_err() {
+            self.mark_lane_delivered(stream_lane);
             return Err(V5ServeQueueError::Closed);
         }
         self.signal_ready()
@@ -382,20 +431,36 @@ impl V5ServeOutputSender {
                 max: V5_SERVE_OUTPUT_EVENT_MAX_RETAINED_BYTES,
             });
         }
-        self.pending_count.fetch_add(1, Ordering::AcqRel);
+        let stream_lane = matches!(
+            event,
+            V5ServeOutputEvent::SessionStreamData { .. }
+                | V5ServeOutputEvent::SessionInputSettled { .. }
+                | V5ServeOutputEvent::SessionTerminal { .. }
+        ) && self.stream_sender.is_some();
+        let pending = if stream_lane {
+            &self.pending_stream_count
+        } else {
+            &self.pending_count
+        };
+        pending.fetch_add(1, Ordering::AcqRel);
+        let sender = if stream_lane {
+            self.stream_sender.as_ref().unwrap()
+        } else {
+            &self.sender
+        };
         loop {
             if cancellation.is_cancelled() {
-                self.mark_delivered();
+                self.mark_lane_delivered(stream_lane);
                 return Err(V5ServeQueueError::Cancelled);
             }
-            match self.sender.try_send(event) {
+            match sender.try_send(event) {
                 Ok(()) => return self.signal_ready(),
                 Err(mpsc::TrySendError::Full(returned)) => {
                     event = returned;
                     std::thread::sleep(Duration::from_millis(1));
                 }
                 Err(mpsc::TrySendError::Disconnected(_)) => {
-                    self.mark_delivered();
+                    self.mark_lane_delivered(stream_lane);
                     return Err(V5ServeQueueError::Closed);
                 }
             }
@@ -418,10 +483,19 @@ impl V5ServeOutputSender {
 
     pub(crate) fn has_pending_output(&self) -> bool {
         self.pending_count.load(Ordering::Acquire) != 0
+            || self.pending_stream_count.load(Ordering::Acquire) != 0
     }
 
     pub(crate) fn mark_delivered(&self) {
         self.pending_count.fetch_sub(1, Ordering::AcqRel);
+    }
+
+    pub(crate) fn mark_lane_delivered(&self, stream_lane: bool) {
+        if stream_lane {
+            self.pending_stream_count.fetch_sub(1, Ordering::AcqRel);
+        } else {
+            self.mark_delivered();
+        }
     }
 }
 
@@ -621,6 +695,16 @@ impl V5ServeOutputEvent {
     pub(crate) fn retained_bytes(&self) -> usize {
         match self {
             Self::StreamData { body, .. } => body.capacity(),
+            Self::SessionStreamData { body, .. } => body.capacity(),
+            Self::SessionInputSettled { .. } => 0,
+            Self::SessionTerminal { result, .. } => match result {
+                Ok(_) => std::mem::size_of::<ProcessSessionCompletion>(),
+                Err(error) => {
+                    error.code.capacity()
+                        + error.message.capacity()
+                        + error.diagnostic.as_ref().map_or(0, String::capacity)
+                }
+            },
             Self::PartialResponse {
                 method, payload, ..
             } => method.capacity().saturating_add(payload.capacity()),

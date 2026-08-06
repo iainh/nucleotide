@@ -1384,6 +1384,40 @@ pub struct ProcessRequest {
     pub timeout_ms: Option<u64>,
 }
 
+/// Selects which project environment is inherited by a long-lived process session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ProjectEnvironmentSelection {
+    Bare,
+    WorkspaceOrNearest {
+        #[serde(serialize_with = "serialize_posix_path")]
+        anchor: PathBuf,
+    },
+    Exact {
+        #[serde(serialize_with = "serialize_posix_path")]
+        root: PathBuf,
+    },
+}
+
+/// Opening metadata for a future full-duplex process session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProcessSessionRequest {
+    pub program: String,
+    pub args: Vec<String>,
+    #[serde(serialize_with = "serialize_posix_path")]
+    pub cwd: PathBuf,
+    pub environment: ProjectEnvironmentSelection,
+    #[serde(default)]
+    pub env_overrides: BTreeMap<String, String>,
+}
+
+/// Terminal metadata emitted when a process session has exited.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProcessSessionCompletion {
+    pub status_code: Option<i32>,
+    pub success: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProcessOutputResponse {
     pub status_code: Option<i32>,
@@ -1442,5 +1476,31 @@ impl RemoteEventStream<RemoteProcessEvent> {
         })));
         Ok(Self::new(futures::stream::iter(events))
             .with_terminal_predicate(|event| matches!(event, RemoteProcessEvent::Complete(_))))
+    }
+}
+
+#[cfg(test)]
+mod process_session_tests {
+    use super::*;
+
+    #[test]
+    fn process_session_paths_serialize_as_posix() {
+        let request = ProcessSessionRequest {
+            program: "tool".to_string(),
+            args: vec!["--serve".to_string()],
+            cwd: PathBuf::from(r"C:\workspace\project"),
+            environment: ProjectEnvironmentSelection::WorkspaceOrNearest {
+                anchor: PathBuf::from(r"C:\workspace\project\src"),
+            },
+            env_overrides: BTreeMap::new(),
+        };
+
+        let json = serde_json::to_string(&request).unwrap();
+        assert!(json.contains(r#""cwd":"C:/workspace/project""#));
+        assert!(json.contains(r#""anchor":"C:/workspace/project/src""#));
+        assert_eq!(
+            serde_json::from_str::<ProcessSessionRequest>(&json).unwrap(),
+            request
+        );
     }
 }

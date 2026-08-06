@@ -1727,6 +1727,8 @@ pub struct WorkspaceBackendConnection {
     pub backend: WorkspaceBackendHandle,
     pub location: WorkspaceLocation,
     pub hello: Option<HelloResponse>,
+    /// Present only when the connected helper negotiated `process_sessions_v1`.
+    pub process_session_launcher: Option<Arc<dyn RemotePipedProcessSessionLauncher>>,
 }
 
 pub fn remote_workspace_identity_for_location(
@@ -2038,26 +2040,28 @@ pub(crate) fn connect_workspace_backend_for_location_with_optional_progress(
                 .as_deref()
                 .unwrap_or(&options.remote_helper_path);
             let command = local_service_command(helper_path, path);
-            let (backend, hello) = spawn_child_process_workspace_backend_with_startup_context(
-                RemoteWorkspaceIdentity {
-                    kind: RemoteWorkspaceKind::Other("local-service".to_string()),
-                    name: "local-service".to_string(),
-                },
-                &command,
-                startup,
-            )
-            .with_context(|| {
-                format!(
-                    "failed to initialize local workspace service for {}. {}",
-                    path.display(),
-                    local_helper_setup_hint(helper_path)
+            let (backend, hello, process_session_launcher) =
+                spawn_child_process_workspace_backend_with_session_launcher(
+                    RemoteWorkspaceIdentity {
+                        kind: RemoteWorkspaceKind::Other("local-service".to_string()),
+                        name: "local-service".to_string(),
+                    },
+                    &command,
+                    startup,
                 )
-            })?;
+                .with_context(|| {
+                    format!(
+                        "failed to initialize local workspace service for {}. {}",
+                        path.display(),
+                        local_helper_setup_hint(helper_path)
+                    )
+                })?;
 
             return Ok(WorkspaceBackendConnection {
                 backend,
                 location,
                 hello: Some(hello),
+                process_session_launcher,
             });
         }
 
@@ -2065,6 +2069,7 @@ pub(crate) fn connect_workspace_backend_for_location_with_optional_progress(
             backend: local_workspace_backend(),
             location,
             hello: None,
+            process_session_launcher: None,
         });
     }
 
@@ -2086,15 +2091,16 @@ pub(crate) fn connect_workspace_backend_for_location_with_optional_progress(
         &location,
         Some(display_root.display().to_string()),
     );
-    let (backend, hello) = match spawn_child_process_workspace_backend_with_startup_context(
-        identity.clone(),
-        &command,
-        startup,
-    ) {
-        Ok(connection) => connection,
-        Err(error) if remote_startup_error_can_retry_helper_install(&location, &error) => {
-            startup.check()?;
-            let retry_helper = helper_manager
+    let (backend, hello, process_session_launcher) =
+        match spawn_child_process_workspace_backend_with_session_launcher(
+            identity.clone(),
+            &command,
+            startup,
+        ) {
+            Ok(connection) => connection,
+            Err(error) if remote_startup_error_can_retry_helper_install(&location, &error) => {
+                startup.check()?;
+                let retry_helper = helper_manager
                 .refresh_helper_for_location(&location, &helper)
                 .with_context(|| {
                     format!(
@@ -2102,20 +2108,20 @@ pub(crate) fn connect_workspace_backend_for_location_with_optional_progress(
                     )
                 })?
                 .context("remote helper reinstall did not apply to this workspace location")?;
-            let retry_command = remote_service_command_for_location_with_options(
-                &location,
-                &retry_helper.path,
-                options,
-            )
-            .context("remote workspace location is missing a service command")?;
-            startup.check()?;
-            emit_remote_deployment_progress(
-                progress,
-                RemoteDeploymentPhase::StartingRemoteWorkspaceService,
-                &location,
-                Some(display_root.display().to_string()),
-            );
-            spawn_child_process_workspace_backend_with_startup_context(
+                let retry_command = remote_service_command_for_location_with_options(
+                    &location,
+                    &retry_helper.path,
+                    options,
+                )
+                .context("remote workspace location is missing a service command")?;
+                startup.check()?;
+                emit_remote_deployment_progress(
+                    progress,
+                    RemoteDeploymentPhase::StartingRemoteWorkspaceService,
+                    &location,
+                    Some(display_root.display().to_string()),
+                );
+                spawn_child_process_workspace_backend_with_session_launcher(
                 identity,
                 &retry_command,
                 startup,
@@ -2126,17 +2132,17 @@ pub(crate) fn connect_workspace_backend_for_location_with_optional_progress(
                     display_root.display()
                 )
             })?
-        }
-        Err(error) => {
-            return Err(error).with_context(|| {
-                format!(
-                    "failed to initialize remote workspace service for {}. {}",
-                    display_root.display(),
-                    remote_helper_setup_hint(&location, &helper.path)
-                )
-            });
-        }
-    };
+            }
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "failed to initialize remote workspace service for {}. {}",
+                        display_root.display(),
+                        remote_helper_setup_hint(&location, &helper.path)
+                    )
+                });
+            }
+        };
 
     startup.check()?;
 
@@ -2144,6 +2150,7 @@ pub(crate) fn connect_workspace_backend_for_location_with_optional_progress(
         backend: path_mapped_workspace_backend(backend, mapping),
         location,
         hello: Some(hello),
+        process_session_launcher,
     })
 }
 
