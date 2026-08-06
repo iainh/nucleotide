@@ -7,7 +7,9 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 
-use helix_lsp::{Client, LanguageServerId, LspWorkspaceContext};
+use helix_lsp::{
+    Client, ExternalTransport, ExternalTransportProvider, LanguageServerId, LspWorkspaceContext,
+};
 use helix_view::Editor;
 use nucleotide_events::{ProjectLspEvent, ServerStartupResult};
 use nucleotide_logging::{debug, error, info, instrument, warn};
@@ -52,6 +54,52 @@ pub trait LspLaunchProxyProvider: Send + Sync {
         server_name: &str,
         server_command: &str,
     ) -> Result<Option<LspLaunchProxy>, Box<dyn std::error::Error + Send + Sync>>;
+}
+
+/// Application-provided native remote LSP session launcher.
+///
+/// This deliberately uses only async I/O and filesystem metadata so this crate
+/// does not depend on any concrete remote protocol implementation.
+pub trait RemoteLspSessionProvider: Send + Sync {
+    fn handles_workspace(&self, workspace_root: &Path) -> bool;
+
+    fn start_remote_lsp_session(
+        &self,
+        workspace_root: &Path,
+        server_name: &str,
+        command: &str,
+        args: &[String],
+        process_cwd: &Path,
+        environment: &HashMap<String, String>,
+    ) -> Result<ExternalTransport, Box<dyn std::error::Error + Send + Sync>>;
+}
+
+struct RegistryRemoteTransportProvider<'a> {
+    provider: &'a dyn RemoteLspSessionProvider,
+    workspace_root: &'a Path,
+    server_name: &'a str,
+}
+
+impl ExternalTransportProvider for RegistryRemoteTransportProvider<'_> {
+    fn provide(
+        &self,
+        command: &str,
+        args: &[String],
+        process_cwd: &Path,
+        environment: &HashMap<String, String>,
+    ) -> helix_lsp::Result<Option<ExternalTransport>> {
+        self.provider
+            .start_remote_lsp_session(
+                self.workspace_root,
+                self.server_name,
+                command,
+                args,
+                process_cwd,
+                environment,
+            )
+            .map(Some)
+            .map_err(|error| helix_lsp::Error::IO(std::io::Error::other(error.to_string())))
+    }
 }
 
 #[derive(Debug, Default)]
@@ -103,6 +151,8 @@ pub struct HelixLspBridge {
     environment_provider: Option<Arc<dyn EnvironmentProvider>>,
     /// Optional provider for temporary launch shims, used by remote workspaces.
     launch_proxy_provider: Option<Arc<dyn LspLaunchProxyProvider>>,
+    /// Optional protocol-independent native remote session launcher.
+    remote_session_provider: Arc<std::sync::RwLock<Option<Arc<dyn RemoteLspSessionProvider>>>>,
     /// Map of (workspace_root, server_name) -> LanguageServerId to scope reuse by workspace
     workspace_server_map: Arc<std::sync::Mutex<HashMap<(PathBuf, String), LanguageServerId>>>,
     /// Temporary proxy shims must outlive server startup because POSIX shebang
@@ -117,6 +167,7 @@ impl HelixLspBridge {
             project_event_tx,
             environment_provider: None,
             launch_proxy_provider: None,
+            remote_session_provider: Arc::new(std::sync::RwLock::new(None)),
             workspace_server_map: Arc::new(std::sync::Mutex::new(HashMap::new())),
             launch_proxy_cleanup_registry: Arc::new(LaunchProxyCleanupRegistry::default()),
         }
@@ -185,6 +236,7 @@ impl HelixLspBridge {
             project_event_tx,
             environment_provider: Some(environment_provider),
             launch_proxy_provider: None,
+            remote_session_provider: Arc::new(std::sync::RwLock::new(None)),
             workspace_server_map: Arc::new(std::sync::Mutex::new(HashMap::new())),
             launch_proxy_cleanup_registry: Arc::new(LaunchProxyCleanupRegistry::default()),
         }
@@ -199,9 +251,41 @@ impl HelixLspBridge {
             project_event_tx,
             environment_provider: Some(environment_provider),
             launch_proxy_provider: Some(launch_proxy_provider),
+            remote_session_provider: Arc::new(std::sync::RwLock::new(None)),
             workspace_server_map: Arc::new(std::sync::Mutex::new(HashMap::new())),
             launch_proxy_cleanup_registry: Arc::new(LaunchProxyCleanupRegistry::default()),
         }
+    }
+
+    /// Configure native remote execution. Existing proxy behavior remains the
+    /// fallback for workspaces the provider does not handle.
+    pub fn with_remote_session_provider(
+        mut self,
+        provider: Arc<dyn RemoteLspSessionProvider>,
+    ) -> Self {
+        self.remote_session_provider = Arc::new(std::sync::RwLock::new(Some(provider)));
+        self
+    }
+
+    /// Replace the connection-bound native session provider. Passing `None`
+    /// restores compatibility-proxy selection for remote workspaces.
+    pub fn set_remote_session_provider(&self, provider: Option<Arc<dyn RemoteLspSessionProvider>>) {
+        *self
+            .remote_session_provider
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = provider;
+    }
+
+    fn remote_session_provider_for(
+        &self,
+        workspace_root: &Path,
+    ) -> Option<Arc<dyn RemoteLspSessionProvider>> {
+        self.remote_session_provider
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .filter(|provider| provider.handles_workspace(workspace_root))
+            .cloned()
     }
 
     /// Start a language server through Helix's registry
@@ -246,6 +330,12 @@ impl HelixLspBridge {
         &self,
         workspace_root: &Path,
     ) -> Result<Option<HashMap<String, String>>, String> {
+        // Service-owned process sessions select WorkspaceOrNearest on the target.
+        // Fetching the same full map first is both wasteful and incorrect because
+        // only command-specific overrides should cross this seam.
+        if self.remote_session_provider_for(workspace_root).is_some() {
+            return Ok(None);
+        }
         let Some(environment_provider) = &self.environment_provider else {
             return Ok(None);
         };
@@ -438,11 +528,15 @@ impl HelixLspBridge {
             .command
             .clone();
 
+        let native_remote_provider = self.remote_session_provider_for(workspace_root);
+        let native_remote_execution = native_remote_provider.is_some();
         let mut original_env_vars = Vec::new();
         let mut launch_proxy_cleanup_paths = Vec::new();
         let mut launch_proxy_enabled = false;
 
-        if let Some(ref launch_proxy_provider) = self.launch_proxy_provider {
+        if !native_remote_execution
+            && let Some(ref launch_proxy_provider) = self.launch_proxy_provider
+        {
             match launch_proxy_provider.create_lsp_launch_proxy(
                 workspace_root,
                 server_name,
@@ -533,7 +627,10 @@ impl HelixLspBridge {
             debug!("No environment provider configured, using default environment");
         }
 
-        let remote_path_mapping = remote_lsp_path_mapping(workspace_root, launch_proxy_enabled);
+        let remote_path_mapping = remote_lsp_path_mapping(
+            workspace_root,
+            launch_proxy_enabled || native_remote_execution,
+        );
         let lsp_workspace_root = remote_path_mapping
             .as_ref()
             .map(|mapping| PathBuf::from(posix_path_string(mapping.native_root())))
@@ -547,7 +644,9 @@ impl HelixLspBridge {
             vec![lsp_workspace_root.clone()]
         };
 
-        let lsp_workspace_context = Some(if remote_path_mapping.is_some() {
+        let lsp_workspace_context = Some(if native_remote_execution {
+            LspWorkspaceContext::remote(lsp_workspace_root.clone(), lsp_workspace_root.clone())
+        } else if remote_path_mapping.is_some() {
             LspWorkspaceContext::remote(lsp_workspace_root.clone(), host_process_cwd())
         } else {
             LspWorkspaceContext::new(lsp_workspace_root.clone(), true, lsp_workspace_root.clone())
@@ -645,14 +744,27 @@ impl HelixLspBridge {
         // Keep all detected workspace roots to support multi-crate workspaces.
         // This allows rust-analyzer to serve files across all member crates.
 
-        let server = editor.language_servers.get_named_with_workspace_context(
-            language_config,
-            server_name,
-            doc_path.as_deref(),
-            &root_dirs,
-            true, // enable_snippets
-            lsp_workspace_context.as_ref(),
-        );
+        let remote_transport_provider =
+            native_remote_provider
+                .as_deref()
+                .map(|provider| RegistryRemoteTransportProvider {
+                    provider,
+                    workspace_root,
+                    server_name,
+                });
+        let server = editor
+            .language_servers
+            .get_named_with_workspace_context_and_transport_provider(
+                language_config,
+                server_name,
+                doc_path.as_deref(),
+                &root_dirs,
+                true, // enable_snippets
+                lsp_workspace_context.as_ref(),
+                remote_transport_provider
+                    .as_ref()
+                    .map(|provider| provider as &dyn ExternalTransportProvider),
+            );
 
         let server_count = usize::from(server.is_some());
         info!(
@@ -1073,6 +1185,7 @@ fn rust_root_dirs(workspace_root: &std::path::Path) -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     struct TestEnvironmentProvider;
@@ -1098,6 +1211,48 @@ mod tests {
                     "/test/bin".to_string(),
                 )]))
             })
+        }
+    }
+
+    struct CountingEnvironmentProvider(Arc<AtomicUsize>);
+
+    impl EnvironmentProvider for CountingEnvironmentProvider {
+        fn get_lsp_environment(
+            &self,
+            _directory: &Path,
+        ) -> Pin<
+            Box<
+                dyn Future<
+                        Output = Result<
+                            HashMap<String, String>,
+                            Box<dyn std::error::Error + Send + Sync>,
+                        >,
+                    > + Send
+                    + '_,
+            >,
+        > {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Ok(HashMap::new()) })
+        }
+    }
+
+    struct HandlesRoot(&'static str);
+
+    impl RemoteLspSessionProvider for HandlesRoot {
+        fn handles_workspace(&self, workspace_root: &Path) -> bool {
+            workspace_root == Path::new(self.0)
+        }
+
+        fn start_remote_lsp_session(
+            &self,
+            _workspace_root: &Path,
+            _server_name: &str,
+            _command: &str,
+            _args: &[String],
+            _process_cwd: &Path,
+            _environment: &HashMap<String, String>,
+        ) -> Result<ExternalTransport, Box<dyn std::error::Error + Send + Sync>> {
+            unreachable!("selection test does not launch")
         }
     }
 
@@ -1146,6 +1301,43 @@ mod tests {
             environment.get("PATH").map(String::as_str),
             Some("/test/bin")
         );
+    }
+
+    #[tokio::test]
+    async fn direct_provider_skips_environment_fetch_and_can_be_replaced_or_removed() {
+        let (event_tx, _) = broadcast::channel(4);
+        let fetches = Arc::new(AtomicUsize::new(0));
+        let bridge = HelixLspBridge::new_with_environment(
+            event_tx,
+            Arc::new(CountingEnvironmentProvider(Arc::clone(&fetches))),
+        );
+
+        bridge.set_remote_session_provider(Some(Arc::new(HandlesRoot("/first"))));
+        assert_eq!(
+            bridge.prepare_server_environment(Path::new("/first")).await,
+            Ok(None)
+        );
+        assert_eq!(fetches.load(Ordering::SeqCst), 0);
+
+        bridge.set_remote_session_provider(Some(Arc::new(HandlesRoot("/second"))));
+        bridge
+            .prepare_server_environment(Path::new("/first"))
+            .await
+            .unwrap();
+        assert_eq!(fetches.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            bridge
+                .prepare_server_environment(Path::new("/second"))
+                .await,
+            Ok(None)
+        );
+
+        bridge.set_remote_session_provider(None);
+        bridge
+            .prepare_server_environment(Path::new("/second"))
+            .await
+            .unwrap();
+        assert_eq!(fetches.load(Ordering::SeqCst), 2);
     }
 
     #[test]

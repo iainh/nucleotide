@@ -709,6 +709,9 @@
             LIBCLANG_PATH = "${pkgs.libclang.lib}/lib";
             PKG_CONFIG_PATH = "${pkgs.openssl.dev}/lib/pkgconfig";
             OPENSSL_NO_VENDOR = 1;
+            # Cargo links build scripts into the workspace target directory.
+            # That is expected in a development shell, not an impure Nix build.
+            NIX_ENFORCE_PURITY = 0;
           }
           // darwinRustLinkerEnv
         );
@@ -773,6 +776,9 @@
               HELIX_RUNTIME = "${helixRuntime}";
               PKG_CONFIG_PATH = "${pkgs.openssl.dev}/lib/pkgconfig";
               OPENSSL_NO_VENDOR = 1;
+              # Cargo links build scripts into the workspace target directory.
+              # That is expected in a development shell, not an impure Nix build.
+              NIX_ENFORCE_PURITY = 0;
               DOTNET_CLI_TELEMETRY_OPTOUT = 1;
               DOTNET_NOLOGO = 1;
               DOTNET_ROOT = "${pkgs.dotnet-sdk_8}/share/dotnet";

@@ -791,6 +791,12 @@ fn merge_native_flake_environment(
     );
     restore_caller_owned_vars(&mut environment, baseline);
 
+    // `nix print-dev-env` exposes derivation setup state that Nix normally
+    // removes when entering an interactive shell. Keeping purity enforcement
+    // would make Cargo reject workspace-local target paths when an LSP or task
+    // is launched from this captured environment.
+    environment.insert("NIX_ENFORCE_PURITY".to_string(), "0".to_string());
+
     environment
 }
 
@@ -1915,7 +1921,7 @@ mod tests {
     }
 
     #[test]
-    fn test_native_flake_environment_restores_temp_vars_but_keeps_nix_build_top() {
+    fn test_native_flake_environment_restores_runtime_vars() {
         let baseline = HashMap::from([
             ("PATH".to_string(), "/usr/bin".to_string()),
             ("TMPDIR".to_string(), "/var/folders/user/tmp".to_string()),
@@ -1930,6 +1936,7 @@ mod tests {
                 "NIX_BUILD_TOP".to_string(),
                 "/tmp/nix-shell.abc123".to_string(),
             ),
+            ("NIX_ENFORCE_PURITY".to_string(), "1".to_string()),
         ]);
 
         let env = merge_native_flake_environment(&baseline, exported);
@@ -1951,6 +1958,7 @@ mod tests {
             env.get("NIX_BUILD_TOP").map(String::as_str),
             Some("/tmp/nix-shell.abc123")
         );
+        assert_eq!(env.get("NIX_ENFORCE_PURITY").map(String::as_str), Some("0"));
     }
 
     #[test]

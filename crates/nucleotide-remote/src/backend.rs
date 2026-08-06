@@ -43,11 +43,19 @@ impl<C> RemoteWorkspaceBackendImpl<C>
 where
     C: RemoteWorkspaceProtocolClient,
 {
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn from_protocol_client(identity: RemoteWorkspaceIdentity, client: C) -> Self {
         Self {
             identity,
             client: Arc::new(client),
         }
+    }
+
+    pub(crate) fn from_shared_protocol_client(
+        identity: RemoteWorkspaceIdentity,
+        client: Arc<C>,
+    ) -> Self {
+        Self { identity, client }
     }
 
     async fn request(
@@ -633,7 +641,11 @@ where
     C: RemoteWorkspaceProtocolClient,
 {
     fn drop(&mut self) {
-        self.client.close();
+        // A process-session launcher/lifecycle can intentionally outlive the backend facade.
+        // Do not tear down that shared physical client while another public owner still exists.
+        if Arc::strong_count(&self.client) == 1 {
+            self.client.close();
+        }
     }
 }
 
@@ -650,6 +662,20 @@ pub(crate) fn spawn_child_process_workspace_backend_with_startup_context(
     command: &RemoteServiceCommand,
     startup: &RemoteStartupContext,
 ) -> Result<(WorkspaceBackendHandle, HelloResponse)> {
+    let (backend, hello, _) =
+        spawn_child_process_workspace_backend_with_session_launcher(identity, command, startup)?;
+    Ok((backend, hello))
+}
+
+pub(crate) fn spawn_child_process_workspace_backend_with_session_launcher(
+    identity: RemoteWorkspaceIdentity,
+    command: &RemoteServiceCommand,
+    startup: &RemoteStartupContext,
+) -> Result<(
+    WorkspaceBackendHandle,
+    HelloResponse,
+    Option<Arc<dyn RemotePipedProcessSessionLauncher>>,
+)> {
     startup.check()?;
     tracing::info!(
         remote_kind = ?identity.kind,
@@ -765,8 +791,20 @@ pub(crate) fn spawn_child_process_workspace_backend_with_startup_context(
             }
             result
         });
-    let backend =
-        RemoteWorkspaceBackendImpl::from_protocol_client(identity.clone(), reconnecting_client);
+    let process_sessions = hello
+        .capabilities
+        .iter()
+        .any(|capability| capability == "process_sessions_v1");
+    let reconnecting_client = Arc::new(reconnecting_client);
+    let launcher = process_sessions.then(|| {
+        Arc::new(RemoteV5ProcessSessionLauncher::new(Arc::clone(
+            &reconnecting_client,
+        ))) as Arc<dyn RemotePipedProcessSessionLauncher>
+    });
+    let backend = RemoteWorkspaceBackendImpl::from_shared_protocol_client(
+        identity.clone(),
+        reconnecting_client,
+    );
     if let Err(error) = startup.check() {
         drop(backend);
         return Err(error);
@@ -781,7 +819,7 @@ pub(crate) fn spawn_child_process_workspace_backend_with_startup_context(
         "V5 remote workspace service hello completed"
     );
 
-    Ok((Arc::new(backend), hello))
+    Ok((Arc::new(backend), hello, launcher))
 }
 
 #[async_trait]

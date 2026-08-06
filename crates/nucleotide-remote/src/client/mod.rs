@@ -4,11 +4,13 @@
 use super::*;
 
 mod connection;
+mod process_session;
 mod response;
 mod stream;
 mod watch;
 
 pub(crate) use connection::*;
+pub use process_session::*;
 pub use response::*;
 pub(crate) use stream::*;
 pub(crate) use watch::*;
@@ -367,6 +369,7 @@ pub(crate) struct RemoteWorkspaceV5Shared<W> {
     pub(crate) file_waiters: Mutex<HashMap<u64, V5PendingFileRead>>,
     pub(crate) search_waiters: Mutex<HashMap<u64, V5PendingSearch>>,
     pub(crate) process_waiters: Mutex<HashMap<u64, V5PendingProcess>>,
+    pub(crate) process_session_waiters: Mutex<HashMap<u64, V5PendingProcessSession>>,
     pub(crate) completed_file_streams: Mutex<HashMap<u64, Arc<V5FileStreamMailbox>>>,
     pub(crate) completed_search_streams: Mutex<HashMap<u64, Arc<V5SearchStreamMailbox>>>,
     pub(crate) completed_process_streams: Mutex<HashMap<u64, Arc<V5ProcessStreamMailbox>>>,
@@ -719,6 +722,7 @@ where
             file_waiters: Mutex::new(HashMap::new()),
             search_waiters: Mutex::new(HashMap::new()),
             process_waiters: Mutex::new(HashMap::new()),
+            process_session_waiters: Mutex::new(HashMap::new()),
             completed_file_streams: Mutex::new(HashMap::new()),
             completed_search_streams: Mutex::new(HashMap::new()),
             completed_process_streams: Mutex::new(HashMap::new()),

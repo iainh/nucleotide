@@ -1,20 +1,20 @@
 use crate::{
+    Call, Error, ExternalTransport, LanguageServerId, LspWorkspaceContext, OffsetEncoding, Result,
     file_operations::FileOperationsInterest,
     file_uri_from_path, find_lsp_workspace, jsonrpc,
     transport::{Payload, Transport},
-    workspace_for_context, Call, Error, LanguageServerId, LspWorkspaceContext, OffsetEncoding,
-    Result,
+    workspace_for_context,
 };
 use log::info;
 
 use crate::lsp::{
-    self, notification::DidChangeWorkspaceFolders, CodeActionCapabilityResolveSupport,
-    DidChangeWorkspaceFoldersParams, OneOf, PositionEncodingKind, SignatureHelp, Url,
-    WorkspaceFolder, WorkspaceFoldersChangeEvent,
+    self, CodeActionCapabilityResolveSupport, DidChangeWorkspaceFoldersParams, OneOf,
+    PositionEncodingKind, SignatureHelp, Url, WorkspaceFolder, WorkspaceFoldersChangeEvent,
+    notification::DidChangeWorkspaceFolders,
 };
 use helix_core::{
-    syntax::config::{LanguageServerFeature, RootMarkers},
     ChangeSet, Rope,
+    syntax::config::{LanguageServerFeature, RootMarkers},
 };
 use helix_loader::VERSION_AND_GIT_HASH;
 use parking_lot::Mutex;
@@ -24,19 +24,15 @@ use std::{collections::HashMap, path::PathBuf};
 use std::{
     ffi::OsStr,
     sync::{
-        atomic::{AtomicU64, Ordering},
         Arc,
+        atomic::{AtomicU64, Ordering},
     },
 };
 use std::{future::Future, sync::OnceLock};
 use std::{path::Path, process::Stdio};
-use tokio::{
-    io::{BufReader, BufWriter},
-    process::Child,
-    sync::{
-        mpsc::{channel, UnboundedReceiver, UnboundedSender},
-        Notify, OnceCell,
-    },
+use tokio::sync::{
+    Notify, OnceCell,
+    mpsc::{UnboundedReceiver, UnboundedSender, channel},
 };
 
 fn workspace_for_uri(uri: lsp::Url) -> WorkspaceFolder {
@@ -96,11 +92,10 @@ fn apply_nucleotide_text_document_capabilities(
         .data_support = Some(true);
 }
 
-#[derive(Debug)]
 pub struct Client {
     id: LanguageServerId,
     name: String,
-    _process: Child,
+    _lifecycle_guard: Mutex<Box<dyn Send>>,
     server_tx: UnboundedSender<Payload>,
     request_counter: AtomicU64,
     pub(crate) capabilities: OnceCell<lsp::ServerCapabilities>,
@@ -114,6 +109,16 @@ pub struct Client {
     shutdown_flushed: Arc<Notify>,
     /// workspace folders added while the server is still initializing
     req_timeout: u64,
+}
+
+impl std::fmt::Debug for Client {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Client")
+            .field("id", &self.id)
+            .field("name", &self.name)
+            .field("root_path", &self.root_path)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Client {
@@ -295,13 +300,47 @@ impl Client {
 
         let mut process = process?;
 
-        // TODO: do we need bufreader/writer here? or do we use async wrappers on unblock?
-        let writer = BufWriter::new(process.stdin.take().expect("Failed to open stdin"));
-        let reader = BufReader::new(process.stdout.take().expect("Failed to open stdout"));
-        let stderr = BufReader::new(process.stderr.take().expect("Failed to open stderr"));
+        let transport = ExternalTransport {
+            stdin: Box::new(process.stdin.take().expect("Failed to open stdin")),
+            stdout: Box::new(process.stdout.take().expect("Failed to open stdout")),
+            stderr: Box::new(process.stderr.take().expect("Failed to open stderr")),
+            lifecycle_guard: Box::new(process),
+        };
+
+        Self::start_with_transport(
+            transport,
+            config,
+            root_path,
+            root_uri,
+            id,
+            name,
+            req_timeout,
+        )
+    }
+
+    #[allow(clippy::type_complexity, clippy::too_many_arguments)]
+    pub fn start_with_transport(
+        transport: ExternalTransport,
+        config: Option<Value>,
+        root_path: PathBuf,
+        root_uri: Option<lsp::Url>,
+        id: LanguageServerId,
+        name: String,
+        req_timeout: u64,
+    ) -> Result<(
+        Self,
+        UnboundedReceiver<(LanguageServerId, Call)>,
+        Arc<Notify>,
+    )> {
+        let ExternalTransport {
+            stdin,
+            stdout,
+            stderr,
+            lifecycle_guard,
+        } = transport;
 
         let (server_rx, server_tx, initialize_notify, shutdown_flushed) =
-            Transport::start(reader, writer, stderr, id, name.clone());
+            Transport::start(stdout, stdin, stderr, id, name.clone());
 
         let workspace_folders = root_uri
             .clone()
@@ -311,7 +350,7 @@ impl Client {
         let client = Self {
             id,
             name,
-            _process: process,
+            _lifecycle_guard: Mutex::new(lifecycle_guard),
             server_tx,
             request_counter: AtomicU64::new(0),
             capabilities: OnceCell::new(),
@@ -482,9 +521,11 @@ impl Client {
                 "utf-16" => Some(OffsetEncoding::Utf16),
                 "utf-32" => Some(OffsetEncoding::Utf32),
                 encoding => {
-                    log::error!("Server provided invalid position encoding {encoding}, defaulting to utf-16");
+                    log::error!(
+                        "Server provided invalid position encoding {encoding}, defaulting to utf-16"
+                    );
                     None
-                },
+                }
             })
             .unwrap_or_default()
     }
@@ -712,13 +753,15 @@ impl Client {
                         completion: Some(lsp::CompletionClientCapabilities {
                             completion_item: Some(lsp::CompletionItemCapability {
                                 snippet_support: Some(enable_snippets),
-                                resolve_support: Some(lsp::CompletionItemCapabilityResolveSupport {
-                                    properties: vec![
-                                        String::from("documentation"),
-                                        String::from("detail"),
-                                        String::from("additionalTextEdits"),
-                                    ],
-                                }),
+                                resolve_support: Some(
+                                    lsp::CompletionItemCapabilityResolveSupport {
+                                        properties: vec![
+                                            String::from("documentation"),
+                                            String::from("detail"),
+                                            String::from("additionalTextEdits"),
+                                        ],
+                                    },
+                                ),
                                 insert_replace_support: Some(true),
                                 deprecated_support: Some(true),
                                 tag_support: Some(lsp::TagSupport {
@@ -1527,9 +1570,9 @@ impl Client {
 
     fn goto_request<
         T: lsp::request::Request<
-            Params = lsp::GotoDefinitionParams,
-            Result = Option<lsp::GotoDefinitionResponse>,
-        >,
+                Params = lsp::GotoDefinitionParams,
+                Result = Option<lsp::GotoDefinitionResponse>,
+            >,
     >(
         &self,
         text_document: lsp::TextDocumentIdentifier,
@@ -1896,6 +1939,15 @@ impl Client {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct DropGuard(Arc<AtomicBool>);
+
+    impl Drop for DropGuard {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
 
     #[test]
     fn root_uri_file_path_matches_native_file_uri() {
@@ -1907,4 +1959,32 @@ mod tests {
         assert!(!root_uri_file_path_matches(None, root));
     }
 
+    #[tokio::test]
+    async fn external_transport_guard_lives_exactly_as_long_as_client() {
+        let (client_stdin, _server_stdin) = tokio::io::duplex(64);
+        let (_server_stdout, client_stdout) = tokio::io::duplex(64);
+        let (_server_stderr, client_stderr) = tokio::io::duplex(64);
+        let dropped = Arc::new(AtomicBool::new(false));
+        let transport = ExternalTransport {
+            stdin: Box::new(client_stdin),
+            stdout: Box::new(client_stdout),
+            stderr: Box::new(client_stderr),
+            lifecycle_guard: Box::new(DropGuard(dropped.clone())),
+        };
+        let id = slotmap::KeyData::from_ffi(1).into();
+        let (client, _, _) = Client::start_with_transport(
+            transport,
+            None,
+            PathBuf::from("/workspace"),
+            None,
+            id,
+            "test".into(),
+            1,
+        )
+        .unwrap();
+
+        assert!(!dropped.load(Ordering::SeqCst));
+        drop(client);
+        assert!(dropped.load(Ordering::SeqCst));
+    }
 }

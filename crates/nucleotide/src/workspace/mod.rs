@@ -60,7 +60,7 @@ use nucleotide_lsp::{LspStatusKind, LspStatusSummary, ServerStatus};
 
 use crate::application::{
     LspCompletionTrigger, find_workspace_root_from,
-    workspace_backend_for_project_directory_with_bootstrap_progress_and_startup_context,
+    workspace_backend_connection_for_project_directory_with_bootstrap_progress_and_startup_context,
 };
 use crate::document::DocumentView;
 use crate::file_tree::{
@@ -9620,7 +9620,7 @@ impl Workspace {
             },
             Finished {
                 id: u64,
-                result: Result<WorkspaceBackendHandle, anyhow::Error>,
+                result: Result<nucleotide_remote::WorkspaceBackendConnection, anyhow::Error>,
             },
         }
 
@@ -9636,7 +9636,7 @@ impl Workspace {
                 });
             };
 
-            workspace_backend_for_project_directory_with_bootstrap_progress_and_startup_context(
+            workspace_backend_connection_for_project_directory_with_bootstrap_progress_and_startup_context(
                 Some(&task_root),
                 &bootstrap,
                 &progress_sink,
@@ -9691,7 +9691,7 @@ impl Workspace {
                     }
                     RemoteOpenEvent::Finished { id, result } => {
                         this.update(cx, |workspace, cx| match result {
-                            Ok(backend) => {
+                            Ok(connection) => {
                                 if !workspace.remote_open_is_current(id) {
                                     return;
                                 }
@@ -9705,7 +9705,7 @@ impl Workspace {
                                 workspace.record_successful_remote_open(&workspace_root, cx);
 
                                 workspace.core.update(cx, |core, _cx| {
-                                    core.set_workspace_backend(backend);
+                                    core.set_workspace_backend_connection(connection);
                                 });
 
                                 workspace.push_editor_status_notification(

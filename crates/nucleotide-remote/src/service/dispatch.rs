@@ -5,10 +5,11 @@ use super::*;
 
 pub struct WorkspaceService<B> {
     backend: B,
-    workspace_root: PathBuf,
+    pub(crate) workspace_root: PathBuf,
     ignore_matcher: Option<Gitignore>,
     directory_delta_cache: Mutex<HashMap<PathBuf, DirectoryListingResponse>>,
     project_environment: ProjectEnvironment,
+    pub(crate) environment_baseline: HashMap<String, String>,
     runtime: tokio::runtime::Runtime,
 }
 
@@ -36,7 +37,8 @@ where
             workspace_root,
             ignore_matcher,
             directory_delta_cache: Mutex::new(HashMap::new()),
-            project_environment: ProjectEnvironment::new(Some(environment_baseline)),
+            project_environment: ProjectEnvironment::new(Some(environment_baseline.clone())),
+            environment_baseline,
             runtime,
         })
     }
@@ -105,8 +107,18 @@ where
         R: Read + Send + 'static,
         W: Write + Send + 'static,
     {
-        let handshake =
-            protocol_v5::server_handshake(&mut io, info).context("v5 handshake failed")?;
+        let mut concurrent_info = info.clone();
+        if !concurrent_info
+            .capabilities
+            .iter()
+            .any(|capability| capability == "process_sessions_v1")
+        {
+            concurrent_info
+                .capabilities
+                .push("process_sessions_v1".to_string());
+        }
+        let handshake = protocol_v5::server_handshake(&mut io, &concurrent_info)
+            .context("v5 handshake failed")?;
         let shared_session = Arc::new(Mutex::new(protocol_v5::ProtocolSession::new(
             protocol_v5::StreamInitiator::Server,
             &handshake.settings,
@@ -149,7 +161,13 @@ where
         std::thread::scope(|scope| -> Result<()> {
             let (output_tx, output_rx) =
                 mpsc::sync_channel::<V5ServeOutputEvent>(V5_SERVE_OUTPUT_EVENT_CAPACITY);
-            let output_events = V5ServeOutputSender::new(output_tx, events_tx.clone());
+            let (process_output_tx, process_output_rx) =
+                mpsc::sync_channel::<V5ServeOutputEvent>(V5_SERVE_OUTPUT_EVENT_CAPACITY);
+            let output_events = V5ServeOutputSender::new_with_stream_lane(
+                output_tx,
+                process_output_tx,
+                events_tx.clone(),
+            );
             let (native_watch_tx, native_watch_rx) =
                 mpsc::sync_channel::<V5NativeWatchEvent>(V5_NATIVE_WATCH_EVENT_CAPACITY);
             let native_watch_events = V5NativeWatchSender::new(native_watch_tx, events_tx.clone());
@@ -162,6 +180,7 @@ where
             let mut active_deadlines = HashMap::<u64, u64>::new();
             let mut canceled_streams = HashSet::<u64>::new();
             let mut watches = V5WatchRegistry::with_native_events(native_watch_events.clone());
+            let mut process_sessions = V5ProcessSessionRegistry::new();
             let mut shutdown = false;
             let shutdown_grace =
                 Duration::from_millis(u64::from(handshake.settings.shutdown_grace_ms));
@@ -236,19 +255,93 @@ where
             macro_rules! apply_v5_output_event {
                 ($session:expr, $event:expr) => {{
                     let output_event = $event;
+                    let stream_lane = matches!(
+                        output_event,
+                        V5ServeOutputEvent::SessionStreamData { .. }
+                            | V5ServeOutputEvent::SessionInputSettled { .. }
+                            | V5ServeOutputEvent::SessionTerminal { .. }
+                    );
                     match output_event {
+                        V5ServeOutputEvent::SessionInputSettled {
+                            stream_id,
+                            bytes,
+                            disposition,
+                            priority,
+                        } => {
+                            if process_sessions.get(stream_id).is_some() {
+                                let _ = (disposition, priority);
+                                $session.acknowledge_data(stream_id, bytes)?;
+                            }
+                        }
+                        V5ServeOutputEvent::SessionTerminal {
+                            stream_id,
+                            priority,
+                            result,
+                        } => {
+                            if process_sessions.get(stream_id).is_some() {
+                                match result {
+                                    Ok(completion) => {
+                                        $session.send_owned_data(
+                                            stream_id,
+                                            protocol_v5::DataChannel::Unspecified,
+                                            serde_json::to_vec(&completion)?,
+                                            priority,
+                                        )?;
+                                        $session.send_response_with_priority(
+                                            stream_id,
+                                            "process.session",
+                                            protocol_v5::MessageRole::FinalResponse,
+                                            true,
+                                            priority,
+                                        )?;
+                                        $session.finish_stream(stream_id, priority)?;
+                                    }
+                                    Err(error) => self.send_v5_remote_error(
+                                        $session,
+                                        stream_id,
+                                        "process.session",
+                                        error,
+                                    )?,
+                                }
+                                if process_sessions
+                                    .get(stream_id)
+                                    .is_some_and(|process_session| process_session.peer_ended)
+                                {
+                                    process_sessions.remove(stream_id);
+                                } else if let Some(process_session) =
+                                    process_sessions.get_mut(stream_id)
+                                {
+                                    process_session.finished = true;
+                                }
+                            }
+                        }
                         V5ServeOutputEvent::StreamData {
                             stream_id,
                             channel,
                             body,
                             priority,
                         } => {
-                            if active_streams.contains(&stream_id)
+                            if (active_streams.contains(&stream_id)
+                                || process_sessions.get(stream_id).is_some())
                                 && !canceled_streams.contains(&stream_id)
                             {
                                 $session
                                     .send_owned_data(stream_id, channel, body, priority)
                                     .context("failed to queue v5 streamed response data")?;
+                            }
+                        }
+                        V5ServeOutputEvent::SessionStreamData {
+                            stream_id,
+                            channel,
+                            body,
+                            priority,
+                        } => {
+                            if process_sessions
+                                .get(stream_id)
+                                .is_some_and(|process_session| !process_session.finished)
+                                && !canceled_streams.contains(&stream_id)
+                            {
+                                $session.send_owned_data(stream_id, channel, body, priority)?;
                             }
                         }
                         V5ServeOutputEvent::PartialResponse {
@@ -324,7 +417,7 @@ where
                             }
                         }
                     }
-                    output_events.mark_delivered();
+                    output_events.mark_lane_delivered(stream_lane);
                 }};
             }
 
@@ -475,6 +568,157 @@ where
                             }
                             let mut acknowledge_data = true;
                             if let Some(stream_event) = event.stream_event {
+                                let session_event = match stream_event {
+                                    protocol_v5::StreamEvent::Headers {
+                                        stream_id,
+                                        role: protocol_v5::MessageRole::Request,
+                                        priority,
+                                        envelope,
+                                    } if envelope.method == "process.session" => {
+                                        if process_sessions.len() >= V5_PROCESS_SESSION_LIMIT {
+                                            process_sessions.install_tombstone(stream_id);
+                                            self.send_v5_remote_error(
+                                                &mut session,
+                                                stream_id,
+                                                "process.session",
+                                                RemoteError {
+                                                    code: "resource_exhausted".to_string(),
+                                                    message: "process.session limit reached"
+                                                        .to_string(),
+                                                    diagnostic: None,
+                                                },
+                                            )?;
+                                        } else {
+                                            let payload = envelope
+                                                .inline_request_payload()
+                                                .map(ToOwned::to_owned)
+                                                .unwrap_or_default();
+                                            match self.start_v5_process_session(
+                                                scope,
+                                                stream_id,
+                                                priority,
+                                                payload,
+                                                output_events.clone(),
+                                            ) {
+                                                Ok(process_session) => process_sessions
+                                                    .insert(stream_id, process_session),
+                                                Err(error) => self.send_v5_remote_error(
+                                                    &mut session,
+                                                    stream_id,
+                                                    "process.session",
+                                                    {
+                                                        process_sessions
+                                                            .install_tombstone(stream_id);
+                                                        error
+                                                    },
+                                                )?,
+                                            }
+                                        }
+                                        None
+                                    }
+                                    protocol_v5::StreamEvent::Data {
+                                        stream_id,
+                                        channel,
+                                        body,
+                                        uncompressed_len,
+                                    } if process_sessions.get(stream_id).is_some() => {
+                                        if process_sessions
+                                            .get(stream_id)
+                                            .is_some_and(|s| s.finished)
+                                        {
+                                            session
+                                                .acknowledge_data(stream_id, uncompressed_len)?;
+                                            acknowledge_data = false;
+                                        } else if channel != protocol_v5::DataChannel::Stdin {
+                                            session
+                                                .acknowledge_data(stream_id, uncompressed_len)?;
+                                            if let Some(process_session) =
+                                                process_sessions.get_mut(stream_id)
+                                            {
+                                                process_session.finished = true;
+                                                process_session.cancellation.cancel();
+                                            }
+                                            self.send_v5_remote_error(
+                                                &mut session,
+                                                stream_id,
+                                                "process.session",
+                                                RemoteError {
+                                                    code: "invalid_request".to_string(),
+                                                    message:
+                                                        "process.session accepts only stdin DATA"
+                                                            .to_string(),
+                                                    diagnostic: None,
+                                                },
+                                            )?;
+                                            acknowledge_data = false;
+                                        } else if let Some(process_session) =
+                                            process_sessions.get(stream_id)
+                                        {
+                                            if process_session
+                                                .input
+                                                .try_send(V5ProcessSessionInput::Data {
+                                                    body,
+                                                    credit: uncompressed_len,
+                                                })
+                                                .is_err()
+                                            {
+                                                session.acknowledge_data(
+                                                    stream_id,
+                                                    uncompressed_len,
+                                                )?;
+                                                if let Some(process_session) =
+                                                    process_sessions.get_mut(stream_id)
+                                                {
+                                                    process_session.finished = true;
+                                                    process_session.cancellation.cancel();
+                                                }
+                                                self.send_v5_remote_error(
+                                                    &mut session,
+                                                    stream_id,
+                                                    "process.session",
+                                                    RemoteError {
+                                                        code: "resource_exhausted".to_string(),
+                                                        message:
+                                                            "process.session stdin queue exhausted"
+                                                                .to_string(),
+                                                        diagnostic: None,
+                                                    },
+                                                )?;
+                                            }
+                                            acknowledge_data = false;
+                                        }
+                                        None
+                                    }
+                                    protocol_v5::StreamEvent::EndStream { stream_id }
+                                        if process_sessions.get(stream_id).is_some() =>
+                                    {
+                                        if process_sessions
+                                            .get(stream_id)
+                                            .is_some_and(|process_session| process_session.finished)
+                                        {
+                                            process_sessions.remove(stream_id);
+                                        } else {
+                                            process_sessions.mark_peer_ended(stream_id);
+                                        }
+                                        None
+                                    }
+                                    protocol_v5::StreamEvent::ResetStream { stream_id, .. }
+                                        if process_sessions.get(stream_id).is_some() =>
+                                    {
+                                        process_sessions.remove(stream_id);
+                                        None
+                                    }
+                                    event => Some(event),
+                                };
+                                let Some(stream_event) = session_event else {
+                                    if acknowledge_data
+                                        && let Some((stream_id, credit_bytes)) = data_credit
+                                    {
+                                        session.acknowledge_data(stream_id, credit_bytes)?;
+                                    }
+                                    drop(session);
+                                    continue;
+                                };
                                 if let protocol_v5::StreamEvent::ResetStream { stream_id, .. } =
                                     &stream_event
                                 {
@@ -607,28 +851,20 @@ where
                         }
                         V5ServeLoopEvent::Wake(V5ServeEvent::Output) => {
                             output_events.clear_ready();
+                            // Completion/control is never held behind flow-blocked process output.
+                            match output_rx.try_recv() {
+                                Ok(output_event) => {
+                                    let _ = output_events.signal_ready();
+                                    apply_v5_output_event!(&mut *session, output_event);
+                                }
+                                Err(
+                                    mpsc::TryRecvError::Empty | mpsc::TryRecvError::Disconnected,
+                                ) => {}
+                            }
                             if session.queued_len() < V5_SERVE_SCHEDULER_BACKLOG_LIMIT {
-                                match output_rx.try_recv() {
-                                    Ok(output_event) => {
-                                        let _ = output_events.signal_ready();
-                                        apply_v5_output_event!(&mut *session, output_event);
-                                    }
-                                    Err(mpsc::TryRecvError::Empty) => {}
-                                    Err(mpsc::TryRecvError::Disconnected) => {
-                                        if active_workers > 0 {
-                                            cancel_all_v5_service_work(
-                                                &mut requests,
-                                                &mut task_pools,
-                                                &active_cancellations,
-                                                &mut active_deadlines,
-                                                &mut canceled_streams,
-                                                &mut watches,
-                                            );
-                                            return Err(anyhow::anyhow!(
-                                                "v5 service output event channel closed"
-                                            ));
-                                        }
-                                    }
+                                if let Ok(output_event) = process_output_rx.try_recv() {
+                                    let _ = output_events.signal_ready();
+                                    apply_v5_output_event!(&mut *session, output_event);
                                 }
                             }
                         }
@@ -2611,7 +2847,7 @@ where
         }
     }
 
-    fn load_project_environment(
+    pub(crate) fn load_project_environment(
         &self,
         root: &Path,
     ) -> std::result::Result<ProjectEnvironmentSnapshot, ShellEnvironmentError> {
@@ -2676,7 +2912,7 @@ where
         cwd.to_path_buf()
     }
 
-    fn resolve_path(&self, path: &Path) -> std::result::Result<PathBuf, RemoteError> {
+    pub(crate) fn resolve_path(&self, path: &Path) -> std::result::Result<PathBuf, RemoteError> {
         let resolved = if path.as_os_str().is_empty() {
             self.workspace_root.clone()
         } else if path.is_absolute() {

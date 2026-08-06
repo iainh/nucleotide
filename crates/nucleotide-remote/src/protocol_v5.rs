@@ -21,6 +21,11 @@ pub const MAX_FLOW_WINDOW: u64 = u32::MAX as u64;
 pub const DEFAULT_MAX_CONCURRENT_STREAMS: u32 = 128;
 pub const DEFAULT_CONNECTION_CONTROL_BUDGET: u32 = 1024 * 1024;
 pub const DEFAULT_STREAM_CONTROL_BUDGET: u32 = 256 * 1024;
+/// Maximum request metadata carried directly in opening HEADERS.
+///
+/// This deliberately leaves ample room for the envelope inside both default
+/// control-frame and per-stream control limits.
+pub const MAX_INLINE_REQUEST_PAYLOAD_LEN: usize = 32 * 1024;
 pub const DEFAULT_SHUTDOWN_GRACE_MS: u32 = 5_000;
 pub const IDLE_PING_INTERVAL_MS: u32 = 30_000;
 pub const PING_TIMEOUT_MS: u32 = 90_000;
@@ -1831,6 +1836,7 @@ pub struct RequestMetadata {
     pub deadline_unix_ms: u64,
     pub supersedes_stream_id: u64,
     pub idempotency: Idempotency,
+    pub inline_payload: Vec<u8>,
 }
 
 impl RequestMetadata {
@@ -1841,6 +1847,7 @@ impl RequestMetadata {
             deadline_unix_ms: 0,
             supersedes_stream_id: 0,
             idempotency: Idempotency::ReadOnly,
+            inline_payload: Vec::new(),
         }
     }
 
@@ -2393,6 +2400,65 @@ impl ProtocolSession {
         options: RequestOptions,
     ) -> io::Result<u64> {
         self.open_request_with_body(method, options, DataChannel::Unspecified, &[])
+    }
+
+    /// Opens a full-duplex request whose complete spawn metadata is embedded in
+    /// the opening HEADERS. Unlike finite request helpers, this queues neither
+    /// DATA metadata nor END_STREAM; callers may subsequently send stdin and
+    /// explicitly finish the local side of the stream.
+    pub fn open_full_duplex_request(
+        &mut self,
+        method: impl Into<String>,
+        options: RequestOptions,
+        inline_payload: Vec<u8>,
+    ) -> io::Result<u64> {
+        if inline_payload.len() > MAX_INLINE_REQUEST_PAYLOAD_LEN {
+            return Err(protocol_error(format!(
+                "inline v5 request payload exceeds maximum: {} > {}",
+                inline_payload.len(),
+                MAX_INLINE_REQUEST_PAYLOAD_LEN
+            )));
+        }
+        self.ensure_peer_accepts_new_stream()?;
+        let priority = options.priority;
+        let method = method.into();
+        let next_stream_id = self.streams.allocator.peek().ok_or_else(|| {
+            protocol_error("v5 stream IDs exhausted; reconnect before opening another stream")
+        })?;
+        let mut envelope =
+            StreamEnvelope::request_with_options(next_stream_id, method.clone(), &options);
+        match envelope.message.as_mut() {
+            Some(stream_envelope::Message::Request(request)) => {
+                request.inline_payload = inline_payload;
+            }
+            _ => unreachable!("request constructor always supplies RequestHeader"),
+        }
+        let candidate = Frame::from_control(FrameType::Headers, next_stream_id, &envelope)
+            .with_priority(priority);
+        if candidate.control.len() > self.limits.max_control_len as usize {
+            return Err(protocol_error(
+                "inline request HEADERS exceeds maximum control length",
+            ));
+        }
+        // Probe a clone so all negotiated control-budget failures are detected
+        // before allocating a stream ID or changing scheduler accounting.
+        let mut control_budget = self.scheduler.control_budget.clone();
+        control_budget.reserve_frame(&candidate)?;
+
+        let (stream_id, _) = self.streams.open_request_with_options(method, options)?;
+        debug_assert_eq!(stream_id, next_stream_id);
+        if let Err(error) = self
+            .in_flight
+            .register_with_metadata(stream_id, envelope.request_metadata()?)
+        {
+            self.rollback_stream(stream_id);
+            return Err(error);
+        }
+        if let Err(error) = self.scheduler.enqueue_stream_open(candidate) {
+            self.rollback_stream(stream_id);
+            return Err(error);
+        }
+        Ok(stream_id)
     }
 
     pub fn open_request_with_body(
@@ -4582,12 +4648,16 @@ pub struct ServerHandshakeInfo {
 
 impl ServerHandshakeInfo {
     pub fn current(workspace_root: impl Into<String>) -> Self {
+        let mut capabilities = default_client_capabilities();
+        // The legacy serial service cannot drive full-duplex process sessions. Production's
+        // concurrent entry point opts in explicitly after constructing this common hello.
+        capabilities.retain(|capability| capability != "process_sessions_v1");
         Self {
             helper_version: env!("CARGO_PKG_VERSION").to_string(),
             os: std::env::consts::OS.to_string(),
             arch: std::env::consts::ARCH.to_string(),
             workspace_root: workspace_root.into(),
-            capabilities: default_client_capabilities(),
+            capabilities,
         }
     }
 }
@@ -4820,6 +4890,7 @@ impl StreamEnvelope {
             content_encoding: options.content_encoding as i32,
             message: Some(stream_envelope::Message::Request(RequestHeader {
                 idempotency: options.idempotency as i32,
+                inline_payload: Vec::new(),
             })),
         }
     }
@@ -4940,7 +5011,15 @@ impl StreamEnvelope {
             deadline_unix_ms: self.deadline_unix_ms,
             supersedes_stream_id: self.supersedes_stream_id,
             idempotency: self.request_idempotency()?,
+            inline_payload: self.inline_request_payload()?.to_vec(),
         })
+    }
+
+    pub fn inline_request_payload(&self) -> io::Result<&[u8]> {
+        match self.message.as_ref() {
+            Some(stream_envelope::Message::Request(request)) => Ok(&request.inline_payload),
+            _ => Err(protocol_error("request headers missing RequestHeader")),
+        }
     }
 
     pub fn request_idempotency(&self) -> io::Result<Idempotency> {
@@ -4978,12 +5057,15 @@ pub mod stream_envelope {
 pub struct RequestHeader {
     #[prost(enumeration = "Idempotency", tag = "1")]
     pub idempotency: i32,
+    #[prost(bytes = "vec", tag = "2")]
+    pub inline_payload: Vec<u8>,
 }
 
 impl RequestHeader {
     pub fn read_only() -> Self {
         Self {
             idempotency: Idempotency::ReadOnly as i32,
+            inline_payload: Vec::new(),
         }
     }
 }
@@ -5250,6 +5332,7 @@ pub fn default_client_capabilities() -> Vec<String> {
         "streaming_read",
         "streaming_write",
         "process_streams",
+        "process_sessions_v1",
         "watch",
         "watch_overflow",
         "directory_not_modified",
@@ -5912,7 +5995,7 @@ mod tests {
         assert_eq!(envelope.content_encoding, ContentEncoding::Zstd as i32);
         assert!(matches!(
             envelope.message,
-            Some(stream_envelope::Message::Request(RequestHeader { idempotency }))
+            Some(stream_envelope::Message::Request(RequestHeader { idempotency, .. }))
                 if idempotency == Idempotency::Process as i32
         ));
         assert_eq!(
@@ -9065,6 +9148,7 @@ mod tests {
 
         envelope.message = Some(stream_envelope::Message::Request(RequestHeader {
             idempotency: 99,
+            inline_payload: Vec::new(),
         }));
         let error = envelope.request_metadata().unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
@@ -9811,6 +9895,105 @@ mod tests {
 
         assert_eq!(decoded.channel, DataChannel::Stdout as i32);
         assert_eq!(decoded.uncompressed_len, 128);
+    }
+
+    #[test]
+    fn full_duplex_request_opens_with_headers_only_and_round_trips_inline_payload() {
+        let mut client =
+            ProtocolSession::new(StreamInitiator::Client, &ConnectionSettings::recommended());
+        let payload = br#"{"program":"sh"}"#.to_vec();
+        let stream_id = client
+            .open_full_duplex_request(
+                "process.session",
+                RequestOptions::default(),
+                payload.clone(),
+            )
+            .unwrap();
+
+        let headers = client.pop_next_frame().unwrap().unwrap();
+        assert_eq!(headers.frame_type, FrameType::Headers);
+        assert!(client.pop_next_frame().unwrap().is_none());
+
+        let mut server =
+            ProtocolSession::new(StreamInitiator::Server, &ConnectionSettings::recommended());
+        let received = server.receive_frame(headers).unwrap();
+        let StreamEvent::Headers { envelope, .. } = received.stream_event.unwrap() else {
+            panic!("opening frame should produce headers");
+        };
+        assert_eq!(envelope.inline_request_payload().unwrap(), payload);
+        assert_eq!(envelope.request_metadata().unwrap().inline_payload, payload);
+
+        client
+            .send_owned_data(
+                stream_id,
+                DataChannel::Stdin,
+                b"input".to_vec(),
+                Priority::UserInput,
+            )
+            .unwrap();
+        client
+            .finish_stream(stream_id, Priority::UserInput)
+            .unwrap();
+        assert_eq!(
+            client.pop_next_frame().unwrap().unwrap().frame_type,
+            FrameType::Data
+        );
+        assert_eq!(
+            client.pop_next_frame().unwrap().unwrap().frame_type,
+            FrameType::EndStream
+        );
+    }
+
+    #[test]
+    fn full_duplex_request_rejections_are_atomic() {
+        let mut settings = ConnectionSettings::recommended();
+        settings.stream_control_budget = FRAME_HEADER_LEN as u32 + 8;
+        let mut session = ProtocolSession::new(StreamInitiator::Client, &settings);
+
+        assert!(
+            session
+                .open_full_duplex_request(
+                    "process.session",
+                    RequestOptions::default(),
+                    vec![0; MAX_INLINE_REQUEST_PAYLOAD_LEN + 1],
+                )
+                .is_err()
+        );
+        assert_eq!(session.active_streams(), 0);
+        assert_eq!(session.in_flight_len(), 0);
+        assert_eq!(session.queued_len(), 0);
+        assert_eq!(session.scheduler.connection_control_used(), 0);
+        assert_eq!(session.streams.allocator.peek(), Some(1));
+
+        assert!(
+            session
+                .open_full_duplex_request(
+                    "process.session",
+                    RequestOptions::default(),
+                    b"not-json-yet-still-opaque".to_vec(),
+                )
+                .is_err()
+        );
+        assert_eq!(session.active_streams(), 0);
+        assert_eq!(session.queued_len(), 0);
+        assert_eq!(session.scheduler.connection_control_used(), 0);
+        assert_eq!(session.streams.allocator.peek(), Some(1));
+    }
+
+    #[test]
+    fn request_header_inline_payload_is_additive_protobuf_data() {
+        let old_wire = [0x08, Idempotency::Process as u8];
+        let old = RequestHeader::decode(old_wire.as_slice()).unwrap();
+        assert_eq!(old.idempotency, Idempotency::Process as i32);
+        assert!(old.inline_payload.is_empty());
+
+        let current = RequestHeader {
+            idempotency: Idempotency::Process as i32,
+            inline_payload: b"spawn".to_vec(),
+        };
+        let mut wire = current.encode_to_vec();
+        wire.extend_from_slice(&[0xf8, 0x03, 0x2a]);
+        assert_eq!(RequestHeader::decode(wire.as_slice()).unwrap(), current);
     }
 
     #[test]

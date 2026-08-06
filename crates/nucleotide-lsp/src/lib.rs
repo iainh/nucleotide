@@ -14,7 +14,7 @@ pub mod integration_tests;
 pub use document_manager::{DocumentManager, DocumentManagerMut};
 pub use helix_lsp_bridge::{
     EditorLspIntegration, EnvironmentProvider, HelixLspBridge, LspLaunchProxy,
-    LspLaunchProxyProvider,
+    LspLaunchProxyProvider, RemoteLspSessionProvider,
 };
 // Note: lsp_completion_trigger module only contains functions, no LspCompletionTrigger type
 pub use lsp_state::{
