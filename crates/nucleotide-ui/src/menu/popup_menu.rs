@@ -204,6 +204,8 @@ fn shortcut_label_for_action(action: &dyn Action) -> Option<&'static str> {
         Some("Ctrl+Alt+R")
     } else if action.partial_eq(&workspace::RunFileTests) {
         Some("Ctrl+Alt+T")
+    } else if action.partial_eq(&workspace::ToggleTerminal) {
+        Some("Ctrl+`")
     } else {
         None
     }
@@ -1053,6 +1055,10 @@ mod tests {
         assert_eq!(
             shortcut_label_for_action(&workspace::RunFileTests),
             Some("Ctrl+Alt+T")
+        );
+        assert_eq!(
+            shortcut_label_for_action(&workspace::ToggleTerminal),
+            Some("Ctrl+`")
         );
     }
 
