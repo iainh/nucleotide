@@ -2178,6 +2178,7 @@ pub fn resolve_fallback_shortcut(
             Intent::RunFileTests,
         ),
         ('b', KeyModifiers::CONTROL, Intent::ToggleFileTree),
+        ('`', KeyModifiers::CONTROL, Intent::ToggleTerminal),
     ];
     if let Some((_, _, intent)) = custom
         .into_iter()
@@ -2780,6 +2781,8 @@ mod tests {
             ("C-,", TargetPlatform::Windows, Intent::OpenSettings),
             ("C-0", TargetPlatform::Linux, Intent::ResetFontSize),
             ("C-F4", TargetPlatform::Windows, Intent::CloseFile),
+            ("C-`", TargetPlatform::Windows, Intent::ToggleTerminal),
+            ("C-`", TargetPlatform::Linux, Intent::ToggleTerminal),
         ] {
             assert_eq!(
                 resolve_fallback_shortcut(Mode::Normal, KeyEvent::from_str(key).unwrap(), platform),

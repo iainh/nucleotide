@@ -6980,6 +6980,25 @@ impl Workspace {
 
     /// Simplified key handler that delegates to the InputCoordinator
     fn handle_key(&mut self, ev: &KeyDownEvent, window: &Window, cx: &mut Context<Self>) {
+        let key = crate::utils::translate_key(&ev.keystroke);
+        let mode = self.core.read(cx).editor.mode();
+        if matches!(
+            crate::application::editor_input::resolve_fallback_shortcut(
+                mode,
+                key,
+                crate::application::editor_input::TargetPlatform::current(),
+            ),
+            Some(
+                crate::application::editor_input::FallbackShortcut::Workspace(
+                    crate::types::SemanticShortcutIntent::ToggleTerminal
+                )
+            )
+        ) {
+            self.toggle_terminal_panel(cx);
+            cx.stop_propagation();
+            return;
+        }
+
         // If embedded terminal is focused, route all keys to it and stop here.
         // Terminal visibility alone must not steal editor input.
         if self.terminal_is_focused(window, cx) {
@@ -7124,6 +7143,7 @@ impl Workspace {
                 self.show_file_tree = !self.show_file_tree;
                 cx.notify();
             }
+            Intent::ToggleTerminal => self.toggle_terminal_panel(cx),
         }
     }
 
