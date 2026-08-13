@@ -56,6 +56,19 @@ fn menu_bar_metrics(embedded_in_titlebar: bool) -> MenuBarMetrics {
     }
 }
 
+fn popup_top_offset(
+    embedded_in_titlebar: bool,
+    row_height: Pixels,
+    metrics: MenuBarMetrics,
+) -> Pixels {
+    if embedded_in_titlebar {
+        px((f32::from(row_height) + f32::from(metrics.trigger_height)) / 2.0)
+    } else {
+        // Deferred anchored children start above the standalone menu row.
+        row_height + metrics.popup_gap + px(20.0)
+    }
+}
+
 pub struct ApplicationMenu {
     id: ElementId,
     entries: Vec<MenuEntry>,
@@ -89,11 +102,14 @@ impl ApplicationMenu {
         }
     }
 
-    #[cfg(target_os = "windows")]
     pub fn new_embedded_in_titlebar(cx: &mut Context<Self>) -> Self {
         let mut menu = Self::new(cx);
         menu.embedded_in_titlebar = true;
         menu
+    }
+
+    pub fn set_row_height(&mut self, row_height: Pixels) {
+        self.row_height = row_height;
     }
 
     fn set_open_index(
@@ -212,6 +228,7 @@ impl Render for ApplicationMenu {
 
         let row_h = self.row_height;
         let metrics = menu_bar_metrics(self.embedded_in_titlebar);
+        let popup_top = popup_top_offset(self.embedded_in_titlebar, row_h, metrics);
         let chrome = tokens.chrome;
 
         let mut container = div()
@@ -306,9 +323,7 @@ impl Render for ApplicationMenu {
                                 format!("application-menu-popup-{popup_debug_name}")
                             })
                             .left(-metrics.trigger_padding_x - px(1.0))
-                            // Deferred anchored children start above this separate menu row.
-                            // Clear the row so the popup does not cover its trigger.
-                            .top(row_h + metrics.popup_gap + px(20.0))
+                            .top(popup_top)
                             .occlude()
                             .child(popup_menu),
                     );
@@ -355,6 +370,17 @@ mod tests {
         assert_eq!(metrics.leading_padding, px(8.0));
         assert_eq!(metrics.trigger_height, px(24.0));
         assert_eq!(metrics.trigger_padding_x, px(8.0));
+    }
+
+    #[test]
+    fn embedded_menu_bar_uses_titlebar_spacing() {
+        let metrics = menu_bar_metrics(true);
+
+        assert_eq!(metrics.gap, px(0.0));
+        assert_eq!(metrics.leading_padding, px(4.0));
+        assert_eq!(metrics.trigger_height, px(22.0));
+        assert_eq!(metrics.trigger_padding_x, px(7.0));
+        assert_eq!(popup_top_offset(true, px(34.0), metrics), px(28.0));
     }
 
     #[gpui::test]
