@@ -79,12 +79,12 @@ impl TitleBar {
 
         #[cfg(not(target_os = "macos"))]
         let application_menu = Some(cx.new(|cx| {
-            #[cfg(target_os = "windows")]
+            #[cfg(any(target_os = "linux", target_os = "windows"))]
             {
                 application_menu::ApplicationMenu::new_embedded_in_titlebar(cx)
             }
 
-            #[cfg(not(target_os = "windows"))]
+            #[cfg(not(any(target_os = "linux", target_os = "windows")))]
             {
                 application_menu::ApplicationMenu::new(cx)
             }
@@ -147,6 +147,11 @@ impl TitleBar {
     }
 
     pub fn height(window: &Window, cx: &gpui::App) -> gpui::Pixels {
+        #[cfg(target_os = "linux")]
+        if LinuxTitlebar::should_create_for_decorations(&window.window_decorations()) {
+            return LinuxTitlebar::height_for_theme(cx.global::<crate::Theme>());
+        }
+
         PlatformTitleBar::height(window, cx)
     }
 }
@@ -161,9 +166,50 @@ impl Render for TitleBar {
         self.platform_titlebar.update(cx, |titlebar, _cx| {
             titlebar.set_title(self.filename.clone());
             titlebar.set_leading_sidebar_background(leading_sidebar_background);
-            #[cfg(target_os = "windows")]
+            #[cfg(any(target_os = "linux", target_os = "windows"))]
             titlebar.set_show_title(false);
         });
+
+        #[cfg(target_os = "linux")]
+        {
+            if let Some(menu) = &self.application_menu {
+                let titlebar_height = TitleBar::height(window, cx);
+                menu.update(cx, |menu, _cx| menu.set_row_height(titlebar_height));
+
+                return div()
+                    .relative()
+                    .w_full()
+                    .h(titlebar_height)
+                    .min_h(titlebar_height)
+                    .flex_shrink_0()
+                    .child(self.platform_titlebar.clone())
+                    .child(
+                        div()
+                            .absolute()
+                            .left_0()
+                            .top_0()
+                            .h_full()
+                            .flex()
+                            .items_center()
+                            .child(menu.clone()),
+                    )
+                    .when_some(self.trailing_view.clone(), |titlebar, trailing_view| {
+                        titlebar.child(
+                            div()
+                                .absolute()
+                                .top_0()
+                                .right(px(TITLEBAR_ACTION_RIGHT_INSET))
+                                .w(px(TITLEBAR_ACTION_LANE_WIDTH))
+                                .h_full()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(trailing_view),
+                        )
+                    })
+                    .into_any_element();
+            }
+        }
 
         #[cfg(target_os = "windows")]
         {
