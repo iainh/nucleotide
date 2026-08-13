@@ -6,7 +6,7 @@ use gpui::{
     Anchor, Context, DismissEvent, ElementId, Entity, FocusHandle, Focusable, InteractiveElement,
     IntoElement, MouseButton, MouseDownEvent, OwnedMenu, ParentElement, Pixels, Render,
     SharedString, StatefulInteractiveElement, Styled, Subscription, Window, anchored, deferred,
-    div, point, px,
+    div, px,
 };
 
 use crate::Theme;
@@ -45,20 +45,15 @@ fn menu_bar_metrics(embedded_in_titlebar: bool) -> MenuBarMetrics {
         }
     } else {
         MenuBarMetrics {
-            gap: px(4.0),
+            gap: px(0.0),
             leading_padding: px(8.0),
-            trigger_height: px(28.0),
-            trigger_padding_x: px(12.0),
-            trigger_radius: px(4.0),
+            trigger_height: px(24.0),
+            trigger_padding_x: px(8.0),
+            trigger_radius: px(2.0),
             popup_gap: px(2.0),
             window_margin: px(8.0),
         }
     }
-}
-
-fn menu_popup_offset_y(row_height: Pixels, trigger_height: Pixels, popup_gap: Pixels) -> Pixels {
-    let bottom_inset = ((f32::from(row_height) - f32::from(trigger_height)).max(0.0)) / 2.0;
-    trigger_height + px(bottom_inset) + popup_gap
 }
 
 pub struct ApplicationMenu {
@@ -180,7 +175,7 @@ impl ApplicationMenu {
         let items = self.entries[index].menu.items.clone();
         let action_context = self.action_context.clone();
         let popup_menu = PopupMenu::build(window, cx, |menu, window, cx| {
-            menu.shortcut_min_w(px(220.0))
+            menu.shortcut_min_w(px(280.0))
                 .max_w(px(420.0))
                 .with_menu_items(items, window, cx)
         });
@@ -246,9 +241,11 @@ impl Render for ApplicationMenu {
             let name = self.entries[index].menu.name.clone();
             let id = SharedString::from(format!("menu-trigger-{}", name));
             let is_open = self.open_index == Some(index);
+            let trigger_debug_name = name.clone();
 
             let mut trigger = div()
                 .id(id)
+                .debug_selector(move || format!("application-menu-trigger-{trigger_debug_name}"))
                 .relative()
                 .h(metrics.trigger_height)
                 .px(metrics.trigger_padding_x)
@@ -299,14 +296,22 @@ impl Render for ApplicationMenu {
 
             if is_open {
                 let popup_menu = self.build_popup_menu(index, window, cx);
+                let popup_debug_name = name.clone();
                 let popup = anchored()
                     .anchor(Anchor::TopLeft)
-                    .offset(point(
-                        px(0.0),
-                        menu_popup_offset_y(row_h, metrics.trigger_height, metrics.popup_gap),
-                    ))
                     .snap_to_window_with_margin(metrics.window_margin)
-                    .child(div().occlude().child(popup_menu));
+                    .child(
+                        div()
+                            .debug_selector(move || {
+                                format!("application-menu-popup-{popup_debug_name}")
+                            })
+                            .left(-metrics.trigger_padding_x - px(1.0))
+                            // Deferred anchored children start above this separate menu row.
+                            // Clear the row so the popup does not cover its trigger.
+                            .top(row_h + metrics.popup_gap + px(20.0))
+                            .occlude()
+                            .child(popup_menu),
+                    );
 
                 trigger = trigger.child(deferred(popup).with_priority(500));
             }
@@ -343,9 +348,13 @@ mod tests {
     }
 
     #[test]
-    fn popup_offset_places_flyout_below_titlebar_row() {
-        assert_eq!(menu_popup_offset_y(px(34.0), px(22.0), px(2.0)), px(30.0));
-        assert_eq!(menu_popup_offset_y(px(34.0), px(28.0), px(2.0)), px(33.0));
+    fn standalone_menu_bar_uses_compact_linux_spacing() {
+        let metrics = menu_bar_metrics(false);
+
+        assert_eq!(metrics.gap, px(0.0));
+        assert_eq!(metrics.leading_padding, px(8.0));
+        assert_eq!(metrics.trigger_height, px(24.0));
+        assert_eq!(metrics.trigger_padding_x, px(8.0));
     }
 
     #[gpui::test]
@@ -418,5 +427,59 @@ mod tests {
             menu.set_open_index(Some(0), window, cx);
             assert_eq!(menu.action_context.as_ref(), Some(&second_focus));
         });
+    }
+
+    #[gpui::test]
+    fn popup_aligns_with_trigger_below_menu_bar(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            cx.set_global(Theme::from_tokens(crate::DesignTokens::dark()));
+        });
+
+        let (root, cx) = cx.add_window_view(|_, cx| TestRoot {
+            menu: cx.new(|cx| ApplicationMenu {
+                id: ElementId::from("application-menu-geometry-test"),
+                entries: vec![
+                    MenuEntry {
+                        menu: Menu::new("File")
+                            .items([MenuItem::action("Open", Confirm)])
+                            .owned(),
+                    },
+                    MenuEntry {
+                        menu: Menu::new("Edit")
+                            .items([MenuItem::action("Copy", Confirm)])
+                            .owned(),
+                    },
+                ],
+                open_index: Some(0),
+                popup_index: None,
+                popup_menu: None,
+                action_context: None,
+                row_height: px(34.0),
+                focus_handle: cx.focus_handle(),
+                embedded_in_titlebar: false,
+                _subscription: None,
+            }),
+            first_focus: cx.focus_handle(),
+            second_focus: cx.focus_handle(),
+        });
+
+        cx.run_until_parked();
+
+        let file_trigger = cx
+            .debug_bounds("application-menu-trigger-File")
+            .expect("File trigger should be rendered");
+        let edit_trigger = cx
+            .debug_bounds("application-menu-trigger-Edit")
+            .expect("Edit trigger should be rendered");
+        let popup = cx
+            .debug_bounds("application-menu-popup-File")
+            .expect("File popup should be rendered");
+
+        assert_eq!(file_trigger.left(), px(8.0));
+        assert_eq!(edit_trigger.left(), file_trigger.right());
+        assert_eq!(popup.left(), file_trigger.left());
+        assert!(popup.top() >= px(56.0));
+
+        drop(root);
     }
 }
