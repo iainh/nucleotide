@@ -8,7 +8,7 @@ use std::{
     process::Command,
 };
 
-use nucleotide_events::v2::workspace::{
+use nucleotide_events::workspace::{
     DeleteMode, Event as WorkspaceEvent, FileOpIntent, PathCopyKind,
 };
 use nucleotide_logging::{error, info, warn};

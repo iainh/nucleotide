@@ -84,8 +84,8 @@ use crate::updates::{UpdateController, UpdateControllerEvent, UpdateDialog};
 use crate::utils;
 use crate::{Core, Input, InputEvent};
 use nucleotide_env::EnvironmentOrigin;
-use nucleotide_events::v2::run::{ResolvedTask, RunId, RunStatus};
-use nucleotide_events::v2::terminal::{Event as TerminalEvent, TerminalId};
+use nucleotide_events::run::{ResolvedTask, RunId, RunStatus};
+use nucleotide_events::terminal::{Event as TerminalEvent, TerminalId};
 use nucleotide_terminal::TerminalBounds;
 use nucleotide_workspace::local_workspace_backend;
 use nucleotide_workspace::{
@@ -636,36 +636,33 @@ fn workspace_backend_supports_trash(_backend_identity: &WorkspaceIdentity) -> bo
 fn effective_delete_mode(
     delete_behavior: crate::config::DeleteBehavior,
     backend_identity: &WorkspaceIdentity,
-) -> nucleotide_events::v2::workspace::DeleteMode {
+) -> nucleotide_events::workspace::DeleteMode {
     match delete_behavior {
         crate::config::DeleteBehavior::Trash
             if workspace_backend_supports_trash(backend_identity) =>
         {
-            nucleotide_events::v2::workspace::DeleteMode::Trash
+            nucleotide_events::workspace::DeleteMode::Trash
         }
         crate::config::DeleteBehavior::Trash | crate::config::DeleteBehavior::Permanent => {
-            nucleotide_events::v2::workspace::DeleteMode::Permanent
+            nucleotide_events::workspace::DeleteMode::Permanent
         }
     }
 }
 
-fn delete_confirmation_required(mode: nucleotide_events::v2::workspace::DeleteMode) -> bool {
-    matches!(
-        mode,
-        nucleotide_events::v2::workspace::DeleteMode::Permanent
-    )
+fn delete_confirmation_required(mode: nucleotide_events::workspace::DeleteMode) -> bool {
+    matches!(mode, nucleotide_events::workspace::DeleteMode::Permanent)
 }
 
-fn delete_confirmation_label(mode: nucleotide_events::v2::workspace::DeleteMode) -> &'static str {
+fn delete_confirmation_label(mode: nucleotide_events::workspace::DeleteMode) -> &'static str {
     match mode {
-        nucleotide_events::v2::workspace::DeleteMode::Trash => "Move to Trash",
-        nucleotide_events::v2::workspace::DeleteMode::Permanent => "Delete Permanently",
+        nucleotide_events::workspace::DeleteMode::Trash => "Move to Trash",
+        nucleotide_events::workspace::DeleteMode::Permanent => "Delete Permanently",
     }
 }
 
 fn delete_confirmation_message(
     path: Option<&Path>,
-    mode: nucleotide_events::v2::workspace::DeleteMode,
+    mode: nucleotide_events::workspace::DeleteMode,
 ) -> String {
     let name = path
         .and_then(|path| path.file_name())
@@ -673,10 +670,10 @@ fn delete_confirmation_message(
         .unwrap_or("this item");
 
     match mode {
-        nucleotide_events::v2::workspace::DeleteMode::Trash => {
+        nucleotide_events::workspace::DeleteMode::Trash => {
             format!("Move '{name}' to Trash?")
         }
-        nucleotide_events::v2::workspace::DeleteMode::Permanent => {
+        nucleotide_events::workspace::DeleteMode::Permanent => {
             format!("Delete '{name}' permanently?")
         }
     }
@@ -5054,10 +5051,10 @@ impl Workspace {
             if !Self::copy_to_clipboard_impl(&text) {
                 nucleotide_logging::warn!(path=%text, "Failed to copy tab path to clipboard");
             }
-            let event = nucleotide_events::v2::workspace::Event::FileOpRequested {
-                intent: nucleotide_events::v2::workspace::FileOpIntent::CopyPath {
+            let event = nucleotide_events::workspace::Event::FileOpRequested {
+                intent: nucleotide_events::workspace::FileOpIntent::CopyPath {
                     path,
-                    kind: nucleotide_events::v2::workspace::PathCopyKind::Absolute,
+                    kind: nucleotide_events::workspace::PathCopyKind::Absolute,
                 },
             };
             self.core.read(cx).dispatch_workspace_event(event);
@@ -5073,10 +5070,10 @@ impl Workspace {
                     "Failed to copy tab relative path to clipboard"
                 );
             }
-            let event = nucleotide_events::v2::workspace::Event::FileOpRequested {
-                intent: nucleotide_events::v2::workspace::FileOpIntent::CopyPath {
+            let event = nucleotide_events::workspace::Event::FileOpRequested {
+                intent: nucleotide_events::workspace::FileOpIntent::CopyPath {
                     path,
-                    kind: nucleotide_events::v2::workspace::PathCopyKind::RelativeToWorkspace,
+                    kind: nucleotide_events::workspace::PathCopyKind::RelativeToWorkspace,
                 },
             };
             self.core.read(cx).dispatch_workspace_event(event);
@@ -5088,8 +5085,8 @@ impl Workspace {
             if self.warn_reveal_in_os_unavailable_for_remote(&path, cx) {
                 return;
             }
-            let event = nucleotide_events::v2::workspace::Event::FileOpRequested {
-                intent: nucleotide_events::v2::workspace::FileOpIntent::RevealInOs { path },
+            let event = nucleotide_events::workspace::Event::FileOpRequested {
+                intent: nucleotide_events::workspace::FileOpIntent::RevealInOs { path },
             };
             self.core.read(cx).dispatch_workspace_event(event);
         }
@@ -6110,8 +6107,8 @@ impl Workspace {
                     &core.workspace_backend.identity(),
                 )
             };
-            let event = nucleotide_events::v2::workspace::Event::FileOpRequested {
-                intent: nucleotide_events::v2::workspace::FileOpIntent::Delete {
+            let event = nucleotide_events::workspace::Event::FileOpRequested {
+                intent: nucleotide_events::workspace::FileOpIntent::Delete {
                     path: path.clone(),
                     mode,
                 },
@@ -6723,10 +6720,10 @@ impl Workspace {
                 if !Self::copy_to_clipboard_impl(&text) {
                     nucleotide_logging::warn!(path=%text, "Failed to copy path to clipboard");
                 }
-                let event = nucleotide_events::v2::workspace::Event::FileOpRequested {
-                    intent: nucleotide_events::v2::workspace::FileOpIntent::CopyPath {
+                let event = nucleotide_events::workspace::Event::FileOpRequested {
+                    intent: nucleotide_events::workspace::FileOpIntent::CopyPath {
                         path,
-                        kind: nucleotide_events::v2::workspace::PathCopyKind::Absolute,
+                        kind: nucleotide_events::workspace::PathCopyKind::Absolute,
                     },
                 };
                 self.core.read(cx).dispatch_workspace_event(event);
@@ -6743,10 +6740,10 @@ impl Workspace {
                 if !Self::copy_to_clipboard_impl(&text) {
                     nucleotide_logging::warn!(path=%text, "Failed to copy relative path to clipboard");
                 }
-                let event = nucleotide_events::v2::workspace::Event::FileOpRequested {
-                    intent: nucleotide_events::v2::workspace::FileOpIntent::CopyPath {
+                let event = nucleotide_events::workspace::Event::FileOpRequested {
+                    intent: nucleotide_events::workspace::FileOpIntent::CopyPath {
                         path,
-                        kind: nucleotide_events::v2::workspace::PathCopyKind::RelativeToWorkspace,
+                        kind: nucleotide_events::workspace::PathCopyKind::RelativeToWorkspace,
                     },
                 };
                 self.core.read(cx).dispatch_workspace_event(event);
@@ -6755,8 +6752,8 @@ impl Workspace {
                 if self.warn_reveal_in_os_unavailable_for_remote(&path, cx) {
                     return;
                 }
-                let event = nucleotide_events::v2::workspace::Event::FileOpRequested {
-                    intent: nucleotide_events::v2::workspace::FileOpIntent::RevealInOs { path },
+                let event = nucleotide_events::workspace::Event::FileOpRequested {
+                    intent: nucleotide_events::workspace::FileOpIntent::RevealInOs { path },
                 };
                 self.core.read(cx).dispatch_workspace_event(event);
             }
@@ -7605,7 +7602,7 @@ impl Workspace {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        use crate::types::{AppEvent, UiEvent, Update};
+        use crate::types::{UiEvent, Update};
         use nucleotide_appearance::SystemAppearance;
 
         // Update system appearance in theme manager
@@ -7636,11 +7633,9 @@ impl Workspace {
             SystemAppearance::Light => crate::types::SystemAppearance::Light,
         };
 
-        cx.emit(Update::Event(AppEvent::Ui(
-            UiEvent::SystemAppearanceChanged {
-                appearance: event_appearance,
-            },
-        )));
+        cx.emit(Update::Ui(UiEvent::SystemAppearanceChanged {
+            appearance: event_appearance,
+        }));
     }
 
     /// Version of switch_theme_by_name for use from event handlers (no window appearance updates)
@@ -8168,40 +8163,25 @@ impl Workspace {
         }
     }
 
-    fn handle_editor_event(
+    fn handle_editor_config_changed(
         &mut self,
-        ev: &helix_view::editor::EditorEvent,
+        config_event: &helix_view::editor::ConfigEvent,
         cx: &mut Context<Self>,
     ) {
-        use helix_view::editor::{ConfigEvent, EditorEvent};
-        match ev {
-            EditorEvent::Redraw => cx.notify(),
-            EditorEvent::ConfigEvent(config_event) => {
-                use nucleotide_logging::debug;
-                // Handle configuration changes
-                debug!(config_event = ?config_event, "Workspace received ConfigEvent");
+        use helix_view::editor::ConfigEvent;
 
-                // Log current bufferline config when we receive a config event
-                let current_bufferline = &self.core.read(cx).editor.config().bufferline;
-                debug!(bufferline_config = ?current_bufferline, "Current bufferline config during ConfigEvent");
+        debug!(config_event = ?config_event, "Workspace received ConfigEvent");
+        let current_bufferline = &self.core.read(cx).editor.config().bufferline;
+        debug!(bufferline_config = ?current_bufferline, "Current bufferline config during ConfigEvent");
 
-                match config_event {
-                    ConfigEvent::Refresh => {
-                        self.refresh_after_editor_config_change(cx);
-                        let config = self.core.read(cx).config.clone();
-                        self.apply_workspace_config(&config, cx);
-                    }
-                    ConfigEvent::Update(_) => {
-                        self.refresh_after_editor_config_change(cx);
-                    }
-                    ConfigEvent::ThemeChanged => {
-                        self.refresh_after_editor_config_change(cx);
-                    }
-                }
+        match config_event {
+            ConfigEvent::Refresh => {
+                self.refresh_after_editor_config_change(cx);
+                let config = self.core.read(cx).config.clone();
+                self.apply_workspace_config(&config, cx);
             }
-            EditorEvent::LanguageServerMessage(_) => { /* handled by notifications */ }
-            _ => {
-                trace!("editor event {ev:?} not handled");
+            ConfigEvent::Update(_) | ConfigEvent::ThemeChanged => {
+                self.refresh_after_editor_config_change(cx);
             }
         }
     }
@@ -8329,7 +8309,7 @@ impl Workspace {
     fn handle_document_changed(
         &mut self,
         doc_id: helix_view::DocumentId,
-        line_change: &nucleotide_events::v2::document::DocumentLineChange,
+        line_change: &nucleotide_events::document::DocumentLineChange,
         cx: &mut Context<Self>,
     ) {
         let is_modified = self
@@ -8383,7 +8363,7 @@ impl Workspace {
     fn invalidate_document_view_metrics(
         &self,
         doc_id: helix_view::DocumentId,
-        line_change: &nucleotide_events::v2::document::DocumentLineChange,
+        line_change: &nucleotide_events::document::DocumentLineChange,
         cx: &mut Context<Self>,
     ) {
         for view_id in self.document_view_ids(doc_id, cx) {
@@ -8917,106 +8897,12 @@ impl Workspace {
         });
     }
 
-    fn handle_regex_selection_submitted(
-        &mut self,
-        action: RegexSelectionAction,
-        regex_text: &str,
-        cx: &mut Context<Self>,
-    ) {
-        debug!(
-            action = ?action,
-            regex = regex_text,
-            "Regex selection submitted"
-        );
-
-        self.overlay.update(cx, |overlay, cx| {
-            overlay.dismiss_all(cx);
-        });
-
-        if regex_text.is_empty() {
-            return;
-        }
-
-        let mut changed_selection = None;
-        self.core.update(cx, |core, cx| {
-            let _guard = self.handle.enter();
-
-            let case_insensitive = core.editor.config().search.smart_case
-                && !regex_text.chars().any(char::is_uppercase);
-            let regex = match helix_stdx::rope::RegexBuilder::new()
-                .syntax(
-                    helix_stdx::rope::Config::new()
-                        .case_insensitive(case_insensitive)
-                        .multi_line(true),
-                )
-                .build(regex_text)
-            {
-                Ok(regex) => regex,
-                Err(err) => {
-                    core.editor.set_error(format!("Invalid regex: {err}"));
-                    return;
-                }
-            };
-
-            let view_id = core.editor.tree.focus;
-            let Some(doc_id) = core.editor.tree.try_get(view_id).map(|view| view.doc) else {
-                return;
-            };
-
-            {
-                let tree = &mut core.editor.tree;
-                let documents = &mut core.editor.documents;
-                let view = tree.get_mut(view_id);
-                let Some(doc) = documents.get_mut(&doc_id) else {
-                    return;
-                };
-                doc.append_changes_to_history(view);
-                let snapshot = doc.selection(view_id).clone();
-                view.push_jump(doc, (doc_id, snapshot));
-            }
-
-            let result = {
-                let Some(doc) = core.editor.documents.get(&doc_id) else {
-                    return;
-                };
-                regex_selection_result(action, doc.text().slice(..), doc.selection(view_id), &regex)
-            };
-
-            match result {
-                Ok(selection) => {
-                    let Some(doc) = core.editor.documents.get_mut(&doc_id) else {
-                        return;
-                    };
-                    doc.set_selection(view_id, selection);
-                    core.editor.ensure_cursor_in_view(view_id);
-                    changed_selection = Some((doc_id, view_id));
-                    cx.emit(crate::Update::SelectionChanged { doc_id, view_id });
-                    cx.emit(crate::Update::Redraw);
-                }
-                Err(message) => {
-                    core.editor.set_error(message);
-                }
-            }
-
-            cx.notify();
-        });
-
-        if let Some((_, view_id)) = changed_selection
-            && let Some(view_entity) = self.view_manager.get_document_view(&view_id)
-        {
-            view_entity.update(cx, |view, cx| {
-                view.request_cursor_center();
-                cx.notify();
-            });
-        }
-    }
-
     fn handle_command_submitted(&mut self, command: &str, cx: &mut Context<Self>) {
         debug!("handle_command_submitted called with '{}'", command);
 
         // If a file op is pending, treat the submitted text as the name and dispatch an intent
         if let Some(pending) = self.pending_file_op.take() {
-            use nucleotide_events::v2::workspace::{Event as WsEvent, FileOpIntent};
+            use nucleotide_events::workspace::{Event as WsEvent, FileOpIntent};
 
             // Build event and decide which directory to rescan using references to avoid moves
             let (event, refresh_dir, lsp_file_operation): (
@@ -10588,7 +10474,9 @@ impl Workspace {
         let skip_editor_status_sync = matches!(ev, crate::Update::EditorStatus(_));
 
         match ev {
-            crate::Update::EditorEvent(ev) => self.handle_editor_event(ev, cx),
+            crate::Update::EditorConfigChanged(config_event) => {
+                self.handle_editor_config_changed(config_event, cx)
+            }
             crate::Update::EditorStatus(status) => {
                 self.push_editor_status_notification(status.clone(), cx);
             }
@@ -10615,19 +10503,8 @@ impl Workspace {
             crate::Update::OpenFile(path) => self.handle_open_file(path, cx),
             crate::Update::OpenDirectory(path) => self.handle_open_directory(path, cx),
             crate::Update::OpenRemote(input) => self.handle_open_remote_submitted(input, cx),
-            crate::Update::OpenRemoteWithOptions { input, options } => self
-                .handle_open_remote_submitted_with_bootstrap(
-                    input,
-                    Some(nucleotide_remote::RemoteWorkspaceBootstrap::new(
-                        options.clone(),
-                    )),
-                    cx,
-                ),
             crate::Update::OpenRemoteWithBootstrap { input, bootstrap } => {
                 self.handle_open_remote_submitted_with_bootstrap(input, Some(bootstrap.clone()), cx)
-            }
-            crate::Update::FileTreeEvent(event) => {
-                self.handle_file_tree_event(event, cx);
             }
             crate::Update::ShowFilePicker => {
                 nucleotide_logging::debug!("DIAG: Workspace received ShowFilePicker");
@@ -10724,10 +10601,6 @@ impl Workspace {
             crate::Update::FileTreeSearchSubmitted(query) => {
                 self.handle_file_tree_search_submitted(query, cx)
             }
-            crate::Update::RegexSelectionSubmitted { action, regex } => {
-                self.handle_regex_selection_submitted(*action, regex, cx)
-            }
-            // Helix event bridge - respond to automatic Helix events
             crate::Update::SelectionChanged { doc_id, view_id } => {
                 self.handle_selection_changed(*doc_id, *view_id, cx)
             }
@@ -10741,33 +10614,27 @@ impl Workspace {
             crate::Update::ViewportCursor { view_id, request } => {
                 self.handle_viewport_cursor(*view_id, *request, cx);
             }
-            crate::Update::Event(event) => {
-                match event {
-                    crate::types::AppEvent::Workspace(workspace_event) => {
-                        if let crate::types::WorkspaceEvent::FileSelected { path, source } =
-                            workspace_event
-                        {
-                            use nucleotide_events::v2::workspace::SelectionSource;
-                            match source {
-                                SelectionSource::Click | SelectionSource::Command => {
-                                    self.handle_workspace_selection(path, cx);
-                                }
-                                _ => {
-                                    // Other selection sources
-                                }
-                            }
+            crate::Update::Workspace(workspace_event) => {
+                if let crate::types::WorkspaceEvent::FileSelected { path, source } = workspace_event
+                {
+                    use nucleotide_events::workspace::SelectionSource;
+                    match source {
+                        SelectionSource::Click | SelectionSource::Command => {
+                            self.handle_workspace_selection(path, cx);
                         }
-                    }
-                    crate::types::AppEvent::Ui(
-                        crate::types::UiEvent::SystemAppearanceChanged { appearance },
-                    ) => {
-                        self.handle_system_appearance_changed(*appearance, cx);
-                    }
-                    crate::types::AppEvent::Document(doc_event) => {
-                        self.handle_document_domain_event(doc_event, cx);
+                        _ => {
+                            // Other selection sources
+                        }
                     }
                 }
             }
+            crate::Update::Ui(crate::types::UiEvent::SystemAppearanceChanged { appearance }) => {
+                self.handle_system_appearance_changed(*appearance, cx);
+            }
+            crate::Update::Document(doc_event) => {
+                self.handle_document_domain_event(doc_event, cx);
+            }
+            crate::Update::Lsp(_) => {}
         }
 
         if !skip_editor_status_sync {
@@ -12086,7 +11953,7 @@ impl Workspace {
 
     fn dispatch_workspace_file_op_and_process(
         &mut self,
-        event: nucleotide_events::v2::workspace::Event,
+        event: nucleotide_events::workspace::Event,
         cx: &mut Context<Self>,
     ) {
         self.core.read(cx).workspace_file_ops.dispatch(&event);
@@ -12145,7 +12012,7 @@ impl Workspace {
         event: &crate::types::DocumentEvent,
         cx: &mut Context<Self>,
     ) {
-        use nucleotide_events::v2::document::Event as DocumentEvent;
+        use nucleotide_events::document::Event as DocumentEvent;
 
         debug!(document_event = ?event, "Document domain event received");
 
@@ -17515,10 +17382,7 @@ mod tests {
 
         let mode = effective_delete_mode(crate::config::DeleteBehavior::Trash, &remote_identity);
 
-        assert_eq!(
-            mode,
-            nucleotide_events::v2::workspace::DeleteMode::Permanent
-        );
+        assert_eq!(mode, nucleotide_events::workspace::DeleteMode::Permanent);
         assert!(delete_confirmation_required(mode));
         assert_eq!(delete_confirmation_label(mode), "Delete Permanently");
     }
@@ -17530,14 +17394,14 @@ mod tests {
         assert_eq!(
             delete_confirmation_message(
                 Some(path),
-                nucleotide_events::v2::workspace::DeleteMode::Permanent,
+                nucleotide_events::workspace::DeleteMode::Permanent,
             ),
             "Delete 'lib.rs' permanently?"
         );
         assert_eq!(
             delete_confirmation_message(
                 Some(path),
-                nucleotide_events::v2::workspace::DeleteMode::Trash,
+                nucleotide_events::workspace::DeleteMode::Trash,
             ),
             "Move 'lib.rs' to Trash?"
         );

@@ -37,7 +37,7 @@ pub struct OverlayView {
     // Shared state for window-level resize listeners
     resize_state: Arc<Mutex<ResizeStateInner>>,
     // Track last dispatched terminal size to avoid redundant resize events
-    last_terminal_size: Option<(nucleotide_events::v2::terminal::TerminalId, u16, u16)>,
+    last_terminal_size: Option<(nucleotide_events::terminal::TerminalId, u16, u16)>,
     focus: FocusHandle,
     core: gpui::WeakEntity<crate::Core>,
     handle: tokio::runtime::Handle,
@@ -1568,7 +1568,7 @@ impl OverlayView {
                                     }
                                 } else if let Some(task) = item
                                     .data
-                                    .downcast_ref::<nucleotide_events::v2::run::ResolvedTask>()
+                                    .downcast_ref::<nucleotide_events::run::ResolvedTask>()
                                 {
                                     return Some((
                                         crate::runnables::task_preview_text(task),
@@ -1750,7 +1750,7 @@ impl OverlayView {
                                 }
                                 else if let Some(task) = selected_item
                                     .data
-                                    .downcast_ref::<nucleotide_events::v2::run::ResolvedTask>()
+                                    .downcast_ref::<nucleotide_events::run::ResolvedTask>()
                                 {
                                     if let Some(core) = core_for_on_select.upgrade() {
                                         let task = task.clone();
@@ -2321,7 +2321,7 @@ impl Render for OverlayView {
                     if let Some(core) = self.core.upgrade() {
                         core.update(cx, |app, _| {
                             app.terminal_runtime.dispatch(
-                                &nucleotide_events::v2::terminal::Event::Resized {
+                                &nucleotide_events::terminal::Event::Resized {
                                     id: active_id,
                                     cols,
                                     rows,

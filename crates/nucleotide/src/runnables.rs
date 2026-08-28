@@ -6,9 +6,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::LazyLock;
 
 use helix_lsp::lsp;
-use nucleotide_events::v2::run::{
-    CommandSpec, ResolvedTask, RunKind, SourceLocation, TaskTemplate,
-};
+use nucleotide_events::run::{CommandSpec, ResolvedTask, RunKind, SourceLocation, TaskTemplate};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 

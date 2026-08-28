@@ -9,7 +9,7 @@ use gpui::{
 };
 // Import helix's syntax highlighting system
 use helix_view::{DocumentId, ViewId};
-use nucleotide_events::v2::run::ResolvedTask;
+use nucleotide_events::run::ResolvedTask;
 use nucleotide_types::scrollbar::SCROLLBAR_THICKNESS;
 use nucleotide_ui::ThemedContext as UIThemedContext;
 use nucleotide_ui::scrollbar::{Scrollbar, ScrollbarState};
@@ -1081,7 +1081,7 @@ mod tests {
     use super::*;
     use gpui::px;
     use nucleotide_editor::run_gutter_button_left;
-    use nucleotide_events::v2::run::{CommandSpec, RunKind, SourceLocation, TaskTemplate};
+    use nucleotide_events::run::{CommandSpec, RunKind, SourceLocation, TaskTemplate};
 
     #[test]
     fn empty_state_is_limited_to_empty_scratch_documents() {
