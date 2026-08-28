@@ -6,11 +6,12 @@ pub use nucleotide_core::{
     CompletionTrigger, EditorFontConfig, EditorStatus, FontSettings, Severity, UiFontConfig,
 };
 
-// Re-export V2 event types from nucleotide-core
-pub use nucleotide_core::{AppEvent, DocumentEvent, UiEvent, WorkspaceEvent};
+// Re-export domain event types
+pub use nucleotide_core::{DocumentEvent, UiEvent, WorkspaceEvent};
+pub use nucleotide_events::LspEvent;
 
-// Re-export UI enums from V2 events
-pub use nucleotide_events::v2::ui::SystemAppearance;
+// Re-export UI enums from domain events
+pub use nucleotide_events::ui::SystemAppearance;
 
 // Local enums that haven't been migrated to V2 yet
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -68,14 +69,15 @@ pub struct DiagnosticLocation {
     pub offset: usize,
 }
 
-// Hybrid Update enum for event system
-// Uses Event(AppEvent) for data-only events and direct variants for complex UI components with behavior
+/// The single application-level event model emitted by `Application` and its UI components.
 pub enum Update {
-    // Event-based updates (data only)
-    Event(AppEvent),
+    // Domain events
+    Document(DocumentEvent),
+    Lsp(LspEvent),
+    Ui(UiEvent),
+    Workspace(WorkspaceEvent),
 
     // Complex UI components with behavior (closures/callbacks)
-    // These cannot be easily serialized into events
     Prompt(crate::prompt::Prompt),
     Picker(crate::picker::Picker),
     DirectoryPicker(crate::picker::Picker),
@@ -85,29 +87,18 @@ pub enum Update {
     CompletionEvent(helix_view::handlers::completion::CompletionEvent),
     Info(helix_view::info::Info),
 
-    // Legacy events still being migrated
-    EditorEvent(helix_view::editor::EditorEvent),
+    // Application UI events
+    EditorConfigChanged(helix_view::editor::ConfigEvent),
     EditorStatus(EditorStatus),
-    FileTreeEvent(crate::file_tree::FileTreeEvent),
-
-    // Temporary - will be removed once all code is updated to use Event(AppEvent)
     Redraw,
     ShouldQuit,
     CommandSubmitted(String),
     SearchSubmitted(String),
     GlobalSearchSubmitted(String),
     FileTreeSearchSubmitted(String),
-    RegexSelectionSubmitted {
-        action: RegexSelectionAction,
-        regex: String,
-    },
     OpenFile(std::path::PathBuf),
     OpenDirectory(std::path::PathBuf),
     OpenRemote(String),
-    OpenRemoteWithOptions {
-        input: String,
-        options: nucleotide_remote::RemoteWorkspaceBackendOptions,
-    },
     OpenRemoteWithBootstrap {
         input: String,
         bootstrap: nucleotide_remote::RemoteWorkspaceBootstrap,
@@ -137,7 +128,7 @@ pub enum Update {
     ShowCodeActions,
     ShowRunnables,
     ShowHoverDocs,
-    RunTask(nucleotide_events::v2::run::ResolvedTask),
+    RunTask(nucleotide_events::run::ResolvedTask),
     ToggleFileTree,
     SemanticShortcut(SemanticShortcutIntent),
     TerminalPanel(gpui::Entity<nucleotide_terminal_panel::TerminalPanel>),
@@ -169,7 +160,10 @@ pub enum SemanticShortcutIntent {
 impl std::fmt::Debug for Update {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Update::Event(event) => write!(f, "Event({event:?})"),
+            Update::Document(event) => write!(f, "Document({event:?})"),
+            Update::Lsp(event) => write!(f, "Lsp({event:?})"),
+            Update::Ui(event) => write!(f, "Ui({event:?})"),
+            Update::Workspace(event) => write!(f, "Workspace({event:?})"),
             Update::Prompt(_) => write!(f, "Prompt(...)"),
             Update::Picker(_) => write!(f, "Picker(...)"),
             Update::DirectoryPicker(_) => write!(f, "DirectoryPicker(...)"),
@@ -177,7 +171,7 @@ impl std::fmt::Debug for Update {
             Update::Completion(_) => write!(f, "Completion(...)"),
             Update::Info(_) => write!(f, "Info(...)"),
             Update::HoverDocs(entries) => write!(f, "HoverDocs(len={})", entries.len()),
-            Update::EditorEvent(_) => write!(f, "EditorEvent(...)"),
+            Update::EditorConfigChanged(_) => write!(f, "EditorConfigChanged(...)"),
             Update::EditorStatus(status) => write!(f, "EditorStatus({status:?})"),
             Update::Redraw => write!(f, "Redraw"),
             Update::OpenFile(path) => write!(f, "OpenFile({path:?})"),
@@ -192,14 +186,8 @@ impl std::fmt::Debug for Update {
                 write!(f, "FileTreeSearchSubmitted({query:?})")
             }
             Update::OpenRemote(input) => write!(f, "OpenRemote({input:?})"),
-            Update::OpenRemoteWithOptions { input, .. } => {
-                write!(f, "OpenRemoteWithOptions({input:?})")
-            }
             Update::OpenRemoteWithBootstrap { input, .. } => {
                 write!(f, "OpenRemoteWithBootstrap({input:?})")
-            }
-            Update::RegexSelectionSubmitted { action, regex } => {
-                write!(f, "RegexSelectionSubmitted({action:?}, {regex:?})")
             }
             Update::SelectionChanged { doc_id, view_id } => {
                 write!(f, "SelectionChanged(doc: {doc_id:?}, view: {view_id:?})")
@@ -214,17 +202,20 @@ impl std::fmt::Debug for Update {
             Update::ViewportCursor { view_id, request } => {
                 write!(f, "ViewportCursor(view: {view_id:?}, request: {request:?})")
             }
-            Update::FileTreeEvent(_) => write!(f, "FileTreeEvent(...)"),
             Update::CompletionEvent(_) => write!(f, "CompletionEvent(...)"),
             Update::ShowFilePicker => write!(f, "ShowFilePicker"),
-            Update::ShowFilePickerAt(path) => write!(f, "ShowFilePickerAt({path:?})"),
+            Update::ShowFilePickerAt(path) => {
+                write!(f, "ShowFilePickerAt({path:?})")
+            }
             Update::ShowBufferPicker => write!(f, "ShowBufferPicker"),
             Update::ShowCodeActions => write!(f, "ShowCodeActions"),
             Update::ShowRunnables => write!(f, "ShowRunnables"),
             Update::ShowHoverDocs => write!(f, "ShowHoverDocs"),
             Update::RunTask(task) => write!(f, "RunTask({:?})", task.label()),
             Update::ToggleFileTree => write!(f, "ToggleFileTree"),
-            Update::SemanticShortcut(intent) => write!(f, "SemanticShortcut({intent:?})"),
+            Update::SemanticShortcut(intent) => {
+                write!(f, "SemanticShortcut({intent:?})")
+            }
             Update::TerminalPanel(_) => write!(f, "TerminalPanel(...)"),
         }
     }

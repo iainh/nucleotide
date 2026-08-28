@@ -2,7 +2,7 @@
 // ABOUTME: Keeps terminal input call sites on the shared UI encoder
 
 use gpui::KeyDownEvent;
-use nucleotide_events::v2::terminal::{Event as TerminalEvent, TerminalId};
+use nucleotide_events::terminal::{Event as TerminalEvent, TerminalId};
 
 /// Encode a GPUI key event into terminal bytes using the shared xterm mapping.
 #[cfg(not(feature = "terminal-emulator-core"))]

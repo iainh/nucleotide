@@ -17,11 +17,11 @@ impl TerminalRuntimeHandle {
         Self
     }
 
-    pub fn dispatch(&self, _event: &nucleotide_events::v2::terminal::Event) {}
+    pub fn dispatch(&self, _event: &nucleotide_events::terminal::Event) {}
 
     pub fn send_input(
         &self,
-        _id: nucleotide_events::v2::terminal::TerminalId,
+        _id: nucleotide_events::terminal::TerminalId,
         _bytes: Vec<u8>,
     ) -> bool {
         false
@@ -1712,7 +1712,7 @@ use nucleotide_logging::{
 };
 use nucleotide_lsp::lsp_state::DiagnosticInfo;
 
-use crate::types::{AppEvent, Update};
+use crate::types::Update;
 use editor_input::EditorInputBridge;
 use gpui::EventEmitter;
 
@@ -1720,47 +1720,30 @@ const MAINTENANCE_DRAIN_WARN_THRESHOLD: Duration = Duration::from_millis(8);
 const MAINTENANCE_ITERATION_WARN_THRESHOLD: Duration = Duration::from_millis(2);
 const MAINTENANCE_POLLER_WARN_THRESHOLD: Duration = Duration::from_millis(2);
 const MAINTENANCE_TURN_BUDGET: Duration = Duration::from_millis(6);
-const MAINTENANCE_BRIDGED_EVENT_BATCH: usize = 64;
+const MAINTENANCE_HELIX_EVENT_BATCH: usize = 64;
 const MAINTENANCE_LSP_COMMAND_BATCH: usize = 1;
 
-fn bridged_event_needs_gpui_context(bridged_event: &event_bridge::BridgedEvent) -> bool {
-    match bridged_event {
-        event_bridge::BridgedEvent::DiagnosticsChanged { .. }
-        | event_bridge::BridgedEvent::DiagnosticsPickerRequested { .. }
-        | event_bridge::BridgedEvent::FilePickerRequested
-        | event_bridge::BridgedEvent::BufferPickerRequested
-        | event_bridge::BridgedEvent::LanguageServerInitialized { .. }
-        | event_bridge::BridgedEvent::LanguageServerExited { .. } => true,
-        event_bridge::BridgedEvent::DocumentChanged { .. }
-        | event_bridge::BridgedEvent::DocumentOpened { .. }
-        | event_bridge::BridgedEvent::DocumentClosed { .. } => false,
-    }
-}
-
-fn coalesce_bridged_events(
-    bridged_events: Vec<event_bridge::BridgedEvent>,
-) -> Vec<event_bridge::BridgedEvent> {
+fn coalesce_helix_events(
+    helix_events: Vec<event_bridge::HelixEvent>,
+) -> Vec<event_bridge::HelixEvent> {
     let mut seen_diagnostics = HashSet::new();
-    let mut coalesced = Vec::with_capacity(bridged_events.len());
+    let mut coalesced = Vec::with_capacity(helix_events.len());
 
-    for bridged_event in bridged_events.into_iter().rev() {
-        match &bridged_event {
-            event_bridge::BridgedEvent::DiagnosticsChanged { doc_id } => {
+    for helix_event in helix_events.into_iter().rev() {
+        match &helix_event {
+            event_bridge::HelixEvent::DiagnosticsChanged { doc_id } => {
                 if !seen_diagnostics.insert(*doc_id) {
                     continue;
                 }
             }
-            event_bridge::BridgedEvent::DocumentChanged { .. }
-            | event_bridge::BridgedEvent::DocumentOpened { .. }
-            | event_bridge::BridgedEvent::DocumentClosed { .. }
-            | event_bridge::BridgedEvent::LanguageServerInitialized { .. }
-            | event_bridge::BridgedEvent::LanguageServerExited { .. }
-            | event_bridge::BridgedEvent::DiagnosticsPickerRequested { .. }
-            | event_bridge::BridgedEvent::FilePickerRequested
-            | event_bridge::BridgedEvent::BufferPickerRequested => {}
+            event_bridge::HelixEvent::DocumentChanged { .. }
+            | event_bridge::HelixEvent::DocumentOpened { .. }
+            | event_bridge::HelixEvent::DocumentClosed { .. }
+            | event_bridge::HelixEvent::LanguageServerInitialized { .. }
+            | event_bridge::HelixEvent::LanguageServerExited { .. } => {}
         }
 
-        coalesced.push(bridged_event);
+        coalesced.push(helix_event);
     }
 
     coalesced.reverse();
@@ -1962,7 +1945,7 @@ pub struct Application {
     pub lsp_state: Option<gpui::Entity<nucleotide_lsp::LspState>>,
     pub project_directory: Option<PathBuf>,
     pub workspace_backend: WorkspaceBackendHandle,
-    pub event_bridge_rx: Option<event_bridge::BridgedEventReceiver>,
+    pub helix_event_rx: Option<event_bridge::HelixEventReceiver>,
     pub config: crate::config::Config,
     pub helix_config_arc: Arc<ArcSwap<helix_term::config::Config>>,
     project_lsp_system: Option<ProjectLspSystem>,
@@ -2145,21 +2128,21 @@ impl Application {
         helix_event::request_redraw();
     }
 
-    fn poll_pending_bridged_events(
+    fn poll_pending_helix_events(
         &mut self,
         cx: &mut gpui::Context<crate::Core>,
         _handle: &tokio::runtime::Handle,
         task_cx: &mut TaskContext<'_>,
     ) -> bool {
-        let mut bridged_events = Vec::new();
+        let mut helix_events = Vec::new();
         let mut disconnected = false;
 
-        if let Some(ref mut rx) = self.event_bridge_rx {
-            for _ in 0..MAINTENANCE_BRIDGED_EVENT_BATCH {
+        if let Some(ref mut rx) = self.helix_event_rx {
+            for _ in 0..MAINTENANCE_HELIX_EVENT_BATCH {
                 match rx.poll_recv(task_cx) {
-                    Poll::Ready(Some(event)) => bridged_events.push(event),
+                    Poll::Ready(Some(event)) => helix_events.push(event),
                     Poll::Ready(None) => {
-                        info!("Bridged event channel disconnected");
+                        info!("Helix event channel disconnected");
                         disconnected = true;
                         break;
                     }
@@ -2169,53 +2152,94 @@ impl Application {
         }
 
         if disconnected {
-            self.event_bridge_rx = None;
+            self.helix_event_rx = None;
         }
 
-        let received_count = bridged_events.len();
-        let bridged_events = coalesce_bridged_events(bridged_events);
-        let progressed = !bridged_events.is_empty();
+        let received_count = helix_events.len();
+        let helix_events = coalesce_helix_events(helix_events);
+        let progressed = !helix_events.is_empty();
 
-        if received_count >= MAINTENANCE_BRIDGED_EVENT_BATCH {
+        if received_count >= MAINTENANCE_HELIX_EVENT_BATCH {
             debug!(
                 received_count = received_count,
-                processed_count = bridged_events.len(),
-                batch_limit = MAINTENANCE_BRIDGED_EVENT_BATCH,
-                "Maintenance bridged-event poll reached batch limit"
+                processed_count = helix_events.len(),
+                batch_limit = MAINTENANCE_HELIX_EVENT_BATCH,
+                "Maintenance Helix-event poll reached batch limit"
             );
-        } else if received_count != bridged_events.len() {
+        } else if received_count != helix_events.len() {
             debug!(
                 received_count = received_count,
-                processed_count = bridged_events.len(),
-                "Maintenance coalesced bridged events"
+                processed_count = helix_events.len(),
+                "Maintenance coalesced Helix events"
             );
         }
 
-        for bridged_event in bridged_events {
-            if let Some(event) = self.process_v2_event(&bridged_event) {
-                cx.emit(crate::Update::Event(event));
-            }
-
-            if bridged_event_needs_gpui_context(&bridged_event) {
-                self.handle_bridged_event_with_gpui_context(&bridged_event, cx);
-            }
+        for helix_event in helix_events {
+            self.handle_helix_event(&helix_event, cx);
         }
 
         progressed
     }
 
-    fn handle_bridged_event_with_gpui_context(
+    fn handle_helix_event(
         &mut self,
-        bridged_event: &event_bridge::BridgedEvent,
+        helix_event: &event_bridge::HelixEvent,
         cx: &mut gpui::Context<crate::Core>,
     ) {
-        match bridged_event {
-            event_bridge::BridgedEvent::DiagnosticsChanged { doc_id } => {
-                if let Some(document) = self.editor.document(*doc_id)
-                    && let (Some(lsp_state), Some(path)) = (&self.lsp_state, document.path())
+        use nucleotide_events::{LspEvent, document::Event as DocumentEvent};
+
+        match helix_event {
+            event_bridge::HelixEvent::DocumentChanged {
+                doc_id,
+                change_summary,
+                line_change,
+            } => {
+                let revision = if let Some(document) = self.editor.document_mut(*doc_id) {
+                    document.get_current_revision() as u64
+                } else {
+                    warn!(doc_id = ?doc_id, "Document not found when processing DocumentChanged event");
+                    0
+                };
+
+                cx.emit(Update::Document(DocumentEvent::ContentChanged {
+                    doc_id: *doc_id,
+                    revision,
+                    change_summary: *change_summary,
+                    line_change: line_change.clone(),
+                }));
+            }
+            event_bridge::HelixEvent::DocumentOpened { doc_id } => {
+                let (path, language_id) = if let Some(document) = self.editor.document(*doc_id) {
+                    let path = document
+                        .path()
+                        .map(std::path::Path::to_path_buf)
+                        .unwrap_or_else(|| std::path::PathBuf::from("untitled"));
+                    let language_id = document.language_name().map(str::to_string);
+                    (path, language_id)
+                } else {
+                    (std::path::PathBuf::from("unknown"), None)
+                };
+
+                cx.emit(Update::Document(DocumentEvent::Opened {
+                    doc_id: *doc_id,
+                    path,
+                    language_id,
+                }));
+            }
+            event_bridge::HelixEvent::DocumentClosed {
+                doc_id,
+                was_modified,
+            } => {
+                cx.emit(Update::Document(DocumentEvent::Closed {
+                    doc_id: *doc_id,
+                    was_modified: *was_modified,
+                }));
+            }
+            event_bridge::HelixEvent::DiagnosticsChanged { doc_id } => {
+                let (diagnostic_count, error_count, warning_count) = if let Some(document) =
+                    self.editor.document(*doc_id)
                 {
                     let diagnostics = document.diagnostics();
-                    let uri = helix_core::Uri::from(path);
                     let total = diagnostics.len();
                     let errors = diagnostics
                         .iter()
@@ -2230,48 +2254,41 @@ impl Application {
                         })
                         .count();
 
-                    debug!(
-                        uri = %uri.to_string(),
-                        total = total,
-                        errors = errors,
-                        warnings = warnings,
-                        "DIAG: Updating LspState diagnostics for URI"
-                    );
-
-                    lsp_state.update(cx, |state, cx| {
+                    if let (Some(lsp_state), Some(path)) = (&self.lsp_state, document.path()) {
+                        let uri = helix_core::Uri::from(path);
                         let infos: Vec<DiagnosticInfo> = diagnostics
                             .iter()
-                            .filter_map(|d| {
-                                d.provider
-                                    .language_server_id()
-                                    .map(|server_id| DiagnosticInfo {
-                                        diagnostic: d.clone(),
+                            .filter_map(|diagnostic| {
+                                diagnostic.provider.language_server_id().map(|server_id| {
+                                    DiagnosticInfo {
+                                        diagnostic: diagnostic.clone(),
                                         server_id,
-                                    })
+                                    }
+                                })
                             })
                             .collect();
-                        state.set_diagnostics(uri.clone(), infos);
-                        cx.notify();
-                    });
+                        lsp_state.update(cx, |state, cx| {
+                            state.set_diagnostics(uri, infos);
+                            cx.notify();
+                        });
+                    }
 
-                    trace!(uri = %uri.to_string(), "DIAG: LspState.set_diagnostics applied");
-                }
+                    (total, errors, warnings)
+                } else {
+                    (0, 0, 0)
+                };
+
+                cx.emit(Update::Document(DocumentEvent::DiagnosticsUpdated {
+                    doc_id: *doc_id,
+                    diagnostic_count,
+                    error_count,
+                    warning_count,
+                }));
             }
-            event_bridge::BridgedEvent::DiagnosticsPickerRequested { workspace } => {
-                self.emit_diagnostics_picker(*workspace, cx);
-            }
-            event_bridge::BridgedEvent::FilePickerRequested => {
-                debug!("DIAG: FilePickerRequested received - emitting ShowFilePicker");
-                cx.emit(crate::Update::ShowFilePicker);
-            }
-            event_bridge::BridgedEvent::BufferPickerRequested => {
-                debug!("DIAG: BufferPickerRequested received - emitting ShowBufferPicker");
-                cx.emit(crate::Update::ShowBufferPicker);
-            }
-            event_bridge::BridgedEvent::LanguageServerInitialized { server_id } => {
+            event_bridge::HelixEvent::LanguageServerInitialized { server_id } => {
                 debug!(
                     server_id = ?server_id,
-                    "MAIN_LOOP: Processing LanguageServerInitialized event with GPUI context"
+                    "Processing LanguageServerInitialized event"
                 );
 
                 if let Some(lsp_state) = &self.lsp_state {
@@ -2301,11 +2318,15 @@ impl Application {
                         cx.notify();
                     });
                 }
+
+                cx.emit(Update::Lsp(LspEvent::ServerInitialized {
+                    server_id: *server_id,
+                }));
             }
-            event_bridge::BridgedEvent::LanguageServerExited { server_id } => {
+            event_bridge::HelixEvent::LanguageServerExited { server_id } => {
                 debug!(
                     server_id = ?server_id,
-                    "MAIN_LOOP: Processing LanguageServerExited event with GPUI context"
+                    "Processing LanguageServerExited event"
                 );
 
                 if let Some(lsp_state) = &self.lsp_state {
@@ -2319,10 +2340,11 @@ impl Application {
                         cx.notify();
                     });
                 }
+
+                cx.emit(Update::Lsp(LspEvent::ServerExited {
+                    server_id: *server_id,
+                }));
             }
-            event_bridge::BridgedEvent::DocumentOpened { .. }
-            | event_bridge::BridgedEvent::DocumentChanged { .. }
-            | event_bridge::BridgedEvent::DocumentClosed { .. } => {}
         }
     }
 
@@ -4210,7 +4232,7 @@ impl Application {
         None
     }
     /// Dispatch a workspace operation through the active backend.
-    pub fn dispatch_workspace_event(&self, event: nucleotide_events::v2::workspace::Event) {
+    pub fn dispatch_workspace_event(&self, event: nucleotide_events::workspace::Event) {
         self.workspace_file_ops.dispatch(&event);
     }
     /// Initialize the application with its own entity handle for LSP completion
@@ -4245,101 +4267,6 @@ impl Application {
             lsp_state_created = self.lsp_state.is_some(),
             "POST_INIT: Application post-initialization completed - LSP completion ready"
         );
-    }
-
-    fn process_v2_event(&mut self, bridged_event: &event_bridge::BridgedEvent) -> Option<AppEvent> {
-        use nucleotide_events::v2::document::Event as DocumentEvent;
-
-        match bridged_event {
-            event_bridge::BridgedEvent::DocumentChanged {
-                doc_id,
-                change_summary,
-                line_change,
-            } => {
-                // Extract actual document revision
-                let revision = if let Some(document) = self.editor.document_mut(*doc_id) {
-                    document.get_current_revision() as u64
-                } else {
-                    warn!(doc_id = ?doc_id, "Document not found when processing DocumentChanged event");
-                    0
-                };
-
-                Some(AppEvent::Document(DocumentEvent::ContentChanged {
-                    doc_id: *doc_id,
-                    revision,
-                    change_summary: *change_summary,
-                    line_change: line_change.clone(),
-                }))
-            }
-
-            event_bridge::BridgedEvent::DocumentOpened { doc_id } => {
-                // Extract document information for enriched event
-                let (path, language_id) = if let Some(document) = self.editor.document(*doc_id) {
-                    let path = document
-                        .path()
-                        .map(std::path::Path::to_path_buf)
-                        .unwrap_or_else(|| std::path::PathBuf::from("untitled"));
-                    let language_id = document.language_name().map(|lang| lang.to_string());
-                    (path, language_id)
-                } else {
-                    (std::path::PathBuf::from("unknown"), None)
-                };
-
-                Some(AppEvent::Document(DocumentEvent::Opened {
-                    doc_id: *doc_id,
-                    path,
-                    language_id,
-                }))
-            }
-
-            event_bridge::BridgedEvent::DocumentClosed {
-                doc_id,
-                was_modified,
-            } => Some(AppEvent::Document(DocumentEvent::Closed {
-                doc_id: *doc_id,
-                was_modified: *was_modified,
-            })),
-
-            event_bridge::BridgedEvent::DiagnosticsChanged { doc_id } => {
-                // Extract diagnostic counts from the document
-                let (diagnostic_count, error_count, warning_count) = if let Some(document) =
-                    self.editor.document(*doc_id)
-                {
-                    let diagnostics = document.diagnostics();
-                    let total = diagnostics.len();
-                    let errors = diagnostics
-                        .iter()
-                        .filter(|d| {
-                            matches!(d.severity, Some(helix_core::diagnostic::Severity::Error))
-                        })
-                        .count();
-                    let warnings = diagnostics
-                        .iter()
-                        .filter(|d| {
-                            matches!(d.severity, Some(helix_core::diagnostic::Severity::Warning))
-                        })
-                        .count();
-
-                    // LSP diagnostics state is synchronized in the GPUI-context loop
-                    (total, errors, warnings)
-                } else {
-                    (0, 0, 0)
-                };
-
-                Some(AppEvent::Document(DocumentEvent::DiagnosticsUpdated {
-                    doc_id: *doc_id,
-                    diagnostic_count,
-                    error_count,
-                    warning_count,
-                }))
-            }
-
-            event_bridge::BridgedEvent::LanguageServerInitialized { .. }
-            | event_bridge::BridgedEvent::LanguageServerExited { .. }
-            | event_bridge::BridgedEvent::DiagnosticsPickerRequested { .. }
-            | event_bridge::BridgedEvent::FilePickerRequested
-            | event_bridge::BridgedEvent::BufferPickerRequested => None,
-        }
     }
 
     /// Handle language server message, adapted from Helix's implementation
@@ -6022,9 +5949,9 @@ impl Application {
             }
 
             progressed |= {
-                let _timer = PerfTimer::new("Application::poll_pending_bridged_events")
+                let _timer = PerfTimer::new("Application::poll_pending_helix_events")
                     .with_warn_threshold(MAINTENANCE_POLLER_WARN_THRESHOLD);
-                self.poll_pending_bridged_events(cx, &handle, &mut task_cx)
+                self.poll_pending_helix_events(cx, &handle, &mut task_cx)
             };
 
             if progressed && turn_started.elapsed() >= MAINTENANCE_TURN_BUDGET {
@@ -6077,7 +6004,7 @@ impl Application {
         cx: &mut gpui::Context<crate::Core>,
     ) -> bool {
         use helix_view::editor::EditorEvent;
-        use nucleotide_events::v2::document::Event as DocumentEvent;
+        use nucleotide_events::document::Event as DocumentEvent;
 
         debug!(
             event_type = ?std::mem::discriminant(&event),
@@ -6093,7 +6020,7 @@ impl Application {
                         path: event.path.clone(),
                         revision: event.revision as u64,
                     };
-                    cx.emit(crate::Update::Event(AppEvent::Document(v2_event)));
+                    cx.emit(crate::Update::Document(v2_event));
                 }
             }
             EditorEvent::IdleTimer => {
@@ -6236,9 +6163,7 @@ impl Application {
         }
 
         debug!("Forwarding ConfigEvent to workspace");
-        cx.emit(crate::Update::EditorEvent(
-            helix_view::editor::EditorEvent::ConfigEvent(config_event),
-        ));
+        cx.emit(crate::Update::EditorConfigChanged(config_event));
     }
 
     pub async fn step(&mut self, cx: &mut gpui::Context<'_, crate::Core>) {
@@ -9888,7 +9813,7 @@ pub fn init_editor(
         lsp_state: None, // Will be initialized when Application is wrapped in a GPUI entity
         project_directory,
         workspace_backend,
-        event_bridge_rx: Some(bridge_rx),
+        helix_event_rx: Some(bridge_rx),
         config: gui_config,
         helix_config_arc: config,
         project_lsp_system: None,
@@ -11774,10 +11699,10 @@ mod tests {
         Application, EditorInputBridge, LspCompletionTrigger, MaintenanceWake,
         NativeOpenFileOutcome, NativeSymbolItem, NativeSymbolTarget, PendingCompletionRequest,
         ProjectEnvironmentProvider, ProjectLspSupervisor, RemoteLspLaunchProxyProvider,
-        WorkspaceDocumentSaveHandler, bridged_event_needs_gpui_context, buffer_text_matches_path,
-        buffer_text_matches_string, buffer_word_completion_items, char_index_for_line_col,
-        coalesce_bridged_events, completion_context_for_trigger, configured_project_servers,
-        current_dir_is_executable_dir, dedupe_completion_items, detect_project_lsp_metadata,
+        WorkspaceDocumentSaveHandler, buffer_text_matches_path, buffer_text_matches_string,
+        buffer_word_completion_items, char_index_for_line_col, coalesce_helix_events,
+        completion_context_for_trigger, configured_project_servers, current_dir_is_executable_dir,
+        dedupe_completion_items, detect_project_lsp_metadata,
         detect_project_type_from_workspace_backend, detect_project_type_from_workspace_listing,
         diagnostic_picker_path_label, diagnostic_severity_label,
         discover_project_languages_with_backend, file_picker_current_directory,
@@ -11858,9 +11783,8 @@ mod tests {
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     enum CapturedUpdate {
-        ShowFilePicker,
-        ShowBufferPicker,
         DiagnosticPicker(Vec<Severity>),
+        LspInitialized(helix_lsp::LanguageServerId),
         StatusChanged(String, crate::types::Severity),
     }
 
@@ -11887,53 +11811,6 @@ mod tests {
             target_exists: None,
             ignored: None,
         }
-    }
-
-    #[test]
-    fn bridged_event_gpui_context_route_only_includes_side_effect_variants() {
-        let doc_id = helix_view::DocumentId::default();
-        assert!(bridged_event_needs_gpui_context(
-            &event_bridge::BridgedEvent::DiagnosticsChanged { doc_id }
-        ));
-        assert!(bridged_event_needs_gpui_context(
-            &event_bridge::BridgedEvent::DiagnosticsPickerRequested { workspace: true }
-        ));
-        assert!(bridged_event_needs_gpui_context(
-            &event_bridge::BridgedEvent::FilePickerRequested
-        ));
-        assert!(bridged_event_needs_gpui_context(
-            &event_bridge::BridgedEvent::BufferPickerRequested
-        ));
-        assert!(bridged_event_needs_gpui_context(
-            &event_bridge::BridgedEvent::LanguageServerInitialized {
-                server_id: helix_lsp::LanguageServerId::default(),
-            }
-        ));
-        assert!(bridged_event_needs_gpui_context(
-            &event_bridge::BridgedEvent::LanguageServerExited {
-                server_id: helix_lsp::LanguageServerId::default(),
-            }
-        ));
-
-        assert!(!bridged_event_needs_gpui_context(
-            &event_bridge::BridgedEvent::DocumentChanged {
-                doc_id,
-                change_summary: nucleotide_events::v2::document::ChangeType::Insert,
-                line_change: nucleotide_events::v2::document::DocumentLineChange {
-                    old_lines: 0..1,
-                    new_lines: 0..1,
-                },
-            }
-        ));
-        assert!(!bridged_event_needs_gpui_context(
-            &event_bridge::BridgedEvent::DocumentOpened { doc_id }
-        ));
-        assert!(!bridged_event_needs_gpui_context(
-            &event_bridge::BridgedEvent::DocumentClosed {
-                doc_id,
-                was_modified: false,
-            }
-        ));
     }
 
     #[test]
@@ -13056,7 +12933,7 @@ mod tests {
                 lsp_state: None,
                 project_directory: None,
                 workspace_backend: local_workspace_backend(),
-                event_bridge_rx: None,
+                helix_event_rx: None,
                 config: gui_config,
                 helix_config_arc: helix_config,
                 project_lsp_system: None,
@@ -13091,16 +12968,6 @@ mod tests {
 
         cx.update(|cx| {
             cx.subscribe(app, move |_app, update: &crate::Update, _cx| match update {
-                crate::Update::ShowFilePicker => {
-                    updates_for_subscription
-                        .borrow_mut()
-                        .push(CapturedUpdate::ShowFilePicker);
-                }
-                crate::Update::ShowBufferPicker => {
-                    updates_for_subscription
-                        .borrow_mut()
-                        .push(CapturedUpdate::ShowBufferPicker);
-                }
                 crate::Update::Picker(crate::picker::Picker::Native { items, .. }) => {
                     let severities = items
                         .iter()
@@ -13114,6 +12981,13 @@ mod tests {
                     updates_for_subscription
                         .borrow_mut()
                         .push(CapturedUpdate::DiagnosticPicker(severities));
+                }
+                crate::Update::Lsp(nucleotide_events::LspEvent::ServerInitialized {
+                    server_id,
+                }) => {
+                    updates_for_subscription
+                        .borrow_mut()
+                        .push(CapturedUpdate::LspInitialized(*server_id));
                 }
                 crate::Update::EditorStatus(crate::types::EditorStatus {
                     status: message,
@@ -13210,24 +13084,25 @@ mod tests {
     }
 
     #[test]
-    fn coalesce_bridged_events_drops_duplicate_diagnostics() {
+    fn coalesce_helix_events_drops_duplicate_diagnostics() {
         let doc_id = helix_view::DocumentId::default();
+        let server_id = helix_lsp::LanguageServerId::default();
         let events = vec![
-            event_bridge::BridgedEvent::DiagnosticsChanged { doc_id },
-            event_bridge::BridgedEvent::FilePickerRequested,
-            event_bridge::BridgedEvent::DiagnosticsChanged { doc_id },
+            event_bridge::HelixEvent::DiagnosticsChanged { doc_id },
+            event_bridge::HelixEvent::LanguageServerInitialized { server_id },
+            event_bridge::HelixEvent::DiagnosticsChanged { doc_id },
         ];
 
-        let coalesced = coalesce_bridged_events(events);
+        let coalesced = coalesce_helix_events(events);
 
         assert_eq!(coalesced.len(), 2);
         assert!(matches!(
             coalesced[0],
-            event_bridge::BridgedEvent::FilePickerRequested
+            event_bridge::HelixEvent::LanguageServerInitialized { .. }
         ));
         assert!(matches!(
             coalesced[1],
-            event_bridge::BridgedEvent::DiagnosticsChanged { .. }
+            event_bridge::HelixEvent::DiagnosticsChanged { .. }
         ));
     }
 
@@ -13251,38 +13126,19 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn maintenance_drains_picker_bridged_events(cx: &mut gpui::TestAppContext) {
+    async fn maintenance_handles_lsp_initialized_through_application_event(
+        cx: &mut gpui::TestAppContext,
+    ) {
         let app = new_test_application(cx);
         let updates = subscribe_application_updates(cx, &app);
-        let (tx, rx) = mpsc::unbounded_channel();
-
-        app.update(cx, |app, _cx| {
-            app.event_bridge_rx = Some(rx);
-        });
-
-        tx.send(event_bridge::BridgedEvent::FilePickerRequested)
-            .expect("file picker event");
-        tx.send(event_bridge::BridgedEvent::BufferPickerRequested)
-            .expect("buffer picker event");
-
-        run_event_driven_maintenance(cx, &app);
-
-        let updates = updates.borrow();
-        assert!(updates.contains(&CapturedUpdate::ShowFilePicker));
-        assert!(updates.contains(&CapturedUpdate::ShowBufferPicker));
-    }
-
-    #[gpui::test]
-    async fn maintenance_registers_lsp_initialized_in_lsp_state(cx: &mut gpui::TestAppContext) {
-        let app = new_test_application(cx);
         let (tx, rx) = mpsc::unbounded_channel();
         let server_id = helix_lsp::LanguageServerId::default();
 
         app.update(cx, |app, _cx| {
-            app.event_bridge_rx = Some(rx);
+            app.helix_event_rx = Some(rx);
         });
 
-        tx.send(event_bridge::BridgedEvent::LanguageServerInitialized { server_id })
+        tx.send(event_bridge::HelixEvent::LanguageServerInitialized { server_id })
             .expect("language server initialized event");
 
         run_event_driven_maintenance(cx, &app);
@@ -13294,6 +13150,11 @@ mod tests {
             let server = state.servers.get(&server_id).expect("registered server");
             assert_eq!(server.status, nucleotide_lsp::ServerStatus::Running);
         });
+        assert!(
+            updates
+                .borrow()
+                .contains(&CapturedUpdate::LspInitialized(server_id))
+        );
     }
 
     #[gpui::test]

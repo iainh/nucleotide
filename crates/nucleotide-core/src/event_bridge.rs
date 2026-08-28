@@ -1,16 +1,16 @@
-// ABOUTME: Event bridge between Helix's event system and GPUI's Update events
-// ABOUTME: Provides a channel-based system to forward Helix events to GPUI UI updates
+// ABOUTME: Private transport for Helix events consumed by the application
+// ABOUTME: Forwards Helix hooks through a channel without defining application events
 
 use helix_core::{Assoc, ChangeSet, Operation, Rope};
 use helix_view::DocumentId;
-use nucleotide_events::v2::document::{ChangeType, DocumentLineChange};
+use nucleotide_events::document::{ChangeType, DocumentLineChange};
 use nucleotide_logging::{debug, info, instrument, trace, warn};
 use std::sync::OnceLock;
 use tokio::sync::mpsc;
 
-/// Events that can be bridged from Helix to GPUI
+/// Internal events forwarded from Helix hooks to the application.
 #[derive(Debug, Clone)]
-pub enum BridgedEvent {
+pub enum HelixEvent {
     DocumentChanged {
         doc_id: DocumentId,
         change_summary: ChangeType,
@@ -32,22 +32,14 @@ pub enum BridgedEvent {
     LanguageServerExited {
         server_id: helix_lsp::LanguageServerId,
     },
-    /// Request to show diagnostics picker (mapped from Helix keybindings)
-    DiagnosticsPickerRequested {
-        workspace: bool,
-    },
-    /// Request to show file picker (mapped from Helix keybindings)
-    FilePickerRequested,
-    /// Request to show buffer picker (mapped from Helix keybindings)
-    BufferPickerRequested,
 }
 
 /// Global event bridge sender - initialized once when application starts
-static EVENT_BRIDGE_SENDER: OnceLock<mpsc::UnboundedSender<BridgedEvent>> = OnceLock::new();
+static EVENT_BRIDGE_SENDER: OnceLock<mpsc::UnboundedSender<HelixEvent>> = OnceLock::new();
 
 /// Initialize the event bridge system with a sender
 #[instrument(skip(sender))]
-pub fn initialize_bridge(sender: mpsc::UnboundedSender<BridgedEvent>) {
+pub fn initialize_bridge(sender: mpsc::UnboundedSender<HelixEvent>) {
     if EVENT_BRIDGE_SENDER.set(sender).is_err() {
         warn!("Event bridge was already initialized");
     } else {
@@ -55,27 +47,17 @@ pub fn initialize_bridge(sender: mpsc::UnboundedSender<BridgedEvent>) {
     }
 }
 
-/// Send a bridged event - used by Helix event hooks
-pub fn send_bridged_event(event: BridgedEvent) {
+/// Send a Helix event from an event hook.
+pub fn send_helix_event(event: HelixEvent) {
     if let Some(sender) = EVENT_BRIDGE_SENDER.get() {
-        debug!(event.type = ?std::mem::discriminant(&event), "Sending bridged event");
-        // DIAG: Special-case diagnostics/picker for clearer tracing
-        match &event {
-            BridgedEvent::DiagnosticsChanged { doc_id } => {
-                trace!(doc_id = ?doc_id, "DIAG: Bridging DiagnosticsChanged to GPUI");
-            }
-            BridgedEvent::DiagnosticsPickerRequested { workspace } => {
-                debug!(
-                    workspace = *workspace,
-                    "DIAG: Bridging DiagnosticsPickerRequested to GPUI"
-                );
-            }
-            _ => {}
+        debug!(event.type = ?std::mem::discriminant(&event), "Sending Helix event");
+        if let HelixEvent::DiagnosticsChanged { doc_id } = &event {
+            trace!(doc_id = ?doc_id, "DIAG: Bridging DiagnosticsChanged to GPUI");
         }
         if let Err(e) = sender.send(event) {
             warn!(
                 error = %e,
-                "Failed to send bridged event"
+                "Failed to send Helix event"
             );
         }
     } else {
@@ -155,7 +137,6 @@ fn document_line_change(
 #[instrument]
 pub fn register_event_hooks() {
     use helix_event::register_hook;
-    use helix_term::events::PostCommand;
     use helix_view::doc_mut;
     use helix_view::events::{
         DiagnosticsDidChange, DocumentDidChange, DocumentDidClose, DocumentDidOpen,
@@ -181,7 +162,7 @@ pub fn register_event_hooks() {
             change_type = ?change_summary,
             "Document changed event"
         );
-        send_bridged_event(BridgedEvent::DocumentChanged {
+        send_helix_event(HelixEvent::DocumentChanged {
             doc_id,
             change_summary,
             line_change,
@@ -213,7 +194,7 @@ pub fn register_event_hooks() {
             doc_id = ?doc_id,
             "DIAG: Helix DiagnosticsDidChange observed"
         );
-        send_bridged_event(BridgedEvent::DiagnosticsChanged { doc_id });
+        send_helix_event(HelixEvent::DiagnosticsChanged { doc_id });
         Ok(())
     });
 
@@ -224,7 +205,7 @@ pub fn register_event_hooks() {
             doc_id = ?doc_id,
             "Document opened event"
         );
-        send_bridged_event(BridgedEvent::DocumentOpened { doc_id });
+        send_helix_event(HelixEvent::DocumentOpened { doc_id });
         Ok(())
     });
 
@@ -237,7 +218,7 @@ pub fn register_event_hooks() {
             was_modified = was_modified,
             "Document closed event"
         );
-        send_bridged_event(BridgedEvent::DocumentClosed {
+        send_helix_event(HelixEvent::DocumentClosed {
             doc_id,
             was_modified,
         });
@@ -251,7 +232,7 @@ pub fn register_event_hooks() {
             server_id = ?server_id,
             "Language server initialized event"
         );
-        send_bridged_event(BridgedEvent::LanguageServerInitialized { server_id });
+        send_helix_event(HelixEvent::LanguageServerInitialized { server_id });
         Ok(())
     });
 
@@ -262,59 +243,18 @@ pub fn register_event_hooks() {
             server_id = ?server_id,
             "Language server exited event"
         );
-        send_bridged_event(BridgedEvent::LanguageServerExited { server_id });
-        Ok(())
-    });
-
-    // Map Helix diagnostics picker commands to bridged events
-    register_hook!(move |event: &mut PostCommand<'_, '_>| {
-        use helix_term::keymap::MappableCommand;
-        // Log every command name to aid integration/mapping
-        if let MappableCommand::Static { name, .. } = event.command {
-            debug!(command = *name, "PostCommand observed");
-        }
-
-        let show = match event.command {
-            MappableCommand::Static { name, .. } => match *name {
-                "diagnostics_picker" => Some(false),
-                "workspace_diagnostics_picker" => Some(true),
-                _ => None,
-            },
-            _ => None,
-        };
-        if let Some(workspace) = show {
-            debug!(
-                workspace = workspace,
-                "DIAG: Diagnostics picker command observed"
-            );
-            send_bridged_event(BridgedEvent::DiagnosticsPickerRequested { workspace });
-        }
-
-        // Map file/buffer picker commands
-        if let MappableCommand::Static { name, .. } = event.command {
-            match *name {
-                "file_picker" => {
-                    debug!("DIAG: File picker command observed");
-                    send_bridged_event(BridgedEvent::FilePickerRequested);
-                }
-                "buffer_picker" => {
-                    debug!("DIAG: Buffer picker command observed");
-                    send_bridged_event(BridgedEvent::BufferPickerRequested);
-                }
-                _ => {}
-            }
-        }
+        send_helix_event(HelixEvent::LanguageServerExited { server_id });
         Ok(())
     });
 
     info!("Successfully registered all Helix event hooks for event bridge");
 }
 
-/// Receiver type for bridged events
-pub type BridgedEventReceiver = mpsc::UnboundedReceiver<BridgedEvent>;
+/// Receiver type for Helix events.
+pub type HelixEventReceiver = mpsc::UnboundedReceiver<HelixEvent>;
 
-/// Create a channel pair for bridged events
-pub fn create_bridge_channel() -> (mpsc::UnboundedSender<BridgedEvent>, BridgedEventReceiver) {
+/// Create a channel pair for Helix events.
+pub fn create_bridge_channel() -> (mpsc::UnboundedSender<HelixEvent>, HelixEventReceiver) {
     mpsc::unbounded_channel()
 }
 

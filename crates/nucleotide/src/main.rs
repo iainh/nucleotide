@@ -1462,14 +1462,12 @@ fn gui_main(
                                             workspace.set_project_directory(dir.clone(), cx);
                                             info!(directory = ?dir, "Updated project directory");
                                             // Emit OpenDirectory event to update file tree
-                                            cx.emit(Update::Event(
-                                                nucleotide::types::AppEvent::Workspace(
-                                                    nucleotide::types::WorkspaceEvent::FileSelected {
-                                                        path: dir.clone(),
-                                                        source:
-                                                            nucleotide_events::v2::workspace::SelectionSource::Command,
-                                                    },
-                                                ),
+                                            cx.emit(Update::Workspace(
+                                                nucleotide::types::WorkspaceEvent::FileSelected {
+                                                    path: dir.clone(),
+                                                    source:
+                                                        nucleotide_events::workspace::SelectionSource::Command,
+                                                },
                                             ));
                                         });
                                     });
@@ -1495,14 +1493,12 @@ fn gui_main(
                                     // Send folder selections through the workspace event path.
                                     cx.update(|cx| {
                                         workspace_clone.update(cx, |_workspace, cx| {
-                                            cx.emit(Update::Event(
-                                                nucleotide::types::AppEvent::Workspace(
-                                                    nucleotide::types::WorkspaceEvent::FileSelected {
-                                                        path: path.clone(),
-                                                        source:
-                                                            nucleotide_events::v2::workspace::SelectionSource::Command,
-                                                    },
-                                                ),
+                                            cx.emit(Update::Workspace(
+                                                nucleotide::types::WorkspaceEvent::FileSelected {
+                                                    path: path.clone(),
+                                                    source:
+                                                        nucleotide_events::workspace::SelectionSource::Command,
+                                                },
                                             ));
                                         });
                                     });
