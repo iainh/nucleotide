@@ -2,19 +2,16 @@
 // ABOUTME: Manages language servers, diagnostics, and code intelligence features
 
 pub mod document_manager;
+pub mod error;
 pub mod helix_lsp_bridge;
 pub mod lsp_completion_trigger;
 pub mod lsp_state;
 pub mod lsp_status;
-pub mod project_lsp_manager;
-
-#[cfg(test)]
-pub mod integration_tests;
 
 pub use document_manager::{DocumentManager, DocumentManagerMut};
+pub use error::ProjectLspError;
 pub use helix_lsp_bridge::{
-    EditorLspIntegration, EnvironmentProvider, HelixLspBridge, LspLaunchProxy,
-    LspLaunchProxyProvider,
+    EnvironmentProvider, HelixLspBridge, LspLaunchProxy, LspLaunchProxyProvider,
 };
 // Note: lsp_completion_trigger module only contains functions, no LspCompletionTrigger type
 pub use lsp_state::{
@@ -22,7 +19,3 @@ pub use lsp_state::{
     ProjectEnvironmentSource, ProjectLspSessionStatus, ProjectServerLifecycle, ServerStatus,
 };
 pub use lsp_status::LspStatus;
-pub use project_lsp_manager::{
-    ManagedServer, ProjectDetector, ProjectInfo, ProjectLspConfig, ProjectLspError,
-    ProjectLspManager, ServerLifecycleManager,
-};

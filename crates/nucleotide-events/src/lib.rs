@@ -14,8 +14,6 @@ pub mod workspace;
 
 // Essential re-exports for event system functionality
 pub use lsp_events::{
-    ActiveServerInfo, LspEvent, PlannedProjectLanguage, ProjectDetectionResult,
-    ProjectHealthStatus, ProjectLanguageEvidence, ProjectLspCommand, ProjectLspCommandError,
-    ProjectLspEvent, ProjectLspPlan, ProjectSessionResult, ProjectStatus, ProjectType,
-    ServerHealthStatus, ServerStartResult, ServerStartupResult,
+    LspEvent, PlannedProjectLanguage, ProjectLanguageEvidence, ProjectLspCommand,
+    ProjectLspCommandError, ProjectLspPlan, ProjectSessionResult, ProjectType, ServerStartResult,
 };
