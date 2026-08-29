@@ -7272,74 +7272,71 @@ impl Workspace {
         let project_status = nucleotide_project::project_status_service(cx);
         project_status.set_project_root(Some(project_root.clone()));
 
-        if let Some(sender) = self.core.read(cx).get_project_lsp_command_sender() {
-            let span = tracing::info_span!(
-                "workspace_project_lsp_detect",
-                workspace_root = %project_root.display()
+        let sender = self.core.read(cx).get_project_lsp_command_sender();
+        let span = tracing::info_span!(
+            "workspace_project_lsp_detect",
+            workspace_root = %project_root.display()
+        );
+        let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+        let command = nucleotide_events::ProjectLspCommand::OpenProjectSession {
+            workspace_root: project_root.clone(),
+            response: response_tx,
+            span,
+        };
+
+        if let Err(error) = sender.send(command) {
+            error!(
+                error = %error,
+                project_root = %project_root.display(),
+                "Failed to send OpenProjectSession command"
             );
-            let (response_tx, response_rx) = tokio::sync::oneshot::channel();
-            let command = nucleotide_events::ProjectLspCommand::OpenProjectSession {
-                workspace_root: project_root.clone(),
-                response: response_tx,
-                span,
-            };
+        } else {
+            let project_root_display = project_root.display().to_string();
+            let project_status = project_status.clone();
+            cx.spawn(async move |this, cx| {
+                let timeout = tokio::time::Duration::from_secs(30);
+                match tokio::time::timeout(timeout, response_rx).await {
+                    Ok(Ok(Ok(result))) => {
+                        project_status.set_project_type(result.plan.project_type.clone());
 
-            if let Err(error) = sender.send(command) {
-                error!(
-                    error = %error,
-                    project_root = %project_root.display(),
-                    "Failed to send OpenProjectSession command"
-                );
-            } else {
-                let project_root_display = project_root.display().to_string();
-                let project_status = project_status.clone();
-                cx.spawn(async move |this, cx| {
-                    let timeout = tokio::time::Duration::from_secs(30);
-                    match tokio::time::timeout(timeout, response_rx).await {
-                        Ok(Ok(Ok(result))) => {
-                            project_status.set_project_type(result.plan.project_type.clone());
+                        info!(
+                            project_root = %project_root_display,
+                            generation = result.generation,
+                            project_type = ?result.plan.project_type,
+                            language_servers = ?result.language_servers,
+                            servers_started = result.servers_started.len(),
+                            "Project detection and LSP startup completed"
+                        );
 
-                            info!(
-                                project_root = %project_root_display,
-                                generation = result.generation,
-                                project_type = ?result.plan.project_type,
-                                language_servers = ?result.language_servers,
-                                servers_started = result.servers_started.len(),
-                                "Project detection and LSP startup completed"
-                            );
-
-                            if let Some(this) = this.upgrade() {
-                                this.update(cx, |workspace, cx| {
-                                    workspace.refresh_project_indicators(cx);
-                                });
-                            }
-                        }
-                        Ok(Ok(Err(error))) => {
-                            error!(
-                                error = %error,
-                                project_root = %project_root_display,
-                                "Project detection and LSP startup failed"
-                            );
-                        }
-                        Ok(Err(_)) => {
-                            warn!(
-                                project_root = %project_root_display,
-                                "OpenProjectSession response channel was dropped"
-                            );
-                        }
-                        Err(_) => {
-                            error!(
-                                project_root = %project_root_display,
-                                timeout_seconds = 30,
-                                "Project detection and LSP startup timed out"
-                            );
+                        if let Some(this) = this.upgrade() {
+                            this.update(cx, |workspace, cx| {
+                                workspace.refresh_project_indicators(cx);
+                            });
                         }
                     }
-                })
-                .detach();
-            }
-        } else {
-            warn!("No LSP command sender available - skipping project LSP coordination");
+                    Ok(Ok(Err(error))) => {
+                        error!(
+                            error = %error,
+                            project_root = %project_root_display,
+                            "Project detection and LSP startup failed"
+                        );
+                    }
+                    Ok(Err(_)) => {
+                        warn!(
+                            project_root = %project_root_display,
+                            "OpenProjectSession response channel was dropped"
+                        );
+                    }
+                    Err(_) => {
+                        error!(
+                            project_root = %project_root_display,
+                            timeout_seconds = 30,
+                            "Project detection and LSP startup timed out"
+                        );
+                    }
+                }
+            })
+            .detach();
         }
 
         // Update UI indicators and refresh project status display
@@ -15712,7 +15709,7 @@ impl Render for Workspace {
                     .as_ref()
                     .and_then(|state| lsp_restart_plan(state.read(cx)));
                 let command_sender = self.core.read(cx).get_project_lsp_command_sender();
-                let restart_enabled = restart_plan.is_some() && command_sender.is_some();
+                let restart_enabled = restart_plan.is_some();
                 let restart_plan_for_click = restart_plan.clone();
                 let sender_for_click = command_sender.clone();
                 let restart_button = Button::new("lsp-restart-all", "Restart")
@@ -15724,9 +15721,7 @@ impl Render for Workspace {
                     .focus_handle(self.statusbar_lsp_restart_focus.clone())
                     .disabled(!restart_enabled)
                     .on_click(cx.listener(move |this, _event, _window, cx| {
-                        let (Some(plan), Some(sender)) =
-                            (&restart_plan_for_click, &sender_for_click)
-                        else {
+                        let Some(plan) = &restart_plan_for_click else {
                             return;
                         };
 
@@ -15739,7 +15734,7 @@ impl Render for Workspace {
                                 workspace_root = %plan.workspace_root.display()
                             ),
                         };
-                        if let Err(error) = sender.send(command) {
+                        if let Err(error) = sender_for_click.send(command) {
                             error!(%error, "Failed to request project language server restart");
                             this.push_editor_status_notification(
                                 EditorStatus {
