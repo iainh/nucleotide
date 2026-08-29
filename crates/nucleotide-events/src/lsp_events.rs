@@ -6,6 +6,8 @@ use std::path::PathBuf;
 use tokio::sync::oneshot;
 use tracing::Span;
 
+use crate::ProjectType;
+
 /// LSP events (already in nucleotide-lsp crate)
 #[derive(Debug, Clone)]
 pub enum LspEvent {
@@ -28,21 +30,6 @@ pub enum LspEvent {
 
     /// Completion available
     CompletionAvailable { doc_id: DocumentId },
-}
-
-/// Type of project detected
-#[derive(Debug, Clone, PartialEq)]
-pub enum ProjectType {
-    Rust,
-    TypeScript,
-    JavaScript,
-    Python,
-    Go,
-    C,
-    Cpp,
-    Mixed(Vec<ProjectType>),
-    Other(String), // Custom project type with name
-    Unknown,
 }
 
 /// Why a language should be started for a project before a document opens.

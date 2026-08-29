@@ -3,6 +3,7 @@
 
 // Core event system modules
 pub mod lsp_events;
+pub mod project;
 
 // Bounded context event modules
 pub mod completion;
@@ -15,5 +16,6 @@ pub mod workspace;
 // Essential re-exports for event system functionality
 pub use lsp_events::{
     LspEvent, PlannedProjectLanguage, ProjectLanguageEvidence, ProjectLspCommand,
-    ProjectLspCommandError, ProjectLspPlan, ProjectSessionResult, ProjectType, ServerStartResult,
+    ProjectLspCommandError, ProjectLspPlan, ProjectSessionResult, ServerStartResult,
 };
+pub use project::ProjectType;
