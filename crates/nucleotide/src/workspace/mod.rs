@@ -376,39 +376,27 @@ fn abbreviated_vcs_ref(head: &str) -> String {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct LspRestartTarget {
-    server_id: helix_lsp::LanguageServerId,
-    server_name: String,
-    language_id: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
 struct LspRestartPlan {
     workspace_root: PathBuf,
-    targets: Vec<LspRestartTarget>,
+    server_count: usize,
 }
 
 fn lsp_restart_plan(state: &nucleotide_lsp::LspState) -> Option<LspRestartPlan> {
     let session = state.project_session.as_ref()?;
-    let targets = session
+    let server_count = session
         .servers
         .iter()
-        .filter_map(|planned| {
-            let server = state
+        .filter(|planned| {
+            state
                 .servers
                 .values()
-                .find(|server| server.name == planned.server_name)?;
-            Some(LspRestartTarget {
-                server_id: server.id,
-                server_name: planned.server_name.clone(),
-                language_id: planned.language_id.clone(),
-            })
+                .any(|server| server.name == planned.server_name)
         })
-        .collect::<Vec<_>>();
+        .count();
 
-    (!targets.is_empty()).then(|| LspRestartPlan {
+    (server_count > 0).then(|| LspRestartPlan {
         workspace_root: session.workspace_root.clone(),
-        targets,
+        server_count,
     })
 }
 
@@ -7295,115 +7283,6 @@ impl Workspace {
 
             // Refresh UI indicators
             self.refresh_project_indicators(cx);
-        }
-    }
-
-    /// Restart LSP servers with new workspace root when project directory changes
-    #[instrument(skip(self, cx))]
-    #[allow(dead_code)]
-    fn restart_lsp_servers_for_workspace_change(
-        &mut self,
-        old_project_root: Option<std::path::PathBuf>,
-        new_project_root: &std::path::Path,
-        cx: &mut Context<Self>,
-    ) {
-        info!(
-            new_project_root = %new_project_root.display(),
-            "🔄 LSP_RESTART: Starting LSP server restart for workspace change"
-        );
-
-        // Get the LSP command sender from the Application
-        let lsp_command_sender = self.core.read(cx).get_project_lsp_command_sender();
-
-        if let Some(sender) = lsp_command_sender {
-            info!(
-                old_project_root = ?old_project_root.as_ref().map(|p| p.display()),
-                new_project_root = %new_project_root.display(),
-                current_working_dir = ?std::env::current_dir().ok(),
-                "🔄 LSP_RESTART: Sending RestartServersForWorkspaceChange command to Application"
-            );
-
-            // Create the command with a span for tracing
-            let span = tracing::info_span!("workspace_lsp_restart",
-                old_workspace = ?old_project_root.as_ref().map(|p| p.display()),
-                new_workspace = %new_project_root.display()
-            );
-
-            // Create response channel
-            let (response_tx, response_rx) = tokio::sync::oneshot::channel();
-
-            // Send the command using the event-driven pattern
-            let command = nucleotide_events::ProjectLspCommand::RestartServersForWorkspaceChange {
-                old_workspace_root: old_project_root,
-                new_workspace_root: new_project_root.to_path_buf(),
-                response: response_tx,
-                span,
-            };
-
-            if let Err(e) = sender.send(command) {
-                error!(
-                    error = %e,
-                    new_project_root = %new_project_root.display(),
-                    "Failed to send RestartServersForWorkspaceChange command"
-                );
-                return;
-            }
-
-            // Spawn a task to handle the response asynchronously using the runtime handle
-            let new_project_root_display = new_project_root.display().to_string();
-            self.handle.spawn(async move {
-                // Add a timeout to prevent indefinite waiting
-                let timeout_duration = tokio::time::Duration::from_secs(30); // 30 second timeout for LSP operations
-                match tokio::time::timeout(timeout_duration, response_rx).await {
-                    Ok(response_result) => match response_result {
-                        Ok(Ok(results)) => {
-                            info!(
-                                restart_count = results.len(),
-                                new_project_root = %new_project_root_display,
-                                "LSP server restart completed successfully"
-                            );
-                            for result in results {
-                                info!(
-                                    server_name = %result.server_name,
-                                    language_id = %result.language_id,
-                                    server_id = ?result.server_id,
-                                    "Server restarted successfully"
-                                );
-                            }
-                        }
-                        Ok(Err(e)) => {
-                            error!(
-                                error = %e,
-                                new_project_root = %new_project_root_display,
-                                "LSP server restart failed"
-                            );
-                        }
-                        Err(_) => {
-                            warn!(
-                                new_project_root = %new_project_root_display,
-                                "RestartServersForWorkspaceChange response channel was dropped"
-                            );
-                        }
-                    }
-                    Err(_timeout) => {
-                        error!(
-                            new_project_root = %new_project_root_display,
-                            timeout_seconds = 30,
-                            "LSP server restart timed out - this may indicate environment capture is taking too long"
-                        );
-                    }
-                }
-            });
-
-            info!(
-                new_project_root = %new_project_root.display(),
-                "RestartServersForWorkspaceChange command sent successfully"
-            );
-        } else {
-            warn!(
-                new_project_root = %new_project_root.display(),
-                "No LSP command sender available - cannot restart LSP servers"
-            );
         }
     }
 
@@ -15895,31 +15774,33 @@ impl Render for Workspace {
                             return;
                         };
 
-                        for target in &plan.targets {
-                            let (response, _response_rx) = tokio::sync::oneshot::channel();
-                            let _ = sender.send(nucleotide_events::ProjectLspCommand::StopServer {
-                                server_id: target.server_id,
-                                response,
-                                span: tracing::info_span!(
-                                    "statusbar_lsp_restart_stop",
-                                    server_name = %target.server_name
-                                ),
-                            });
-                            let _ = sender.send(
-                                nucleotide_events::ProjectLspCommand::LspServerStartupRequested {
-                                    workspace_root: plan.workspace_root.clone(),
-                                    server_name: target.server_name.clone(),
-                                    language_id: target.language_id.clone(),
+                        let (response, response_rx) = tokio::sync::oneshot::channel();
+                        let command = nucleotide_events::ProjectLspCommand::RestartProjectSession {
+                            workspace_root: plan.workspace_root.clone(),
+                            response,
+                            span: tracing::info_span!(
+                                "statusbar_lsp_restart",
+                                workspace_root = %plan.workspace_root.display()
+                            ),
+                        };
+                        if let Err(error) = sender.send(command) {
+                            error!(%error, "Failed to request project language server restart");
+                            this.push_editor_status_notification(
+                                EditorStatus {
+                                    status: "Failed to request language server restart".to_string(),
+                                    severity: Severity::Error,
                                 },
+                                cx,
                             );
+                            return;
                         }
 
                         this.push_editor_status_notification(
                             EditorStatus {
                                 status: format!(
                                     "Restarting {} language server{}",
-                                    plan.targets.len(),
-                                    if plan.targets.len() == 1 { "" } else { "s" }
+                                    plan.server_count,
+                                    if plan.server_count == 1 { "" } else { "s" }
                                 ),
                                 severity: Severity::Info,
                             },
@@ -15927,6 +15808,52 @@ impl Render for Workspace {
                         );
                         this.lsp_menu_open = false;
                         cx.notify();
+
+                        cx.spawn(async move |this, cx| {
+                            let outcome = tokio::time::timeout(
+                                tokio::time::Duration::from_secs(30),
+                                response_rx,
+                            )
+                            .await;
+                            if let Some(this) = this.upgrade() {
+                                this.update(cx, |workspace, cx| {
+                                    let (status, severity) = match outcome {
+                                        Ok(Ok(Ok(result))) => (
+                                            format!(
+                                                "Restarted {} language server{}",
+                                                result.servers_started.len(),
+                                                if result.servers_started.len() == 1 {
+                                                    ""
+                                                } else {
+                                                    "s"
+                                                }
+                                            ),
+                                            Severity::Info,
+                                        ),
+                                        Ok(Ok(Err(error))) => {
+                                            error!(%error, "Project language server restart failed");
+                                            (
+                                                "Language server restart failed".to_string(),
+                                                Severity::Error,
+                                            )
+                                        }
+                                        Ok(Err(_)) => (
+                                            "Language server restart was interrupted".to_string(),
+                                            Severity::Error,
+                                        ),
+                                        Err(_) => (
+                                            "Language server restart timed out".to_string(),
+                                            Severity::Error,
+                                        ),
+                                    };
+                                    workspace.push_editor_status_notification(
+                                        EditorStatus { status, severity },
+                                        cx,
+                                    );
+                                });
+                            }
+                        })
+                        .detach();
                     }));
 
                 let log_directory = crate::lsp_traffic_logger::log_directory();
@@ -17944,7 +17871,7 @@ mod tests {
     }
 
     #[test]
-    fn lsp_restart_plan_uses_project_root_and_only_running_planned_servers() {
+    fn lsp_restart_plan_uses_project_root_and_counts_only_running_planned_servers() {
         let rust_server_id: helix_lsp::LanguageServerId = KeyData::from_ffi(5).into();
         let mut state = nucleotide_lsp::LspState::new();
         state.begin_project_session(9, PathBuf::from("/workspace"));
@@ -17957,14 +17884,7 @@ mod tests {
         let plan = lsp_restart_plan(&state).expect("restart plan");
 
         assert_eq!(plan.workspace_root, PathBuf::from("/workspace"));
-        assert_eq!(
-            plan.targets,
-            vec![LspRestartTarget {
-                server_id: rust_server_id,
-                server_name: "rust-analyzer".to_string(),
-                language_id: "rust".to_string(),
-            }]
-        );
+        assert_eq!(plan.server_count, 1);
     }
 
     #[test]
@@ -19974,26 +19894,6 @@ mod tests {
 
         assert!(workspace.is_project_change(&old_root, &new_root));
         assert!(!workspace.is_project_change(&Some(new_root.clone()), &new_root));
-    }
-
-    #[test]
-    #[allow(clippy::assertions_on_constants)]
-    fn test_lsp_manager_config_creation() {
-        // Test that ProjectLspConfig can be created with defaults
-        let config = nucleotide_lsp::ProjectLspConfig::default();
-
-        // Basic validation of config fields
-        assert!(
-            config.enable_proactive_startup,
-            "Proactive startup should be enabled by default"
-        );
-        assert!(
-            config.health_check_interval.as_secs() > 0,
-            "Health check interval should be positive"
-        );
-
-        // This test mainly ensures the integration compiles
-        assert!(true, "ProjectLspConfig should be creatable with defaults");
     }
 
     #[test]
