@@ -155,61 +155,38 @@ where
         .unwrap_or(RemoteDocumentReloadDecision::Hidden { doc_id })
 }
 
-fn project_status_types_from_lsp_project_type(
-    project_type: &nucleotide_events::ProjectType,
-) -> Vec<nucleotide_project::ProjectType> {
-    match project_type {
-        nucleotide_events::ProjectType::Rust => {
-            vec![project_status_type("rust", "Rust", "R", 0.95)]
-        }
-        nucleotide_events::ProjectType::TypeScript => {
-            vec![project_status_type("typescript", "TypeScript", "TS", 0.9)]
-        }
-        nucleotide_events::ProjectType::JavaScript => {
-            vec![project_status_type("javascript", "JavaScript", "JS", 0.85)]
-        }
-        nucleotide_events::ProjectType::Python => {
-            vec![project_status_type("python", "Python", "Py", 0.9)]
-        }
-        nucleotide_events::ProjectType::Go => vec![project_status_type("go", "Go", "Go", 0.95)],
-        nucleotide_events::ProjectType::C => vec![project_status_type("c", "C", "C", 0.85)],
-        nucleotide_events::ProjectType::Cpp => {
-            vec![project_status_type("cpp", "C++", "C++", 0.85)]
-        }
-        nucleotide_events::ProjectType::Mixed(project_types) => {
-            let mut detected_types = Vec::new();
-            let mut seen_names = HashSet::new();
-            for nested_type in project_types {
-                for detected_type in project_status_types_from_lsp_project_type(nested_type) {
-                    if seen_names.insert(detected_type.name.clone()) {
-                        detected_types.push(detected_type);
-                    }
-                }
-            }
-            detected_types
-        }
-        nucleotide_events::ProjectType::Other(name) => vec![project_status_type(
-            &name.to_ascii_lowercase().replace(' ', "_"),
-            name,
-            "",
-            0.5,
-        )],
-        nucleotide_events::ProjectType::Unknown => Vec::new(),
-    }
-}
+pub fn project_lsp_status_from_state(
+    lsp_state: &nucleotide_lsp::LspState,
+) -> nucleotide_project::ProjectLspStatus {
+    let running_servers = lsp_state
+        .servers
+        .values()
+        .filter(|server| server.status == nucleotide_lsp::ServerStatus::Running)
+        .count();
+    let failed_servers = lsp_state
+        .servers
+        .values()
+        .filter(|server| matches!(server.status, nucleotide_lsp::ServerStatus::Failed(_)))
+        .count();
+    let initializing_servers = lsp_state
+        .servers
+        .values()
+        .filter(|server| {
+            matches!(
+                server.status,
+                nucleotide_lsp::ServerStatus::Initializing | nucleotide_lsp::ServerStatus::Starting
+            )
+        })
+        .count();
+    let diagnostic_count = lsp_state.diagnostics.values().map(Vec::len).sum::<usize>();
 
-fn project_status_type(
-    name: &str,
-    display_name: &str,
-    icon: &str,
-    confidence: f32,
-) -> nucleotide_project::ProjectType {
-    nucleotide_project::ProjectType {
-        name: name.to_string(),
-        display_name: display_name.to_string(),
-        icon: icon.to_string(),
-        color: None,
-        confidence,
+    nucleotide_project::ProjectLspStatus {
+        total_servers: lsp_state.servers.len(),
+        running_servers,
+        failed_servers,
+        initializing_servers,
+        has_diagnostics: diagnostic_count > 0,
+        diagnostic_count,
     }
 }
 
@@ -7235,15 +7212,9 @@ impl Workspace {
 
         let workspace_backend = self.core.read(cx).workspace_backend.clone();
 
-        // Update project status service. Remote project type detection is
-        // handled through the workspace backend to avoid host filesystem
-        // probes on WSL/SSH paths.
+        // Classification runs through the active workspace backend later.
         let project_status = nucleotide_project::project_status_service(cx);
-        if matches!(workspace_backend.identity(), WorkspaceIdentity::Local) {
-            project_status.set_project_root(Some(dir.clone()));
-        } else {
-            project_status.set_project_root_without_detection(Some(dir.clone()));
-        }
+        project_status.set_project_root(Some(dir.clone()));
 
         // Start VCS monitoring for the new directory
         let vcs_handle = cx.global::<VcsServiceHandle>().service().clone();
@@ -7295,22 +7266,11 @@ impl Workspace {
     ) {
         info!(project_root = %project_root.display(), "Starting project detection and LSP coordination");
 
-        // Force refresh project detection in the project status service
+        // The application session classifies both local and remote roots through
+        // the same marker-name classifier.
         info!(project_root = %project_root.display(), "Updating project status service with project root");
         let project_status = nucleotide_project::project_status_service(cx);
-        let workspace_backend = self.core.read(cx).workspace_backend.clone();
-        if matches!(workspace_backend.identity(), WorkspaceIdentity::Local) {
-            project_status.set_project_root(Some(project_root.clone()));
-            info!("Project status service updated, refreshing project detection");
-            project_status.refresh_project_detection();
-            info!("Project detection refresh completed");
-        } else {
-            project_status.set_project_root_without_detection(Some(project_root.clone()));
-            info!(
-                backend = ?workspace_backend.identity(),
-                "Project status detection deferred to workspace backend"
-            );
-        }
+        project_status.set_project_root(Some(project_root.clone()));
 
         if let Some(sender) = self.core.read(cx).get_project_lsp_command_sender() {
             let span = tracing::info_span!(
@@ -7337,10 +7297,7 @@ impl Workspace {
                     let timeout = tokio::time::Duration::from_secs(30);
                     match tokio::time::timeout(timeout, response_rx).await {
                         Ok(Ok(Ok(result))) => {
-                            let detected_types = project_status_types_from_lsp_project_type(
-                                &result.plan.project_type,
-                            );
-                            project_status.set_detected_project_types(detected_types);
+                            project_status.set_project_type(result.plan.project_type.clone());
 
                             info!(
                                 project_root = %project_root_display,
@@ -7438,9 +7395,8 @@ impl Workspace {
             // Get project status service first
             let project_status = nucleotide_project::project_status_service(cx);
 
-            // Clone the LSP state and update project status outside the closure
-            let lsp_state_clone = lsp_state_entity.read(cx).clone();
-            project_status.update_lsp_state(&lsp_state_clone);
+            let lsp_status = project_lsp_status_from_state(lsp_state_entity.read(cx));
+            project_status.update_lsp_status(lsp_status);
 
             debug!("Updated project status from LSP state");
         }
@@ -17473,20 +17429,25 @@ mod tests {
     }
 
     #[test]
-    fn project_status_types_from_lsp_project_type_dedupes_mixed_types() {
-        let detected_types = project_status_types_from_lsp_project_type(
-            &nucleotide_events::ProjectType::Mixed(vec![
-                nucleotide_events::ProjectType::Rust,
-                nucleotide_events::ProjectType::Rust,
-                nucleotide_events::ProjectType::TypeScript,
-            ]),
+    fn project_lsp_status_snapshot_maps_application_state() {
+        let running_id: helix_lsp::LanguageServerId = KeyData::from_ffi(71).into();
+        let failed_id: helix_lsp::LanguageServerId = KeyData::from_ffi(72).into();
+        let mut state = nucleotide_lsp::LspState::new();
+        state.register_server(running_id, "rust-analyzer".to_string(), None);
+        state.update_server_status(running_id, nucleotide_lsp::ServerStatus::Running);
+        state.register_server(failed_id, "pylsp".to_string(), None);
+        state.update_server_status(
+            failed_id,
+            nucleotide_lsp::ServerStatus::Failed("exited".to_string()),
         );
 
-        let names = detected_types
-            .iter()
-            .map(|project_type| project_type.name.as_str())
-            .collect::<Vec<_>>();
-        assert_eq!(names, vec!["rust", "typescript"]);
+        let status = project_lsp_status_from_state(&state);
+
+        assert_eq!(status.total_servers, 2);
+        assert_eq!(status.running_servers, 1);
+        assert_eq!(status.failed_servers, 1);
+        assert_eq!(status.initializing_servers, 0);
+        assert!(!status.has_diagnostics);
     }
 
     #[test]
@@ -19871,17 +19832,6 @@ mod tests {
             .fragments(text.slice(..))
             .map(|fragment| fragment.into_owned())
             .collect()
-    }
-
-    #[test]
-    #[allow(clippy::assertions_on_constants)]
-    fn test_project_detection_basic() {
-        // Test that project detection function exists and doesn't panic with valid path
-
-        //         let _detected_types = crate::project_indicator::detect_project_types_for_path(&current_dir);
-
-        // The main goal is ensuring the integration compiles and doesn't panic
-        assert!(true, "Project detection should complete without panicking");
     }
 
     #[test]

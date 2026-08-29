@@ -6,21 +6,20 @@ use gpui::{
     Context, Entity, EventEmitter, IntoElement, ParentElement, Render, Styled, Window, div,
 };
 use nucleotide_ui::ThemedContext;
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-/// Information about detected project types
+use crate::ProjectType;
+
+/// UI presentation derived from the canonical project type.
 #[derive(Clone, Debug, PartialEq)]
-pub struct ProjectType {
-    pub name: String,
+struct ProjectTypePresentation {
     pub display_name: String,
     pub icon: String,
     pub color: Option<gpui::Hsla>,
-    pub confidence: f32, // 0.0-1.0, higher means more confident
 }
 
 /// Status of project-wide LSP servers
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProjectLspStatus {
     pub total_servers: usize,
     pub running_servers: usize,
@@ -34,7 +33,7 @@ pub struct ProjectLspStatus {
 #[derive(Clone)]
 pub struct ProjectInfo {
     pub root_path: Option<PathBuf>,
-    pub detected_types: Vec<ProjectType>,
+    pub project_type: ProjectType,
     pub lsp_status: ProjectLspStatus,
     pub last_updated: std::time::Instant,
 }
@@ -43,7 +42,7 @@ impl ProjectInfo {
     pub fn new(root_path: Option<PathBuf>) -> Self {
         Self {
             root_path,
-            detected_types: Vec::new(),
+            project_type: ProjectType::Unknown,
             lsp_status: ProjectLspStatus {
                 total_servers: 0,
                 running_servers: 0,
@@ -56,79 +55,50 @@ impl ProjectInfo {
         }
     }
 
-    /// Detect project types based on files in the project directory
-    pub fn detect_project_types(&mut self) {
-        self.detected_types.clear();
+    pub fn set_project_type(&mut self, project_type: ProjectType) {
+        self.project_type = project_type;
+        self.last_updated = std::time::Instant::now();
+    }
 
-        if let Some(ref root) = self.root_path {
-            nucleotide_logging::debug!(
-                project_root = %root.display(),
-                "Starting project type detection in directory"
-            );
-            self.detected_types = detect_project_types_for_path(root);
-            nucleotide_logging::info!(
-                project_root = %root.display(),
-                detected_count = self.detected_types.len(),
-                detected_types = ?self.detected_types.iter().map(|t| &t.name).collect::<Vec<_>>(),
-                "Project type detection completed"
-            );
-        } else {
-            nucleotide_logging::warn!("No project root set for project type detection");
+    pub fn update_lsp_status(&mut self, lsp_status: ProjectLspStatus) {
+        self.lsp_status = lsp_status;
+        self.last_updated = std::time::Instant::now();
+    }
+
+    fn primary_project_type(&self) -> Option<ProjectTypePresentation> {
+        project_type_presentation(&self.project_type)
+    }
+}
+
+fn project_type_presentation(project_type: &ProjectType) -> Option<ProjectTypePresentation> {
+    let (display_name, icon) = match project_type {
+        ProjectType::Rust => ("Rust", "R"),
+        ProjectType::TypeScript => ("TypeScript", "TS"),
+        ProjectType::JavaScript => ("JavaScript", "JS"),
+        ProjectType::Python => ("Python", "Py"),
+        ProjectType::Go => ("Go", "Go"),
+        ProjectType::Java => ("Java", "Java"),
+        ProjectType::CSharp => ("C#", "C#"),
+        ProjectType::C => ("C", "C"),
+        ProjectType::Cpp => ("C++", "C++"),
+        ProjectType::Mixed(project_types) => {
+            return project_types.iter().find_map(project_type_presentation);
         }
+        ProjectType::Other(name) => {
+            return Some(ProjectTypePresentation {
+                display_name: name.clone(),
+                icon: String::new(),
+                color: None,
+            });
+        }
+        ProjectType::Unknown => return None,
+    };
 
-        self.last_updated = std::time::Instant::now();
-    }
-
-    /// Update LSP status from LSP state
-    pub fn update_lsp_status(&mut self, lsp_state: &nucleotide_lsp::LspState) {
-        let running = lsp_state
-            .servers
-            .values()
-            .filter(|s| s.status == nucleotide_lsp::ServerStatus::Running)
-            .count();
-        let failed = lsp_state
-            .servers
-            .values()
-            .filter(|s| matches!(s.status, nucleotide_lsp::ServerStatus::Failed(_)))
-            .count();
-        let initializing = lsp_state
-            .servers
-            .values()
-            .filter(|s| {
-                matches!(
-                    s.status,
-                    nucleotide_lsp::ServerStatus::Initializing
-                        | nucleotide_lsp::ServerStatus::Starting
-                )
-            })
-            .count();
-
-        let diagnostic_count: usize = lsp_state
-            .diagnostics
-            .values()
-            .map(|diags| diags.len())
-            .sum();
-
-        self.lsp_status = ProjectLspStatus {
-            total_servers: lsp_state.servers.len(),
-            running_servers: running,
-            failed_servers: failed,
-            initializing_servers: initializing,
-            has_diagnostics: diagnostic_count > 0,
-            diagnostic_count,
-        };
-
-        self.last_updated = std::time::Instant::now();
-    }
-
-    /// Get the primary project type (highest confidence)
-    pub fn primary_project_type(&self) -> Option<&ProjectType> {
-        self.detected_types.iter().max_by(|a, b| {
-            a.confidence
-                .partial_cmp(&b.confidence)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
-    }
+    Some(ProjectTypePresentation {
+        display_name: display_name.to_string(),
+        icon: icon.to_string(),
+        color: None,
+    })
 }
 
 impl EventEmitter<()> for ProjectInfo {}
@@ -376,223 +346,28 @@ impl Render for ProjectLspStatusIndicator {
     }
 }
 
-/// Detect project types based on files and structure in the given path
-pub fn detect_project_types_for_path(path: &Path) -> Vec<ProjectType> {
-    nucleotide_logging::debug!(
-        path = %path.display(),
-        "Starting project type detection in path"
-    );
-
-    if !path.exists() {
-        nucleotide_logging::warn!(
-            path = %path.display(),
-            "Project path does not exist"
-        );
-        return Vec::new();
-    }
-
-    if !path.is_dir() {
-        nucleotide_logging::warn!(
-            path = %path.display(),
-            "Project path is not a directory"
-        );
-        return Vec::new();
-    }
-
-    let mut detected_types: Vec<ProjectType> = Vec::new();
-    let mut confidence_map: HashMap<String, f32> = HashMap::new();
-
-    // Define project type detection rules
-    let detection_rules = [
-        // Rust
-        (
-            "Cargo.toml",
-            ProjectType {
-                name: "rust".to_string(),
-                display_name: "Rust".to_string(),
-                icon: "🦀".to_string(),
-                color: None,
-                confidence: 0.95,
-            },
-        ),
-        // Node.js/JavaScript
-        (
-            "package.json",
-            ProjectType {
-                name: "nodejs".to_string(),
-                display_name: "Node.js".to_string(),
-                icon: "📦".to_string(),
-                color: None,
-                confidence: 0.9,
-            },
-        ),
-        // Python
-        (
-            "requirements.txt",
-            ProjectType {
-                name: "python".to_string(),
-                display_name: "Python".to_string(),
-                icon: "🐍".to_string(),
-                color: None,
-                confidence: 0.8,
-            },
-        ),
-        (
-            "pyproject.toml",
-            ProjectType {
-                name: "python".to_string(),
-                display_name: "Python".to_string(),
-                icon: "🐍".to_string(),
-                color: None,
-                confidence: 0.9,
-            },
-        ),
-        // Go
-        (
-            "go.mod",
-            ProjectType {
-                name: "go".to_string(),
-                display_name: "Go".to_string(),
-                icon: "🐹".to_string(),
-                color: None,
-                confidence: 0.95,
-            },
-        ),
-        // Java
-        (
-            "pom.xml",
-            ProjectType {
-                name: "java".to_string(),
-                display_name: "Java (Maven)".to_string(),
-                icon: "☕".to_string(),
-                color: None,
-                confidence: 0.9,
-            },
-        ),
-        (
-            "build.gradle",
-            ProjectType {
-                name: "java".to_string(),
-                display_name: "Java (Gradle)".to_string(),
-                icon: "☕".to_string(),
-                color: None,
-                confidence: 0.9,
-            },
-        ),
-    ];
-
-    // Check for project files
-    nucleotide_logging::debug!(
-        path = %path.display(),
-        rules_count = detection_rules.len(),
-        "Checking project detection rules"
-    );
-
-    for (file_name, project_type) in &detection_rules {
-        let file_path = path.join(file_name);
-        nucleotide_logging::debug!(
-            file_path = %file_path.display(),
-            file_name = file_name,
-            project_type = %project_type.name,
-            "Checking for project marker file"
-        );
-
-        if file_path.exists() {
-            nucleotide_logging::info!(
-                file_path = %file_path.display(),
-                project_type = %project_type.name,
-                confidence = project_type.confidence,
-                "Found project marker file"
-            );
-
-            let current_confidence = confidence_map
-                .get(&project_type.name)
-                .map(|&c: &f32| c.max(project_type.confidence))
-                .unwrap_or(project_type.confidence);
-            confidence_map.insert(project_type.name.clone(), current_confidence);
-
-            // Update or add project type with highest confidence
-            if let Some(existing) = detected_types
-                .iter_mut()
-                .find(|t| t.name == project_type.name)
-            {
-                if project_type.confidence > existing.confidence {
-                    nucleotide_logging::debug!(
-                        project_type = %project_type.name,
-                        old_confidence = existing.confidence,
-                        new_confidence = project_type.confidence,
-                        "Updating project type with higher confidence"
-                    );
-                    *existing = project_type.clone();
-                }
-            } else {
-                nucleotide_logging::debug!(
-                    project_type = %project_type.name,
-                    confidence = project_type.confidence,
-                    "Adding new project type"
-                );
-                detected_types.push(project_type.clone());
-            }
-        }
-    }
-
-    // Sort by confidence (highest first)
-    detected_types.sort_by(|a, b| {
-        b.confidence
-            .partial_cmp(&a.confidence)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-
-    nucleotide_logging::info!(
-        path = %path.display(),
-        detected_count = detected_types.len(),
-        detected_types = ?detected_types.iter().map(|t| format!("{}({})", t.name, t.confidence)).collect::<Vec<_>>(),
-        "Project type detection completed"
-    );
-
-    detected_types
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs::File;
-    use std::io::Write;
-    use tempfile::TempDir;
 
     #[test]
-    fn test_rust_project_detection() {
-        let temp_dir = TempDir::new().unwrap();
-        let cargo_toml = temp_dir.path().join("Cargo.toml");
-        File::create(&cargo_toml)
-            .unwrap()
-            .write_all(b"[package]\nname = \"test\"")
-            .unwrap();
-
-        let detected = detect_project_types_for_path(temp_dir.path());
-        assert_eq!(detected.len(), 1);
-        assert_eq!(detected[0].name, "rust");
-        assert_eq!(detected[0].display_name, "Rust");
+    fn project_type_presentation_maps_canonical_type() {
+        let presentation = project_type_presentation(&ProjectType::Rust).unwrap();
+        assert_eq!(presentation.display_name, "Rust");
     }
 
     #[test]
-    fn test_multiple_project_types() {
-        let temp_dir = TempDir::new().unwrap();
-        File::create(temp_dir.path().join("package.json")).unwrap();
-        File::create(temp_dir.path().join("requirements.txt")).unwrap();
-
-        let detected = detect_project_types_for_path(temp_dir.path());
-        assert_eq!(detected.len(), 2);
-
-        // Should be sorted by confidence (Node.js > Python in this case)
-        assert_eq!(detected[0].name, "nodejs");
-        assert_eq!(detected[1].name, "python");
+    fn mixed_project_presentation_uses_canonical_priority() {
+        let presentation = project_type_presentation(&ProjectType::Mixed(vec![
+            ProjectType::Python,
+            ProjectType::Rust,
+        ]))
+        .unwrap();
+        assert_eq!(presentation.display_name, "Python");
     }
 
     #[test]
-    fn test_no_project_files() {
-        let temp_dir = TempDir::new().unwrap();
-        let detected = detect_project_types_for_path(temp_dir.path());
-        assert_eq!(detected.len(), 0);
+    fn unknown_project_has_no_presentation() {
+        assert!(project_type_presentation(&ProjectType::Unknown).is_none());
     }
 }

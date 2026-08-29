@@ -9610,15 +9610,6 @@ fn completion_symbol_key(text: &str) -> Option<String> {
     (!key.is_empty()).then_some(key)
 }
 
-#[cfg(test)]
-fn detect_project_lsp_metadata(
-    workspace_root: &Path,
-) -> (nucleotide_events::ProjectType, Vec<String>) {
-    let project_type = detect_project_type_from_workspace(workspace_root);
-    let language_servers = language_servers_for_project_type(&project_type);
-    (project_type, language_servers)
-}
-
 fn configured_project_servers(
     editor: &Editor,
     plan: &nucleotide_events::ProjectLspPlan,
@@ -9747,59 +9738,29 @@ async fn detect_project_lsp_plan_with_backend(
     workspace_root: &Path,
     workspace_backend: WorkspaceBackendHandle,
 ) -> nucleotide_events::ProjectLspPlan {
-    let names = if matches!(workspace_backend.identity(), WorkspaceIdentity::Local) {
-        std::fs::read_dir(workspace_root)
-            .ok()
-            .into_iter()
-            .flatten()
-            .filter_map(Result::ok)
-            .filter_map(|entry| entry.file_name().into_string().ok())
-            .take(512)
-            .collect::<Vec<_>>()
-    } else {
-        workspace_backend
-            .list_dir(workspace_root)
-            .await
-            .map(|listing| {
-                listing
-                    .entries
-                    .into_iter()
-                    .take(512)
-                    .map(|entry| entry.name)
-                    .collect()
-            })
-            .unwrap_or_default()
-    };
+    let names = workspace_backend
+        .list_dir(workspace_root)
+        .await
+        .map(project_marker_names)
+        .unwrap_or_default();
 
     project_lsp_plan_from_names(&names)
 }
 
-fn project_lsp_plan_from_names(names: &[String]) -> nucleotide_events::ProjectLspPlan {
-    use nucleotide_events::{
-        PlannedProjectLanguage, ProjectLanguageEvidence, ProjectLspPlan, ProjectType,
-    };
-
-    let has = |name: &str| names.iter().any(|candidate| candidate == name);
-    let project_type = if has("Cargo.toml") {
-        ProjectType::Rust
-    } else if has("tsconfig.json") {
-        ProjectType::TypeScript
-    } else if has("package.json") {
-        ProjectType::JavaScript
-    } else if ["pyproject.toml", "requirements.txt", "setup.py", "Pipfile"]
+fn project_marker_names(listing: DirectoryListing) -> Vec<String> {
+    listing
+        .entries
         .into_iter()
-        .any(has)
-    {
-        ProjectType::Python
-    } else if has("go.mod") || has("go.sum") {
-        ProjectType::Go
-    } else if has("CMakeLists.txt") {
-        ProjectType::Cpp
-    } else if has("Makefile") {
-        ProjectType::C
-    } else {
-        ProjectType::Unknown
-    };
+        .filter(|entry| matches!(entry.stat.kind, FileKind::File | FileKind::Symlink))
+        .take(512)
+        .map(|entry| entry.name)
+        .collect()
+}
+
+fn project_lsp_plan_from_names(names: &[String]) -> nucleotide_events::ProjectLspPlan {
+    use nucleotide_events::{PlannedProjectLanguage, ProjectLanguageEvidence, ProjectLspPlan};
+
+    let project_type = nucleotide_project::classify_project_markers(names);
 
     let mut languages = Vec::new();
     let mut add_language = |language_id: &str, evidence: ProjectLanguageEvidence| {
@@ -9814,31 +9775,8 @@ fn project_lsp_plan_from_names(names: &[String]) -> nucleotide_events::ProjectLs
         }
     };
 
-    match &project_type {
-        ProjectType::Rust => add_language("rust", ProjectLanguageEvidence::EagerProject),
-        ProjectType::TypeScript => {
-            add_language("typescript", ProjectLanguageEvidence::EagerProject)
-        }
-        ProjectType::JavaScript => {
-            add_language("javascript", ProjectLanguageEvidence::EagerProject)
-        }
-        ProjectType::Python => add_language("python", ProjectLanguageEvidence::EagerProject),
-        ProjectType::Go => add_language("go", ProjectLanguageEvidence::EagerProject),
-        ProjectType::C => add_language("c", ProjectLanguageEvidence::EagerProject),
-        ProjectType::Cpp => add_language("cpp", ProjectLanguageEvidence::EagerProject),
-        ProjectType::Mixed(types) => {
-            for project_type in types {
-                add_language(
-                    &primary_language_id_for_project_type(project_type),
-                    ProjectLanguageEvidence::EagerProject,
-                );
-            }
-        }
-        ProjectType::Other(name) => add_language(
-            &name.to_ascii_lowercase().replace(' ', "_"),
-            ProjectLanguageEvidence::EagerProject,
-        ),
-        ProjectType::Unknown => {}
+    for language_id in nucleotide_project::project_language_ids(&project_type) {
+        add_language(&language_id, ProjectLanguageEvidence::EagerProject);
     }
 
     if names.iter().any(|name| name.ends_with(".toml")) {
@@ -9934,142 +9872,6 @@ fn discovered_language_id_for_name(name: &str) -> Option<&'static str> {
     }
 }
 
-#[cfg(test)]
-fn detect_project_type_from_workspace(workspace_root: &Path) -> nucleotide_events::ProjectType {
-    use nucleotide_events::ProjectType;
-
-    if workspace_root.join("Cargo.toml").exists() {
-        return ProjectType::Rust;
-    }
-
-    if workspace_root.join("tsconfig.json").exists() {
-        return ProjectType::TypeScript;
-    }
-
-    if workspace_root.join("package.json").exists() {
-        return ProjectType::JavaScript;
-    }
-
-    if workspace_root.join("pyproject.toml").exists()
-        || workspace_root.join("requirements.txt").exists()
-        || workspace_root.join("setup.py").exists()
-        || workspace_root.join("Pipfile").exists()
-    {
-        return ProjectType::Python;
-    }
-
-    if workspace_root.join("go.mod").exists() || workspace_root.join("go.sum").exists() {
-        return ProjectType::Go;
-    }
-
-    if workspace_root.join("CMakeLists.txt").exists() {
-        return ProjectType::Cpp;
-    }
-
-    if workspace_root.join("Makefile").exists() {
-        return ProjectType::C;
-    }
-
-    ProjectType::Unknown
-}
-
-#[cfg(test)]
-async fn detect_project_type_from_workspace_backend(
-    workspace_root: &Path,
-    workspace_backend: &WorkspaceBackendHandle,
-) -> nucleotide_events::ProjectType {
-    let Ok(listing) = workspace_backend.list_dir(workspace_root).await else {
-        return nucleotide_events::ProjectType::Unknown;
-    };
-
-    detect_project_type_from_workspace_listing(&listing)
-}
-
-#[cfg(test)]
-fn detect_project_type_from_workspace_listing(
-    listing: &DirectoryListing,
-) -> nucleotide_events::ProjectType {
-    use nucleotide_events::ProjectType;
-
-    let has_marker = |markers: &[&str]| {
-        listing.entries.iter().any(|entry| {
-            markers.contains(&entry.name.as_str())
-                && matches!(entry.stat.kind, FileKind::File | FileKind::Symlink)
-        })
-    };
-
-    if has_marker(&["Cargo.toml"]) {
-        return ProjectType::Rust;
-    }
-
-    if has_marker(&["tsconfig.json"]) {
-        return ProjectType::TypeScript;
-    }
-
-    if has_marker(&["package.json"]) {
-        return ProjectType::JavaScript;
-    }
-
-    if has_marker(&["pyproject.toml", "requirements.txt", "setup.py", "Pipfile"]) {
-        return ProjectType::Python;
-    }
-
-    if has_marker(&["go.mod", "go.sum"]) {
-        return ProjectType::Go;
-    }
-
-    if has_marker(&["CMakeLists.txt"]) {
-        return ProjectType::Cpp;
-    }
-
-    if has_marker(&["Makefile"]) {
-        return ProjectType::C;
-    }
-
-    ProjectType::Unknown
-}
-
-#[cfg(test)]
-fn language_servers_for_project_type(project_type: &nucleotide_events::ProjectType) -> Vec<String> {
-    use nucleotide_events::ProjectType;
-
-    match project_type {
-        ProjectType::Rust => vec!["rust-analyzer".to_string()],
-        ProjectType::TypeScript | ProjectType::JavaScript => {
-            vec!["typescript-language-server".to_string()]
-        }
-        ProjectType::Python => vec!["pylsp".to_string()],
-        ProjectType::Go => vec!["gopls".to_string()],
-        ProjectType::C | ProjectType::Cpp => vec!["clangd".to_string()],
-        ProjectType::Mixed(project_types) => {
-            let mut servers = project_types
-                .iter()
-                .flat_map(language_servers_for_project_type)
-                .collect::<Vec<_>>();
-            servers.sort();
-            servers.dedup();
-            servers
-        }
-        ProjectType::Other(_) | ProjectType::Unknown => Vec::new(),
-    }
-}
-
-fn primary_language_id_for_project_type(project_type: &nucleotide_events::ProjectType) -> String {
-    use nucleotide_events::ProjectType;
-
-    match project_type {
-        ProjectType::Rust => "rust".to_string(),
-        ProjectType::TypeScript => "typescript".to_string(),
-        ProjectType::JavaScript => "javascript".to_string(),
-        ProjectType::Python => "python".to_string(),
-        ProjectType::Go => "go".to_string(),
-        ProjectType::C => "c".to_string(),
-        ProjectType::Cpp => "cpp".to_string(),
-        ProjectType::Mixed(_) | ProjectType::Unknown => "unknown".to_string(),
-        ProjectType::Other(name) => name.to_ascii_lowercase().replace(' ', "_"),
-    }
-}
-
 // Tests moved to tests/integration_test.rs to avoid GPUI proc macro compilation issues
 // The issue: When compiling with --test, GPUI proc macros cause stack overflow
 // when processing certain patterns in our codebase
@@ -10085,20 +9887,20 @@ mod tests {
         RemoteLspLaunchProxyProvider, WorkspaceDocumentSaveHandler, buffer_text_matches_path,
         buffer_text_matches_string, buffer_word_completion_items, char_index_for_line_col,
         coalesce_helix_events, completion_context_for_trigger, configured_project_servers,
-        current_dir_is_executable_dir, dedupe_completion_items, detect_project_lsp_metadata,
-        detect_project_type_from_workspace_backend, detect_project_type_from_workspace_listing,
-        diagnostic_picker_path_label, diagnostic_severity_label,
-        discover_project_languages_with_backend, file_picker_current_directory,
-        home_requires_login_shell_capture, hydrate_workspace_document_from_read,
-        local_path_completion_context, lsp_completion_insert_text,
-        lsp_completion_insert_text_format, lsp_completion_items_from_response,
-        lsp_completion_items_from_response_for_server, lsp_completion_resolve_supported,
-        lsp_completion_response_is_incomplete, lsp_diagnostic_document_uri,
-        lsp_location_from_location, lsp_location_path_from_url, lsp_symbol_picker,
-        native_open_file_with_backend, native_symbol_item_from_lsp, navigation_display_path,
-        open_loading_workspace_document, open_workspace_document, path_completion_items,
-        path_completion_items_from_listing, probe_available_language_server_commands,
-        project_lsp_plan_from_names, read_workspace_document, remote_lsp_project_root_for_document,
+        current_dir_is_executable_dir, dedupe_completion_items,
+        detect_project_lsp_plan_with_backend, diagnostic_picker_path_label,
+        diagnostic_severity_label, discover_project_languages_with_backend,
+        file_picker_current_directory, home_requires_login_shell_capture,
+        hydrate_workspace_document_from_read, local_path_completion_context,
+        lsp_completion_insert_text, lsp_completion_insert_text_format,
+        lsp_completion_items_from_response, lsp_completion_items_from_response_for_server,
+        lsp_completion_resolve_supported, lsp_completion_response_is_incomplete,
+        lsp_diagnostic_document_uri, lsp_location_from_location, lsp_location_path_from_url,
+        lsp_symbol_picker, native_open_file_with_backend, native_symbol_item_from_lsp,
+        navigation_display_path, open_loading_workspace_document, open_workspace_document,
+        path_completion_items, path_completion_items_from_listing,
+        probe_available_language_server_commands, project_lsp_plan_from_names,
+        project_marker_names, read_workspace_document, remote_lsp_project_root_for_document,
         remote_lsp_root_uri_matches_document_workspace, remote_native_file_uri,
         retain_servers_with_available_commands, should_stat_picker_root_with_backend,
         should_use_native_save_for_settings_file, should_use_workspace_syntax_symbol_fallback,
@@ -12081,36 +11883,6 @@ mod tests {
     }
 
     #[test]
-    fn project_lsp_metadata_detects_builtin_project_types() {
-        let rust_project = tempdir().unwrap();
-        fs::write(
-            rust_project.path().join("Cargo.toml"),
-            "[package]\nname = \"demo\"\n",
-        )
-        .unwrap();
-        let (project_type, language_servers) = detect_project_lsp_metadata(rust_project.path());
-        assert!(matches!(project_type, nucleotide_events::ProjectType::Rust));
-        assert_eq!(language_servers, vec!["rust-analyzer"]);
-
-        let ts_project = tempdir().unwrap();
-        fs::write(ts_project.path().join("tsconfig.json"), "{}").unwrap();
-        let (project_type, language_servers) = detect_project_lsp_metadata(ts_project.path());
-        assert!(matches!(
-            project_type,
-            nucleotide_events::ProjectType::TypeScript
-        ));
-        assert_eq!(language_servers, vec!["typescript-language-server"]);
-
-        let unknown_project = tempdir().unwrap();
-        let (project_type, language_servers) = detect_project_lsp_metadata(unknown_project.path());
-        assert!(matches!(
-            project_type,
-            nucleotide_events::ProjectType::Unknown
-        ));
-        assert!(language_servers.is_empty());
-    }
-
-    #[test]
     fn project_lsp_plan_starts_manifest_languages_without_open_documents() {
         use nucleotide_events::ProjectLanguageEvidence;
 
@@ -12133,6 +11905,27 @@ mod tests {
         assert_eq!(
             plan.languages[1].evidence,
             ProjectLanguageEvidence::EagerManifest
+        );
+    }
+
+    #[test]
+    fn project_lsp_plan_starts_each_language_in_a_mixed_project() {
+        let plan =
+            project_lsp_plan_from_names(&["Cargo.toml".to_string(), "pyproject.toml".to_string()]);
+
+        assert_eq!(
+            plan.project_type,
+            nucleotide_events::ProjectType::Mixed(vec![
+                nucleotide_events::ProjectType::Rust,
+                nucleotide_events::ProjectType::Python,
+            ])
+        );
+        assert_eq!(
+            plan.languages
+                .iter()
+                .map(|language| language.language_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["rust", "python", "toml"]
         );
     }
 
@@ -12386,24 +12179,27 @@ language-servers = ["taplo"]
     }
 
     #[test]
-    fn project_lsp_metadata_backend_detector_uses_workspace_listing() {
-        let rust_project = tempdir().unwrap();
-        fs::write(
-            rust_project.path().join("Cargo.toml"),
-            "[package]\nname = \"demo\"\n",
-        )
-        .unwrap();
+    fn project_lsp_plan_uses_workspace_backend_listing() {
+        let project = tempdir().unwrap();
+        fs::write(project.path().join("Cargo.toml"), "[workspace]\n").unwrap();
+        fs::write(project.path().join("pyproject.toml"), "[project]\n").unwrap();
 
-        let backend = local_workspace_backend();
-        let project_type = TEST_RUNTIME.block_on(async {
-            detect_project_type_from_workspace_backend(rust_project.path(), &backend).await
-        });
+        let plan = TEST_RUNTIME.block_on(detect_project_lsp_plan_with_backend(
+            project.path(),
+            local_workspace_backend(),
+        ));
 
-        assert!(matches!(project_type, nucleotide_events::ProjectType::Rust));
+        assert_eq!(
+            plan.project_type,
+            nucleotide_events::ProjectType::Mixed(vec![
+                nucleotide_events::ProjectType::Rust,
+                nucleotide_events::ProjectType::Python,
+            ])
+        );
     }
 
     #[test]
-    fn project_lsp_metadata_listing_detector_prefers_highest_priority_file_marker() {
+    fn project_marker_names_ignore_directory_names() {
         let root = PathBuf::from("/remote/project");
         let listing = DirectoryListing {
             path: root.clone(),
@@ -12418,9 +12214,16 @@ language-servers = ["taplo"]
             ],
         };
 
-        let project_type = detect_project_type_from_workspace_listing(&listing);
+        let names = project_marker_names(listing);
+        let plan = project_lsp_plan_from_names(&names);
 
-        assert!(matches!(project_type, nucleotide_events::ProjectType::Rust));
+        assert_eq!(
+            plan.project_type,
+            nucleotide_events::ProjectType::Mixed(vec![
+                nucleotide_events::ProjectType::Rust,
+                nucleotide_events::ProjectType::JavaScript,
+            ])
+        );
     }
 
     #[test]

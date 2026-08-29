@@ -3,6 +3,7 @@
 
 use std::path::Path;
 
+pub mod classification;
 pub mod error;
 pub mod manifest;
 pub mod project_indicator;
@@ -11,10 +12,11 @@ pub mod providers;
 pub mod registry;
 pub mod utils;
 
+pub use classification::{ProjectType, classify_project_markers, project_language_ids};
 pub use error::{ProjectError, Result};
 pub use manifest::{ManifestDelegate, ManifestName, ManifestProvider, ManifestQuery};
 pub use project_indicator::{
-    ProjectInfo, ProjectLspStatus, ProjectLspStatusIndicator, ProjectType, ProjectTypeBadge,
+    ProjectInfo, ProjectLspStatus, ProjectLspStatusIndicator, ProjectTypeBadge,
 };
 pub use project_status_service::{
     ProjectStatusHandle, ProjectStatusService, initialize_project_status_service,
@@ -32,17 +34,6 @@ pub async fn detect_project_root(
 ) -> Result<Option<std::path::PathBuf>> {
     let providers = ManifestProviders::global();
     providers.detect_project_root(file_path, max_depth).await
-}
-
-/// Convenience function to detect project type
-///
-/// Returns the manifest name (e.g., "Cargo.toml", "package.json") if a project is detected
-pub async fn detect_project_type(
-    file_path: &Path,
-    max_depth: Option<usize>,
-) -> Result<Option<ManifestName>> {
-    let providers = ManifestProviders::global();
-    providers.detect_project_type(file_path, max_depth).await
 }
 
 /// Register all built-in providers
@@ -96,10 +87,5 @@ mod tests {
         let detected_root = detect_project_root(&main_rs, None).await.unwrap();
         assert!(detected_root.is_some());
         assert_eq!(detected_root.unwrap(), rust_project);
-
-        // Test project type detection
-        let project_type = detect_project_type(&main_rs, None).await.unwrap();
-        assert!(project_type.is_some());
-        assert_eq!(project_type.unwrap().as_str(), "Cargo.toml");
     }
 }

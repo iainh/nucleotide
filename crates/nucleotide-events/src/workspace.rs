@@ -1,7 +1,9 @@
 // ABOUTME: Workspace domain events for file operations and project management
 // ABOUTME: Immutable fact-based events following Domain-Driven Design principles
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+
+use crate::ProjectType;
 
 /// Workspace domain events - covers file operations, project management, and layout operations
 /// Following event sourcing principles: all events are immutable facts about what has happened
@@ -172,20 +174,6 @@ pub enum PanelType {
     Extensions,
 }
 
-/// Project type identification
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProjectType {
-    Rust,
-    TypeScript,
-    JavaScript,
-    Python,
-    Go,
-    Java,
-    CSharp,
-    Cpp,
-    Unknown,
-}
-
 /// Tab identifier
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TabId(pub usize);
@@ -238,47 +226,6 @@ impl TabId {
 impl From<usize> for TabId {
     fn from(id: usize) -> Self {
         Self(id)
-    }
-}
-
-impl ProjectType {
-    pub fn from_path(path: &Path) -> Self {
-        // Check for common project files
-        if path.join("Cargo.toml").exists() {
-            return Self::Rust;
-        }
-
-        if path.join("package.json").exists() {
-            if path.join("tsconfig.json").exists() {
-                return Self::TypeScript;
-            }
-            return Self::JavaScript;
-        }
-
-        if path.join("pyproject.toml").exists()
-            || path.join("requirements.txt").exists()
-            || path.join("setup.py").exists()
-        {
-            return Self::Python;
-        }
-
-        if path.join("go.mod").exists() {
-            return Self::Go;
-        }
-
-        if path.join("pom.xml").exists() || path.join("build.gradle").exists() {
-            return Self::Java;
-        }
-
-        if path.join("*.csproj").exists() || path.join("*.sln").exists() {
-            return Self::CSharp;
-        }
-
-        if path.join("CMakeLists.txt").exists() || path.join("Makefile").exists() {
-            return Self::Cpp;
-        }
-
-        Self::Unknown
     }
 }
 

@@ -1250,7 +1250,11 @@ fn gui_main(
                                         cx.try_global::<nucleotide_project::ProjectStatusHandle>()
                                     {
                                         let project_status = project_status.clone();
-                                        project_status.update_lsp_state(state);
+                                        project_status.update_lsp_status(
+                                            nucleotide::workspace::project_lsp_status_from_state(
+                                                state,
+                                            ),
+                                        );
                                     }
 
                                     // Only notify if there's actually a change
