@@ -5119,11 +5119,13 @@ impl Application {
                 .map(|client| client.name())
                 .unwrap_or("unknown");
 
-            warn!(
+            // Expected housekeeping for servers that report 100% without an `end` message
+            // (rust-analyzer does this routinely); not worth a warning on every occurrence.
+            debug!(
                 server_id = ?server_id,
                 server_name = %server_name,
                 token = ?token,
-                "🧟 WORKAROUND: Force-ending zombie progress operation at 100%"
+                "Force-ending zombie progress operation at 100%"
             );
 
             self.lsp_progress.end_progress(server_id, &token);
