@@ -84,6 +84,9 @@ ignore = [
     # derivative is pulled transitively by the pinned Velopack 1.2 SDK. It is
     # unmaintained rather than vulnerable and has no patched release.
     "RUSTSEC-2024-0388",
+    # smartstring is pulled transitively by the pinned Helix revision. It is
+    # unmaintained rather than vulnerable and has no patched release.
+    "RUSTSEC-2026-0249",
 ]
 
 # This section is considered when running `cargo deny check licenses`

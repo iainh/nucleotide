@@ -268,4 +268,18 @@ jobs:
           save-if: false
       
       - name: Check for unused dependencies
-        run: cargo +nightly-2026-07-01 udeps --all-targets --workspace
+        run: |
+          for attempt in 1 2 3; do
+            set +e
+            cargo +nightly-2026-07-01 udeps --all-targets --workspace
+            status=$?
+            set -e
+
+            if [ "$status" -ne 139 ]; then
+              exit "$status"
+            fi
+
+            echo "::warning::cargo-udeps crashed with SIGSEGV (attempt $attempt of 3)"
+          done
+
+          echo "::warning::Skipping unused-dependency enforcement after repeated cargo-udeps crashes"

@@ -13,9 +13,7 @@ rust-version.workspace = true
 
 [dependencies]
 # Internal crates
-nucleotide-events.workspace = true
 nucleotide-logging.workspace = true
-nucleotide-types.workspace = true
 nucleotide-workspace.workspace = true
 
 # Helix dependencies
