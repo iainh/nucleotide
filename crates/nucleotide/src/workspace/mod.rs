@@ -7239,6 +7239,11 @@ impl Workspace {
         self.last_native_window_metadata = Some(metadata);
     }
 
+    /// The project root the workspace is currently rooted at, if any.
+    pub fn project_directory(&self, cx: &App) -> Option<std::path::PathBuf> {
+        self.core.read(cx).project_directory.clone()
+    }
+
     #[instrument(skip(self, cx))]
     pub fn set_project_directory(&mut self, dir: std::path::PathBuf, cx: &mut Context<Self>) {
         let workspace_identity = self.core.read(cx).workspace_backend.identity();
