@@ -10,13 +10,15 @@ publish = false
 description = "Terminal session and PTY management for Nucleotide (Layer 3)"
 categories = ["text-editors", "gui"]
 rust-version.workspace = true
+build = "build.rs"
 
 [dependencies]
 tokio.workspace = true
 anyhow.workspace = true
 portable-pty = "0.9"
 libghostty-vt = { version = "0.2.1", default-features = false, optional = true }
+libghostty-vt-sys = { version = "0.2.1", optional = true }
 
 [features]
 default = []
-emulator = ["dep:libghostty-vt"]
+emulator = ["dep:libghostty-vt", "dep:libghostty-vt-sys"]

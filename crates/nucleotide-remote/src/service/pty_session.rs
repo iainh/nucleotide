@@ -243,10 +243,7 @@ impl<B: WorkspaceBackend> WorkspaceService<B> {
         let (program, args) = match &request.command {
             PtySessionCommand::Command { program, args } => (program.clone(), args.clone()),
             PtySessionCommand::LoginShell { shell } => (
-                shell
-                    .clone()
-                    .or_else(|| self.environment_baseline.get("SHELL").cloned())
-                    .unwrap_or_else(|| "/bin/sh".into()),
+                shell.clone().unwrap_or_else(|| "/bin/sh".into()),
                 Vec::new(),
             ),
         };
@@ -261,6 +258,7 @@ impl<B: WorkspaceBackend> WorkspaceService<B> {
         for key in crate::proxy::INTERACTIVE_SHELL_STATE_ENV_VARS {
             env.remove(*key);
         }
+        configure_pty_shell_environment(&request.command, &program, &mut env);
         env.extend([
             ("TERM".into(), "xterm-256color".into()),
             ("COLORTERM".into(), "truecolor".into()),
@@ -285,5 +283,63 @@ impl<B: WorkspaceBackend> WorkspaceService<B> {
             command.env(key, value);
         }
         Ok((command, cwd))
+    }
+}
+
+fn configure_pty_shell_environment(
+    command: &PtySessionCommand,
+    program: &Path,
+    env: &mut BTreeMap<String, String>,
+) {
+    match command {
+        // `CommandBuilder::new_default_prog` consults its environment before the password
+        // database. Do not let the service's Nix launch environment replace the account's
+        // configured login shell.
+        PtySessionCommand::LoginShell { shell: None } => {
+            env.remove("SHELL");
+        }
+        PtySessionCommand::LoginShell { shell: Some(_) } => {
+            env.insert("SHELL".into(), program.to_string_lossy().into_owned());
+        }
+        PtySessionCommand::Command { .. } => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_login_shell_does_not_inherit_service_shell() {
+        let mut env = BTreeMap::from([(
+            "SHELL".to_string(),
+            "/nix/store/helper-bash/bin/bash".to_string(),
+        )]);
+
+        configure_pty_shell_environment(
+            &PtySessionCommand::LoginShell { shell: None },
+            Path::new("/bin/sh"),
+            &mut env,
+        );
+
+        assert!(!env.contains_key("SHELL"));
+    }
+
+    #[test]
+    fn explicit_login_shell_replaces_service_shell() {
+        let mut env = BTreeMap::from([(
+            "SHELL".to_string(),
+            "/nix/store/helper-bash/bin/bash".to_string(),
+        )]);
+
+        configure_pty_shell_environment(
+            &PtySessionCommand::LoginShell {
+                shell: Some("/bin/zsh".to_string()),
+            },
+            Path::new("/bin/zsh"),
+            &mut env,
+        );
+
+        assert_eq!(env.get("SHELL").map(String::as_str), Some("/bin/zsh"));
     }
 }

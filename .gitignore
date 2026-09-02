@@ -106,3 +106,6 @@ zed-src/
 # Temporary release artifacts
 nucleotide-linux/
 nucleotide-linux.tar.gz
+
+# Local packaging output
+/dist/
