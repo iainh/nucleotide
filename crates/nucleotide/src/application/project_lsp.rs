@@ -427,6 +427,9 @@ pub(super) fn commands_to_probe_for_servers(
         .collect()
 }
 
+/// Longest status message that fits the status bar's message slot without truncation.
+pub(super) const PROJECT_LSP_STATUS_MAX_CHARS: usize = 48;
+
 /// Status shown while the project session detects languages, loads the project environment and
 /// (for remote workspaces) probes server availability.
 pub(super) fn project_lsp_preparation_status(
@@ -434,14 +437,9 @@ pub(super) fn project_lsp_preparation_status(
     proactive_startup_enabled: bool,
 ) -> String {
     match (remote_workspace, proactive_startup_enabled) {
-        (true, true) => {
-            "Preparing language servers: loading remote project environment and checking servers"
-                .to_string()
-        }
-        (false, true) => "Preparing language servers: loading project environment".to_string(),
-        (_, false) => {
-            "Loading project environment; language servers start when a file is opened".to_string()
-        }
+        (true, true) => "Preparing remote language servers".to_string(),
+        (false, true) => "Preparing language servers".to_string(),
+        (_, false) => "Loading project environment".to_string(),
     }
 }
 
@@ -451,11 +449,10 @@ pub(super) fn project_lsp_startup_status(
     proactive_startup_enabled: bool,
 ) -> String {
     if !proactive_startup_enabled {
-        return "Project environment ready; language servers start when a file is opened"
-            .to_string();
+        return "Environment ready; LSP starts on file open".to_string();
     }
     if server_names.is_empty() {
-        return "Project environment ready; no language servers to start".to_string();
+        return "Environment ready; no language servers".to_string();
     }
     format!("Starting language servers: {}", server_names.join(", "))
 }
@@ -713,9 +710,9 @@ mod tests {
 
     #[test]
     fn project_lsp_status_messages_describe_the_current_phase() {
-        assert!(project_lsp_preparation_status(true, true).contains("remote project environment"));
-        assert!(project_lsp_preparation_status(false, true).contains("project environment"));
-        assert!(project_lsp_preparation_status(true, false).contains("when a file is opened"));
+        assert!(project_lsp_preparation_status(true, true).contains("remote language servers"));
+        assert!(project_lsp_preparation_status(false, true).contains("language servers"));
+        assert!(project_lsp_preparation_status(true, false).contains("project environment"));
 
         assert_eq!(
             project_lsp_startup_status(&["rust-analyzer".to_string()], true),
@@ -724,8 +721,28 @@ mod tests {
         assert!(project_lsp_startup_status(&[], true).contains("no language servers"));
         assert!(
             project_lsp_startup_status(&["rust-analyzer".to_string()], false)
-                .contains("when a file is opened")
+                .contains("on file open")
         );
+    }
+
+    #[test]
+    fn project_lsp_status_messages_fit_the_status_bar() {
+        let messages = [
+            project_lsp_preparation_status(true, true),
+            project_lsp_preparation_status(false, true),
+            project_lsp_preparation_status(true, false),
+            project_lsp_preparation_status(false, false),
+            project_lsp_startup_status(&["rust-analyzer".to_string()], true),
+            project_lsp_startup_status(&["rust-analyzer".to_string()], false),
+            project_lsp_startup_status(&[], true),
+        ];
+
+        for message in messages {
+            assert!(
+                message.chars().count() <= PROJECT_LSP_STATUS_MAX_CHARS,
+                "status message too long for the status bar: {message:?}"
+            );
+        }
     }
 
     #[test]
