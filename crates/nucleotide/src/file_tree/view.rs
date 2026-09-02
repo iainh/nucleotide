@@ -1990,8 +1990,10 @@ impl FileTreeView {
         let vcs_handle = cx.global::<VcsServiceHandle>().service().clone();
 
         vcs_handle.update(cx, |service, cx| {
-            // Start monitoring if not already
-            if service.root_path() != Some(&root_path) {
+            // The VCS root follows the workspace project directory. Only adopt the tree root
+            // when nothing is monitored yet; re-rooting from here fights the workspace and
+            // restarts monitoring every refresh cycle.
+            if service.root_path().is_none() {
                 service.start_monitoring(root_path.clone(), cx);
             } else if force {
                 // Force refresh the VCS status
@@ -2160,7 +2162,7 @@ impl FileTreeView {
 
         let vcs_handle = cx.global::<VcsServiceHandle>().service().clone();
         vcs_handle.update(cx, |service, cx| {
-            if service.root_path() != Some(root_path.as_path()) {
+            if service.root_path().is_none() {
                 service.start_monitoring(root_path, cx);
             } else {
                 service.refresh_after_file_system_changes(&changed_paths, cx);
