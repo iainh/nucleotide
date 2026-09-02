@@ -427,9 +427,6 @@ pub(super) fn commands_to_probe_for_servers(
         .collect()
 }
 
-/// Longest status message that fits the status bar's message slot without truncation.
-pub(super) const PROJECT_LSP_STATUS_MAX_CHARS: usize = 48;
-
 /// Status shown while the project session detects languages, loads the project environment and
 /// (for remote workspaces) probes server availability.
 pub(super) fn project_lsp_preparation_status(
@@ -724,6 +721,9 @@ mod tests {
                 .contains("on file open")
         );
     }
+
+    /// Longest status message that fits the status bar's message slot without truncation.
+    const PROJECT_LSP_STATUS_MAX_CHARS: usize = 48;
 
     #[test]
     fn project_lsp_status_messages_fit_the_status_bar() {

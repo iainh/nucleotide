@@ -459,6 +459,8 @@ pub struct FileTreeView {
     remote_file_watch_epoch: u64,
     /// Whether the initial tree load is running in the background.
     initial_load_in_flight: bool,
+    /// File to select once its lazily loaded ancestor directories have been expanded.
+    pending_reveal_path: Option<PathBuf>,
     /// Monotonic revision for structural tree changes.
     tree_revision: u64,
     presentation_cache: Option<FileTreePresentationCache>,
@@ -510,6 +512,7 @@ impl FileTreeView {
             remote_file_watch_resync_pending: false,
             remote_file_watch_epoch: 0,
             initial_load_in_flight: false,
+            pending_reveal_path: None,
             tree_revision: 0,
             presentation_cache: None,
             presentation_cache_hits: 0,
@@ -582,6 +585,7 @@ impl FileTreeView {
             remote_file_watch_resync_pending: false,
             remote_file_watch_epoch: 0,
             initial_load_in_flight: false,
+            pending_reveal_path: None,
             tree_revision: 0,
             presentation_cache: None,
             presentation_cache_hits: 0,
@@ -705,9 +709,11 @@ impl FileTreeView {
                             if view.should_poll_remote_filesystem() {
                                 view.start_remote_file_watching(cx);
                             }
+                            view.continue_pending_reveal(cx);
                         }
                         Err(error) => {
                             error!(error = %error, "Failed to load file tree");
+                            view.pending_reveal_path = None;
                         }
                     }
 
@@ -1661,39 +1667,79 @@ impl FileTreeView {
         self.select_path(Some(matches[next_index].clone()), cx);
     }
 
-    /// Sync selection with the currently open file
+    /// Sync selection with the currently open file, expanding its ancestors so it is visible.
+    ///
+    /// Directories load lazily (one listing per expansion, asynchronously for remote
+    /// workspaces), so a file under a collapsed directory is usually not in the tree yet. The
+    /// reveal therefore proceeds one ancestor at a time and finishes from
+    /// [`Self::continue_pending_reveal`] once the required listings have arrived.
     pub fn sync_selection_with_file(&mut self, file_path: Option<&Path>, cx: &mut Context<Self>) {
-        if let Some(path) = file_path {
-            // Only update if the path exists in the tree
-            if self.tree.entry_by_path(path).is_some() {
-                self.select_path(Some(path.to_path_buf()), cx);
+        self.pending_reveal_path = file_path
+            .filter(|path| path.starts_with(self.tree.root_path()))
+            .map(Path::to_path_buf);
+        self.continue_pending_reveal(cx);
+    }
 
-                // Ensure parent directories are expanded so the file is visible
-                if let Some(parent) = path.parent() {
-                    self.ensure_path_visible(parent, cx);
-                }
+    /// Advance the pending reveal: expand the shallowest collapsed ancestor, or select the file
+    /// once every ancestor is expanded. Called again whenever a directory listing lands.
+    fn continue_pending_reveal(&mut self, cx: &mut Context<Self>) {
+        let Some(path) = self.pending_reveal_path.take() else {
+            return;
+        };
+        if self.initial_load_in_flight {
+            self.pending_reveal_path = Some(path);
+            return;
+        }
+
+        let root_path = self.tree.root_path().to_path_buf();
+        let mut ancestors = path
+            .ancestors()
+            .skip(1)
+            .take_while(|ancestor| ancestor.starts_with(&root_path))
+            .map(Path::to_path_buf)
+            .collect::<Vec<_>>();
+        ancestors.reverse();
+
+        for ancestor in ancestors {
+            let Some(entry) = self.tree.entry_by_path(&ancestor) else {
+                // The parent listing arrived without this directory (hidden, ignored or gone).
+                return;
+            };
+            if !entry.is_directory() {
+                return;
             }
+            if self.tree.is_expanded(&ancestor) && !self.tree.is_directory_loading(&ancestor) {
+                continue;
+            }
+            self.pending_reveal_path = Some(path);
+            if !self.tree.is_directory_loading(&ancestor) {
+                self.toggle_directory(&ancestor, cx);
+            }
+            return;
+        }
+
+        if self.tree.entry_by_path(&path).is_some() {
+            self.select_path(Some(path.clone()), cx);
+            self.scroll_to_path(
+                &path,
+                FileTreeScrollToPathOptions {
+                    focus: false,
+                    offset: FileTreeScrollOffset::Nearest,
+                },
+                cx,
+            );
         }
     }
 
-    /// Ensure a path is visible by expanding parent directories
-    fn ensure_path_visible(&mut self, path: &Path, cx: &mut Context<Self>) {
-        // Start from the root and expand directories along the path
-        let mut current = PathBuf::new();
-
-        for component in path.components() {
-            current.push(component);
-
-            if let Some(entry) = self.tree.entry_by_path(&current)
-                && entry.is_directory()
-                && !self.tree.is_expanded(&current)
-            {
-                // Expand this directory using toggle_directory
-                self.toggle_directory(&current, cx);
-            }
+    /// Drop a pending reveal whose ancestor `directory` could not be listed.
+    fn abandon_pending_reveal_under(&mut self, directory: &Path) {
+        if self
+            .pending_reveal_path
+            .as_ref()
+            .is_some_and(|pending| pending.starts_with(directory))
+        {
+            self.pending_reveal_path = None;
         }
-
-        cx.notify();
     }
 
     /// Toggle directory expansion
@@ -1748,6 +1794,7 @@ impl FileTreeView {
                                         error = %e,
                                         "Failed to expand directory"
                                     );
+                                    view.abandon_pending_reveal_under(&path_buf);
                                 } else {
                                     view.tree_revision = view.tree_revision.wrapping_add(1);
                                     if view.should_poll_remote_filesystem() {
@@ -1759,6 +1806,7 @@ impl FileTreeView {
                                         path: path_buf.clone(),
                                         expanded: true,
                                     });
+                                    view.continue_pending_reveal(cx);
                                 }
                             }
                             Err(e) => {
@@ -1768,6 +1816,7 @@ impl FileTreeView {
                                     "Failed to read directory"
                                 );
                                 view.tree.unmark_directory_loading(&path_buf);
+                                view.abandon_pending_reveal_under(&path_buf);
                             }
                         }
 
@@ -3988,6 +4037,97 @@ mod tests {
             assert_eq!(deferred.item_index, 2);
             assert_eq!(deferred.strategy, ScrollStrategy::Nearest);
             assert!(!deferred.scroll_strict);
+        });
+    }
+
+    #[gpui::test]
+    async fn sync_selection_expands_lazily_loaded_ancestors_before_selecting(
+        cx: &mut TestAppContext,
+    ) {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root_path = temp_dir.path().to_path_buf();
+        let crates_path = root_path.join("crates");
+        let src_path = crates_path.join("remote").join("src");
+        let target_path = src_path.join("lib.rs");
+        std::fs::create_dir_all(&src_path).unwrap();
+        std::fs::write(&target_path, "pub fn lib() {}\n").unwrap();
+        std::fs::write(root_path.join("Cargo.toml"), "[workspace]\n").unwrap();
+
+        let view = cx.new(|cx| FileTreeView::new(root_path.clone(), test_config(), cx));
+
+        view.update(cx, |view, cx| {
+            // `src` sits at the initial load depth, so its listing has not been loaded yet.
+            assert!(view.tree.entry_by_path(&target_path).is_none());
+            view.tree.collapse_directory(&crates_path).unwrap();
+
+            view.sync_selection_with_file(Some(&target_path), cx);
+
+            assert_eq!(
+                view.pending_reveal_path.as_deref(),
+                Some(target_path.as_path())
+            );
+            assert!(view.tree.is_directory_loading(&crates_path));
+        });
+
+        cx.run_until_parked();
+
+        view.update(cx, |view, _cx| {
+            assert!(view.pending_reveal_path.is_none());
+            assert!(view.tree.is_expanded(&crates_path));
+            assert!(view.tree.is_expanded(&src_path));
+            assert_eq!(view.selected_path(), Some(&target_path));
+            assert!(
+                view.tree
+                    .visible_entries()
+                    .iter()
+                    .any(|entry| entry.path == target_path)
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn sync_selection_waits_for_the_initial_tree_load(cx: &mut TestAppContext) {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root_path = temp_dir.path().to_path_buf();
+        let src_path = root_path.join("src");
+        let target_path = src_path.join("main.rs");
+        std::fs::create_dir(&src_path).unwrap();
+        std::fs::write(&target_path, "fn main() {}\n").unwrap();
+
+        let view =
+            cx.new(|cx| FileTreeView::new_with_runtime(root_path.clone(), test_config(), None, cx));
+
+        view.update(cx, |view, cx| {
+            view.sync_selection_with_file(Some(&target_path), cx);
+            assert_eq!(
+                view.pending_reveal_path.as_deref(),
+                Some(target_path.as_path())
+            );
+        });
+
+        cx.run_until_parked();
+
+        view.read_with(cx, |view, _cx| {
+            assert!(view.pending_reveal_path.is_none());
+            assert_eq!(view.selected_path(), Some(&target_path));
+        });
+    }
+
+    #[gpui::test]
+    async fn sync_selection_ignores_paths_outside_the_tree_root(cx: &mut TestAppContext) {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root_path = temp_dir.path().to_path_buf();
+        std::fs::write(root_path.join("main.rs"), "fn main() {}\n").unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let outside_path = outside.path().join("other.rs");
+        std::fs::write(&outside_path, "\n").unwrap();
+
+        let view = cx.new(|cx| FileTreeView::new(root_path.clone(), test_config(), cx));
+
+        view.update(cx, |view, cx| {
+            view.sync_selection_with_file(Some(&outside_path), cx);
+            assert!(view.pending_reveal_path.is_none());
+            assert_eq!(view.selected_path(), Some(&root_path));
         });
     }
 
