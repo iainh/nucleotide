@@ -31,6 +31,8 @@ struct ProjectLspSupervisor {
     generation: u64,
     active_root: Option<PathBuf>,
     retrying_servers: HashSet<(u64, String, String)>,
+    /// Servers already launched on behalf of an opened document in this generation.
+    document_started_servers: HashSet<(u64, String, String)>,
     session_in_flight: bool,
     session_result: Option<ProjectSessionResult>,
     session_waiters:
@@ -54,6 +56,7 @@ impl ProjectLspSupervisor {
 
         self.generation = self.generation.wrapping_add(1).max(1);
         self.retrying_servers.clear();
+        self.document_started_servers.clear();
         ProjectSessionTransition {
             generation: self.generation,
             previous_root: self.active_root.replace(workspace_root),
@@ -108,6 +111,7 @@ impl ProjectLspSupervisor {
 
         self.generation = self.generation.wrapping_add(1).max(1);
         self.retrying_servers.clear();
+        self.document_started_servers.clear();
         self.session_in_flight = true;
         self.session_result = None;
         self.session_waiters.push(response);
@@ -137,6 +141,28 @@ impl ProjectLspSupervisor {
 
     fn is_current(&self, generation: u64, workspace_root: &Path) -> bool {
         self.generation == generation && self.active_root.as_deref() == Some(workspace_root)
+    }
+
+    /// Generation of the active session for `workspace_root` once its preparation has
+    /// settled. While preparation is in flight the session itself decides what to start.
+    fn settled_generation(&self, workspace_root: &Path) -> Option<u64> {
+        (self.active_root.as_deref() == Some(workspace_root) && !self.session_in_flight)
+            .then_some(self.generation)
+    }
+
+    /// Records a document-driven start; returns `false` when this generation already
+    /// launched that server for a document.
+    fn begin_document_start(
+        &mut self,
+        generation: u64,
+        language_id: &str,
+        server_name: &str,
+    ) -> bool {
+        self.document_started_servers.insert((
+            generation,
+            language_id.to_string(),
+            server_name.to_string(),
+        ))
     }
 
     fn begin_retry(&mut self, generation: u64, language_id: &str, server_name: &str) -> bool {
@@ -292,6 +318,20 @@ impl ProjectLspCoordinator {
 
     pub(super) fn is_current(&self, generation: u64, workspace_root: &Path) -> bool {
         self.supervisor.is_current(generation, workspace_root)
+    }
+
+    pub(super) fn settled_generation(&self, workspace_root: &Path) -> Option<u64> {
+        self.supervisor.settled_generation(workspace_root)
+    }
+
+    pub(super) fn begin_document_start(
+        &mut self,
+        generation: u64,
+        language_id: &str,
+        server_name: &str,
+    ) -> bool {
+        self.supervisor
+            .begin_document_start(generation, language_id, server_name)
     }
 
     pub(super) fn begin_retry(
@@ -686,6 +726,47 @@ mod tests {
             project_lsp_startup_status(&["rust-analyzer".to_string()], false)
                 .contains("when a file is opened")
         );
+    }
+
+    #[test]
+    fn supervisor_document_starts_wait_for_settled_session_and_dedupe_per_generation() {
+        let root = PathBuf::from("/workspace/first");
+        let mut supervisor = ProjectLspSupervisor::default();
+        assert_eq!(supervisor.settled_generation(&root), None);
+
+        let (response, _rx) = tokio::sync::oneshot::channel();
+        let transition = supervisor
+            .queue_session_open(root.clone(), response)
+            .expect("first open schedules a session");
+        assert_eq!(
+            supervisor.settled_generation(&root),
+            None,
+            "in-flight sessions own startup decisions"
+        );
+
+        supervisor.complete_session(
+            transition.generation,
+            Ok(ProjectSessionResult {
+                generation: transition.generation,
+                plan: project_lsp_plan_from_names(&[]),
+                language_servers: Vec::new(),
+                servers_started: Vec::new(),
+            }),
+        );
+        let generation = supervisor
+            .settled_generation(&root)
+            .expect("settled session exposes its generation");
+        assert_eq!(generation, transition.generation);
+        assert_eq!(
+            supervisor.settled_generation(Path::new("/workspace/other")),
+            None
+        );
+
+        assert!(supervisor.begin_document_start(generation, "rust", "rust-analyzer"));
+        assert!(!supervisor.begin_document_start(generation, "rust", "rust-analyzer"));
+
+        let next = supervisor.open_session(PathBuf::from("/workspace/second"));
+        assert!(supervisor.begin_document_start(next.generation, "rust", "rust-analyzer"));
     }
 
     #[test]
