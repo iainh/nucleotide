@@ -3395,6 +3395,21 @@ impl Workspace {
         });
     }
 
+    /// Clear a transient status message once its operation finishes, without clobbering a
+    /// newer status that replaced it in the meantime.
+    fn clear_run_status_if_current(&mut self, message: &str, cx: &mut Context<Self>) {
+        self.core.update(cx, |app, app_cx| {
+            let is_current = app
+                .editor
+                .get_status()
+                .is_some_and(|(current, _)| current == message);
+            if is_current {
+                app.editor.clear_status();
+                app_cx.emit(crate::Update::Redraw);
+            }
+        });
+    }
+
     fn start_background_activity(
         &mut self,
         message: impl Into<String>,
@@ -9858,7 +9873,7 @@ impl Workspace {
         let runtime_handle = self.handle.clone();
         let message = format!("Loading remote file: {}", path.display());
         self.set_run_status(message.clone(), Severity::Info, cx);
-        let activity_id = self.start_background_activity(message, cx);
+        let activity_id = self.start_background_activity(message.clone(), cx);
 
         let placeholder = self.core.update(cx, |core, cx| {
             let _guard = self.handle.enter();
@@ -9941,6 +9956,9 @@ impl Workspace {
             if let Some(this) = this.upgrade() {
                 this.update(cx, |workspace, cx| {
                     workspace.finish_background_activity(activity_id, cx);
+                    // The file is either shown or reported as failed below; the loading status
+                    // must not outlive the load itself.
+                    workspace.clear_run_status_if_current(&message, cx);
                     let Some(loading_document) = workspace
                         .loading_documents
                         .get(&doc_id)

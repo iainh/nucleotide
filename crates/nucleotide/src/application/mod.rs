@@ -1789,7 +1789,8 @@ use project_lsp::{
     configured_language_server_commands, configured_project_servers,
     detect_project_lsp_plan_with_backend, discover_project_languages_with_backend,
     probe_available_language_server_commands, project_lsp_error_is_retryable,
-    project_lsp_plan_from_discovered_languages, retain_servers_with_available_commands,
+    project_lsp_plan_from_discovered_languages, project_lsp_preparation_status,
+    project_lsp_startup_status, retain_servers_with_available_commands,
 };
 #[cfg(test)]
 use project_lsp::{project_lsp_plan_from_names, project_marker_names};
@@ -2774,9 +2775,11 @@ impl Application {
             warn!(%error, workspace_root = %workspace_root.display(), "Failed to update Editor working directory");
         }
 
+        let remote_workspace = classify_workspace_location(&workspace_root).is_remote();
+        let proactive_startup_enabled = self.config.gui.lsp.project_lsp_startup;
         self.set_editor_status_feedback(
             cx,
-            "Preparing project language servers".to_string(),
+            project_lsp_preparation_status(remote_workspace, proactive_startup_enabled),
             crate::types::Severity::Info,
         );
 
@@ -2787,9 +2790,7 @@ impl Application {
         let server_commands = configured_language_server_commands(&self.editor);
         let inventory_server_commands = server_commands.clone();
         let syntax_loader = self.editor.syn_loader.load_full();
-        let remote_workspace = classify_workspace_location(&workspace_root).is_remote();
         let timeout = Duration::from_millis(self.config.gui.lsp.startup_timeout_ms);
-        let proactive_startup_enabled = self.config.gui.lsp.project_lsp_startup;
         let runtime = handle.clone();
 
         cx.spawn(async move |this, cx| {
@@ -2899,6 +2900,11 @@ impl Application {
                         .iter()
                         .map(|(_, server_name)| server_name.clone())
                         .collect::<Vec<_>>();
+                    app.set_editor_status_feedback(
+                        cx,
+                        project_lsp_startup_status(&server_names, proactive_startup_enabled),
+                        crate::types::Severity::Info,
+                    );
                     let servers_started = app.start_planned_project_servers_prepared(
                         &runtime,
                         generation,
