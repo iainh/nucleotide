@@ -702,8 +702,16 @@ fn open_request_workspace_dir(path: &Path) -> Option<PathBuf> {
     if path.is_dir() {
         Some(path.to_path_buf())
     } else {
-        path.parent().map(Path::to_path_buf)
+        // Match startup: a file opens the project that contains it, not its parent directory.
+        path.parent()
+            .map(nucleotide::application::find_workspace_root_from)
     }
+}
+
+/// A forwarded file inside the current project must not re-root the workspace; re-rooting
+/// tears down the file tree, VCS monitoring and every project language server.
+fn forwarded_open_changes_project(current_root: Option<&Path>, requested_root: &Path) -> bool {
+    !current_root.is_some_and(|root| requested_root.starts_with(root))
 }
 
 fn forwarded_open_path_kind(path: &Path) -> Option<ForwardedOpenPathKind> {
@@ -1430,10 +1438,22 @@ fn gui_main(
                         let mut new_working_dir = request.working_directory.clone();
 
                         if new_working_dir.is_none() {
+                            let current_root = cx.update(|cx| {
+                                workspace_clone.read(cx).project_directory(cx)
+                            });
                             for file in &request.files {
                                 if let Some(dir) = open_request_workspace_dir(&file.path) {
-                                    new_working_dir = Some(dir.clone());
-                                    info!(directory = ?dir, "Will change working directory");
+                                    if forwarded_open_changes_project(current_root.as_deref(), &dir)
+                                    {
+                                        info!(directory = ?dir, "Will change working directory");
+                                        new_working_dir = Some(dir);
+                                    } else {
+                                        info!(
+                                            directory = ?dir,
+                                            current_root = ?current_root,
+                                            "Forwarded path is inside the current project; keeping project root"
+                                        );
+                                    }
                                     break;
                                 }
                             }
@@ -1599,6 +1619,37 @@ mod tests {
             open_request_workspace_dir(&file_path),
             Some(temp_dir.path().to_path_buf())
         );
+    }
+
+    #[test]
+    fn open_request_workspace_dir_uses_project_root_for_nested_local_file() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(temp_dir.path().join(".git")).unwrap();
+        let nested = temp_dir.path().join("crates").join("lib").join("src");
+        std::fs::create_dir_all(&nested).unwrap();
+        let file_path = nested.join("lib.rs");
+        std::fs::write(&file_path, "").unwrap();
+
+        assert_eq!(
+            open_request_workspace_dir(&file_path),
+            Some(temp_dir.path().to_path_buf())
+        );
+    }
+
+    #[test]
+    fn forwarded_open_inside_current_project_keeps_project_root() {
+        let current = PathBuf::from(r"\\wsl.localhost\Ubuntu\home\me\project");
+
+        assert!(!forwarded_open_changes_project(
+            Some(&current),
+            &current.join("crates").join("remote").join("src"),
+        ));
+        assert!(!forwarded_open_changes_project(Some(&current), &current));
+        assert!(forwarded_open_changes_project(
+            Some(&current),
+            Path::new(r"\\wsl.localhost\Ubuntu\home\me\other"),
+        ));
+        assert!(forwarded_open_changes_project(None, &current));
     }
 
     #[test]
