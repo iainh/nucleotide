@@ -4,7 +4,7 @@ use gpui::{
     App, AppContext, Context, Entity, FocusHandle, Focusable, FontWeight, InteractiveElement,
     IntoElement, MouseButton, ParentElement, Render, Styled, Window, div, px, svg,
 };
-use nucleotide_events::v2::terminal::TerminalId;
+use nucleotide_events::terminal::TerminalId;
 use nucleotide_terminal_view::{TerminalView, get_view_model};
 use nucleotide_ui::{Button, ButtonSize, ButtonVariant, ThemedContext, Toolbar, Tooltipped};
 use std::sync::Arc;

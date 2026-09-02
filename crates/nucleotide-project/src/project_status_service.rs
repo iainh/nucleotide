@@ -1,11 +1,11 @@
-// ABOUTME: Service for managing project status and detection state
-// ABOUTME: Coordinates between project detection, LSP state, and UI updates
+// ABOUTME: Service for publishing classified project and LSP status to the UI.
+// ABOUTME: Stores backend-independent snapshots without owning detection or LSP state.
 
 use gpui::Global;
 use nucleotide_logging::{debug, info, warn};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 /// Service handle for accessing project status throughout the application
 #[derive(Clone)]
@@ -25,53 +25,22 @@ impl ProjectStatusHandle {
         self.inner.read().project_root.clone()
     }
 
-    /// Update project root path and trigger re-detection
+    /// Update the project root and clear its previous classification.
     pub fn set_project_root(&self, path: Option<PathBuf>) {
         let mut service = self.inner.write();
         service.set_project_root(path);
     }
 
-    /// Update project root path without running synchronous filesystem detection.
-    pub fn set_project_root_without_detection(&self, path: Option<PathBuf>) {
+    /// Replace the canonical project type with a classifier result.
+    pub fn set_project_type(&self, project_type: crate::ProjectType) {
         let mut service = self.inner.write();
-        service.set_project_root_without_detection(path);
+        service.set_project_type(project_type);
     }
 
-    /// Replace detected project types with results from an external detector.
-    pub fn set_detected_project_types(
-        &self,
-        detected_types: Vec<crate::project_indicator::ProjectType>,
-    ) {
+    /// Update the project-wide language-server status snapshot.
+    pub fn update_lsp_status(&self, lsp_status: crate::project_indicator::ProjectLspStatus) {
         let mut service = self.inner.write();
-        service.set_detected_project_types(detected_types);
-    }
-
-    /// Update LSP state and refresh project status
-    pub fn update_lsp_state(&self, lsp_state: &nucleotide_lsp::LspState) {
-        let mut service = self.inner.write();
-        let now = std::time::Instant::now();
-
-        // Debounce LSP updates to avoid excessive UI refreshes
-        if let Some(last_update) = service.last_lsp_update
-            && now.duration_since(last_update) < service.debounce_duration
-        {
-            return;
-        }
-
-        debug!(
-            server_count = lsp_state.servers.len(),
-            diagnostic_count = lsp_state.diagnostics.len(),
-            "Updating project LSP status"
-        );
-
-        service.last_lsp_update = Some(now);
-    }
-
-    /// Force refresh of project detection
-    pub fn refresh_project_detection(&self) {
-        let mut service = self.inner.write();
-        info!("Forcing refresh of project type detection");
-        service.refresh_project_detection();
+        service.update_lsp_status(lsp_status);
     }
 
     /// Get project info for UI components
@@ -79,9 +48,9 @@ impl ProjectStatusHandle {
         self.inner.read().get_project_info().clone()
     }
 
-    /// Get project types detected in the current project
-    pub fn get_project_types(&self) -> Vec<crate::project_indicator::ProjectType> {
-        self.inner.read().get_project_info().detected_types.clone()
+    /// Get the canonical type detected for the current project.
+    pub fn get_project_type(&self) -> crate::ProjectType {
+        self.inner.read().get_project_info().project_type.clone()
     }
 
     /// Get LSP status for the current project
@@ -92,14 +61,10 @@ impl ProjectStatusHandle {
 
 impl Global for ProjectStatusHandle {}
 
-/// Background service that manages project status detection and updates
+/// Stores the latest project status for UI consumers.
 pub struct ProjectStatusService {
     project_root: Option<PathBuf>,
     project_info: crate::project_indicator::ProjectInfo,
-    last_lsp_update: Option<Instant>,
-    last_detection_update: Option<Instant>,
-    debounce_duration: Duration,
-    background_task: Option<gpui::Task<()>>,
 }
 
 impl Default for ProjectStatusService {
@@ -114,10 +79,6 @@ impl ProjectStatusService {
         Self {
             project_root: None,
             project_info,
-            last_lsp_update: None,
-            last_detection_update: None,
-            debounce_duration: Duration::from_millis(500),
-            background_task: None,
         }
     }
 
@@ -126,149 +87,57 @@ impl ProjectStatusService {
         self.project_root.as_deref()
     }
 
-    /// Set the project root directory and trigger detection
+    /// Set the project root directory. Classification is supplied separately by
+    /// the backend-independent project classifier.
     pub fn set_project_root(&mut self, path: Option<PathBuf>) {
-        info!(
-            project_path = ?path,
-            "Setting project root and triggering project type detection"
-        );
-
-        self.project_root = path.clone();
-        self.project_info.root_path = path.clone();
-
-        debug!("Running project type detection");
-        self.project_info.detect_project_types();
-
-        let detected_count = self.project_info.detected_types.len();
-        if detected_count > 0 {
-            info!(
-                project_path = ?path,
-                detected_types = ?self.project_info.detected_types,
-                detected_count = detected_count,
-                "Project type detection completed with results"
-            );
-        } else {
-            warn!(
-                project_path = ?path,
-                "Project type detection completed but no types detected"
-            );
+        if self.project_root == path {
+            return;
         }
 
-        self.last_detection_update = Some(Instant::now());
-    }
-
-    /// Set the project root while deferring type detection to another service.
-    pub fn set_project_root_without_detection(&mut self, path: Option<PathBuf>) {
         info!(
             project_path = ?path,
-            "Setting project root without synchronous project type detection"
+            "Setting project root"
         );
 
         self.project_root = path.clone();
         self.project_info.root_path = path;
-        self.project_info.detected_types.clear();
+        self.project_info.project_type = crate::ProjectType::Unknown;
         self.project_info.last_updated = Instant::now();
-        self.last_detection_update = Some(Instant::now());
     }
 
-    /// Update project types using results from a backend-aware detector.
-    pub fn set_detected_project_types(
-        &mut self,
-        detected_types: Vec<crate::project_indicator::ProjectType>,
-    ) {
-        info!(
-            detected_count = detected_types.len(),
-            detected_types = ?detected_types.iter().map(|project_type| &project_type.name).collect::<Vec<_>>(),
-            "Setting externally detected project types"
-        );
+    /// Update the canonical type using a backend-independent classifier result.
+    pub fn set_project_type(&mut self, project_type: crate::ProjectType) {
+        info!(?project_type, "Setting classified project type");
 
-        self.project_info.detected_types = detected_types;
-        self.project_info.last_updated = Instant::now();
-        self.last_detection_update = Some(Instant::now());
+        self.project_info.set_project_type(project_type);
     }
 
-    /// Update project status with current LSP state
-    pub fn update_lsp_state(&mut self, lsp_state: &nucleotide_lsp::LspState) {
-        let now = Instant::now();
-
-        // Debounce LSP updates to avoid excessive UI refreshes
-        if let Some(last_update) = self.last_lsp_update
-            && now.duration_since(last_update) < self.debounce_duration
-        {
+    /// Update project status from an application-owned LSP status snapshot.
+    pub fn update_lsp_status(&mut self, lsp_status: crate::project_indicator::ProjectLspStatus) {
+        if self.project_info.lsp_status == lsp_status {
             return;
         }
 
         debug!(
-            server_count = lsp_state.servers.len(),
-            diagnostic_count = lsp_state.diagnostics.len(),
+            server_count = lsp_status.total_servers,
+            diagnostic_count = lsp_status.diagnostic_count,
             "Updating project LSP status"
         );
 
-        // Update project info with current LSP state
-        self.project_info.update_lsp_status(lsp_state);
+        self.project_info.update_lsp_status(lsp_status);
 
         info!(
-            lsp_servers = lsp_state.servers.len(),
+            lsp_servers = self.project_info.lsp_status.total_servers,
             running_servers = self.project_info.lsp_status.running_servers,
             failed_servers = self.project_info.lsp_status.failed_servers,
             diagnostics = self.project_info.lsp_status.diagnostic_count,
             "Project LSP status updated"
         );
-
-        self.last_lsp_update = Some(now);
-    }
-
-    /// Force refresh of project type detection
-    pub fn refresh_project_detection(&mut self) {
-        info!("Forcing refresh of project type detection");
-
-        // Re-run project type detection
-        self.project_info.detect_project_types();
-        self.last_detection_update = Some(Instant::now());
-    }
-
-    /// Start background monitoring for file system changes
-    pub fn start_background_monitoring(&mut self) {
-        if self.background_task.is_some() {
-            warn!("Background monitoring already started");
-            return;
-        }
-
-        // For now, we'll use a simple approach without spawning background tasks
-        // This would be improved later with proper file system watching
-        info!("Project status monitoring enabled (on-demand basis)");
-
-        // Set task to None to indicate monitoring is "active" but on-demand
-        self.background_task = None;
-    }
-
-    /// Stop background monitoring
-    pub fn stop_background_monitoring(&mut self) {
-        if let Some(task) = self.background_task.take() {
-            task.detach();
-            info!("Stopped background project status monitoring");
-        }
-    }
-
-    /// Get project root for UI components
-    pub fn get_project_root(&self) -> Option<PathBuf> {
-        self.project_root.clone()
     }
 
     /// Get project info for UI components
     pub fn get_project_info(&self) -> &crate::project_indicator::ProjectInfo {
         &self.project_info
-    }
-
-    /// Get mutable project info for updates
-    pub fn get_project_info_mut(&mut self) -> &mut crate::project_indicator::ProjectInfo {
-        &mut self.project_info
-    }
-}
-
-impl Drop for ProjectStatusService {
-    fn drop(&mut self) {
-        self.stop_background_monitoring();
     }
 }
 
@@ -308,8 +177,6 @@ pub fn project_status_service(cx: &gpui::App) -> ProjectStatusHandle {
 mod tests {
     use super::*;
 
-    use std::fs::File;
-    use std::io::Write;
     use tempfile::TempDir;
 
     #[tokio::test]
@@ -321,65 +188,64 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_set_project_root_triggers_detection() {
+    async fn test_set_project_root_resets_classification() {
         let temp_dir = TempDir::new().unwrap();
-        let cargo_toml = temp_dir.path().join("Cargo.toml");
-        File::create(&cargo_toml)
-            .unwrap()
-            .write_all(b"[package]\nname = \"test\"")
-            .unwrap();
-
         let mut service = ProjectStatusService::new();
+        service.set_project_type(crate::ProjectType::Rust);
         service.set_project_root(Some(temp_dir.path().to_path_buf()));
 
         let project_root = service.project_root();
         assert!(project_root.is_some());
         assert_eq!(project_root.unwrap(), temp_dir.path());
+        assert_eq!(
+            service.get_project_info().project_type,
+            crate::ProjectType::Unknown
+        );
     }
 
     #[tokio::test]
-    async fn test_set_project_root_without_detection_defers_types() {
+    async fn test_set_same_project_root_preserves_classification() {
         let temp_dir = TempDir::new().unwrap();
-        let cargo_toml = temp_dir.path().join("Cargo.toml");
-        File::create(&cargo_toml)
-            .unwrap()
-            .write_all(b"[package]\nname = \"test\"")
-            .unwrap();
-
+        let root = temp_dir.path().to_path_buf();
         let mut service = ProjectStatusService::new();
-        service.set_project_root_without_detection(Some(temp_dir.path().to_path_buf()));
+        service.set_project_root(Some(root.clone()));
+        service.set_project_type(crate::ProjectType::Rust);
 
-        assert_eq!(service.project_root(), Some(temp_dir.path()));
-        assert!(service.get_project_info().detected_types.is_empty());
+        service.set_project_root(Some(root));
+
+        assert_eq!(
+            service.get_project_info().project_type,
+            crate::ProjectType::Rust
+        );
     }
 
     #[tokio::test]
-    async fn test_set_detected_project_types_updates_project_info() {
+    async fn test_set_project_type_updates_project_info() {
         let mut service = ProjectStatusService::new();
-        service.set_detected_project_types(vec![crate::project_indicator::ProjectType {
-            name: "rust".to_string(),
-            display_name: "Rust".to_string(),
-            icon: "R".to_string(),
-            color: None,
-            confidence: 0.95,
-        }]);
+        service.set_project_type(crate::ProjectType::Mixed(vec![
+            crate::ProjectType::Rust,
+            crate::ProjectType::Python,
+        ]));
 
-        let detected_types = &service.get_project_info().detected_types;
-        assert_eq!(detected_types.len(), 1);
-        assert_eq!(detected_types[0].name, "rust");
+        assert_eq!(
+            service.get_project_info().project_type,
+            crate::ProjectType::Mixed(vec![crate::ProjectType::Rust, crate::ProjectType::Python,])
+        );
     }
 
     #[tokio::test]
     async fn test_lsp_status_update() {
-        let service = ProjectStatusService::new();
+        let mut service = ProjectStatusService::new();
+        let status = crate::ProjectLspStatus {
+            total_servers: 2,
+            running_servers: 1,
+            failed_servers: 0,
+            initializing_servers: 1,
+            has_diagnostics: true,
+            diagnostic_count: 3,
+        };
+        service.update_lsp_status(status.clone());
 
-        // Test that the update doesn't crash
-        // Note: Simplified without actual LSP state update as it would require
-        // complex mocking of the LSP system. This would be better tested
-        // in integration tests with a real LSP setup.
-
-        // Basic verification that the service is still functional
-        let project_root = service.project_root();
-        assert!(project_root.is_none()); // Should still be None since we didn't set it
+        assert_eq!(service.get_project_info().lsp_status, status);
     }
 }

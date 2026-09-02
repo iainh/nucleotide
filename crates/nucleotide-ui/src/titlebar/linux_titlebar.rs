@@ -100,6 +100,17 @@ pub struct LinuxTitlebar {
 }
 
 impl LinuxTitlebar {
+    pub fn height_for_theme(theme: &crate::Theme) -> Pixels {
+        let platform_info = get_platform_info();
+        let tokens = theme.tokens.titlebar_tokens();
+
+        match platform_info.desktop_environment {
+            DesktopEnvironment::Gnome => tokens.height.max(px(40.0)),
+            DesktopEnvironment::Kde => tokens.height.max(px(32.0)),
+            _ => tokens.height.min(px(28.0)),
+        }
+    }
+
     pub fn new(id: impl Into<ElementId>, theme: &crate::Theme) -> Self {
         let platform_info = get_platform_info().clone();
 

@@ -1,6 +1,6 @@
 // ABOUTME: Placeholder terminal view crate – to be implemented with GPUI
 
-use nucleotide_events::v2::terminal::TerminalId;
+use nucleotide_events::terminal::TerminalId;
 
 #[cfg(feature = "emulator")]
 use gpui::AppContext;

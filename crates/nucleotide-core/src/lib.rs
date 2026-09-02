@@ -1,7 +1,6 @@
 // ABOUTME: Core event bridges between Helix and GPUI
 // ABOUTME: Provides the fundamental event translation layer
 
-pub mod app_event;
 pub mod document_manager;
 pub mod event_bridge;
 pub mod picker_capability;
@@ -11,17 +10,15 @@ pub mod utils;
 
 pub use picker_capability::PickerCapability;
 
-// Re-export V2 domain events
-pub use nucleotide_events::v2::{
+// Re-export domain events
+pub use nucleotide_events::{
     document::Event as DocumentEvent, ui::Event as UiEvent, workspace::Event as WorkspaceEvent,
 };
 
-pub use app_event::AppEvent;
-
 // Event bridge exports
 pub use event_bridge::{
-    BridgedEvent, BridgedEventReceiver, create_bridge_channel, initialize_bridge,
-    register_event_hooks, send_bridged_event,
+    HelixEvent, HelixEventReceiver, create_bridge_channel, initialize_bridge, register_event_hooks,
+    send_helix_event,
 };
 
 // Document manager exports

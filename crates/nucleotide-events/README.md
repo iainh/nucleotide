@@ -4,13 +4,12 @@ Event system definitions for Nucleotide editor (Layer 2).
 
 ## Purpose
 
-This crate defines the event types and event bus system used for communication between different components of the Nucleotide editor.
+This crate defines data-only domain event types shared by Nucleotide components.
 
 ## Public API
 
-- **Event types**: `AppEvent`, `CoreEvent`, `UiEvent`, `WorkspaceEvent`, `LspEvent`
-- **Event bus**: `EventBus`, `EventHandler`
-- **Enums**: `MessageSeverity`, `PanelType`, `PickerType`, `SplitDirection`
+- **Domain modules**: `document`, `ui`, `workspace`, `lsp_events`, `completion`, `run`, `terminal`
+- **Application integration**: the `nucleotide` crate embeds these events directly in its `Update` enum
 
 ## Dependencies
 

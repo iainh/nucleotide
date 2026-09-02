@@ -12,8 +12,6 @@ pub mod document;
 pub mod file_tree;
 mod helix_command;
 pub mod input_coordinator;
-#[cfg(test)]
-pub mod integration_test_phase2;
 pub mod lsp_traffic_logger;
 pub mod overlay;
 pub mod picker_capability;
