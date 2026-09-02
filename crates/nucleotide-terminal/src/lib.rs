@@ -396,7 +396,7 @@ pub mod session {
         {
             use crate::engine::Engine;
             use std::time::{Duration, Instant};
-            let (data_tx, data_rx) = std::sync::mpsc::channel::<Vec<u8>>();
+            let (data_tx, data_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(16);
             let eof_after_parse = output_eof.clone();
             std::thread::spawn(move || {
                 let mut buf = vec![0; 8192];
