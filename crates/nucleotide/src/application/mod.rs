@@ -6869,6 +6869,164 @@ impl Application {
         tracked_count
     }
 
+    /// Attach a freshly opened remote document to running servers, or start its configured
+    /// servers when none are running. Remote documents open with `launch_language_servers:
+    /// false` because Helix cannot spawn the server on the remote side, so this is the
+    /// file-based startup path for remote workspaces regardless of `project_lsp_startup`.
+    pub(crate) fn attach_or_start_remote_document_servers(
+        &mut self,
+        doc_id: DocumentId,
+        handle: &tokio::runtime::Handle,
+        cx: &mut gpui::Context<crate::Core>,
+    ) {
+        if self.ensure_document_tracked_by_running_servers(doc_id) > 0 {
+            return;
+        }
+
+        let workspace_identity = self.workspace_backend.identity();
+        if !matches!(workspace_identity, WorkspaceIdentity::Remote(_)) {
+            return;
+        }
+        let Some((doc_path, language_id, configured_server_names)) =
+            self.editor.document(doc_id).map(|doc| {
+                (
+                    doc.path().map(Path::to_path_buf),
+                    doc.language_id().map(ToOwned::to_owned),
+                    doc.language_config()
+                        .map(|config| {
+                            config
+                                .language_servers
+                                .iter()
+                                .map(|features| features.name.clone())
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default(),
+                )
+            })
+        else {
+            return;
+        };
+        let Some(language_id) = language_id else {
+            return;
+        };
+        if configured_server_names.is_empty() {
+            return;
+        }
+        let Some(project_root) = remote_lsp_project_root_for_document(
+            &workspace_identity,
+            self.project_directory.as_deref(),
+            doc_path.as_deref(),
+        ) else {
+            return;
+        };
+        let workspace_root = canonical_project_lsp_root(&project_root);
+        let Some(generation) = self.project_lsp.settled_generation(&workspace_root) else {
+            debug!(
+                doc_id = ?doc_id,
+                workspace_root = %workspace_root.display(),
+                "Project session still preparing; it decides which servers to start"
+            );
+            return;
+        };
+
+        // Servers already launched for this root (initialized or not) must not be started twice.
+        let launched_server_names = self
+            .editor
+            .language_servers
+            .iter_clients()
+            .filter(|client| {
+                remote_lsp_root_uri_matches_document_workspace(
+                    &workspace_identity,
+                    self.project_directory.as_deref(),
+                    doc_path.as_deref(),
+                    client.root_path(),
+                    client.root_uri(),
+                )
+            })
+            .map(|client| client.name().to_string())
+            .collect::<HashSet<_>>();
+        let planned_servers = configured_server_names
+            .into_iter()
+            .filter(|server_name| !launched_server_names.contains(server_name))
+            .filter(|server_name| {
+                self.project_lsp
+                    .begin_document_start(generation, &language_id, server_name)
+            })
+            .map(|server_name| (language_id.clone(), server_name))
+            .collect::<Vec<_>>();
+        if planned_servers.is_empty() {
+            return;
+        }
+        let Some(bridge) = self.helix_lsp_bridge_handle() else {
+            return;
+        };
+
+        let server_names = planned_servers
+            .iter()
+            .map(|(_, server_name)| server_name.clone())
+            .collect::<Vec<_>>();
+        info!(
+            doc_id = ?doc_id,
+            path = ?doc_path,
+            %language_id,
+            servers = ?server_names,
+            workspace_root = %workspace_root.display(),
+            "Starting language servers for opened remote document"
+        );
+        self.set_editor_status_feedback(
+            cx,
+            project_lsp_startup_status(&server_names, true),
+            crate::types::Severity::Info,
+        );
+        if let Some(state) = &self.lsp_state {
+            let plan_servers = planned_servers.clone();
+            state.update(cx, |state, cx| {
+                state.extend_project_server_plan(&plan_servers);
+                cx.notify();
+            });
+        }
+
+        let runtime = handle.clone();
+        let timeout = Duration::from_millis(self.config.gui.lsp.startup_timeout_ms);
+        cx.spawn(async move |this, cx| {
+            let prepare_root = workspace_root.clone();
+            let environment = runtime
+                .spawn(async move {
+                    tokio::time::timeout(timeout, bridge.prepare_server_environment(&prepare_root))
+                        .await
+                        .map_err(|_| {
+                            format!(
+                                "environment preparation timed out after {}ms",
+                                timeout.as_millis()
+                            )
+                        })
+                        .and_then(|result| result)
+                })
+                .await
+                .unwrap_or_else(|error| Err(format!("environment task failed: {error}")));
+
+            if let Some(this) = this.upgrade() {
+                this.update(cx, move |app, cx| {
+                    if !app.project_lsp.is_current(generation, &workspace_root) {
+                        return;
+                    }
+                    app.start_planned_project_servers_prepared(
+                        &runtime,
+                        generation,
+                        &workspace_root,
+                        &planned_servers,
+                        environment,
+                        cx,
+                    );
+                    app.sync_lsp_state(cx);
+                    cx.emit(crate::Update::Redraw);
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+    }
+
     pub fn trigger_lsp_navigation(
         &mut self,
         request: editor_input::NativeLspNavigationRequest,
@@ -8670,7 +8828,7 @@ impl Application {
                             action,
                         ) {
                             Ok(doc_id) => {
-                                core.ensure_document_tracked_by_running_servers(doc_id);
+                                core.attach_or_start_remote_document_servers(doc_id, &handle, cx);
                             }
                             Err(error) => {
                                 core.editor
