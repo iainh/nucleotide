@@ -5,7 +5,7 @@
 #[allow(dead_code, clippy::new_without_default)]
 pub mod test_support {
     use helix_view::DocumentId;
-    use nucleotide_core::event_bridge::{BridgedEvent, create_bridge_channel};
+    use nucleotide_core::event_bridge::{HelixEvent, create_bridge_channel};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::sync::mpsc;
@@ -67,7 +67,7 @@ pub mod test_support {
 
     /// Create a channel with a mock receiver that counts updates
     pub fn create_counting_channel() -> (
-        mpsc::UnboundedSender<BridgedEvent>,
+        mpsc::UnboundedSender<HelixEvent>,
         mpsc::UnboundedReceiver<TestUpdate>,
         UpdateCounter,
     ) {
@@ -76,43 +76,34 @@ pub mod test_support {
         let counter = UpdateCounter::new();
         let counter_clone = counter.clone_counter();
 
-        // Spawn a task to convert BridgedEvents to TestUpdates and count them
+        // Spawn a task to convert Helix events to TestUpdates and count them
         tokio::spawn(async move {
             while let Some(event) = rx.recv().await {
                 counter_clone.fetch_add(1, Ordering::SeqCst);
 
                 let update = match event {
-                    BridgedEvent::DocumentChanged {
+                    HelixEvent::DocumentChanged {
                         doc_id,
                         change_summary: _,
                         line_change: _,
                     } => TestUpdate::DocumentChanged { doc_id },
-                    BridgedEvent::DiagnosticsChanged { doc_id } => {
+                    HelixEvent::DiagnosticsChanged { doc_id } => {
                         TestUpdate::DiagnosticsChanged { doc_id }
                     }
-                    BridgedEvent::DocumentOpened { doc_id } => {
-                        TestUpdate::DocumentOpened { doc_id }
-                    }
-                    BridgedEvent::DocumentClosed {
+                    HelixEvent::DocumentOpened { doc_id } => TestUpdate::DocumentOpened { doc_id },
+                    HelixEvent::DocumentClosed {
                         doc_id,
                         was_modified: _,
                     } => TestUpdate::DocumentClosed { doc_id },
-                    BridgedEvent::LanguageServerInitialized { server_id } => {
+                    HelixEvent::LanguageServerInitialized { server_id } => {
                         TestUpdate::LanguageServerInitialized {
                             server_id,
                             server_name: format!("LSP-{:?}", server_id),
                         }
                     }
-                    BridgedEvent::LanguageServerExited { server_id } => {
+                    HelixEvent::LanguageServerExited { server_id } => {
                         TestUpdate::LanguageServerExited { server_id }
                     }
-                    // Ignore UI picker-related bridged events in tests
-                    BridgedEvent::DiagnosticsPickerRequested { .. }
-                    | BridgedEvent::FilePickerRequested
-                    | BridgedEvent::BufferPickerRequested => TestUpdate::DocumentChanged {
-                        doc_id: helix_view::DocumentId::default(),
-                    },
-                    // No fallback arm; all current variants handled above
                 };
 
                 let _ = update_tx.send(update);
@@ -122,14 +113,14 @@ pub mod test_support {
         (tx, update_rx, counter)
     }
 
-    pub fn create_test_document_events(count: usize) -> Vec<BridgedEvent> {
+    pub fn create_test_document_events(count: usize) -> Vec<HelixEvent> {
         let doc_id = DocumentId::default();
 
         (0..count)
-            .map(|_| BridgedEvent::DocumentChanged {
+            .map(|_| HelixEvent::DocumentChanged {
                 doc_id,
-                change_summary: nucleotide_events::v2::document::ChangeType::Insert,
-                line_change: nucleotide_events::v2::document::DocumentLineChange {
+                change_summary: nucleotide_events::document::ChangeType::Insert,
+                line_change: nucleotide_events::document::DocumentLineChange {
                     old_lines: 0..1,
                     new_lines: 0..1,
                 },
@@ -137,11 +128,11 @@ pub mod test_support {
             .collect()
     }
 
-    pub fn create_test_diagnostic_events(count: usize) -> Vec<BridgedEvent> {
+    pub fn create_test_diagnostic_events(count: usize) -> Vec<HelixEvent> {
         let doc_id = DocumentId::default();
 
         (0..count)
-            .map(|_| BridgedEvent::DiagnosticsChanged { doc_id })
+            .map(|_| HelixEvent::DiagnosticsChanged { doc_id })
             .collect()
     }
 }

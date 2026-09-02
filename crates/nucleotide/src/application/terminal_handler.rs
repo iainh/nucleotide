@@ -1,6 +1,6 @@
 // ABOUTME: Terminal runtime handler; consumes terminal events and updates view state
 
-use nucleotide_events::v2::terminal::{Event as TerminalEvent, TerminalId};
+use nucleotide_events::terminal::{Event as TerminalEvent, TerminalId};
 use nucleotide_logging::{error, info};
 use std::collections::HashMap;
 use std::io::{Read, Write};

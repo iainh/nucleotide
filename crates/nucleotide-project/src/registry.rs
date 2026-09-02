@@ -210,31 +210,6 @@ impl ManifestProviders {
         Ok(None)
     }
 
-    /// Detect project type (manifest name) for a given file path
-    pub async fn detect_project_type(
-        &self,
-        file_path: &Path,
-        max_depth: Option<usize>,
-    ) -> Result<Option<ManifestName>> {
-        let delegate = Arc::new(FsDelegate);
-        let max_depth = max_depth.unwrap_or(20);
-        let query = ManifestQuery::new(file_path, max_depth, delegate);
-
-        let providers = self.get_all();
-        for provider in providers {
-            match provider.search(query.clone()).await {
-                Ok(Some(_)) => {
-                    return Ok(Some(provider.name()));
-                }
-                Ok(None) => continue,
-                Err(e) if e.is_recoverable() => continue,
-                Err(e) => return Err(e),
-            }
-        }
-
-        Ok(None)
-    }
-
     /// Get providers that match specific file patterns
     pub fn providers_for_patterns(&self, patterns: &[String]) -> Vec<Arc<dyn ManifestProvider>> {
         let providers = self.get_all();
@@ -449,13 +424,6 @@ mod tests {
             .unwrap();
         assert!(detected_root.is_some());
         assert_eq!(detected_root.unwrap(), temp_dir.path());
-
-        let project_type = registry
-            .detect_project_type(&file_path, None)
-            .await
-            .unwrap();
-        assert!(project_type.is_some());
-        assert_eq!(project_type.unwrap().as_str(), "test.toml");
     }
 
     #[tokio::test]

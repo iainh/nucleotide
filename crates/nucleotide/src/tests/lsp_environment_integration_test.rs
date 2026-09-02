@@ -2,12 +2,10 @@
 // ABOUTME: Tests the full flow from ProjectEnvironment → HelixLspBridge → LSP server startup with environment injection
 
 use nucleotide_env::ProjectEnvironment;
-use nucleotide_events::ProjectLspEvent;
 use nucleotide_lsp::{EnvironmentProvider, HelixLspBridge};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tempfile;
-use tokio::sync::broadcast;
 
 fn env_contains_key(env: &HashMap<String, String>, key: &str) -> bool {
     env.keys()
@@ -62,14 +60,11 @@ impl EnvironmentProvider for MockEnvironmentProvider {
 
 #[tokio::test]
 async fn test_helix_lsp_bridge_environment_injection() {
-    // Create event channel for the bridge (using broadcast channel)
-    let (event_tx, _event_rx) = broadcast::channel::<ProjectLspEvent>(100);
-
     // Create mock environment provider
     let env_provider = Arc::new(MockEnvironmentProvider::new());
 
     // Create HelixLspBridge with environment provider
-    let _bridge = HelixLspBridge::new_with_environment(event_tx, env_provider.clone());
+    let _bridge = HelixLspBridge::new_with_environment(env_provider.clone());
 
     // Test that the bridge can access the environment provider
     // This is an indirect test since the actual server startup requires a full Editor
@@ -164,9 +159,8 @@ async fn test_environment_injection_flow() {
     use crate::application::ProjectEnvironmentProvider;
     let env_provider = Arc::new(ProjectEnvironmentProvider::new(project_env));
 
-    // 3. Create HelixLspBridge with the environment provider (using broadcast channel)
-    let (event_tx, _event_rx) = broadcast::channel::<ProjectLspEvent>(100);
-    let _bridge = HelixLspBridge::new_with_environment(event_tx, env_provider.clone());
+    // 3. Create HelixLspBridge with the environment provider
+    let _bridge = HelixLspBridge::new_with_environment(env_provider.clone());
 
     // 4. Verify the environment is available for LSP server startup
     let temp_workspace = tempfile::tempdir().unwrap();

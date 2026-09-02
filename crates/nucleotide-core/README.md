@@ -9,8 +9,8 @@ This crate provides the Helix-to-GPUI event bridge and small shared utilities us
 ## Public API
 
 ### Event Bridges
-- `event_bridge`: Helix → GPUI event translation
-- `AppEvent`: active document, UI, and workspace events delivered to GPUI
+- `event_bridge`: private Helix event transport consumed by the application
+- `HelixEvent`: hook payloads translated into the application's `Update` model
 
 ### Editor Utilities
 - `DocumentManager`, `DocumentManagerMut`: document access helpers

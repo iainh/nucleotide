@@ -1,5 +1,5 @@
-// ABOUTME: Bridge between ProjectLspManager and Helix's LSP Registry system
-// ABOUTME: Provides seamless integration without breaking existing LSP infrastructure
+// ABOUTME: Translates application LSP lifecycle requests into Helix registry operations.
+// ABOUTME: Helix remains the authoritative owner of every language-server process.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -11,13 +11,11 @@ use helix_lsp::{
     Client, ExternalTransport, ExternalTransportProvider, LanguageServerId, LspWorkspaceContext,
 };
 use helix_view::Editor;
-use nucleotide_events::{ProjectLspEvent, ServerStartupResult};
 use nucleotide_logging::{debug, error, info, instrument, warn};
 use nucleotide_workspace::{WorkspacePathMapping, classify_workspace_location, posix_path_string};
 use serde_json::Value as JsonValue;
-use tokio::sync::broadcast;
 
-use crate::{ProjectLspError, ProjectLspManager};
+use crate::ProjectLspError;
 
 // Define a dyn-compatible trait for environment providers using boxed futures
 #[allow(clippy::type_complexity)]
@@ -142,11 +140,9 @@ impl Drop for LaunchProxyCleanupRegistry {
     }
 }
 
-/// Bridge between ProjectLspManager and Helix's LSP system
+/// The sole adapter for mutating Helix's language-server registry.
 #[derive(Clone)]
 pub struct HelixLspBridge {
-    /// Event sender for project events
-    project_event_tx: broadcast::Sender<ProjectLspEvent>,
     /// Environment provider for LSP server startup
     environment_provider: Option<Arc<dyn EnvironmentProvider>>,
     /// Optional provider for temporary launch shims, used by remote workspaces.
@@ -161,10 +157,9 @@ pub struct HelixLspBridge {
 }
 
 impl HelixLspBridge {
-    /// Create a new bridge without environment provider (legacy)
-    pub fn new(project_event_tx: broadcast::Sender<ProjectLspEvent>) -> Self {
+    /// Create a new bridge without an environment provider.
+    pub fn new() -> Self {
         Self {
-            project_event_tx,
             environment_provider: None,
             launch_proxy_provider: None,
             remote_session_provider: Arc::new(std::sync::RwLock::new(None)),
@@ -228,12 +223,8 @@ impl HelixLspBridge {
         )))
     }
     /// Create a new bridge with environment provider for dynamic environment injection
-    pub fn new_with_environment(
-        project_event_tx: broadcast::Sender<ProjectLspEvent>,
-        environment_provider: Arc<dyn EnvironmentProvider>,
-    ) -> Self {
+    pub fn new_with_environment(environment_provider: Arc<dyn EnvironmentProvider>) -> Self {
         Self {
-            project_event_tx,
             environment_provider: Some(environment_provider),
             launch_proxy_provider: None,
             remote_session_provider: Arc::new(std::sync::RwLock::new(None)),
@@ -243,12 +234,10 @@ impl HelixLspBridge {
     }
 
     pub fn new_with_environment_and_launch_proxy(
-        project_event_tx: broadcast::Sender<ProjectLspEvent>,
         environment_provider: Arc<dyn EnvironmentProvider>,
         launch_proxy_provider: Arc<dyn LspLaunchProxyProvider>,
     ) -> Self {
         Self {
-            project_event_tx,
             environment_provider: Some(environment_provider),
             launch_proxy_provider: Some(launch_proxy_provider),
             remote_session_provider: Arc::new(std::sync::RwLock::new(None)),
@@ -821,19 +810,6 @@ impl HelixLspBridge {
                 cleanup_launch_proxy_paths(std::mem::take(&mut launch_proxy_cleanup_paths));
                 let error_msg = format!("Failed to start server: {}", e);
                 error!(error = %error_msg);
-
-                // Send failure event
-                let _ = self
-                    .project_event_tx
-                    .send(ProjectLspEvent::ServerStartupCompleted {
-                        workspace_root: workspace_root.to_path_buf(),
-                        server_name: server_name.to_string(),
-                        server_id: slotmap::KeyData::from_ffi(0).into(), // Invalid ID for failure
-                        status: ServerStartupResult::Failed {
-                            error: error_msg.clone(),
-                        },
-                    });
-
                 Err(ProjectLspError::ServerStartup(error_msg))
             }
             None => {
@@ -1001,28 +977,10 @@ fn cached_lsp_client_matches_workspace(
         .is_some_and(|(client_uri, expected_uri)| client_uri == expected_uri)
 }
 
-/// Helper trait for integrating ProjectLspManager with Editor
-pub trait EditorLspIntegration {
-    /// Get or create project LSP manager
-    fn get_project_lsp_manager(&mut self) -> Option<&mut ProjectLspManager>;
-
-    /// Detect and register project for current document
-    fn detect_and_register_project(&mut self, workspace_root: PathBuf);
-
-    /// Cleanup project when workspace closes
-    #[allow(clippy::ptr_arg)]
-    fn cleanup_project(&mut self, workspace_root: &PathBuf);
-}
-
-// Note: This would be implemented as an extension to the Editor struct
-// For now, we provide the interface that would be used
-
 #[cfg(test)]
 /// Mock implementation of HelixLspBridge for testing
 #[derive(Clone)]
 pub struct MockHelixLspBridge {
-    /// Event sender for project events
-    project_event_tx: broadcast::Sender<ProjectLspEvent>,
     /// Predefined responses for testing
     pub should_fail: bool,
     pub mock_server_id: Option<LanguageServerId>,
@@ -1031,18 +989,16 @@ pub struct MockHelixLspBridge {
 #[cfg(test)]
 impl MockHelixLspBridge {
     /// Create a new mock bridge
-    pub fn new(project_event_tx: broadcast::Sender<ProjectLspEvent>) -> Self {
+    pub fn new() -> Self {
         Self {
-            project_event_tx,
             should_fail: false,
             mock_server_id: Some(slotmap::KeyData::from_ffi(12345).into()),
         }
     }
 
     /// Create a mock bridge that will fail server startup
-    pub fn new_failing(project_event_tx: broadcast::Sender<ProjectLspEvent>) -> Self {
+    pub fn new_failing() -> Self {
         Self {
-            project_event_tx,
             should_fail: true,
             mock_server_id: None,
         }
@@ -1071,35 +1027,12 @@ impl MockHelixLspBridge {
 
         if self.should_fail {
             let error_msg = "Mock server startup failure".to_string();
-
-            // Send failure event
-            let _ = self
-                .project_event_tx
-                .send(ProjectLspEvent::ServerStartupCompleted {
-                    workspace_root: workspace_root.to_path_buf(),
-                    server_name: server_name.to_string(),
-                    server_id: slotmap::KeyData::from_ffi(0).into(),
-                    status: ServerStartupResult::Failed {
-                        error: error_msg.clone(),
-                    },
-                });
-
             return Err(ProjectLspError::ServerStartup(error_msg));
         }
 
         let server_id = self
             .mock_server_id
             .unwrap_or_else(|| slotmap::KeyData::from_ffi(rand::random::<u64>()).into());
-
-        // Send success event
-        let _ = self
-            .project_event_tx
-            .send(ProjectLspEvent::ServerStartupCompleted {
-                workspace_root: workspace_root.to_path_buf(),
-                server_name: server_name.to_string(),
-                server_id,
-                status: ServerStartupResult::Success,
-            });
 
         info!(server_id = ?server_id, "Mock: Server started successfully");
         Ok(server_id)
@@ -1287,9 +1220,7 @@ mod tests {
 
     #[tokio::test]
     async fn server_environment_can_be_prepared_without_an_editor() {
-        let (event_tx, _) = broadcast::channel(4);
-        let bridge =
-            HelixLspBridge::new_with_environment(event_tx, Arc::new(TestEnvironmentProvider));
+        let bridge = HelixLspBridge::new_with_environment(Arc::new(TestEnvironmentProvider));
 
         let environment = bridge
             .prepare_server_environment(Path::new("/workspace"))
@@ -1305,12 +1236,10 @@ mod tests {
 
     #[tokio::test]
     async fn direct_provider_skips_environment_fetch_and_can_be_replaced_or_removed() {
-        let (event_tx, _) = broadcast::channel(4);
         let fetches = Arc::new(AtomicUsize::new(0));
-        let bridge = HelixLspBridge::new_with_environment(
-            event_tx,
-            Arc::new(CountingEnvironmentProvider(Arc::clone(&fetches))),
-        );
+        let bridge = HelixLspBridge::new_with_environment(Arc::new(CountingEnvironmentProvider(
+            Arc::clone(&fetches),
+        )));
 
         bridge.set_remote_session_provider(Some(Arc::new(HandlesRoot("/first"))));
         assert_eq!(

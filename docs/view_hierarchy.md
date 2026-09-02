@@ -95,24 +95,20 @@ Helix Core Events
     ↓
 Event Bridge (src/event_bridge.rs)
     ↓ (via mpsc channel)
-BridgedEvent enum
+HelixEvent transport
     ↓
-Application::handle_bridged_event
+Application::handle_helix_event
     ↓
 Update Event emission
     ↓
 Workspace/View handlers
 ```
 
-#### Bridged Event Types:
+#### Helix Event Types:
 - `DocumentChanged` - Text content modifications
-- `SelectionChanged` - Cursor/selection updates
-- `ModeChanged` - Normal/Insert/Visual mode switches
 - `DiagnosticsChanged` - LSP diagnostic updates
 - `DocumentOpened/Closed` - Buffer lifecycle
-- `ViewFocused` - Split focus changes
 - `LanguageServerInitialized/Exited` - LSP lifecycle
-- `CompletionRequested` - Trigger completions
 
 ### 2. Update Event Flow
 
@@ -290,11 +286,11 @@ GPUI composites and presents frame
 
 ### Adding New Event Types
 
-1. Add variant to `BridgedEvent` enum
-2. Register hook in `register_event_hooks()`
-3. Handle in `Application::handle_bridged_event()`
-4. Add Update variant if UI needs notification
-5. Handle in relevant view components
+1. Add an `Update` variant for the application fact or request
+2. If it originates in Helix, add a private `HelixEvent` transport variant
+3. Register the hook in `register_event_hooks()`
+4. Translate it once in `Application::handle_helix_event()`
+5. Handle the `Update` in the owning view component
 
 ### Communication Best Practices
 
