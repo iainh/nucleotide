@@ -335,10 +335,9 @@ pub(super) fn project_lsp_error_is_retryable(error: &ProjectLspCommandError) -> 
 }
 
 pub(super) fn configured_project_servers(
-    editor: &Editor,
+    syntax_loader: &helix_core::syntax::Loader,
     plan: &ProjectLspPlan,
 ) -> Vec<(String, String)> {
-    let syntax_loader = editor.syn_loader.load();
     let mut servers = Vec::new();
     let mut seen = HashSet::new();
 
@@ -368,6 +367,23 @@ pub(super) fn configured_language_server_commands(editor: &Editor) -> HashMap<St
         .language_server_configs()
         .iter()
         .map(|(name, config)| (name.clone(), config.command.clone()))
+        .collect()
+}
+
+/// Commands the given servers would launch, excluding ones whose availability is already known.
+/// Probing only these keeps remote startup from checking every configured language server.
+pub(super) fn commands_to_probe_for_servers(
+    servers: &[(String, String)],
+    server_commands: &HashMap<String, String>,
+    known_available: Option<&HashSet<String>>,
+) -> Vec<String> {
+    servers
+        .iter()
+        .filter_map(|(_, server_name)| server_commands.get(server_name))
+        .filter(|command| !known_available.is_some_and(|known| known.contains(*command)))
+        .cloned()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
         .collect()
 }
 
@@ -517,6 +533,22 @@ pub(super) fn project_lsp_plan_from_names(names: &[String]) -> ProjectLspPlan {
     ProjectLspPlan {
         project_type,
         languages,
+    }
+}
+
+/// Plan for languages found by scanning project files rather than project markers.
+pub(super) fn project_lsp_plan_from_discovered_languages(
+    language_ids: impl IntoIterator<Item = String>,
+) -> ProjectLspPlan {
+    ProjectLspPlan {
+        project_type: nucleotide_events::ProjectType::Unknown,
+        languages: language_ids
+            .into_iter()
+            .map(|language_id| PlannedProjectLanguage {
+                language_id,
+                evidence: ProjectLanguageEvidence::DiscoveredLanguage,
+            })
+            .collect(),
     }
 }
 
