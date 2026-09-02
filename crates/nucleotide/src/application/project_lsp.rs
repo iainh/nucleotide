@@ -387,6 +387,39 @@ pub(super) fn commands_to_probe_for_servers(
         .collect()
 }
 
+/// Status shown while the project session detects languages, loads the project environment and
+/// (for remote workspaces) probes server availability.
+pub(super) fn project_lsp_preparation_status(
+    remote_workspace: bool,
+    proactive_startup_enabled: bool,
+) -> String {
+    match (remote_workspace, proactive_startup_enabled) {
+        (true, true) => {
+            "Preparing language servers: loading remote project environment and checking servers"
+                .to_string()
+        }
+        (false, true) => "Preparing language servers: loading project environment".to_string(),
+        (_, false) => {
+            "Loading project environment; language servers start when a file is opened".to_string()
+        }
+    }
+}
+
+/// Status shown once preparation finished and the planned servers are about to launch.
+pub(super) fn project_lsp_startup_status(
+    server_names: &[String],
+    proactive_startup_enabled: bool,
+) -> String {
+    if !proactive_startup_enabled {
+        return "Project environment ready; language servers start when a file is opened"
+            .to_string();
+    }
+    if server_names.is_empty() {
+        return "Project environment ready; no language servers to start".to_string();
+    }
+    format!("Starting language servers: {}", server_names.join(", "))
+}
+
 pub(super) fn retain_servers_with_available_commands(
     servers: &mut Vec<(String, String)>,
     server_commands: &HashMap<String, String>,
@@ -637,6 +670,23 @@ mod tests {
                 .build()
                 .expect("test runtime")
         });
+
+    #[test]
+    fn project_lsp_status_messages_describe_the_current_phase() {
+        assert!(project_lsp_preparation_status(true, true).contains("remote project environment"));
+        assert!(project_lsp_preparation_status(false, true).contains("project environment"));
+        assert!(project_lsp_preparation_status(true, false).contains("when a file is opened"));
+
+        assert_eq!(
+            project_lsp_startup_status(&["rust-analyzer".to_string()], true),
+            "Starting language servers: rust-analyzer"
+        );
+        assert!(project_lsp_startup_status(&[], true).contains("no language servers"));
+        assert!(
+            project_lsp_startup_status(&["rust-analyzer".to_string()], false)
+                .contains("when a file is opened")
+        );
+    }
 
     #[test]
     fn supervisor_makes_same_root_idempotent_and_rejects_stale_generations() {
