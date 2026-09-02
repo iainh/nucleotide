@@ -33,6 +33,18 @@ pub type Core = Application;
 // Re-export shared types
 pub use types::{EditorStatus, Update};
 
+/// Log level implied by the `-v` count. Returns `None` when the environment already requested a
+/// level and no `-v` flag was given, so `RUST_LOG=info nucl` behaves as documented.
+fn cli_log_level(verbosity: u64, env_level_requested: bool) -> Option<nucleotide_logging::Level> {
+    match verbosity {
+        0 if env_level_requested => None,
+        0 => Some(nucleotide_logging::Level::WARN),
+        1 => Some(nucleotide_logging::Level::INFO),
+        2 => Some(nucleotide_logging::Level::DEBUG),
+        _3_or_more => Some(nucleotide_logging::Level::TRACE),
+    }
+}
+
 fn setup_logging(verbosity: u64) -> Result<()> {
     use nucleotide_logging::{LoggingConfig, init_logging_with_reload};
 
@@ -40,14 +52,13 @@ fn setup_logging(verbosity: u64) -> Result<()> {
     let mut config =
         LoggingConfig::from_env().context("Failed to create logging config from environment")?;
 
-    // Override log level based on command line verbosity
-    let level = match verbosity {
-        0 => nucleotide_logging::Level::WARN,
-        1 => nucleotide_logging::Level::INFO,
-        2 => nucleotide_logging::Level::DEBUG,
-        _3_or_more => nucleotide_logging::Level::TRACE,
-    };
-    config.level = level.into();
+    // Explicit `-v` flags win; otherwise a level requested through NUCLEOTIDE_LOG / RUST_LOG
+    // must survive, and only a bare invocation drops to WARN.
+    let env_level_requested =
+        std::env::var_os("NUCLEOTIDE_LOG").is_some() || std::env::var_os("RUST_LOG").is_some();
+    if let Some(level) = cli_log_level(verbosity, env_level_requested) {
+        config.level = level.into();
+    }
 
     // Initialize the new logging system with hot-reload support
     init_logging_with_reload(config).context("Failed to initialize nucleotide logging")?;
@@ -1634,6 +1645,17 @@ mod tests {
             open_request_workspace_dir(&file_path),
             Some(temp_dir.path().to_path_buf())
         );
+    }
+
+    #[test]
+    fn cli_log_level_lets_environment_win_without_verbose_flags() {
+        use nucleotide_logging::Level;
+
+        assert_eq!(cli_log_level(0, false), Some(Level::WARN));
+        assert_eq!(cli_log_level(0, true), None);
+        assert_eq!(cli_log_level(1, true), Some(Level::INFO));
+        assert_eq!(cli_log_level(2, false), Some(Level::DEBUG));
+        assert_eq!(cli_log_level(5, true), Some(Level::TRACE));
     }
 
     #[test]
