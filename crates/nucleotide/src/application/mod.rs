@@ -1785,10 +1785,11 @@ use crate::types::Update;
 use editor_input::EditorInputBridge;
 use gpui::EventEmitter;
 use project_lsp::{
-    ProjectLspCoordinator, canonical_project_lsp_root, configured_language_server_commands,
-    configured_project_servers, detect_project_lsp_plan_with_backend,
-    discover_project_languages_with_backend, probe_available_language_server_commands,
-    project_lsp_error_is_retryable, retain_servers_with_available_commands,
+    ProjectLspCoordinator, canonical_project_lsp_root, commands_to_probe_for_servers,
+    configured_language_server_commands, configured_project_servers,
+    detect_project_lsp_plan_with_backend, discover_project_languages_with_backend,
+    probe_available_language_server_commands, project_lsp_error_is_retryable,
+    project_lsp_plan_from_discovered_languages, retain_servers_with_available_commands,
 };
 #[cfg(test)]
 use project_lsp::{project_lsp_plan_from_names, project_marker_names};
@@ -2785,6 +2786,7 @@ impl Application {
         let inventory_backend = workspace_backend.clone();
         let server_commands = configured_language_server_commands(&self.editor);
         let inventory_server_commands = server_commands.clone();
+        let syntax_loader = self.editor.syn_loader.load_full();
         let remote_workspace = classify_workspace_location(&workspace_root).is_remote();
         let timeout = Duration::from_millis(self.config.gui.lsp.startup_timeout_ms);
         let proactive_startup_enabled = self.config.gui.lsp.project_lsp_startup;
@@ -2815,11 +2817,15 @@ impl Application {
                         }
                     };
                     let (plan, environment) = tokio::join!(plan_future, environment_future);
+                    // Probe only the commands the planned servers need. Checking every
+                    // configured language server over the remote backend delays the first
+                    // server start by seconds; the language inventory probes the rest later.
+                    let planned_servers = configured_project_servers(&syntax_loader, &plan);
                     let available_commands = if remote_workspace && proactive_startup_enabled {
                         probe_available_language_server_commands(
                             &task_root,
                             availability_backend,
-                            server_commands.values().cloned().collect(),
+                            commands_to_probe_for_servers(&planned_servers, &server_commands, None),
                             environment.as_ref().ok().and_then(Option::as_ref),
                             timeout,
                         )
@@ -2828,11 +2834,11 @@ impl Application {
                     } else {
                         Ok(None)
                     };
-                    (plan, environment, available_commands)
+                    (plan, planned_servers, environment, available_commands)
                 })
                 .await;
 
-            let Ok((plan, environment, available_commands)) = preparation else {
+            let Ok((plan, planned_servers, environment, available_commands)) = preparation else {
                 if let Some(this) = this.upgrade() {
                     this.update(cx, |app, _cx| {
                         app.project_lsp.complete_session(
@@ -2858,7 +2864,7 @@ impl Application {
                     let proactive_startup_enabled = proactive_startup_enabled
                         && app.config.gui.lsp.project_lsp_startup;
                     let mut planned_servers = if proactive_startup_enabled {
-                        configured_project_servers(&app.editor, &plan)
+                        planned_servers
                     } else {
                         Vec::new()
                     };
@@ -2952,43 +2958,86 @@ impl Application {
     ) {
         let runtime = handle.clone();
         let timeout = Duration::from_millis(self.config.gui.lsp.startup_timeout_ms);
+        let syntax_loader = self.editor.syn_loader.load_full();
+        let remote_workspace = classify_workspace_location(&workspace_root).is_remote();
+        let probe_server_commands = server_commands.clone();
         cx.spawn(async move |this, cx| {
             let task_root = workspace_root.clone();
             let preparation = runtime
                 .spawn(async move {
+                    let server_commands = probe_server_commands;
+                    let availability_backend = workspace_backend.clone();
                     let discovered = discover_project_languages_with_backend(
                         &task_root,
                         workspace_backend,
                         &existing_languages,
                     )
                     .await;
-                    let environment = if discovered.is_empty() {
-                        Ok(None)
-                    } else {
-                        match bridge {
-                            Some(bridge) => tokio::time::timeout(
+                    if discovered.is_empty() {
+                        return (Vec::new(), Ok(None), available_commands);
+                    }
+                    let environment = match bridge {
+                        Some(bridge) => tokio::time::timeout(
+                            timeout,
+                            bridge.prepare_server_environment(&task_root),
+                        )
+                        .await
+                        .map_err(|_| {
+                            format!(
+                                "environment preparation timed out after {}ms",
+                                timeout.as_millis()
+                            )
+                        })
+                        .and_then(|result| result),
+                        None => Err("HelixLspBridge not initialized".to_string()),
+                    };
+
+                    let discovered_plan = project_lsp_plan_from_discovered_languages(discovered);
+                    let servers = configured_project_servers(&syntax_loader, &discovered_plan);
+
+                    // The initial probe covered only the planned servers; check the commands
+                    // the discovered languages add and fold them into the known set.
+                    let mut available_commands = available_commands;
+                    if remote_workspace {
+                        let missing = commands_to_probe_for_servers(
+                            &servers,
+                            &server_commands,
+                            available_commands.as_ref(),
+                        );
+                        if !missing.is_empty() {
+                            match probe_available_language_server_commands(
+                                &task_root,
+                                availability_backend,
+                                missing,
+                                environment.as_ref().ok().and_then(Option::as_ref),
                                 timeout,
-                                bridge.prepare_server_environment(&task_root),
                             )
                             .await
-                            .map_err(|_| {
-                                format!(
-                                    "environment preparation timed out after {}ms",
-                                    timeout.as_millis()
-                                )
-                            })
-                            .and_then(|result| result),
-                            None => Err("HelixLspBridge not initialized".to_string()),
+                            {
+                                Ok(found) => {
+                                    available_commands
+                                        .get_or_insert_with(HashSet::new)
+                                        .extend(found);
+                                }
+                                Err(error) => {
+                                    warn!(
+                                        %error,
+                                        workspace_root = %task_root.display(),
+                                        "Failed to probe remote language server availability for discovered languages; deferring their startup"
+                                    );
+                                    available_commands.get_or_insert_with(HashSet::new);
+                                }
+                            }
                         }
-                    };
-                    (discovered, environment)
+                    }
+                    (servers, environment, available_commands)
                 })
                 .await;
 
-            let Ok((discovered, environment)) = preparation else {
+            let Ok((mut servers, environment, available_commands)) = preparation else {
                 return;
             };
-            if discovered.is_empty() {
+            if servers.is_empty() {
                 return;
             }
 
@@ -3000,18 +3049,6 @@ impl Application {
                         return;
                     }
 
-                    let discovered_plan = nucleotide_events::ProjectLspPlan {
-                        project_type: nucleotide_events::ProjectType::Unknown,
-                        languages: discovered
-                            .into_iter()
-                            .map(|language_id| nucleotide_events::PlannedProjectLanguage {
-                                language_id,
-                                evidence:
-                                    nucleotide_events::ProjectLanguageEvidence::DiscoveredLanguage,
-                            })
-                            .collect(),
-                    };
-                    let mut servers = configured_project_servers(&app.editor, &discovered_plan);
                     retain_servers_with_available_commands(
                         &mut servers,
                         &server_commands,
@@ -9553,26 +9590,26 @@ mod tests {
         ProjectEnvironmentProvider, ProjectLspCoordinator, RemoteLspLaunchProxyProvider,
         WorkspaceDocumentSaveHandler, buffer_text_matches_path, buffer_text_matches_string,
         buffer_word_completion_items, char_index_for_line_col, coalesce_helix_events,
-        completion_context_for_trigger, configured_project_servers, current_dir_is_executable_dir,
-        dedupe_completion_items, detect_project_lsp_plan_with_backend,
-        diagnostic_picker_path_label, diagnostic_severity_label,
-        discover_project_languages_with_backend, file_picker_current_directory,
-        home_requires_login_shell_capture, hydrate_workspace_document_from_read,
-        local_path_completion_context, lsp_completion_insert_text,
-        lsp_completion_insert_text_format, lsp_completion_items_from_response,
-        lsp_completion_items_from_response_for_server, lsp_completion_resolve_supported,
-        lsp_completion_response_is_incomplete, lsp_diagnostic_document_uri,
-        lsp_location_from_location, lsp_location_path_from_url, lsp_symbol_picker,
-        native_open_file_with_backend, native_symbol_item_from_lsp, navigation_display_path,
-        open_loading_workspace_document, open_workspace_document, path_completion_items,
-        path_completion_items_from_listing, probe_available_language_server_commands,
-        project_lsp_plan_from_names, project_marker_names, read_workspace_document,
-        remote_lsp_project_root_for_document, remote_lsp_root_uri_matches_document_workspace,
-        remote_native_file_uri, retain_servers_with_available_commands,
-        should_stat_picker_root_with_backend, should_use_native_save_for_settings_file,
-        should_use_workspace_syntax_symbol_fallback, startup_path_should_open_as_file,
-        str_prefix_at_byte_limit, suppress_shadowed_buffer_word_completion_items,
-        syntax_symbol_kind_from_capture_name,
+        commands_to_probe_for_servers, completion_context_for_trigger, configured_project_servers,
+        current_dir_is_executable_dir, dedupe_completion_items,
+        detect_project_lsp_plan_with_backend, diagnostic_picker_path_label,
+        diagnostic_severity_label, discover_project_languages_with_backend,
+        file_picker_current_directory, home_requires_login_shell_capture,
+        hydrate_workspace_document_from_read, local_path_completion_context,
+        lsp_completion_insert_text, lsp_completion_insert_text_format,
+        lsp_completion_items_from_response, lsp_completion_items_from_response_for_server,
+        lsp_completion_resolve_supported, lsp_completion_response_is_incomplete,
+        lsp_diagnostic_document_uri, lsp_location_from_location, lsp_location_path_from_url,
+        lsp_symbol_picker, native_open_file_with_backend, native_symbol_item_from_lsp,
+        navigation_display_path, open_loading_workspace_document, open_workspace_document,
+        path_completion_items, path_completion_items_from_listing,
+        probe_available_language_server_commands, project_lsp_plan_from_names,
+        project_marker_names, read_workspace_document, remote_lsp_project_root_for_document,
+        remote_lsp_root_uri_matches_document_workspace, remote_native_file_uri,
+        retain_servers_with_available_commands, should_stat_picker_root_with_backend,
+        should_use_native_save_for_settings_file, should_use_workspace_syntax_symbol_fallback,
+        startup_path_should_open_as_file, str_prefix_at_byte_limit,
+        suppress_shadowed_buffer_word_completion_items, syntax_symbol_kind_from_capture_name,
     };
     use crate::test_utils::test_support::{
         TestUpdate, create_counting_channel, create_test_diagnostic_events,
@@ -11625,13 +11662,44 @@ language-servers = ["taplo"]
         app.update(cx, |app, _cx| {
             app.editor.syn_loader.store(Arc::new(loader));
             assert_eq!(
-                configured_project_servers(&app.editor, &plan),
+                configured_project_servers(&app.editor.syn_loader.load(), &plan),
                 vec![
                     ("rust".to_string(), "rust-analyzer".to_string()),
                     ("toml".to_string(), "taplo".to_string()),
                 ]
             );
         });
+    }
+
+    #[test]
+    fn project_lsp_probe_covers_only_planned_commands_not_already_known() {
+        let servers = vec![
+            ("rust".to_string(), "rust-analyzer".to_string()),
+            ("toml".to_string(), "taplo".to_string()),
+            ("toml".to_string(), "tombi".to_string()),
+            ("python".to_string(), "unconfigured".to_string()),
+        ];
+        let commands = HashMap::from([
+            ("rust-analyzer".to_string(), "rust-analyzer".to_string()),
+            ("taplo".to_string(), "taplo".to_string()),
+            ("tombi".to_string(), "tombi-cli".to_string()),
+            ("marksman".to_string(), "marksman".to_string()),
+        ]);
+
+        assert_eq!(
+            commands_to_probe_for_servers(&servers, &commands, None),
+            vec![
+                "rust-analyzer".to_string(),
+                "taplo".to_string(),
+                "tombi-cli".to_string()
+            ]
+        );
+
+        let known = HashSet::from(["rust-analyzer".to_string()]);
+        assert_eq!(
+            commands_to_probe_for_servers(&servers, &commands, Some(&known)),
+            vec!["taplo".to_string(), "tombi-cli".to_string()]
+        );
     }
 
     #[test]
