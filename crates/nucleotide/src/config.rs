@@ -245,8 +245,9 @@ pub struct EditorGuiConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum ThemeMode {
-    /// Follow system appearance
+    /// Follow system appearance (also accepted as `auto`)
     #[default]
+    #[serde(alias = "auto")]
     System,
     /// Always use light theme
     Light,
@@ -981,8 +982,16 @@ impl Config {
         // First, load the base Helix configuration
         let mut helix_config = load_helix_config(dir)?;
 
-        // Then, load GUI-specific configuration if it exists
-        let gui_config = load_gui_config(dir).unwrap_or_default();
+        // Then, load GUI-specific configuration if it exists. A broken nucleotide.toml must not
+        // abort startup, but it must not be silently ignored either.
+        let gui_config = load_gui_config(dir).unwrap_or_else(|error| {
+            nucleotide_logging::error!(
+                config_path = %dir.join("nucleotide.toml").display(),
+                error = %error,
+                "Failed to load nucleotide.toml; falling back to default GUI configuration"
+            );
+            GuiConfig::default()
+        });
 
         // Enable recommended diagnostics rendering by default when user has not configured it.
         // Matches Helix book guidance: end-of-line diagnostics = "hint" and inline cursor-line = "warning".
@@ -2025,6 +2034,27 @@ auto_download = true
             NUCLEOTIDE_EXAMPLE_CONFIG,
             include_str!("../../../docs/examples/nucleotide.example.toml")
         );
+    }
+
+    #[test]
+    fn theme_mode_accepts_auto_as_alias_for_system() {
+        let temp_dir = tempfile::TempDir::new().expect("should create temp directory");
+        std::fs::write(
+            temp_dir.path().join("nucleotide.toml"),
+            r#"
+[theme]
+mode = "auto"
+
+[lsp]
+project_lsp_startup = false
+"#,
+        )
+        .expect("should write nucleotide config");
+
+        let config = load_gui_config(temp_dir.path()).expect("should load GUI config");
+
+        assert_eq!(config.theme.mode, ThemeMode::System);
+        assert!(!config.lsp.project_lsp_startup);
     }
 
     #[test]
