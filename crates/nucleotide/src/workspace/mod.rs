@@ -3397,7 +3397,13 @@ impl Workspace {
 
     /// Clear a transient status message once its operation finishes, without clobbering a
     /// newer status that replaced it in the meantime.
+    ///
+    /// The status bar renders the message from `NotificationView` (which otherwise keeps it
+    /// for a fixed timeout), so the matching notification is dismissed as well.
     fn clear_run_status_if_current(&mut self, message: &str, cx: &mut Context<Self>) {
+        self.notifications.update(cx, |notifications, cx| {
+            notifications.dismiss_status_line_message(message, cx);
+        });
         self.core.update(cx, |app, app_cx| {
             let is_current = app
                 .editor

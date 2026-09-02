@@ -240,6 +240,25 @@ impl NotificationView {
         }
     }
 
+    /// Dismiss status-line notifications carrying `message` before their timeout elapses.
+    ///
+    /// Progress messages such as "Loading remote file: …" are pushed when an operation starts;
+    /// once it finishes the message is stale and must not linger for the default timeout.
+    pub fn dismiss_status_line_message(&mut self, message: &str, cx: &mut Context<Self>) {
+        if self.remove_status_line_message(message) {
+            cx.notify();
+        }
+    }
+
+    fn remove_status_line_message(&mut self, message: &str) -> bool {
+        let previous_len = self.transient_notifications.len();
+        self.transient_notifications.retain(|notification| {
+            !(notification.placement == NotificationPlacement::StatusLine
+                && notification.message.as_deref() == Some(message))
+        });
+        self.transient_notifications.len() != previous_len
+    }
+
     pub fn status_bar_notification(&self) -> Option<StatusBarNotification> {
         self.transient_notifications
             .iter()
@@ -387,6 +406,44 @@ mod tests {
 
         assert_eq!(view.transient_notifications.len(), 1);
         assert_eq!(view.transient_notifications[0].id, 2);
+    }
+
+    #[test]
+    fn remove_status_line_message_only_drops_matching_status_line_entries() {
+        let mut view = NotificationView::new();
+        view.transient_notifications.push(Notification {
+            id: 1,
+            title: "info".to_string(),
+            message: Some("Loading remote file: /tmp/a.rs".to_string()),
+            severity: NotificationSeverity::Info,
+            placement: NotificationPlacement::StatusLine,
+        });
+        view.transient_notifications.push(Notification {
+            id: 2,
+            title: "warning".to_string(),
+            message: Some("Loading remote file: /tmp/a.rs".to_string()),
+            severity: NotificationSeverity::Warning,
+            placement: NotificationPlacement::Banner,
+        });
+        view.transient_notifications.push(Notification {
+            id: 3,
+            title: "info".to_string(),
+            message: Some("Loading remote file: /tmp/b.rs".to_string()),
+            severity: NotificationSeverity::Info,
+            placement: NotificationPlacement::StatusLine,
+        });
+
+        assert!(view.remove_status_line_message("Loading remote file: /tmp/a.rs"));
+        assert_eq!(
+            view.transient_notifications
+                .iter()
+                .map(|notification| notification.id)
+                .collect::<Vec<_>>(),
+            vec![2, 3]
+        );
+
+        assert!(!view.remove_status_line_message("Loading remote file: /tmp/a.rs"));
+        assert_eq!(view.transient_notifications.len(), 2);
     }
 
     #[test]
