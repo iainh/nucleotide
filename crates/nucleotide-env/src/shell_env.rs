@@ -77,6 +77,10 @@ pub struct ProjectEnvironment {
     /// Cached error messages per directory  
     environment_errors: Arc<RwLock<HashMap<PathBuf, String>>>,
 
+    /// One lock per canonical directory so concurrent requests for the same directory share
+    /// a single environment load instead of each spawning `nix print-dev-env` or a shell.
+    directory_load_locks: std::sync::Mutex<HashMap<PathBuf, Arc<tokio::sync::Mutex<()>>>>,
+
     /// Cached login-shell process environment for GUI launches without CLI inheritance.
     process_shell_environment: Arc<RwLock<Option<HashMap<String, String>>>>,
 
@@ -98,6 +102,7 @@ impl ProjectEnvironment {
             cli_environment: cli_env,
             directory_environments: Arc::new(RwLock::new(HashMap::new())),
             environment_errors: Arc::new(RwLock::new(HashMap::new())),
+            directory_load_locks: std::sync::Mutex::new(HashMap::new()),
             process_shell_environment: Arc::new(RwLock::new(None)),
             shell_execution_semaphore: Arc::new(Semaphore::new(3)), // Limit concurrent shell executions
         }
@@ -129,46 +134,27 @@ impl ProjectEnvironment {
             .await;
 
         // Priority 1: Directory-specific environment (cached)
-        if let Some(cached) = {
-            let cache = self.directory_environments.read().await;
-            cache.get(directory).cloned()
-        } {
-            if cached_environment_is_current(&cached) {
-                debug!("Using cached directory environment");
-                return Ok(cached.environment);
-            }
-
-            debug!(
-                directory = %directory.display(),
-                origin = ?cached.origin,
-                "Cached directory environment is stale"
-            );
-            let mut cache = self.directory_environments.write().await;
-            cache.remove(directory);
+        if let Some(environment) = self.take_current_cached_environment(directory).await {
+            return Ok(environment);
         }
 
         let canonical_dir = directory
             .canonicalize()
             .unwrap_or_else(|_| directory.to_path_buf());
 
-        // Check cache first. Native flake environments are invalidated when any
-        // watched input changes so project switches and lockfile updates reload.
-        if let Some(cached) = {
-            let cache = self.directory_environments.read().await;
-            cache.get(&canonical_dir).cloned()
-        } {
-            if cached_environment_is_current(&cached) {
-                debug!("Using cached directory environment");
-                return Ok(cached.environment);
-            }
+        // Serialize loads per directory. Startup asks for the same project environment from
+        // several places at once; the first caller loads and the rest read its cached result.
+        let load_lock = self.directory_load_lock(&canonical_dir);
+        let _load_guard = load_lock.lock().await;
 
-            debug!(
-                directory = %canonical_dir.display(),
-                origin = ?cached.origin,
-                "Cached directory environment is stale"
-            );
-            let mut cache = self.directory_environments.write().await;
-            cache.remove(&canonical_dir);
+        if shell_environment_cancelled(cancellation) {
+            return Err(ShellEnvironmentError::Cancelled);
+        }
+
+        // Check cache again under the lock. Native flake environments are invalidated when
+        // any watched input changes so project switches and lockfile updates reload.
+        if let Some(environment) = self.take_current_cached_environment(&canonical_dir).await {
+            return Ok(environment);
         }
 
         // Priority 2: Native `.envrc` subset for `use flake`.
@@ -539,16 +525,44 @@ impl ProjectEnvironment {
             baseline_env.clone()
         };
 
+        let watch_paths = native_flake_watch_paths(directory, &envrc_path, &plan);
+        let watch_state = snapshot_watched_files(watch_paths.clone());
+        let snapshot_path = native_flake_snapshot_path(directory, &native_baseline);
+
+        // `nix print-dev-env` re-evaluates the flake on every call, even with a warm store
+        // and a profile GC root. Each remote helper process starts with an empty in-memory
+        // cache, so reuse the last exported variables from disk while the flake inputs the
+        // evaluation depends on are unchanged.
+        if let Some(exported) = read_native_flake_snapshot(&snapshot_path, &plan, &watch_state) {
+            info!(
+                directory = %directory.display(),
+                snapshot = %snapshot_path.display(),
+                "Reusing persisted native flake environment"
+            );
+            let mut environment = merge_native_flake_environment(&native_baseline, exported);
+            environment.insert("ZED_ENVIRONMENT".to_string(), "native-flake".to_string());
+            return Ok(Some(NativeFlakeEnvironment {
+                environment,
+                watch_state,
+            }));
+        }
+
         let exported =
             run_nix_print_dev_env(directory, &plan, &native_baseline, cancellation).await?;
+
+        // Only persist when the inputs did not change while nix was running; otherwise the
+        // snapshot could describe inputs that never produced this output.
+        let watch_state_after = snapshot_watched_files(watch_paths);
+        if watch_state_after == watch_state {
+            write_native_flake_snapshot(&snapshot_path, &plan, &watch_state, &exported);
+        }
+
         let mut environment = merge_native_flake_environment(&native_baseline, exported);
         environment.insert("ZED_ENVIRONMENT".to_string(), "native-flake".to_string());
 
-        let watch_paths = native_flake_watch_paths(directory, &envrc_path, &plan);
-
         Ok(Some(NativeFlakeEnvironment {
             environment,
-            watch_state: snapshot_watched_files(watch_paths),
+            watch_state: watch_state_after,
         }))
     }
 
@@ -576,6 +590,43 @@ impl ProjectEnvironment {
         }
 
         Ok(env)
+    }
+
+    /// Return the cached environment for `directory` if it is still current, dropping a
+    /// stale entry so the caller reloads it.
+    async fn take_current_cached_environment(
+        &self,
+        directory: &Path,
+    ) -> Option<HashMap<String, String>> {
+        let cached = {
+            let cache = self.directory_environments.read().await;
+            cache.get(directory).cloned()
+        }?;
+
+        if cached_environment_is_current(&cached) {
+            debug!("Using cached directory environment");
+            return Some(cached.environment);
+        }
+
+        debug!(
+            directory = %directory.display(),
+            origin = ?cached.origin,
+            "Cached directory environment is stale"
+        );
+        let mut cache = self.directory_environments.write().await;
+        cache.remove(directory);
+        None
+    }
+
+    fn directory_load_lock(&self, directory: &Path) -> Arc<tokio::sync::Mutex<()>> {
+        let mut locks = self
+            .directory_load_locks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        locks
+            .entry(directory.to_path_buf())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
     }
 
     /// Get cached directories for testing/debugging
@@ -1170,11 +1221,138 @@ fn parse_nix_print_dev_env_json(
 }
 
 fn native_flake_profile_path(directory: &Path, environment: &HashMap<String, String>) -> PathBuf {
+    native_flake_cache_dir(directory, environment).join("flake-profile")
+}
+
+fn native_flake_snapshot_path(directory: &Path, environment: &HashMap<String, String>) -> PathBuf {
+    native_flake_cache_dir(directory, environment).join("exported-env.json")
+}
+
+fn native_flake_cache_dir(directory: &Path, environment: &HashMap<String, String>) -> PathBuf {
     let key = stable_hash_hex(directory.to_string_lossy().as_bytes());
     nucleotide_cache_dir(environment)
         .join("native-flake-env")
         .join(key)
-        .join("flake-profile")
+}
+
+const NATIVE_FLAKE_SNAPSHOT_VERSION: u64 = 1;
+
+/// Read the exported variables persisted by a previous `nix print-dev-env` run when they
+/// were produced from the same flake arguments and the same watched-file states.
+fn read_native_flake_snapshot(
+    path: &Path,
+    plan: &NativeFlakePlan,
+    watch_state: &[WatchedFileState],
+) -> Option<HashMap<String, String>> {
+    let bytes = fs::read(path).ok()?;
+    let snapshot: serde_json::Value = match serde_json::from_slice(&bytes) {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            debug!(path = %path.display(), error = %error, "Ignoring unreadable native flake snapshot");
+            return None;
+        }
+    };
+
+    if snapshot.get("version").and_then(serde_json::Value::as_u64)
+        != Some(NATIVE_FLAKE_SNAPSHOT_VERSION)
+    {
+        return None;
+    }
+
+    let flake_args: Vec<String> = snapshot
+        .get("flake_args")?
+        .as_array()?
+        .iter()
+        .map(|value| value.as_str().map(str::to_owned))
+        .collect::<Option<_>>()?;
+    if flake_args != plan.flake_args {
+        return None;
+    }
+
+    let recorded_watch_state: Vec<WatchedFileState> = snapshot
+        .get("watched_files")?
+        .as_array()?
+        .iter()
+        .map(watched_file_state_from_json)
+        .collect::<Option<_>>()?;
+    if recorded_watch_state != watch_state {
+        debug!(path = %path.display(), "Native flake snapshot inputs changed");
+        return None;
+    }
+
+    let exported: HashMap<String, String> = snapshot
+        .get("exported")?
+        .as_object()?
+        .iter()
+        .map(|(key, value)| value.as_str().map(|value| (key.clone(), value.to_owned())))
+        .collect::<Option<_>>()?;
+    (!exported.is_empty()).then_some(exported)
+}
+
+fn write_native_flake_snapshot(
+    path: &Path,
+    plan: &NativeFlakePlan,
+    watch_state: &[WatchedFileState],
+    exported: &HashMap<String, String>,
+) {
+    let snapshot = serde_json::json!({
+        "version": NATIVE_FLAKE_SNAPSHOT_VERSION,
+        "flake_args": plan.flake_args,
+        "watched_files": watch_state
+            .iter()
+            .map(watched_file_state_to_json)
+            .collect::<Vec<_>>(),
+        "exported": exported,
+    });
+
+    let result = path
+        .parent()
+        .map(fs::create_dir_all)
+        .unwrap_or(Ok(()))
+        .and_then(|()| {
+            // Write to a sibling and rename so a concurrent reader never sees a partial file.
+            let temp_path = path.with_extension(format!("json.{}.tmp", std::process::id()));
+            fs::write(&temp_path, snapshot.to_string())?;
+            fs::rename(&temp_path, path)
+        });
+
+    if let Err(error) = result {
+        warn!(
+            path = %path.display(),
+            error = %error,
+            "Failed to persist native flake environment snapshot"
+        );
+    }
+}
+
+fn watched_file_state_to_json(watched: &WatchedFileState) -> serde_json::Value {
+    let path = watched.path.to_string_lossy();
+    match &watched.state {
+        WatchedPathState::Present { modified, len } => serde_json::json!({
+            "path": path,
+            "modified_unix_nanos": modified
+                .and_then(|modified| modified.duration_since(SystemTime::UNIX_EPOCH).ok())
+                .map(|duration| duration.as_nanos() as u64),
+            "len": len,
+        }),
+        WatchedPathState::Missing => serde_json::json!({ "path": path, "missing": true }),
+    }
+}
+
+fn watched_file_state_from_json(value: &serde_json::Value) -> Option<WatchedFileState> {
+    let path = PathBuf::from(value.get("path")?.as_str()?);
+    let state = if value.get("missing").and_then(serde_json::Value::as_bool) == Some(true) {
+        WatchedPathState::Missing
+    } else {
+        WatchedPathState::Present {
+            modified: value
+                .get("modified_unix_nanos")
+                .and_then(serde_json::Value::as_u64)
+                .map(|nanos| SystemTime::UNIX_EPOCH + Duration::from_nanos(nanos)),
+            len: value.get("len")?.as_u64()?,
+        }
+    };
+    Some(WatchedFileState { path, state })
 }
 
 fn nucleotide_cache_dir(environment: &HashMap<String, String>) -> PathBuf {
@@ -2144,6 +2322,76 @@ mod tests {
         std::fs::write(watched_path, "use flake --impure\n").unwrap();
 
         assert!(!watched_files_are_current(&watch_state));
+    }
+
+    #[test]
+    fn test_native_flake_snapshot_round_trips_for_unchanged_inputs() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let envrc_path = temp_dir.path().join(".envrc");
+        std::fs::write(&envrc_path, "use flake\n").unwrap();
+        let missing_lock = temp_dir.path().join("flake.lock");
+        let plan = NativeFlakePlan {
+            flake_args: vec![".#dev".to_string()],
+            watched_files: Vec::new(),
+        };
+        let watch_state = snapshot_watched_files(vec![envrc_path.clone(), missing_lock]);
+        let exported = HashMap::from([("PATH".to_string(), "/nix/store/x/bin".to_string())]);
+        let snapshot_path = temp_dir.path().join("cache").join("exported-env.json");
+
+        write_native_flake_snapshot(&snapshot_path, &plan, &watch_state, &exported);
+
+        assert_eq!(
+            read_native_flake_snapshot(&snapshot_path, &plan, &watch_state),
+            Some(exported)
+        );
+
+        let other_plan = NativeFlakePlan {
+            flake_args: vec![".#other".to_string()],
+            watched_files: Vec::new(),
+        };
+        assert_eq!(
+            read_native_flake_snapshot(&snapshot_path, &other_plan, &watch_state),
+            None
+        );
+
+        std::fs::write(&envrc_path, "use flake .#dev --impure\n").unwrap();
+        let changed_state =
+            snapshot_watched_files(watch_state.iter().map(|w| w.path.clone()).collect());
+        assert_eq!(
+            read_native_flake_snapshot(&snapshot_path, &plan, &changed_state),
+            None
+        );
+    }
+
+    #[test]
+    fn test_directory_load_lock_is_shared_per_directory() {
+        let project_env = ProjectEnvironment::new(None);
+        let first = project_env.directory_load_lock(Path::new("/project/a"));
+        let same = project_env.directory_load_lock(Path::new("/project/a"));
+        let other = project_env.directory_load_lock(Path::new("/project/b"));
+
+        assert!(Arc::ptr_eq(&first, &same));
+        assert!(!Arc::ptr_eq(&first, &other));
+    }
+
+    #[test]
+    fn test_native_flake_snapshot_ignores_other_versions_and_garbage() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let plan = NativeFlakePlan {
+            flake_args: Vec::new(),
+            watched_files: Vec::new(),
+        };
+        let snapshot_path = temp_dir.path().join("exported-env.json");
+
+        std::fs::write(&snapshot_path, "not json").unwrap();
+        assert_eq!(read_native_flake_snapshot(&snapshot_path, &plan, &[]), None);
+
+        std::fs::write(
+            &snapshot_path,
+            r#"{"version": 999, "flake_args": [], "watched_files": [], "exported": {"A": "b"}}"#,
+        )
+        .unwrap();
+        assert_eq!(read_native_flake_snapshot(&snapshot_path, &plan, &[]), None);
     }
 
     #[test]
