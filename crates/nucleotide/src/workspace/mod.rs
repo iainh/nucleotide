@@ -15454,6 +15454,7 @@ impl Render for Workspace {
                     root = root.child(
                         div()
                             .absolute()
+                            .size_full()
                             .top_0()
                             .left_0()
                             .right_0()

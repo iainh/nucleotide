@@ -3201,9 +3201,9 @@ impl Application {
                             warn!(
                                 %error,
                                 workspace_root = %workspace_root.display(),
-                                "Failed to probe remote language server availability; retaining configured candidates"
+                                "Failed to probe remote language server availability; deferring proactive startup"
                             );
-                            None
+                            Some(HashSet::new())
                         }
                     };
                     retain_servers_with_available_commands(

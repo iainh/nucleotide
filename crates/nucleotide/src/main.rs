@@ -1085,6 +1085,10 @@ fn gui_main(
     platform_open_tx: tokio::sync::mpsc::UnboundedSender<ExternalOpenRequest>,
     mut platform_open_rx: tokio::sync::mpsc::UnboundedReceiver<ExternalOpenRequest>,
 ) {
+    if let Some(workspace_root) = &workspace_root {
+        app.project_directory = Some(workspace_root.clone());
+    }
+
     let gpui_app = gpui_platform::application().with_assets(nucleotide_ui::Assets);
 
     // Register handler for macOS file open events (dock drops and Finder "Open With")
