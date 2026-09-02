@@ -1094,7 +1094,7 @@ fn dock_menu_items() -> Vec<MenuItem> {
 // Font types are now exported from nucleotide::types
 use nucleotide::{EditorFontConfig, FontSettings, UiFontConfig};
 
-#[instrument(skip(app, config, handle))]
+#[instrument(skip(app, config, handle, platform_open_tx, platform_open_rx))]
 fn gui_main(
     mut app: Application,
     config: nucleotide::config::Config,
