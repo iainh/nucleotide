@@ -1524,9 +1524,16 @@ mod process_session_tests {
         let json = serde_json::to_string(&request).unwrap();
         assert!(json.contains(r#""cwd":"C:/workspace/project""#));
         assert!(json.contains(r#""anchor":"C:/workspace/project/src""#));
+        let expected = ProcessSessionRequest {
+            cwd: PathBuf::from("C:/workspace/project"),
+            environment: ProjectEnvironmentSelection::WorkspaceOrNearest {
+                anchor: PathBuf::from("C:/workspace/project/src"),
+            },
+            ..request
+        };
         assert_eq!(
             serde_json::from_str::<ProcessSessionRequest>(&json).unwrap(),
-            request
+            expected
         );
     }
 }

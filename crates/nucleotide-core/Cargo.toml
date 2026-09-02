@@ -20,7 +20,6 @@ nucleotide-logging.workspace = true
 # Helix dependencies
 helix-core.workspace = true
 helix-event.workspace = true
-helix-term.workspace = true
 helix-view.workspace = true
 helix-lsp.workspace = true
 
