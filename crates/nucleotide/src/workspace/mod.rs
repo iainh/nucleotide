@@ -991,7 +991,6 @@ pub struct Workspace {
     notifications: Entity<NotificationView>,
     last_notified_editor_status: Option<EditorStatus>,
     focus_handle: FocusHandle,
-    needs_focus_restore: bool,
     statusbar_lsp_focus: FocusHandle,
     statusbar_file_tree_focus: FocusHandle,
     statusbar_terminal_focus: FocusHandle,
@@ -1094,8 +1093,6 @@ pub struct Workspace {
     embedded_terminal_panel: Option<gpui::Entity<nucleotide_terminal_panel::TerminalPanel>>,
     // Cwd used to spawn the active terminal session.
     terminal_cwd: Option<PathBuf>,
-    // Request to focus terminal on next render (when toggled on via button)
-    terminal_focus_pending: bool,
     // Cache last applied editor size to avoid redundant resizes each frame
     last_editor_size: Option<(u16, u16)>,
     last_terminal_bounds: Option<(TerminalId, TerminalBounds)>,
@@ -2831,7 +2828,7 @@ impl Workspace {
         let id = self.spawn_terminal_session_with_input(cwd, extra_env, initial_input, cx);
         self.set_embedded_terminal_panel(id, cx);
         self.terminal_panel_visible = true;
-        self.terminal_focus_pending = true;
+        self.defer_focus_terminal(cx);
         cx.notify();
         id
     }
@@ -2850,16 +2847,14 @@ impl Workspace {
         let id = self.spawn_terminal_command_session(cwd, program, args, extra_env, cx);
         self.set_embedded_terminal_panel(id, cx);
         self.terminal_panel_visible = true;
-        self.terminal_focus_pending = true;
+        self.defer_focus_terminal(cx);
         cx.notify();
         id
     }
 
     fn hide_terminal_panel(&mut self, cx: &mut Context<Self>) {
         self.terminal_panel_visible = false;
-        self.terminal_focus_pending = false;
         self.last_terminal_bounds = None;
-        self.needs_focus_restore = true;
         if let Some(focus) = self.terminal_focus_handle(cx)
             && let Some(coordinator) = cx.try_global::<nucleotide_ui::FocusCoordinator>().cloned()
         {
@@ -2912,7 +2907,6 @@ impl Workspace {
             if let Some(activity_id) = self.active_run_activity.take() {
                 self.finish_background_activity(activity_id, cx);
             }
-            self.terminal_focus_pending = false;
             let status_message = match (status, code) {
                 (RunStatus::Finished, Some(0) | None) => "Runnable finished".to_string(),
                 (RunStatus::Failed, Some(exit_code)) => {
@@ -3070,8 +3064,7 @@ impl Workspace {
 
         self.terminal_panel_visible = true;
         self.register_terminal_focus(cx);
-        // Ask render to focus the terminal on the next frame
-        self.terminal_focus_pending = true;
+        self.defer_focus_terminal(cx);
         cx.notify();
     }
 
@@ -4387,7 +4380,7 @@ impl Workspace {
         }
 
         if should_focus {
-            self.needs_focus_restore = false;
+            self.defer_focus_editor(cx);
         }
 
         cx.notify();
@@ -5272,7 +5265,7 @@ impl Workspace {
             self.execute_raw_command(command, cx);
         }
         if self.view_manager.focused_view_id().is_some() {
-            self.needs_focus_restore = true;
+            self.defer_focus_editor(cx);
         }
         cx.notify();
     }
@@ -5377,21 +5370,25 @@ impl Workspace {
         info: Entity<InfoBoxView>,
         input_coordinator: Arc<InputCoordinator>,
         update_controller: Entity<UpdateController>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let focus_handle = cx.focus_handle();
+        let modal_layer = cx.new(|_| ModalLayer::new());
+        cx.observe_in(&modal_layer, window, |workspace, _layer, window, cx| {
+            workspace.sync_confirmation_modal(window, cx);
+        })
+        .detach();
         // Register editor focus with the global coordinator for centralized focus handling
         if let Some(coord) = cx.try_global::<nucleotide_ui::FocusCoordinator>().cloned() {
             coord.set_editor_focus(focus_handle.clone());
         }
 
-        // Subscribe to overlay dismiss events to restore focus
+        // Only removal of the focused surface restores focus (see on_focus_lost below).
+        // Completion dismissals also emit this event, but never own keyboard focus.
         cx.subscribe(
             &overlay,
             |workspace, _overlay, _event: &DismissEvent, cx| {
-                // Mark that we need to restore focus in the next render
-                workspace.needs_focus_restore = true;
-
                 // Check if completion was dismissed and manage context
                 let has_completion = workspace.overlay.read(cx).has_completion();
                 workspace.manage_completion_context(has_completion);
@@ -5425,9 +5422,22 @@ impl Workspace {
         .detach();
 
         // Subscribe to core (Application) events to receive Update events
-        cx.subscribe(&core, |workspace, _core, event: &crate::Update, cx| {
-            debug!("Workspace: Received Update event from core: {:?}", event);
-            workspace.handle_event(event, cx);
+        cx.subscribe_in(
+            &core,
+            window,
+            |workspace, _core, event: &crate::Update, _window, cx| {
+                debug!("Workspace: Received Update event from core: {:?}", event);
+                workspace.handle_event(event, cx);
+            },
+        )
+        .detach();
+
+        cx.on_focus_lost(window, |workspace, window, cx| {
+            if !workspace.overlay.read(cx).has_focusable_overlay()
+                && !workspace.modal_layer.read(cx).has_active_modal()
+            {
+                workspace.focus_editor(window, cx);
+            }
         })
         .detach();
 
@@ -5541,14 +5551,13 @@ impl Workspace {
             view_manager: ViewManager::new(),
             handle,
             overlay,
-            modal_layer: cx.new(|_| ModalLayer::new()),
+            modal_layer,
             info,
             info_hidden: true,
             key_hints,
             notifications,
             last_notified_editor_status: None,
             focus_handle,
-            needs_focus_restore: false,
             statusbar_lsp_focus: cx.focus_handle(),
             statusbar_file_tree_focus: cx.focus_handle(),
             statusbar_terminal_focus: cx.focus_handle(),
@@ -5643,7 +5652,6 @@ impl Workspace {
             basic_terminal_height: 220.0,
             embedded_terminal_panel: None,
             terminal_cwd: None,
-            terminal_focus_pending: false,
             // Performance cache for editor sizing
             last_editor_size: None,
             last_terminal_bounds: None,
@@ -5666,18 +5674,13 @@ impl Workspace {
         // Compute initial theme-derived colors once
         workspace.recompute_theme_colors(cx);
 
-        // Set initial focus restore state
-        workspace.needs_focus_restore = true;
-
         // Note: Completion handling is now done directly via event-driven approach
 
         // Initialize document views
         workspace.update_document_views(cx);
 
-        // Auto-focus the first document view on startup
-        if workspace.view_manager.focused_view_id().is_some() {
-            workspace.needs_focus_restore = true;
-        }
+        // Establish the initial keyboard owner after workspace construction.
+        workspace.defer_focus_editor(cx);
 
         // Setup LSP state subscription for project status updates
         workspace.setup_lsp_state_subscription(cx);
@@ -5740,6 +5743,7 @@ impl Workspace {
             .any(|document| document.is_modified());
         if has_modified_buffers {
             self.update_restart_confirm_open = true;
+            self.defer_confirmation_modal(cx);
             cx.notify();
         } else {
             self.prepare_and_arm_update_restart(cx);
@@ -5824,6 +5828,7 @@ impl Workspace {
     ) {
         self.close_confirm = Some(UnsavedCloseConfirmation { action, names });
         self.close_confirm_open = true;
+        self.defer_confirmation_modal(cx);
         cx.notify();
     }
 
@@ -5857,6 +5862,7 @@ impl Workspace {
         match delete_confirmation_required(delete_mode) {
             true => {
                 self.delete_confirm_open = true;
+                self.defer_confirmation_modal(cx);
                 cx.notify();
             }
             false => self.perform_delete_confirm(cx),
@@ -5959,6 +5965,17 @@ impl Workspace {
                 Workspace::handle_unsaved_close_confirm_event,
             );
         }
+    }
+
+    fn defer_confirmation_modal(&self, cx: &mut Context<Self>) {
+        let workspace = cx.weak_entity();
+        cx.defer(move |cx| {
+            cx.with_window(workspace.entity_id(), |window, cx| {
+                let _ = workspace.update(cx, |workspace, cx| {
+                    workspace.sync_confirmation_modal(window, cx);
+                });
+            });
+        });
     }
 
     fn render_documentation_sidebar(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
@@ -6546,7 +6563,7 @@ impl Workspace {
         let finished_resize = self.split_pane_resize.take().is_some();
 
         if finished_resize && self.view_manager.focused_view_id().is_some() {
-            self.needs_focus_restore = true;
+            self.focus_editor(window, cx);
         }
 
         if finished_resize || stopped_drag {
@@ -6640,7 +6657,7 @@ impl Workspace {
         });
 
         if self.view_manager.focused_view_id().is_some() {
-            self.needs_focus_restore = true;
+            self.defer_focus_editor(cx);
         }
         cx.notify();
     }
@@ -8101,6 +8118,19 @@ impl Workspace {
     }
 
     fn handle_redraw(&mut self, cx: &mut Context<Self>) {
+        // Keyboard split/navigation commands mutate Helix's active view. Follow
+        // that transition only if the old editor surface still owns GPUI focus.
+        let editor = &self.core.read(cx).editor;
+        if self.view_manager.focused_view_id() != Some(editor.tree.focus)
+            || editor.tree.views().count() != self.view_manager.view_count()
+            || editor
+                .tree
+                .views()
+                .any(|(view, _)| !self.view_manager.has_view(&view.id))
+        {
+            self.update_document_views(cx);
+        }
+
         // Shaped lines are keyed by text and paint style, so ordinary redraws
         // can reuse them. Font and theme changes invalidate the cache at their
         // dedicated update sites.
@@ -8397,7 +8427,7 @@ impl Workspace {
         info!("View focused: {:?}", view_id);
         self.active_image_tab_id = None;
         self.invalidate_tab_bar_documents();
-        self.view_manager.handle_view_focused(view_id, cx);
+        self.update_document_views(cx);
 
         let focused_filename = self.current_filename(cx);
         self.update_titlebar_filename(focused_filename.as_deref(), true, cx);
@@ -9942,7 +9972,7 @@ impl Workspace {
             });
         }
         if should_focus && self.view_manager.focused_view_id().is_some() {
-            self.needs_focus_restore = true;
+            self.defer_focus_editor(cx);
         }
         cx.notify();
 
@@ -10119,7 +10149,7 @@ impl Workspace {
             });
         }
         if should_focus && self.view_manager.focused_view_id().is_some() {
-            self.needs_focus_restore = true;
+            self.defer_focus_editor(cx);
         }
         cx.notify();
     }
@@ -10302,7 +10332,7 @@ impl Workspace {
 
         // Only focus the editor if requested (not when opening from file tree)
         if should_focus && self.view_manager.focused_view_id().is_some() {
-            self.needs_focus_restore = true;
+            self.defer_focus_editor(cx);
         }
 
         // Force a redraw
@@ -10495,7 +10525,6 @@ impl Workspace {
                 // pending keymap payload.
                 self.info_hidden = true;
                 self.update_key_hints(cx);
-                self.needs_focus_restore = true;
                 cx.notify();
             }
             crate::Update::ShouldQuit => {
@@ -10570,8 +10599,7 @@ impl Workspace {
             .is_some_and(|doc_view| doc_view.focus_handle(cx).contains_focused(window, cx));
         let tab_bar_menu_focused = self.any_tab_bar_menu_open();
         let workspace_focused = self.focus_handle.contains_focused(window, cx);
-        let terminal_pane_focused =
-            self.terminal_is_focused(window, cx) || self.terminal_focus_pending;
+        let terminal_pane_focused = self.terminal_is_focused(window, cx);
         let editor_pane_focused = workspace_focused || active_document_focused;
         let show_focused_tab_bar_buttons =
             editor_pane_focused || terminal_pane_focused || tab_bar_menu_focused;
@@ -12634,21 +12662,43 @@ impl Workspace {
 
     /// Focus the main editor area
     pub fn focus_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        nucleotide_logging::debug!("Focusing editor area");
-
-        // Find the currently active document view and focus it
-        if let Some(view_id) = self.view_manager.focused_view_id()
-            && let Some(doc_view) = self.view_manager.get_document_view(&view_id)
+        if self.active_image_tab_id.is_none()
+            && self.view_manager.get_focused_document_view().is_some()
         {
-            let doc_focus = doc_view.focus_handle(cx);
-            window.focus(&doc_focus, cx);
-            nucleotide_logging::debug!(view_id = ?view_id, "Focused active document view");
-            return;
+            self.view_manager.focus_editor_area(cx, window);
+        } else {
+            window.focus(&self.focus_handle, cx);
         }
+    }
 
-        // If no specific document, focus the main workspace
-        window.focus(&self.focus_handle, cx);
-        nucleotide_logging::debug!("Focused main workspace");
+    // Core events and async file opens do not carry a Window. Run their explicit
+    // focus transition after the current effect cycle, not from rendering.
+    fn defer_focus_editor(&self, cx: &mut Context<Self>) {
+        let workspace = cx.weak_entity();
+        cx.defer(move |cx| {
+            cx.with_window(workspace.entity_id(), |window, cx| {
+                let _ = workspace.update(cx, |workspace, cx| {
+                    if !workspace.overlay.read(cx).has_focusable_overlay()
+                        && !workspace.modal_layer.read(cx).has_active_modal()
+                    {
+                        workspace.focus_editor(window, cx);
+                    }
+                });
+            });
+        });
+    }
+
+    fn defer_focus_terminal(&self, cx: &mut Context<Self>) {
+        let workspace = cx.weak_entity();
+        cx.defer(move |cx| {
+            cx.with_window(workspace.entity_id(), |window, cx| {
+                let _ = workspace.update(cx, |workspace, cx| {
+                    if workspace.terminal_panel_visible {
+                        workspace.focus_terminal_panel(window, cx);
+                    }
+                });
+            });
+        });
     }
 
     /// Focus the file tree if it exists and is visible
@@ -13390,8 +13440,34 @@ impl Workspace {
     }
 
     fn update_document_views(&mut self, cx: &mut Context<Self>) {
+        let previous_view_id = self.view_manager.focused_view_id();
+        let previous_focus = self
+            .view_manager
+            .get_focused_document_view()
+            .map(|view| view.focus_handle(cx));
         let mut view_ids = HashSet::new();
         self.make_views(&mut view_ids, cx);
+
+        if let Some(view) = self.view_manager.get_focused_document_view()
+            && let Some(coordinator) = cx.try_global::<nucleotide_ui::FocusCoordinator>()
+        {
+            coordinator.set_editor_focus(view.focus_handle(cx));
+        }
+
+        if previous_view_id != self.view_manager.focused_view_id()
+            && let Some(previous_focus) = previous_focus
+        {
+            let workspace = cx.weak_entity();
+            cx.defer(move |cx| {
+                cx.with_window(workspace.entity_id(), |window, cx| {
+                    if previous_focus.is_focused(window) {
+                        let _ = workspace.update(cx, |workspace, cx| {
+                            workspace.focus_editor(window, cx);
+                        });
+                    }
+                });
+            });
+        }
     }
 
     /// Update only a specific document view - more efficient for targeted updates
@@ -13628,7 +13704,7 @@ impl Workspace {
     fn send_helix_key(&mut self, key: &str, cx: &mut Context<Self>) {
         // Ensure an editor view has focus
         if self.view_manager.focused_view_id().is_some() {
-            self.needs_focus_restore = true;
+            self.defer_focus_editor(cx);
         }
 
         // Parse the key string and send it to Helix
@@ -13654,9 +13730,6 @@ impl Workspace {
     ) {
         if !self.view_manager.is_document_view_focused(cx, window) {
             return;
-        }
-        if self.view_manager.focused_view_id().is_some() {
-            self.needs_focus_restore = true;
         }
         self.input
             .update(cx, |_, cx| cx.emit(InputEvent::semantic(action)));
@@ -13696,6 +13769,7 @@ impl Workspace {
     ) -> Option<String> {
         let mut focused_file_name = None;
         let mut focused_doc_path = None;
+        self.view_manager.set_focused_view_id(None);
 
         {
             let editor = &self.core.read(cx).editor;
@@ -13792,6 +13866,15 @@ impl Workspace {
                         &doc_focus_handle,
                         is_focused,
                     )
+                });
+                let document = view.downgrade();
+                let workspace_id = cx.entity_id();
+                cx.defer(move |cx| {
+                    cx.with_window(workspace_id, |window, cx| {
+                        let _ = document.update(cx, |view, cx| {
+                            view.observe_focus(window, cx);
+                        });
+                    });
                 });
                 self.view_manager.insert_document_view(view_id, view);
             }
@@ -14095,51 +14178,6 @@ impl Render for Workspace {
         }
 
         self.sync_file_tree_width_for_viewport(f32::from(window.viewport_size().width));
-        self.sync_confirmation_modal(window, cx);
-
-        // Failsafe: If the overlay is gone and no known element has focus, force-refocus.
-        // We see cases in logs where overlay_empty=true and both workspace and doc view
-        // report not focused, leaving the app with no key receiver. This block ensures
-        // that after overlay teardown, we always regain a valid focus target without a click.
-        if self.overlay.read(cx).is_empty() && !self.modal_layer.read(cx).has_active_modal() {
-            let ws_focused = self.focus_handle.contains_focused(window, cx);
-            let overlay_focused = self.overlay.focus_handle(cx).contains_focused(window, cx);
-
-            let (doc_focus_handle, doc_focused) = if let Some(id) =
-                self.view_manager.focused_view_id()
-                && let Some(doc_view) = self.view_manager.get_document_view(&id)
-            {
-                let fh = doc_view.focus_handle(cx);
-                (Some(fh.clone()), fh.contains_focused(window, cx))
-            } else {
-                (None, false)
-            };
-
-            let file_tree_focused = self
-                .file_tree
-                .as_ref()
-                .map(|ft| ft.focus_handle(cx).contains_focused(window, cx))
-                .unwrap_or(false);
-
-            let terminal_focused = self
-                .terminal_focus_handle(cx)
-                .is_some_and(|focus| focus.contains_focused(window, cx));
-
-            if !ws_focused
-                && !overlay_focused
-                && !doc_focused
-                && !file_tree_focused
-                && !terminal_focused
-            {
-                if let Some(fh) = doc_focus_handle {
-                    window.focus(&fh, cx);
-                } else if let Some(file_tree) = &self.file_tree {
-                    window.focus(&file_tree.focus_handle(cx), cx);
-                } else {
-                    window.focus(&self.focus_handle, cx);
-                }
-            }
-        }
 
         // Update global workspace layout information for completion positioning
         self.update_workspace_layout_info(window, cx);
@@ -14196,17 +14234,6 @@ impl Render for Workspace {
             }
         }
 
-        // Handle focus restoration if needed
-        if self.needs_focus_restore {
-            if self.view_manager.get_focused_document_view().is_some() {
-                self.view_manager.focus_editor_area(cx, window);
-            } else if let Some(file_tree) = &self.file_tree {
-                window.focus(&file_tree.focus_handle(cx), cx);
-            } else {
-                window.focus(&self.focus_handle, cx);
-            }
-            self.needs_focus_restore = false;
-        }
         let (focused_file_name, native_metadata) = self.focused_native_window_metadata(cx);
 
         self.update_titlebar_filename(focused_file_name.as_deref(), false, cx);
@@ -14595,10 +14622,6 @@ impl Render for Workspace {
                 if workspace.close_tab_bar_menus() {
                     cx.notify();
                 }
-
-                // Ensure workspace regains focus when clicked, so global shortcuts work
-                workspace.needs_focus_restore = true;
-                cx.notify();
             }),
         );
 
@@ -15423,12 +15446,6 @@ impl Render for Workspace {
                 container.into_any_element()
             }
         };
-
-        // If terminal was toggled on via button, focus it now (after elements are built)
-        if self.terminal_panel_visible && self.terminal_focus_pending {
-            self.focus_terminal_panel(window, cx);
-            self.terminal_focus_pending = false;
-        }
 
         // Build final workspace with unified bottom status bar
         workspace_div

@@ -207,6 +207,9 @@ impl Render for TerminalPanel {
         } else {
             container = container.child(
                 div()
+                    // Own focus while the session starts. TerminalView takes
+                    // over this same handle once the model is available.
+                    .track_focus(&self.focus)
                     .flex_1()
                     .min_h(px(0.0))
                     .flex()

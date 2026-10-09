@@ -1399,6 +1399,7 @@ fn gui_main(
                         info,
                         input_coordinator,
                         update_controller.clone(),
+                        window,
                         cx,
                     );
 
