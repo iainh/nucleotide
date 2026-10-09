@@ -378,7 +378,7 @@ mod tests {
     fn test_cache_expiration() {
         let config = CacheConfig {
             max_entries: 10,
-            max_age: Duration::from_millis(10), // Short but reliable expiration
+            max_age: Duration::from_secs(60),
             enable_metrics: true,
         };
         let mut cache = CompletionCache::with_config(config);
@@ -389,8 +389,8 @@ mod tests {
         cache.insert(key.clone(), matches);
         assert!(cache.get(&key).is_some());
 
-        // Wait for expiration
-        std::thread::sleep(Duration::from_millis(15));
+        // Age the entry without depending on thread scheduling or sleeps.
+        cache.cache.get_mut(&key).unwrap().created_at = Instant::now() - Duration::from_secs(120);
 
         // Should be expired now
         assert!(cache.get(&key).is_none());
@@ -466,7 +466,7 @@ mod tests {
     fn test_cleanup_expired() {
         let config = CacheConfig {
             max_entries: 10,
-            max_age: Duration::from_millis(1),
+            max_age: Duration::from_secs(60),
             enable_metrics: true,
         };
         let mut cache = CompletionCache::with_config(config);
@@ -475,10 +475,10 @@ mod tests {
         let key2 = CacheKey::new("test2".to_string(), None, 123);
         let matches = vec![StringMatch::new(1, 100, vec![0])];
 
-        cache.insert(key1, matches.clone());
+        cache.insert(key1.clone(), matches.clone());
 
-        // Wait for first entry to expire
-        std::thread::sleep(Duration::from_millis(2));
+        // Expire only the first entry; the fresh entry must survive cleanup.
+        cache.cache.get_mut(&key1).unwrap().created_at = Instant::now() - Duration::from_secs(120);
 
         cache.insert(key2.clone(), matches);
         assert_eq!(cache.size(), 2);

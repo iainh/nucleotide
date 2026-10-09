@@ -3022,7 +3022,12 @@ mod tests {
                 &mut jobs,
             );
         }
-        assert_eq!(focused_document_text(&editor), "Zx你好😀x你好😀x你好😀\n");
+        // New scratch documents use the platform's native line ending.
+        let line_ending = if cfg!(windows) { "\r\n" } else { "\n" };
+        assert_eq!(
+            focused_document_text(&editor),
+            format!("Zx你好😀x你好😀x你好😀{line_ending}")
+        );
         assert_eq!(editor.mode(), Mode::Normal);
         bridge.handle_semantic_action(
             EditorSemanticAction::Undo,
@@ -3030,7 +3035,10 @@ mod tests {
             &mut editor,
             &mut jobs,
         );
-        assert_eq!(focused_document_text(&editor), "Zx你好😀x你好😀\n");
+        assert_eq!(
+            focused_document_text(&editor),
+            format!("Zx你好😀x你好😀{line_ending}")
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
