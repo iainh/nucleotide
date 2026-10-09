@@ -1913,7 +1913,7 @@ impl OverlayView {
     }
 
     /// Calculate cursor-based completion position using exact cursor coordinates when available
-    fn calculate_completion_position(&self, cx: &Context<Self>) -> (gpui::Pixels, gpui::Pixels) {
+    fn calculate_completion_position(&self, cx: &App) -> (gpui::Pixels, gpui::Pixels) {
         let layout_info = self.get_workspace_layout_info(cx);
 
         // Use exact cursor coordinates if available from DocumentView rendering
@@ -2001,7 +2001,7 @@ impl OverlayView {
 
     /// Get workspace layout information for completion positioning
     /// Attempts to access real workspace dimensions, falls back to reasonable defaults
-    fn get_workspace_layout_info(&self, cx: &Context<Self>) -> WorkspaceLayoutInfo {
+    fn get_workspace_layout_info(&self, cx: &App) -> WorkspaceLayoutInfo {
         // Try to access workspace layout through global state
         if let Some(layout) = cx.try_global::<WorkspaceLayoutInfo>() {
             return *layout;
@@ -2197,15 +2197,12 @@ impl Render for OverlayView {
 
         if let Some(completion_view) = &self.completion_view {
             nucleotide_logging::trace!("DIAG: Render overlay branch: completion");
-            use gpui::{Anchor, anchored, point};
+            use gpui::{Anchor, AvailableSpace, anchored, canvas, point};
 
-            // Calculate proper completion position based on cursor location
-            let (cursor_x, cursor_y) = self.calculate_completion_position(cx);
-            nucleotide_logging::debug!(
-                x = ?cursor_x,
-                y = ?cursor_y,
-                "Rendering completion popup at calculated position"
-            );
+            // Read both the exact anchor and its fallback in prepaint, after
+            // the panes have synchronized this frame.
+            let overlay = cx.entity();
+            let completion_view = completion_view.clone();
 
             return div()
                 .key_context("Overlay")
@@ -2222,19 +2219,33 @@ impl Render for OverlayView {
                         this.dismiss_completion(cx);
                     }),
                 )
-                .child(
-                    anchored()
-                        .position(point(cursor_x, cursor_y))
-                        .anchor(Anchor::TopLeft) // Anchor top-left of completion to cursor position
-                        .offset(point(px(0.0), px(2.0))) // Small offset below cursor
-                        .snap_to_window_with_margin(px(8.0))
-                        // Consume clicks inside the popup so they don't dismiss
-                        .child(
-                            div()
-                                .on_mouse_down(MouseButton::Left, |_, _, _| {})
-                                .child(completion_view.clone()),
-                        ),
-                )
+                .child(gpui::deferred(
+                    canvas(
+                        move |bounds, window, cx| {
+                            let (x, y) = overlay.read(cx).calculate_completion_position(cx);
+                            let mut popup = anchored()
+                                .position(point(x, y))
+                                .anchor(Anchor::TopLeft)
+                                .offset(point(px(0.0), px(2.0)))
+                                .snap_to_window_with_margin(px(8.0))
+                                .child(
+                                    div()
+                                        .on_mouse_down(MouseButton::Left, |_, _, _| {})
+                                        .child(completion_view),
+                                )
+                                .into_any_element();
+                            popup.prepaint_as_root(
+                                bounds.origin,
+                                bounds.size.map(AvailableSpace::Definite),
+                                window,
+                                cx,
+                            );
+                            popup
+                        },
+                        |_, mut popup, window, cx| popup.paint(window, cx),
+                    )
+                    .size_full(),
+                ))
                 .into_any_element();
         }
 

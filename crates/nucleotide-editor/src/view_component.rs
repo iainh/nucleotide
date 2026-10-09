@@ -1,18 +1,18 @@
 // ABOUTME: Native GPUI editor view component shell
 // ABOUTME: Composes editor document painting with viewport input and scrollbars
 
-use std::rc::Rc;
+use std::{marker::PhantomData, rc::Rc};
 
 use gpui::{
-    App, Bounds, Component, EntityId, FocusHandle, Hsla, InteractiveElement as _, IntoElement,
-    KeyDownEvent, ParentElement as _, Pixels, RenderOnce, Size, Styled as _, TextStyle, Window,
-    div,
+    AnyElement, App, AvailableSpace, Bounds, Element, ElementId, EntityId, FocusHandle,
+    GlobalElementId, Hsla, InspectorElementId, InteractiveElement as _, IntoElement, KeyDownEvent,
+    LayoutId, ParentElement as _, Pixels, Style, Styled as _, TextStyle, Window, div, relative,
 };
 
 use crate::{
     CursorOverlayPlan, EditorDocumentElement, EditorLayout, EditorScrollbarMarker, EditorSurface,
-    EditorSurfacePointerEvent, EditorViewState, EditorViewport, ViewportScrollUpdate,
-    selection::EditorPointerSelectionPhase,
+    EditorSurfacePointerEvent, EditorTextMetrics, EditorViewState, EditorViewport,
+    ViewportScrollUpdate, selection::EditorPointerSelectionPhase,
 };
 
 type ScrollCallback = Rc<dyn Fn(&EditorViewport, ViewportScrollUpdate, &mut App)>;
@@ -22,34 +22,13 @@ type PointerSelectionCallback =
 type CursorOverlayCallback = Rc<dyn Fn(Option<CursorOverlayPlan>, &mut App)>;
 type KeyDownCallback = Rc<dyn Fn(&KeyDownEvent, &mut Window, &mut App) -> bool>;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct EditorSurfaceRerenderSnapshot {
-    gutter_width: Pixels,
-    viewport_size: Size<Pixels>,
-    max_scroll_offset: gpui::Size<Pixels>,
-}
-
-impl EditorSurfaceRerenderSnapshot {
-    fn from_state(state: &EditorViewState) -> Self {
-        Self {
-            gutter_width: state.layout_snapshot().gutter_width,
-            viewport_size: state.viewport().viewport_bounds().size,
-            max_scroll_offset: state.viewport().max_scroll_offset(),
-        }
-    }
-
-    fn requires_rerender_after(self, next: Self) -> bool {
-        self.gutter_width != next.gutter_width
-            || self.viewport_size != next.viewport_size
-            || self.max_scroll_offset != next.max_scroll_offset
-    }
-}
-
-pub struct NativeEditorView<P> {
+pub struct NativeEditorView<F, P, T> {
     view_entity_id: EntityId,
     editor_state: EditorViewState,
     text_style: TextStyle,
-    paint: P,
+    prepare: F,
+    paint: Option<P>,
+    frame: PhantomData<T>,
     focus: Option<FocusHandle>,
     scrollbar_thumb_color: Option<Hsla>,
     scrollbar_markers: Vec<EditorScrollbarMarker>,
@@ -62,28 +41,34 @@ pub struct NativeEditorView<P> {
     on_mouse_up: Option<PointerCallback>,
 }
 
-impl<P> NativeEditorView<P>
+impl<F, P, T> NativeEditorView<F, P, T>
 where
+    F: FnMut(&mut EditorViewState, Bounds<Pixels>, &mut EditorLayout, &mut Window, &mut App) -> T
+        + 'static,
     P: FnMut(
             &mut EditorViewState,
-            Bounds<Pixels>,
-            &mut EditorLayout,
+            &T,
+            &EditorLayout,
             &mut Window,
             &mut App,
         ) -> Option<CursorOverlayPlan>
         + 'static,
+    T: 'static,
 {
     pub fn new(
         view_entity_id: EntityId,
         editor_state: EditorViewState,
         text_style: TextStyle,
+        prepare: F,
         paint: P,
     ) -> Self {
         Self {
             view_entity_id,
             editor_state,
             text_style,
-            paint,
+            prepare,
+            paint: Some(paint),
+            frame: PhantomData,
             focus: None,
             scrollbar_thumb_color: None,
             scrollbar_markers: Vec::new(),
@@ -170,52 +155,92 @@ where
     }
 }
 
-impl<P> IntoElement for NativeEditorView<P>
+impl<F, P, T> IntoElement for NativeEditorView<F, P, T>
 where
+    F: FnMut(&mut EditorViewState, Bounds<Pixels>, &mut EditorLayout, &mut Window, &mut App) -> T
+        + 'static,
     P: FnMut(
             &mut EditorViewState,
-            Bounds<Pixels>,
-            &mut EditorLayout,
+            &T,
+            &EditorLayout,
             &mut Window,
             &mut App,
         ) -> Option<CursorOverlayPlan>
         + 'static,
+    T: 'static,
 {
-    type Element = Component<Self>;
+    type Element = Self;
 
     fn into_element(self) -> Self::Element {
-        Component::new(self)
+        self
     }
 }
 
-impl<P> RenderOnce for NativeEditorView<P>
+impl<F, P, T> Element for NativeEditorView<F, P, T>
 where
+    F: FnMut(&mut EditorViewState, Bounds<Pixels>, &mut EditorLayout, &mut Window, &mut App) -> T
+        + 'static,
     P: FnMut(
             &mut EditorViewState,
-            Bounds<Pixels>,
-            &mut EditorLayout,
+            &T,
+            &EditorLayout,
             &mut Window,
             &mut App,
         ) -> Option<CursorOverlayPlan>
         + 'static,
+    T: 'static,
 {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
-        let NativeEditorView {
-            view_entity_id,
-            editor_state,
-            text_style,
-            mut paint,
-            focus,
-            scrollbar_thumb_color,
-            scrollbar_markers,
-            on_scroll,
-            on_key_down,
-            on_cursor_overlay,
-            on_pointer_selection,
-            on_mouse_down,
-            on_mouse_drag,
-            on_mouse_up,
-        } = self;
+    type RequestLayoutState = ();
+    type PrepaintState = AnyElement;
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        let mut style = Style::default();
+        style.size.width = relative(1.).into();
+        style.size.height = relative(1.).into();
+        (window.request_layout(style, None, cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) -> AnyElement {
+        let mut layout = EditorTextMetrics::resolve(cx.text_system(), &self.text_style)
+            .layout_for_bounds(bounds);
+        // Prepare before constructing the surface: its scrollbars and input must
+        // see the same geometry that the document will paint in this frame.
+        let frame = (self.prepare)(&mut self.editor_state, bounds, &mut layout, window, cx);
+        let view_entity_id = self.view_entity_id;
+        let editor_state = self.editor_state.clone();
+        let mut paint = self.paint.take().expect("editor element prepainted once");
+        let focus = self.focus.clone();
+        let scrollbar_thumb_color = self.scrollbar_thumb_color;
+        let scrollbar_markers = self.scrollbar_markers.clone();
+        let on_scroll = self.on_scroll.clone();
+        let on_key_down = self.on_key_down.clone();
+        let on_cursor_overlay = self.on_cursor_overlay.clone();
+        let on_pointer_selection = self.on_pointer_selection.clone();
+        let on_mouse_down = self.on_mouse_down.clone();
+        let on_mouse_drag = self.on_mouse_drag.clone();
+        let on_mouse_up = self.on_mouse_up.clone();
 
         let root = div().id("editor-content").w_full().h_full().flex();
 
@@ -225,20 +250,8 @@ where
         let horizontal_scrollbar_state = editor_state.horizontal_scrollbar_state().clone();
         let mut paint_editor_state = editor_state;
         let document_element =
-            EditorDocumentElement::new(text_style, move |bounds, after_layout, window, cx| {
-                let rerender_snapshot_before =
-                    EditorSurfaceRerenderSnapshot::from_state(&paint_editor_state);
-                let overlay_plan = paint(&mut paint_editor_state, bounds, after_layout, window, cx);
-                let rerender_snapshot_after =
-                    EditorSurfaceRerenderSnapshot::from_state(&paint_editor_state);
-                if rerender_snapshot_before.requires_rerender_after(rerender_snapshot_after) {
-                    // Paint runs after the surface has already rendered from
-                    // the old viewport. Schedule the owning view to render
-                    // again after this frame unwinds.
-                    cx.defer(move |cx| {
-                        cx.notify(view_entity_id);
-                    });
-                }
+            EditorDocumentElement::new(layout, move |_bounds, layout, window, cx| {
+                let overlay_plan = paint(&mut paint_editor_state, &frame, layout, window, cx);
 
                 if let Some(on_cursor_overlay) = &on_cursor_overlay {
                     on_cursor_overlay(overlay_plan, cx);
@@ -320,7 +333,29 @@ where
 
         let paint_area = div().id("editor-paint-area").w_full().h_full().flex_1();
 
-        root.child(paint_area.child(editor_surface))
+        let mut surface = root
+            .child(paint_area.child(editor_surface))
+            .into_any_element();
+        surface.prepaint_as_root(
+            bounds.origin,
+            bounds.size.map(AvailableSpace::Definite),
+            window,
+            cx,
+        );
+        surface
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        surface: &mut AnyElement,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        surface.paint(window, cx);
     }
 }
 
@@ -337,49 +372,6 @@ mod tests {
     };
 
     use super::*;
-
-    #[test]
-    fn surface_rerender_snapshot_tracks_scroll_extent_changes() {
-        let before = EditorSurfaceRerenderSnapshot {
-            gutter_width: px(32.0),
-            viewport_size: size(px(100.0), px(200.0)),
-            max_scroll_offset: size(px(0.0), px(0.0)),
-        };
-        let after = EditorSurfaceRerenderSnapshot {
-            gutter_width: px(32.0),
-            viewport_size: size(px(100.0), px(200.0)),
-            max_scroll_offset: size(px(0.0), px(400.0)),
-        };
-
-        assert!(before.requires_rerender_after(after));
-    }
-
-    #[test]
-    fn surface_rerender_snapshot_tracks_viewport_size_changes() {
-        let before = EditorSurfaceRerenderSnapshot {
-            gutter_width: px(32.0),
-            viewport_size: size(px(800.0), px(600.0)),
-            max_scroll_offset: size(px(0.0), px(0.0)),
-        };
-        let after = EditorSurfaceRerenderSnapshot {
-            gutter_width: px(32.0),
-            viewport_size: size(px(100.0), px(200.0)),
-            max_scroll_offset: size(px(0.0), px(0.0)),
-        };
-
-        assert!(before.requires_rerender_after(after));
-    }
-
-    #[test]
-    fn surface_rerender_snapshot_ignores_stable_layout() {
-        let snapshot = EditorSurfaceRerenderSnapshot {
-            gutter_width: px(32.0),
-            viewport_size: size(px(100.0), px(200.0)),
-            max_scroll_offset: size(px(0.0), px(400.0)),
-        };
-
-        assert!(!snapshot.requires_rerender_after(snapshot));
-    }
 
     #[gpui::test]
     fn native_editor_view_draws_and_dispatches_input(cx: &mut TestAppContext) {
@@ -414,6 +406,7 @@ mod tests {
                     view_entity_id,
                     editor_state.clone(),
                     TextStyle::default(),
+                    |_, _, _, _, _| (),
                     {
                         let painted = Rc::clone(&painted);
                         move |_state, _bounds, _layout, _window, _cx| {
@@ -492,7 +485,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn native_editor_view_scrolls_after_initial_paint_layout(cx: &mut TestAppContext) {
+    fn native_editor_view_scrolls_after_initial_prepaint_layout(cx: &mut TestAppContext) {
         let view_entity_id = cx.update(|cx| {
             let entity: Entity<Empty> = cx.new(|_| Empty);
             entity.entity_id()
@@ -510,14 +503,29 @@ mod tests {
                     TextStyle::default(),
                     move |state, bounds, _layout, _window, _cx| {
                         state.viewport_mut().set_layout(px(20.0), bounds.size, 50);
-                        None
                     },
+                    |_, _, _, _, _| None,
                 )
+                .on_mouse_down(|_, _| {})
                 .into_element()
             },
         );
 
         assert!(editor_state.viewport().max_scroll_offset().height > px(0.0));
+
+        // The scrollbar must already be interactive on the first draw, not
+        // merely become available after a wheel event causes a repair frame.
+        window.simulate_mouse_down(
+            point(px(106.0), px(150.0)),
+            MouseButton::Left,
+            gpui::Modifiers::none(),
+        );
+        window.simulate_mouse_up(
+            point(px(106.0), px(150.0)),
+            MouseButton::Left,
+            gpui::Modifiers::none(),
+        );
+        assert!(editor_state.viewport().scroll_position().y > px(0.0));
 
         window.simulate_event(ScrollWheelEvent {
             position: point(px(10.0), px(10.0)),
@@ -547,14 +555,14 @@ mod tests {
                 TextStyle::default(),
                 move |state, bounds, _layout, _window, _cx| {
                     state.viewport_mut().set_layout(px(20.0), bounds.size, 50);
-                    None
                 },
+                |_, _, _, _, _| None,
             )
         }
     }
 
     #[gpui::test]
-    fn native_editor_view_rerenders_after_initial_paint_layout(cx: &mut TestAppContext) {
+    fn native_editor_view_does_not_need_geometry_repair_render(cx: &mut TestAppContext) {
         let render_count = Rc::new(Cell::new(0));
         let render_count_clone = Rc::clone(&render_count);
 
@@ -565,9 +573,10 @@ mod tests {
 
         cx.run_until_parked();
 
-        assert!(
-            render_count.get() > 1,
-            "expected paint-time layout sync to request a second render"
+        assert_eq!(
+            render_count.get(),
+            1,
+            "geometry must be ready in the first frame"
         );
     }
 
@@ -588,6 +597,7 @@ mod tests {
                 self.view_entity_id,
                 self.editor_state.clone(),
                 TextStyle::default(),
+                |_, _, _, _, _| (),
                 |_state, _bounds, _layout, _window, _cx| None,
             )
             .track_focus(self.focus.clone())
