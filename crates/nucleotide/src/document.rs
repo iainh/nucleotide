@@ -19,6 +19,8 @@ use nucleotide_ui::{
 };
 use nucleotide_workspace::{WorkspaceBackendHandle, WorkspaceIdentity};
 
+mod native_input;
+
 use crate::{Core, Input, InputEvent};
 use nucleotide_editor::{
     DiagnosticSeverityIconColors, EDITOR_MINIMUM_VIEWPORT_COLUMNS, EditorCursorReveal,
@@ -116,6 +118,7 @@ pub struct DocumentView {
     markdown_snapshot_cache: Option<MarkdownSnapshotCache>,
     runnable_tasks_cache: Option<RunnableTasksCache>,
     runnable_tasks_pending: Option<RunnableTasksPending>,
+    native_input: native_input::NativeInput,
 }
 
 impl DocumentView {
@@ -147,6 +150,7 @@ impl DocumentView {
             markdown_snapshot_cache: None,
             runnable_tasks_cache: None,
             runnable_tasks_pending: None,
+            native_input: native_input::NativeInput::default(),
         }
     }
 
@@ -160,12 +164,14 @@ impl DocumentView {
         })
         .detach();
         cx.on_blur(&self.focus, window, |view, _window, cx| {
+            view.cancel_native_composition(cx);
             view.editor_state.clear_pointer_selection();
             cx.notify();
         })
         .detach();
-        cx.observe_window_activation(window, |view, window, _cx| {
+        cx.observe_window_activation(window, |view, window, cx| {
             if !window.is_window_active() {
+                view.cancel_native_composition(cx);
                 view.editor_state.clear_pointer_selection();
             }
         })
@@ -556,7 +562,8 @@ async fn remote_runnable_tasks_by_line_from_backend(
 impl EventEmitter<DismissEvent> for DocumentView {}
 
 impl Render for DocumentView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.reset_native_input_if_needed(window, cx);
         let runnable_tasks_by_line = self.runnable_tasks_by_line(cx);
         let layout_snapshot = self.editor_state.layout_snapshot();
         let desired_gutter_extra_columns = if runnable_tasks_by_line.is_empty() {
@@ -594,6 +601,10 @@ impl Render for DocumentView {
             let paint_style = style.clone();
             let focus = self.focus.clone();
             let paint_focus = focus.clone();
+            let input_view = cx.entity();
+            let input_bounds = self.native_input.bounds.clone();
+            let prepare_input_bounds = input_bounds.clone();
+            let marked_ranges = self.native_input.marked_ranges();
             let is_focused = self.is_focused;
             let input = self.input.clone();
             let scrollbar_thumb_color = cx.ui_theme().tokens.editor.focus_ring;
@@ -626,6 +637,7 @@ impl Render for DocumentView {
                 self.editor_state.clone(),
                 style.clone(),
                 move |editor_state, bounds, after_layout, window, cx| {
+                    prepare_input_bounds.set(Some(bounds));
                     let prepared = prepare_document_content(DocumentPrepareParams {
                         core: &core,
                         view_id,
@@ -653,7 +665,7 @@ impl Render for DocumentView {
                         return None;
                     };
                     let theme = cx.global::<crate::ThemeManager>().helix_theme().clone();
-                    paint_native_editor_frame(
+                    let overlay = paint_native_editor_frame(
                         window,
                         cx,
                         NativeEditorFramePaintParams {
@@ -665,7 +677,23 @@ impl Render for DocumentView {
                             diagnostic_theme: &theme,
                             element_focused: paint_focus.is_focused(window),
                         },
-                    )
+                    );
+                    native_input::paint_marked_ranges(
+                        editor_state,
+                        &marked_ranges,
+                        input_bounds.get(),
+                        &input_view,
+                        window,
+                        cx,
+                    );
+                    if let Some(bounds) = input_bounds.get() {
+                        window.handle_input(
+                            &paint_focus,
+                            gpui::ElementInputHandler::new(bounds, input_view.clone()),
+                            cx,
+                        );
+                    }
+                    overlay
                 },
             )
             .scrollbar_thumb_color(scrollbar_thumb_color)
@@ -673,8 +701,14 @@ impl Render for DocumentView {
             .track_focus(focus.clone());
 
             if let Some(input) = input {
+                let input_view = cx.entity();
                 editor_content = editor_content.on_key_down(move |ev, _window, cx| {
                     let key = crate::utils::translate_key(&ev.keystroke);
+                    let uses_native_text = input_view.read(cx).uses_native_text(ev, cx);
+                    if uses_native_text {
+                        return false;
+                    }
+                    input_view.update(cx, |view, cx| view.cancel_native_composition(cx));
                     input.update(cx, |_, cx| {
                         cx.emit(InputEvent::key_down(key, ev.is_held));
                     });
@@ -684,12 +718,16 @@ impl Render for DocumentView {
 
             editor_content
                 .on_pointer_selection({
+                    let input_view = cx.entity();
                     let core = self.core.clone();
                     let view_id = self.view_id;
                     let editor_state = self.editor_state.clone();
                     let runnable_tasks_by_line = runnable_tasks_by_line.clone();
 
                     move |phase, event, cx| {
+                        if phase == EditorPointerSelectionPhase::Begin {
+                            input_view.update(cx, |view, cx| view.cancel_native_composition(cx));
+                        }
                         if phase == EditorPointerSelectionPhase::Begin
                             && let Some(task) = editor_state
                                 .gutter_run_button_line_at(event.position)

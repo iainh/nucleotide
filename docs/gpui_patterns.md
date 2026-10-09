@@ -191,8 +191,43 @@ Non-editor text fields should use `nucleotide_ui::TextInput`. It owns editing
 state, cursor movement, selection, clipboard actions, marked text / IME,
 submit/cancel events, and token styling.
 
-The Helix-backed editor remains on the Helix input path. The terminal remains on
-the terminal byte path.
+The Helix-backed editor registers `DocumentView` as an `EntityInputHandler`
+through `ElementInputHandler` during document paint. Normal/select keys, insert
+bindings, pending key sequences, callbacks and shortcuts remain on the Helix
+command bridge. Unbound printable insert keys propagate to GPUI's committed-text
+path; neither the document nor the workspace inserts their raw key a second time.
+Native commits use Helix insertion primitives and retain auto-pairs, completion
+hooks, multi-cursors, insert-session undo and counted dot-repeat. Replay records
+which characters were committed text so it doesn't reinterpret them as bindings.
+Committed characters check the workspace's completion commit-character path
+before insertion. Raw preedit keys must not accept or filter a completion.
+Completion sessions retain their original document and prefix range. Acceptance
+may reuse a session after word-prefix typing/deletion only when all text outside
+that prefix is unchanged; LSP edit ranges map through that prefix change. Other
+edits and changes during asynchronous resolution retain strict version checks.
+Helix macro recording/replay remains unsupported by this command bridge;
+dot-repeat is not macro support.
+
+Native ranges use UTF-16 code units and convert through Rope character indices.
+The insert cursor is advertised as a caret, not Helix's one-grapheme block
+selection. Explicit replacement ranges replace text; ordinary commits keep
+Helix's insert-at-each-cursor semantics. Marked text uses temporary Helix
+transactions and a savepoint. Commit restores the savepoint before inserting
+the final text; cancellation restores the original text and selections. Blur,
+window deactivation, pointer selection and command keys cancel pending preedit.
+Application-initiated cancellation also resets OS preedit by disabling native
+input through a backend-observed frame before re-enabling it. Printable keys
+stay on the Helix bridge during that reset. Capture-phase completion commands
+must cancel preedit too, since they bypass the document's raw-key handler.
+Candidate bounds and point queries use the current painted line cache, including
+soft-wrap segments, display-byte maps, scrolling and pane bounds.
+
+Test native composition with an OS input method as well as the handler contract.
+On Linux, GPUI needs Wayland text-input-v3; a nested compositor that exposes only
+text-input-v1 cannot verify this path. Nested Sway with Fcitx5 Pinyin provides a
+working native control. Check saved files and protocol events independently of
+screenshots, and allow key hints and selection paint to settle before captures.
+The terminal remains on the terminal byte path.
 
 ## Resize And Drag
 

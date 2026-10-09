@@ -27,6 +27,7 @@ use helix_view::{
 use nucleotide_logging::{PerfTimer, debug, info};
 use std::{
     borrow::Cow,
+    collections::BTreeSet,
     num::NonZeroUsize,
     path::{Path, PathBuf},
     time::Duration,
@@ -172,6 +173,31 @@ impl EditorInputBridge {
                 TargetPlatform::current(),
             ),
         }
+    }
+
+    /// Only unbound insert-mode text goes to the platform's committed-text path.
+    /// Pending keymaps and callbacks still belong to Helix, even for printable keys.
+    pub fn uses_native_text(&self, editor: &Editor, mut key: KeyEvent) -> bool {
+        canonicalize_key(&mut key);
+        editor.mode() == Mode::Insert
+            && key.char().is_some()
+            && self.native_commands.on_next_key.is_none()
+            && self.native_commands.keymaps.pending().is_empty()
+            && self.native_commands.keymaps.sticky().is_none()
+            && !self.native_commands.keymaps.contains_key(Mode::Insert, key)
+    }
+
+    /// Committed text is text, not a sequence of keymap commands. Use Helix's
+    /// insertion primitive so auto-pairs, multi-cursors and completion hooks remain intact.
+    pub fn insert_text(
+        &mut self,
+        text: &str,
+        replacement: Option<std::ops::Range<usize>>,
+        editor: &mut Editor,
+        jobs: &mut Jobs,
+    ) {
+        self.native_commands
+            .insert_text(text, replacement, editor, jobs);
     }
 
     pub fn handle_key(
@@ -447,7 +473,7 @@ enum NativeCommandResult {
         request: nucleotide_editor::EditorViewportCursorRequest,
     },
     ReplayInsert {
-        keys: Vec<KeyEvent>,
+        replay: InsertReplay,
         count: usize,
     },
     Unhandled {
@@ -459,12 +485,15 @@ enum NativeCommandResult {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct InsertReplay {
     keys: Vec<KeyEvent>,
+    /// Native commits replay as text even when a character has a key binding.
+    text_indices: BTreeSet<usize>,
 }
 
 impl InsertReplay {
     fn from_keys(keys: &[KeyEvent]) -> Self {
         Self {
             keys: keys.to_vec(),
+            text_indices: BTreeSet::new(),
         }
     }
 
@@ -474,6 +503,66 @@ impl InsertReplay {
 }
 
 impl NativeCommandInput {
+    fn insert_text(
+        &mut self,
+        text: &str,
+        replacement: Option<std::ops::Range<usize>>,
+        editor: &mut Editor,
+        jobs: &mut Jobs,
+    ) {
+        if editor.mode() != Mode::Insert {
+            return;
+        }
+        editor.reset_idle_timer();
+        editor.status_msg = None;
+        let is_replacement = replacement.is_some();
+        if let Some(range) = replacement {
+            // Explicit native ranges are literal, atomic replacements. They must
+            // not insert another copy at unrelated secondary cursors.
+            let view_id = editor.tree.focus;
+            let doc_id = editor.tree.get(view_id).doc;
+            let doc = editor.documents.get_mut(&doc_id).unwrap();
+            let transaction = helix_core::Transaction::change(
+                doc.text(),
+                [(range.start, range.end, Some(text.into()))].into_iter(),
+            );
+            let selection = doc.selection(view_id).clone().map(transaction.changes());
+            let primary = selection.primary_index();
+            let mut ranges = selection.ranges().to_vec();
+            ranges[primary] = Range::point(range.start + text.chars().count());
+            doc.apply(
+                &transaction.with_selection(helix_core::Selection::new(ranges.into(), primary)),
+                view_id,
+            );
+        }
+        let mut context = commands::Context {
+            editor,
+            count: None,
+            register: None,
+            callback: Vec::new(),
+            on_next_key_callback: None,
+            jobs,
+        };
+        for ch in text.chars() {
+            if !is_replacement {
+                commands::insert::insert_char(&mut context, ch);
+            }
+            self.current_insert_replay
+                .text_indices
+                .insert(self.current_insert_replay.keys.len());
+            self.current_insert_replay.keys.push(KeyEvent {
+                code: KeyCode::Char(ch),
+                modifiers: KeyModifiers::empty(),
+            });
+        }
+        if is_replacement && let Some(c) = text.chars().last() {
+            helix_event::dispatch(helix_term::events::PostInsertChar {
+                c,
+                cx: &mut context,
+            });
+        }
+    }
+
     #[cfg(test)]
     fn new(keymaps: Keymaps) -> Self {
         Self::new_for_platform(keymaps, TargetPlatform::current())
@@ -607,9 +696,19 @@ impl NativeCommandInput {
                 self.finish_insert_replay_if_needed(mode_before, editor.mode());
                 NativeInputResult::RequestViewportCursor(request)
             }
-            NativeCommandResult::ReplayInsert { keys, count } => {
+            NativeCommandResult::ReplayInsert { replay, count } => {
                 for _ in 0..count {
-                    for replay_key in keys.iter().copied() {
+                    for (index, replay_key) in replay.keys.iter().copied().enumerate() {
+                        if replay.text_indices.contains(&index) {
+                            let mut buffer = [0; 4];
+                            self.insert_text(
+                                replay_key.char().unwrap().encode_utf8(&mut buffer),
+                                None,
+                                editor,
+                                jobs,
+                            );
+                            continue;
+                        }
                         match self.handle_key(replay_key, compositor, editor, jobs) {
                             NativeInputResult::Handled { .. } => {}
                             NativeInputResult::RequestLspNavigation(request) => {
@@ -832,10 +931,7 @@ impl NativeCommandInput {
             if let Some(replay) = self.last_insert_replay.clone() {
                 let count = context.editor.count.map_or(1, NonZeroUsize::get);
                 context.editor.count = None;
-                return NativeCommandResult::ReplayInsert {
-                    keys: replay.keys,
-                    count,
-                };
+                return NativeCommandResult::ReplayInsert { replay, count };
             }
             return NativeCommandResult::Unhandled {
                 keys: vec![key],
@@ -2892,6 +2988,49 @@ mod tests {
 
         assert_eq!(outcome.prompt_requested, Some(NativePromptRequest::Search));
         assert_eq!(focused_selection_fragments(&editor), before);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn native_commits_replay_as_text_not_insert_keymaps() {
+        let mut editor = test_editor_with_text("Z");
+        set_test_cursor(&mut editor, 0);
+        let mut bridge = EditorInputBridge::new(disposition_test_keymaps(Mode::Insert));
+        let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));
+        let mut jobs = Jobs::new();
+        bridge.handle_key(
+            KeyEvent::from_str("a").unwrap(),
+            &mut compositor,
+            &mut editor,
+            &mut jobs,
+        );
+        assert!(bridge.uses_native_text(&editor, KeyEvent::from_str("n").unwrap()));
+        assert!(!bridge.uses_native_text(&editor, KeyEvent::from_str("x").unwrap()));
+        // An IME may commit a bound character. It must be inserted literally,
+        // including during counted dot-repeat, not reinterpreted as that binding.
+        bridge.insert_text("x你好😀", None, &mut editor, &mut jobs);
+        bridge.handle_key(
+            KeyEvent::from_str("esc").unwrap(),
+            &mut compositor,
+            &mut editor,
+            &mut jobs,
+        );
+        for key in ["2", "."] {
+            bridge.handle_key(
+                KeyEvent::from_str(key).unwrap(),
+                &mut compositor,
+                &mut editor,
+                &mut jobs,
+            );
+        }
+        assert_eq!(focused_document_text(&editor), "Zx你好😀x你好😀x你好😀\n");
+        assert_eq!(editor.mode(), Mode::Normal);
+        bridge.handle_semantic_action(
+            EditorSemanticAction::Undo,
+            &mut compositor,
+            &mut editor,
+            &mut jobs,
+        );
+        assert_eq!(focused_document_text(&editor), "Zx你好😀x你好😀\n");
     }
 
     #[tokio::test(flavor = "current_thread")]

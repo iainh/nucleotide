@@ -11006,22 +11006,206 @@ mod tests {
     }
 
     #[gpui::test]
-    fn workspace_focus_follows_splits_and_overlay_dismissal_without_stealing_tree_focus(
+    fn editor_native_composition_preserves_unicode_multicursors_and_undo(
         cx: &mut gpui::TestAppContext,
     ) {
-        use crate::workspace::Workspace;
-        use gpui::Focusable;
-        use nucleotide_ui::FocusCoordinator;
+        use gpui::EntityInputHandler;
+        use helix_core::{Range, Selection};
+        use helix_view::document::Mode;
+        use std::str::FromStr;
 
         let _runtime = TEST_RUNTIME.enter();
         let root = tempdir().unwrap();
-        let path = root.path().join("focus.txt");
-        fs::write(&path, "first line\nsecond line\n").unwrap();
+        let path = root.path().join("native.txt");
+        fs::write(&path, "a😀b|cdé\n").unwrap();
+        let core = new_test_application(cx);
+        let view_id = core.update(cx, |core, _| {
+            core.editor.open(&path, Action::VerticalSplit).unwrap();
+            core.editor.mode = Mode::Insert;
+            let view_id = core.editor.tree.focus;
+            let doc_id = core.editor.tree.get(view_id).doc;
+            core.editor
+                .documents
+                .get_mut(&doc_id)
+                .unwrap()
+                .set_selection(
+                    view_id,
+                    Selection::new(vec![Range::point(1), Range::point(5)].into(), 1),
+                );
+            view_id
+        });
+        let view = cx.new(|cx| {
+            crate::document::DocumentView::new(
+                core.clone(),
+                None,
+                view_id,
+                gpui::TextStyle::default(),
+                &cx.focus_handle(),
+                true,
+            )
+        });
+        let window = cx.add_empty_window();
+        window.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                let mut actual = None;
+                // A surrogate-interior offset must not slice an emoji in half.
+                assert_eq!(
+                    view.text_for_range(2..4, &mut actual, window, cx)
+                        .as_deref(),
+                    Some("😀b")
+                );
+                assert_eq!(actual, Some(1..4));
+                view.replace_and_mark_text_in_range(None, "ni", None, window, cx);
+                view.replace_and_mark_text_in_range(None, "你好😀", Some(2..4), window, cx);
+                assert_eq!(view.marked_text_range(window, cx), Some(10..14));
+                assert_eq!(
+                    view.selected_text_range(false, window, cx).unwrap().range,
+                    12..14
+                );
+                view.replace_and_mark_text_in_range(Some(12..14), "é", Some(0..1), window, cx);
+                assert_eq!(view.marked_text_range(window, cx), Some(9..12));
+                let mut actual = None;
+                assert_eq!(
+                    view.text_for_range(9..12, &mut actual, window, cx)
+                        .as_deref(),
+                    Some("你好é")
+                );
+                // Native cancellation restores the full original selection, not just primary.
+                let marked = view.marked_text_range(window, cx);
+                view.replace_text_in_range(marked, "", window, cx);
+            });
+        });
+        window.update(|_, cx| {
+            core.update(cx, |core, _| {
+                let doc_id = core.editor.tree.get(view_id).doc;
+                let doc = &core.editor.documents[&doc_id];
+                assert_eq!(doc.text().to_string(), "a😀b|cdé\n");
+                assert_eq!(
+                    doc.selection(view_id).ranges(),
+                    &[Range::new(1, 2), Range::new(5, 6)]
+                );
+            })
+        });
+        window.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.replace_and_mark_text_in_range(None, "ni hao", None, window, cx);
+                view.replace_text_in_range(None, "你好", window, cx);
+            });
+        });
+        window.update(|_, cx| {
+            core.update(cx, |core, _| {
+                let doc_id = core.editor.tree.get(view_id).doc;
+                assert_eq!(
+                    core.editor.documents[&doc_id].text().to_string(),
+                    "a你好😀b|c你好dé\n"
+                );
+                core.editor_input.handle_key(
+                    helix_view::input::KeyEvent::from_str("esc").unwrap(),
+                    &mut core.compositor,
+                    &mut core.editor,
+                    &mut core.jobs,
+                );
+                core.editor_input.handle_semantic_action(
+                    super::editor_input::EditorSemanticAction::Undo,
+                    &mut core.compositor,
+                    &mut core.editor,
+                    &mut core.jobs,
+                );
+                assert_eq!(
+                    core.editor.documents[&doc_id].text().to_string(),
+                    "a😀b|cdé\n"
+                );
+                core.editor.mode = Mode::Insert;
+                core.editor
+                    .documents
+                    .get_mut(&doc_id)
+                    .unwrap()
+                    .set_selection(
+                        view_id,
+                        Selection::new(vec![Range::point(1), Range::point(5)].into(), 0),
+                    );
+            })
+        });
+        window.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                // Explicit native replacement uses UTF-16 and must not insert
+                // another copy at an unrelated secondary cursor.
+                view.replace_text_in_range(Some(1..3), "日", window, cx);
+            });
+        });
+        window.update(|_, cx| {
+            core.update(cx, |core, _| {
+                let doc_id = core.editor.tree.get(view_id).doc;
+                assert_eq!(
+                    core.editor.documents[&doc_id].text().to_string(),
+                    "a日b|cdé\n"
+                );
+            })
+        });
+        window.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.replace_and_mark_text_in_range(Some(1..2), "ni", None, window, cx);
+                view.unmark_text(window, cx);
+                assert_eq!(view.marked_text_range(window, cx), None);
+            });
+            core.update(cx, |core, _| {
+                let doc_id = core.editor.tree.get(view_id).doc;
+                assert_eq!(
+                    core.editor.documents[&doc_id].text().to_string(),
+                    "anib|cdé\n"
+                );
+            });
+        });
+        window.update(|window, cx| {
+            core.update(cx, |core, _| {
+                let doc_id = core.editor.tree.get(view_id).doc;
+                core.editor
+                    .documents
+                    .get_mut(&doc_id)
+                    .unwrap()
+                    .set_selection(
+                        view_id,
+                        Selection::new(
+                            vec![Range::point(1), Range::point(2), Range::point(5)].into(),
+                            1,
+                        ),
+                    );
+            });
+            view.update(cx, |view, cx| {
+                // Deletion merges cursors inside the replaced span. The
+                // primary index must come from Helix's mapped selection.
+                view.replace_text_in_range(Some(1..3), "", window, cx);
+            });
+            core.read_with(cx, |core, _| {
+                let doc_id = core.editor.tree.get(view_id).doc;
+                let doc = &core.editor.documents[&doc_id];
+                assert_eq!(doc.text().to_string(), "ab|cdé\n");
+                assert_eq!(doc.selection(view_id).primary_index(), 0);
+                assert_eq!(
+                    doc.selection(view_id).ranges(),
+                    &[Range::new(1, 2), Range::new(3, 4)]
+                );
+            });
+        });
+    }
+
+    fn new_test_workspace<'a>(
+        cx: &'a mut gpui::TestAppContext,
+        path: &Path,
+    ) -> (
+        Entity<Application>,
+        Entity<crate::workspace::Workspace>,
+        &'a mut gpui::VisualTestContext,
+    ) {
+        use crate::workspace::Workspace;
+        use nucleotide_ui::FocusCoordinator;
+
+        let _runtime = TEST_RUNTIME.enter();
         let core = new_test_application(cx);
         core.update(cx, |core, _cx| {
             let _runtime = TEST_RUNTIME.enter();
-            core.project_directory = Some(root.path().to_path_buf());
-            core.editor.open(&path, Action::VerticalSplit).unwrap();
+            core.project_directory = Some(path.parent().unwrap().to_path_buf());
+            core.editor.open(path, Action::VerticalSplit).unwrap();
         });
         cx.update(|cx| {
             nucleotide_appearance::SystemAppearance::init(cx);
@@ -11104,6 +11288,20 @@ mod tests {
         });
         cx.update(|window, _| window.activate_window());
         cx.run_until_parked();
+        (core, workspace, cx)
+    }
+
+    #[gpui::test]
+    fn workspace_focus_follows_splits_and_overlay_dismissal_without_stealing_tree_focus(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use gpui::Focusable;
+        use nucleotide_ui::FocusCoordinator;
+        let _runtime = TEST_RUNTIME.enter();
+        let root = tempdir().unwrap();
+        let path = root.path().join("focus.txt");
+        fs::write(&path, "first line\nsecond line\n").unwrap();
+        let (core, workspace, cx) = new_test_workspace(cx, &path);
         workspace.update_in(cx, |workspace, window, cx| {
             workspace.focus_file_tree(window, cx)
         });
@@ -11215,6 +11413,117 @@ mod tests {
                     .is_focused(window)
             );
         });
+    }
+
+    #[gpui::test]
+    fn native_completion_accepts_prefix_edits_but_rejects_unrelated_changes(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use helix_core::{Selection, Transaction};
+        use helix_view::document::Mode;
+        use nucleotide_events::completion::{
+            CompletionEdit, CompletionItem, CompletionItemKind, CompletionOffsetEncoding,
+            CompletionPosition, CompletionRange, CompletionTextEdit,
+        };
+
+        let _runtime = TEST_RUNTIME.enter();
+        let root = tempdir().unwrap();
+        let path = root.path().join("completion.txt");
+        let original = "😀:al|TAIL\n";
+        fs::write(&path, original).unwrap();
+        let (core, workspace, cx) = new_test_workspace(cx, &path);
+        for case in ["typed", "backspace", "commit", "unrelated", "cursor"] {
+            let (doc_id, view_id) = core.update(cx, |core, cx| {
+                core.editor.mode = Mode::Insert;
+                let view_id = core.editor.tree.focus;
+                let doc_id = core.editor.tree.get(view_id).doc;
+                let doc = core.editor.documents.get_mut(&doc_id).unwrap();
+                let transaction = Transaction::change(
+                    doc.text(),
+                    [(0, doc.text().len_chars(), Some(original.into()))].into_iter(),
+                )
+                .with_selection(Selection::point(4));
+                doc.apply(&transaction, view_id);
+                cx.notify();
+                (doc_id, view_id)
+            });
+            cx.run_until_parked();
+            workspace.update_in(cx, |workspace, window, cx| {
+                workspace.focus_editor(window, cx);
+                let item = CompletionItem::new("alpineZ9".into(), CompletionItemKind::Variable)
+                    .with_commit_characters(vec![".".into()])
+                    .with_edit(CompletionEdit {
+                        offset_encoding: CompletionOffsetEncoding::Utf16,
+                        text_edit: Some(CompletionTextEdit {
+                            range: CompletionRange {
+                                start: CompletionPosition {
+                                    line: 0,
+                                    character: 3,
+                                },
+                                end: CompletionPosition {
+                                    line: 0,
+                                    character: 5,
+                                },
+                            },
+                            new_text: "alpineZ9".into(),
+                        }),
+                        additional_text_edits: Vec::new(),
+                    });
+                workspace.show_completion_items_with_prefix(
+                    vec![item],
+                    "al".into(),
+                    doc_id,
+                    view_id,
+                    false,
+                    Vec::new(),
+                    cx,
+                );
+            });
+            cx.run_until_parked();
+            match case {
+                "typed" => cx.simulate_input("p"),
+                "backspace" => cx.simulate_keystrokes("backspace"),
+                "commit" => cx.simulate_input("p."),
+                "unrelated" => {
+                    core.update(cx, |core, cx| {
+                        let doc = core.editor.documents.get_mut(&doc_id).unwrap();
+                        let transaction = Transaction::change(
+                            doc.text(),
+                            [(5, 9, Some("EVIL".into()))].into_iter(),
+                        );
+                        doc.apply(&transaction, view_id);
+                        cx.notify();
+                    });
+                    cx.run_until_parked();
+                }
+                "cursor" => {
+                    core.update(cx, |core, _| {
+                        core.editor
+                            .documents
+                            .get_mut(&doc_id)
+                            .unwrap()
+                            .set_selection(view_id, Selection::single(5, 6));
+                    });
+                }
+                _ => unreachable!(),
+            }
+            if case != "commit" {
+                cx.simulate_keystrokes("tab");
+            }
+            let expected = match case {
+                "commit" => "😀:alpineZ9.|TAIL\n",
+                "unrelated" => "😀:al|EVIL\n",
+                "cursor" => original,
+                _ => "😀:alpineZ9|TAIL\n",
+            };
+            core.read_with(cx, |core, _| {
+                assert_eq!(
+                    core.editor.documents[&doc_id].text().to_string(),
+                    expected,
+                    "{case}"
+                );
+            });
+        }
     }
 
     fn subscribe_application_updates(

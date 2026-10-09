@@ -1137,10 +1137,38 @@ struct ActiveCompletionSession {
     doc_id: DocumentId,
     view_id: ViewId,
     document_version: i32,
+    document_text: Rope,
+    prefix_range: std::ops::Range<usize>,
     is_incomplete: bool,
     incomplete_server_ids: Vec<u64>,
     retained_items: Vec<nucleotide_events::completion::CompletionItem>,
     requested_prefix: String,
+}
+
+impl ActiveCompletionSession {
+    /// Only edits to the active word prefix may reuse these candidates and ranges.
+    fn prefix_change(&self, text: &Rope, cursor: usize) -> Option<helix_core::Transaction> {
+        let start = self.prefix_range.start;
+        if cursor < start || cursor > text.len_chars() || start > text.len_chars() {
+            return None;
+        }
+        let prefix = text.slice(start..cursor);
+        if !prefix.chars().all(helix_core::chars::char_is_word)
+            || text.slice(..start) != self.document_text.slice(..start)
+            || text.slice(cursor..) != self.document_text.slice(self.prefix_range.end..)
+        {
+            return None;
+        }
+        Some(helix_core::Transaction::change(
+            &self.document_text,
+            [(
+                start,
+                self.prefix_range.end,
+                Some(prefix.to_string().into()),
+            )]
+            .into_iter(),
+        ))
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1148,6 +1176,7 @@ struct CompletionAcceptTarget {
     doc_id: DocumentId,
     view_id: ViewId,
     document_version: i32,
+    source_version: i32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -6940,27 +6969,24 @@ impl Workspace {
             return false;
         };
 
+        // Capture-phase completion actions bypass the document's key handler.
+        // Restore and reset native preedit before accepting or navigating the menu.
+        if let Some(view) = self.view_manager.get_focused_document_view() {
+            view.update(cx, |view, cx| view.cancel_native_composition(cx));
+        }
         self.overlay.update(cx, |overlay, cx| {
             overlay.handle_completion_menu_action(action, cx)
         })
     }
 
-    fn handle_completion_commit_character(
+    pub(crate) fn handle_completion_commit_character(
         &mut self,
-        ev: &KeyDownEvent,
+        commit_character: char,
         cx: &mut Context<Self>,
     ) -> bool {
         if !self.overlay.read(cx).has_completion() {
             return false;
         }
-
-        let Some(commit_character) = completion_commit_character_from_key(
-            ev.keystroke.key.as_str(),
-            ev.keystroke.key_char.as_deref(),
-            ev.keystroke.modifiers.control,
-        ) else {
-            return false;
-        };
 
         let accept_index = self.overlay.update(cx, |overlay, cx| {
             overlay.completion_commit_accept_index(commit_character, cx)
@@ -7023,8 +7049,25 @@ impl Workspace {
             return;
         }
 
-        let accepted_completion_on_commit_character =
-            self.handle_completion_commit_character(ev, cx);
+        // Native text checks commit characters when text is actually committed,
+        // not on the raw keys used to build an IME preedit.
+        let native_text = ev.keystroke.key_char.is_some()
+            && ev
+                .keystroke
+                .modifiers
+                .is_subset_of(&gpui::Modifiers::shift())
+            && self
+                .core
+                .read(cx)
+                .editor_input
+                .uses_native_text(&self.core.read(cx).editor, key);
+        let accepted_completion_on_commit_character = !native_text
+            && completion_commit_character_from_key(
+                ev.keystroke.key.as_str(),
+                ev.keystroke.key_char.as_deref(),
+                ev.keystroke.modifiers.control,
+            )
+            .is_some_and(|ch| self.handle_completion_commit_character(ch, cx));
 
         // Update input context based on current focus state
         self.update_input_context(window, cx);
@@ -7050,6 +7093,18 @@ impl Workspace {
             InputResult::SendToHelix(helix_key) => {
                 if !self.view_manager.is_document_view_focused(cx, window) {
                     self.handle_unfocused_semantic_shortcut(ev, cx);
+                    return;
+                }
+                // Leave unbound insert text propagating to GPUI's platform input
+                // handler. The document and workspace must not also insert its raw key.
+                let core = self.core.read(cx);
+                if ev.keystroke.key_char.is_some()
+                    && ev
+                        .keystroke
+                        .modifiers
+                        .is_subset_of(&gpui::Modifiers::shift())
+                    && core.editor_input.uses_native_text(&core.editor, helix_key)
+                {
                     return;
                 }
                 nucleotide_logging::trace!(
@@ -12112,6 +12167,14 @@ impl Workspace {
     /// Update completion filter by detecting current prefix at cursor
     /// This method attempts to auto-detect the current completion prefix
     pub fn update_completion_filter_auto(&mut self, cx: &mut Context<Self>) -> bool {
+        // Preedit is temporary document text, not a committed completion prefix.
+        if self
+            .view_manager
+            .get_focused_document_view()
+            .is_some_and(|view| view.read(cx).has_native_composition())
+        {
+            return false;
+        }
         // Get current text under cursor to determine new prefix
         if let Some(current_prefix) = self.get_current_completion_prefix(cx) {
             let updated = self.update_completion_filter(current_prefix.clone(), cx);
@@ -12585,13 +12648,18 @@ impl Workspace {
         let language = self.completion_language_for_doc(doc_id, cx);
         let retained_items =
             retained_completion_items_for_completed_providers(&items, &incomplete_server_ids);
-        let document_version = self
-            .core
-            .read(cx)
-            .editor
-            .document(doc_id)
-            .map(|doc| doc.version())
-            .unwrap_or_default();
+        let (document_version, document_text, cursor) = {
+            let core = self.core.read(cx);
+            let Some(doc) = core.editor.document(doc_id) else {
+                return;
+            };
+            let cursor = doc
+                .selection(view_id)
+                .primary()
+                .cursor(doc.text().slice(..));
+            (doc.version(), doc.text().clone(), cursor)
+        };
+        let prefix_start = completion_word_start(document_text.slice(..), cursor);
         let mut ui_items: Vec<nucleotide_ui::completion_v2::CompletionItem> = items
             .into_iter()
             .map(ui_completion_item_from_event)
@@ -12616,6 +12684,8 @@ impl Workspace {
             doc_id,
             view_id,
             document_version,
+            document_text,
+            prefix_range: prefix_start..cursor,
             is_incomplete,
             incomplete_server_ids,
             retained_items,
@@ -12785,12 +12855,18 @@ impl Workspace {
         let session = self.active_completion_session.as_ref()?;
         let core = self.core.read(cx);
         let view_doc = core.editor.tree.try_get(session.view_id)?.doc;
-        if view_doc != session.doc_id {
+        if view_doc != session.doc_id || core.editor.tree.focus != session.view_id {
             return None;
         }
 
         let doc = core.editor.document(session.doc_id)?;
-        if doc.version() != session.document_version {
+        let cursor = doc
+            .selection(session.view_id)
+            .primary()
+            .cursor(doc.text().slice(..));
+        if (doc.version() != session.document_version || cursor != session.prefix_range.end)
+            && session.prefix_change(doc.text(), cursor).is_none()
+        {
             return None;
         }
 
@@ -12798,7 +12874,8 @@ impl Workspace {
             CompletionAcceptTarget {
                 doc_id: session.doc_id,
                 view_id: session.view_id,
-                document_version: session.document_version,
+                document_version: doc.version(),
+                source_version: session.document_version,
             },
             session.requested_prefix.clone(),
         ))
@@ -12935,11 +13012,70 @@ impl Workspace {
 
     fn accept_completion_item(
         &mut self,
-        completion_item: nucleotide_ui::CompletionItem,
+        mut completion_item: nucleotide_ui::CompletionItem,
         completion_memory_key: Option<CompletionMemoryKey>,
         target: CompletionAcceptTarget,
         cx: &mut Context<Self>,
     ) {
+        if target.document_version != target.source_version
+            && let Some(edit) = completion_item.edit.as_mut()
+        {
+            let Some(session) = self.active_completion_session.as_ref().filter(|session| {
+                session.doc_id == target.doc_id
+                    && session.view_id == target.view_id
+                    && session.document_version == target.source_version
+            }) else {
+                return;
+            };
+            let core = self.core.read(cx);
+            let Some(doc) = core.editor.document(target.doc_id) else {
+                return;
+            };
+            // Also retain the exact version check across asynchronous item resolve.
+            if doc.version() != target.document_version {
+                return;
+            }
+            let cursor = doc
+                .selection(target.view_id)
+                .primary()
+                .cursor(doc.text().slice(..));
+            let Some(change) = session.prefix_change(doc.text(), cursor) else {
+                return;
+            };
+            let encoding = helix_offset_encoding_from_completion(edit.offset_encoding);
+            for text_edit in edit
+                .text_edit
+                .iter_mut()
+                .chain(edit.additional_text_edits.iter_mut())
+            {
+                let Some(range) = helix_lsp::util::lsp_range_to_range(
+                    &session.document_text,
+                    lsp_range_from_completion(text_edit.range),
+                    encoding,
+                ) else {
+                    return;
+                };
+                let range = helix_core::Range::new(
+                    change
+                        .changes()
+                        .map_pos(range.from(), helix_core::Assoc::Before),
+                    change
+                        .changes()
+                        .map_pos(range.to(), helix_core::Assoc::After),
+                );
+                let range = helix_lsp::util::range_to_lsp_range(doc.text(), range, encoding);
+                text_edit.range = nucleotide_ui::CompletionRange {
+                    start: nucleotide_ui::CompletionPosition {
+                        line: range.start.line,
+                        character: range.start.character,
+                    },
+                    end: nucleotide_ui::CompletionPosition {
+                        line: range.end.line,
+                        character: range.end.character,
+                    },
+                };
+            }
+        }
         let accepted = if let Some(edit) = completion_item.edit.clone() {
             self.handle_lsp_edit_completion(completion_item, edit, target, cx)
         } else {
@@ -18231,6 +18367,8 @@ mod tests {
             doc_id,
             view_id,
             document_version: 0,
+            document_text: Rope::from_str("pri"),
+            prefix_range: 0..3,
             is_incomplete: true,
             incomplete_server_ids: vec![1],
             retained_items: Vec::new(),
@@ -18253,6 +18391,8 @@ mod tests {
             doc_id,
             view_id,
             document_version: 0,
+            document_text: Rope::from_str("pri"),
+            prefix_range: 0..3,
             is_incomplete: false,
             incomplete_server_ids: vec![1],
             retained_items: Vec::new(),

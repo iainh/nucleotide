@@ -377,6 +377,21 @@ impl LineLayoutCache {
         }
     }
 
+    /// All visible shaped segments of a document line, including soft wraps.
+    pub fn lines_for_index(&self, line_idx: usize) -> Vec<LineLayout> {
+        let Ok(layouts) = self.layouts.lock() else {
+            return Vec::new();
+        };
+        let Some(&first) = layouts.line_to_first_layout.get(&line_idx) else {
+            return Vec::new();
+        };
+        layouts.ordered[first..]
+            .iter()
+            .take_while(|line| line.line_idx == line_idx)
+            .cloned()
+            .collect()
+    }
+
     pub fn shape_line_cached(
         &self,
         text_system: &WindowTextSystem,
