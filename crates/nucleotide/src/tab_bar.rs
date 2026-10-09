@@ -19,13 +19,14 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::config::{TabCloseButtonVisibility, TabClosePosition, TabDiagnosticsVisibility};
-use crate::tab::{Tab, TabId, TabPosition, tab_container_height};
+use crate::tab::{DraggedTab, Tab, TabId, TabPosition, tab_container_height};
 
 /// Type alias for tab event handlers
 type TabEventHandler = Arc<dyn Fn(TabId, &mut Window, &mut App) + 'static>;
 type TabContextMenuHandler = Arc<dyn Fn(TabId, &MouseDownEvent, &mut Window, &mut App) + 'static>;
 type EmptyTabBarClickHandler = Arc<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
 type TabBarScrollWheelHandler = Arc<dyn Fn(&ScrollWheelEvent, &mut Window, &mut App) + 'static>;
+type TabDropHandler = Arc<dyn Fn(&DraggedTab, Option<TabId>, &mut Window, &mut App)>;
 
 const MAX_TAB_TITLE_LEN: usize = 24;
 
@@ -213,6 +214,7 @@ pub struct TabBar {
     end_children: Vec<AnyElement>,
     /// Documents whose contents are still being loaded
     loading_documents: HashSet<TabId>,
+    pane_drag_drop: Option<(helix_view::ViewId, TabDropHandler)>,
 }
 
 impl TabBar {
@@ -263,7 +265,17 @@ impl TabBar {
             start_children: Vec::new(),
             end_children: Vec::new(),
             loading_documents: HashSet::new(),
+            pane_drag_drop: None,
         }
+    }
+
+    pub(crate) fn with_pane_drag_drop(
+        mut self,
+        pane: helix_view::ViewId,
+        on_drop: impl Fn(&DraggedTab, Option<TabId>, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.pane_drag_drop = Some((pane, Arc::new(on_drop)));
+        self
     }
 
     pub fn loading_documents(mut self, documents: impl IntoIterator<Item = TabId>) -> Self {
@@ -497,12 +509,27 @@ impl RenderOnce for TabBar {
             pinned_count,
         );
 
-        if self.should_render_separate_pinned_row(&documents) {
+        let pane_drag_drop = self.pane_drag_drop.clone();
+        let bar = if self.should_render_separate_pinned_row(&documents) {
             self.render_two_row_tab_bar(pinned_tabs, unpinned_tabs, tokens, &tab_bar_tokens)
         } else {
             self.render_single_row_tab_bar(pinned_tabs, unpinned_tabs, tokens, &tab_bar_tokens)
                 .into_any_element()
-        }
+        };
+        div()
+            .id("pane-tab-drop-target")
+            .w_full()
+            .flex_none()
+            .when_some(pane_drag_drop, |bar, (_, on_drop)| {
+                bar.drag_over::<DraggedTab>(|style, _, _, cx| {
+                    style.bg(cx.theme().tokens.chrome.surface_hover)
+                })
+                .on_drop(move |dragged: &DraggedTab, window, cx| {
+                    on_drop(dragged, None, window, cx);
+                    cx.stop_propagation();
+                })
+            })
+            .child(bar)
     }
 }
 
@@ -593,6 +620,12 @@ impl TabBar {
                 {
                     tab = tab.on_toggle_readonly(move |_event, window, cx| {
                         on_tab_toggle_readonly(doc_id, window, cx);
+                    });
+                }
+
+                if let Some((pane, on_drop)) = self.pane_drag_drop.clone() {
+                    tab = tab.with_pane_drag_drop(pane, move |dragged, window, cx| {
+                        on_drop(dragged, Some(doc_id), window, cx);
                     });
                 }
 

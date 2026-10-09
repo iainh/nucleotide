@@ -8,7 +8,7 @@ use gpui::{
     Stateful, StatefulInteractiveElement, Styled, Window, div, px, svg,
 };
 use helix_core::diagnostic::Severity as DiagnosticSeverity;
-use helix_view::DocumentId;
+use helix_view::{DocumentId, ViewId};
 use nucleotide_types::VcsStatus;
 use nucleotide_ui::ThemedContext;
 use nucleotide_ui::{
@@ -24,6 +24,27 @@ use crate::config::{TabCloseButtonVisibility, TabClosePosition};
 /// Type alias for mouse event handlers in tabs
 type MouseEventHandler = Arc<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
 type MouseDownEventHandler = Arc<dyn Fn(&MouseDownEvent, &mut Window, &mut App) + 'static>;
+
+#[derive(Clone)]
+pub(crate) struct DraggedTab {
+    pub(crate) pane: ViewId,
+    pub(crate) tab: TabId,
+    label: SharedString,
+}
+
+impl Render for DraggedTab {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let tokens = cx.theme().tokens;
+        div()
+            .px(tokens.sizes.space_3)
+            .h(tab_container_height(tokens))
+            .bg(tokens.chrome.surface)
+            .text_color(tokens.chrome.text_on_chrome)
+            .border_1()
+            .border_color(tokens.editor.focus_ring)
+            .child(self.label.clone())
+    }
+}
 
 struct TabTooltip {
     text: SharedString,
@@ -243,6 +264,35 @@ pub struct Tab {
 }
 
 impl Tab {
+    pub(crate) fn with_pane_drag_drop(
+        mut self,
+        pane: ViewId,
+        on_drop: impl Fn(&DraggedTab, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        let payload = DraggedTab {
+            pane,
+            tab: self.doc_id,
+            label: self.label.clone().into(),
+        };
+        let selector = format!("pane-tab-{:?}-{}", pane, self.doc_id);
+        self.div = self
+            .div
+            .when(cfg!(test), |tab| tab.debug_selector(|| selector))
+            .on_drag(payload, |dragged, _offset, _window, cx| {
+                cx.new(|_| dragged.clone())
+            })
+            .drag_over::<DraggedTab>(|style, _, _, cx| {
+                style
+                    .border_l_2()
+                    .border_color(cx.theme().tokens.editor.focus_ring)
+            })
+            .on_drop(move |dragged: &DraggedTab, window, cx| {
+                on_drop(dragged, window, cx);
+                cx.stop_propagation();
+            });
+        self
+    }
+
     #[inline]
     fn element_id_for(doc_id: TabId) -> ElementId {
         ElementId::from(SharedString::from(format!("tab-{}", doc_id)))
@@ -703,7 +753,6 @@ impl RenderOnce for Tab {
                     move |event, window, cx| {
                         let click_event = click_event_from_mouse_down(event);
                         window.prevent_default();
-                        cx.stop_propagation();
                         on_click(&click_event, window, cx);
                     }
                 })
