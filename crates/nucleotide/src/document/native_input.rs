@@ -78,10 +78,9 @@ impl NativeInput {
 
     fn cancel(&mut self, editor: &mut Editor, view_id: ViewId) -> Option<Composition> {
         let composition = self.composition.take()?;
-        if editor
-            .tree
-            .try_get(view_id)
-            .is_some_and(|view| view.doc == composition.doc_id)
+        // Preview can switch this view's document before its blur callback.
+        // The savepoint still belongs to the original document and view ID.
+        if editor.tree.try_get(view_id).is_some()
             && let Some(doc) = editor.documents.get_mut(&composition.doc_id)
         {
             let view = editor.tree.get_mut(view_id);

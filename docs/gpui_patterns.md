@@ -64,6 +64,23 @@ The old `nucleotide_ui::global_input` dispatcher has been removed. Do not add a
 second shortcut registry, dismiss-handler registry, or focus-group manager for
 app UI. Terminal byte translation uses `nucleotide_ui::terminal_keys` instead.
 
+The editor registers GPUI's `EntityInputHandler` for native text and input method
+editor (IME) composition. Unbound printable insert-mode keys reach that handler;
+Helix bindings and command modes stay on the raw-key bridge. Native ranges use
+UTF-16 offsets, while document transactions use character offsets.
+
+Preedit text uses temporary Helix transactions and a savepoint. Cancellation
+restores the original document, even if file preview has already switched the
+view to another buffer. Committed text goes through Helix insertion so
+multi-cursor edits, undo and dot-repeat retain their usual semantics. Commands
+and focus loss cancel composition and briefly disable native input across
+backend-observed frames to reject late commits.
+
+GPUI's `unmark_text` finalizes the current preedit, matching Zed. It is not a
+cancellation callback: Wayland sends it before pointer presses, so a click can
+finalize preedit before the ensuing focus loss. Subsequent cancellation must
+not undo text that has already been finalized.
+
 ## Focus
 
 Focusable components should expose or own a `FocusHandle` and render it with

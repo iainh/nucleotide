@@ -11187,6 +11187,36 @@ mod tests {
                 );
             });
         });
+        window.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.replace_and_mark_text_in_range(None, "ni hao", None, window, cx);
+            });
+            let replacement = root.path().join("replacement.txt");
+            fs::write(&replacement, "other document\n").unwrap();
+            let original_doc = core.update(cx, |core, _| {
+                let original_doc = core.editor.tree.get(view_id).doc;
+                core.editor.open(&replacement, Action::Replace).unwrap();
+                core.editor.mode = Mode::Insert;
+                original_doc
+            });
+            // File-tree preview can replace the document before GPUI delivers
+            // blur. Native cancellation still belongs to the original buffer.
+            view.update(cx, |view, cx| {
+                view.replace_and_mark_text_in_range(None, "", None, window, cx);
+                assert_eq!(view.marked_text_range(window, cx), None);
+            });
+            core.read_with(cx, |core, _| {
+                assert_eq!(
+                    core.editor.documents[&original_doc].text().to_string(),
+                    "ab|cdé\n"
+                );
+                let replacement_doc = core.editor.tree.get(view_id).doc;
+                assert_eq!(
+                    core.editor.documents[&replacement_doc].text().to_string(),
+                    "other document\n"
+                );
+            });
+        });
     }
 
     fn new_test_workspace<'a>(
