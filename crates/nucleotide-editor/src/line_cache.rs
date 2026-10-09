@@ -328,6 +328,27 @@ impl LineLayoutCache {
         }
     }
 
+    /// Hit-test the nearest painted row, including dragging past the viewport
+    /// or into the empty space below the last document line.
+    pub fn find_line_at_clamped_position(
+        &self,
+        mut position: gpui::Point<Pixels>,
+        bounds_width: Pixels,
+        line_height: Pixels,
+    ) -> Option<LineLayout> {
+        {
+            let layouts = self.layouts.lock().ok()?;
+            let first = layouts.ordered.first()?;
+            let last = layouts.ordered.last()?;
+            position.y = position
+                .y
+                .max(first.origin.y)
+                .min(last.origin.y + line_height - px(0.01));
+            position.x = position.x.max(px(0.0)).min(bounds_width - px(0.01));
+        }
+        self.find_line_at_position(position, bounds_width, line_height)
+    }
+
     pub fn find_line_at_position_with_scroll(
         &self,
         position: gpui::Point<Pixels>,

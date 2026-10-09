@@ -296,7 +296,7 @@ where
                 }
                 if let Some(on_mouse_down) = &on_mouse_down {
                     on_mouse_down(event, cx);
-                    changed = true;
+                    changed |= on_pointer_selection.is_none();
                 }
                 changed
             });
@@ -478,6 +478,7 @@ mod tests {
             phases.borrow().as_slice(),
             &[
                 EditorPointerSelectionPhase::Begin,
+                EditorPointerSelectionPhase::Extend,
                 EditorPointerSelectionPhase::Extend,
                 EditorPointerSelectionPhase::End,
             ]

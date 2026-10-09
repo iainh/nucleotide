@@ -22,9 +22,12 @@ pub fn hit_test_document_position(
     let geometry = EditorSurfaceGeometry::new(event.bounds, gutter_columns, event.cell_width);
     let text_bounds = geometry.text_bounds();
     let text_area_pos = geometry.window_to_text_area(event.position);
-    let clamped_text_area_pos = geometry.clamp_text_area_position(text_area_pos, false);
+    let mut clamped_text_area_pos = geometry.clamp_text_area_position(text_area_pos, true);
+    clamped_text_area_pos.y = clamped_text_area_pos
+        .y
+        .min(text_bounds.size.height - px(0.01));
 
-    let line_layout = line_cache.find_line_at_position(
+    let line_layout = line_cache.find_line_at_clamped_position(
         clamped_text_area_pos,
         text_bounds.size.width,
         event.line_height,

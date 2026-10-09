@@ -2077,6 +2077,59 @@ mod tests {
                     anchor.get().is_some(),
                     "missing cursor for wrapped={wrapped}, width={width}"
                 );
+                // Continue beyond the top/left edge, re-enter, then release
+                // beyond the bottom. Check real Helix ranges, not painted pixels.
+                window.simulate_mouse_down(position, MouseButton::Left, gpui::Modifiers::none());
+                window.simulate_mouse_move(
+                    point(px(-100.0), px(-100.0)),
+                    MouseButton::Left,
+                    gpui::Modifiers::none(),
+                );
+                {
+                    let editor = editor.borrow();
+                    let selection = editor
+                        .document(doc_id)
+                        .unwrap()
+                        .selection(view_id)
+                        .primary();
+                    assert_eq!((selection.anchor, selection.head), (2, 0));
+                }
+                window.simulate_mouse_move(position, MouseButton::Left, gpui::Modifiers::none());
+                window.simulate_mouse_up(
+                    point(position.x, px(1000.0)),
+                    MouseButton::Left,
+                    gpui::Modifiers::none(),
+                );
+                let final_selection = editor
+                    .borrow()
+                    .document(doc_id)
+                    .unwrap()
+                    .selection(view_id)
+                    .primary();
+                assert_eq!(final_selection.anchor, 2);
+                assert!(final_selection.head > 2);
+                if !wrapped {
+                    let expected_row =
+                        ((height - 1.01) / f32::from(metrics.line_height)).floor() as usize;
+                    let editor = editor.borrow();
+                    let doc = editor.document(doc_id).unwrap();
+                    assert_eq!(doc.text().char_to_line(final_selection.head), expected_row);
+                }
+                window.simulate_mouse_move(position, MouseButton::Left, gpui::Modifiers::none());
+                assert_eq!(
+                    editor
+                        .borrow()
+                        .document(doc_id)
+                        .unwrap()
+                        .selection(view_id)
+                        .primary(),
+                    final_selection
+                );
+                editor
+                    .borrow_mut()
+                    .document_mut(doc_id)
+                    .unwrap()
+                    .set_selection(view_id, helix_core::Selection::single(2, 2));
             }
         }
     }
