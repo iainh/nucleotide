@@ -183,6 +183,12 @@ Use higher-level wrappers like `sidebar_split`, `right_sidebar_split`, and
 `bottom_panel_split` when the component can own both layout and resize
 mechanics.
 
+Paint resize handles after both panes so the full hitbox stays reachable and
+drag initiation runs before editor selection handlers. Measure drag displacement
+from the original mouse-down position, including movement before GPUI's drag
+threshold. Cover both sides of the divider and a first move that leaves its
+hitbox in interaction tests.
+
 ## Layout
 
 Prefer semantic layout wrappers and token-based sizes over ad-hoc absolute
