@@ -1,30 +1,30 @@
 // ABOUTME: Native GPUI element shell for editor document painting
-// ABOUTME: Owns document layout/prepaint while callers provide app-specific paint data
+// ABOUTME: Paints with the layout already synchronized by the native editor surface
 
 use gpui::{
     App, Bounds, Element, ElementId, GlobalElementId, InspectorElementId, IntoElement, LayoutId,
-    Pixels, Style as GpuiStyle, TextStyle, Window, relative,
+    Pixels, Style as GpuiStyle, Window, relative,
 };
 
-use crate::{EditorLayout, EditorTextMetrics};
+use crate::EditorLayout;
 
 pub struct EditorDocumentElement<P> {
-    text_style: TextStyle,
+    layout: EditorLayout,
     paint: P,
 }
 
 impl<P> EditorDocumentElement<P>
 where
-    P: FnMut(Bounds<Pixels>, &mut EditorLayout, &mut Window, &mut App) + 'static,
+    P: FnMut(Bounds<Pixels>, &EditorLayout, &mut Window, &mut App) + 'static,
 {
-    pub fn new(text_style: TextStyle, paint: P) -> Self {
-        Self { text_style, paint }
+    pub fn new(layout: EditorLayout, paint: P) -> Self {
+        Self { layout, paint }
     }
 }
 
 impl<P> IntoElement for EditorDocumentElement<P>
 where
-    P: FnMut(Bounds<Pixels>, &mut EditorLayout, &mut Window, &mut App) + 'static,
+    P: FnMut(Bounds<Pixels>, &EditorLayout, &mut Window, &mut App) + 'static,
 {
     type Element = Self;
 
@@ -35,10 +35,10 @@ where
 
 impl<P> Element for EditorDocumentElement<P>
 where
-    P: FnMut(Bounds<Pixels>, &mut EditorLayout, &mut Window, &mut App) + 'static,
+    P: FnMut(Bounds<Pixels>, &EditorLayout, &mut Window, &mut App) + 'static,
 {
     type RequestLayoutState = ();
-    type PrepaintState = EditorLayout;
+    type PrepaintState = ();
 
     fn id(&self) -> Option<ElementId> {
         None
@@ -66,12 +66,11 @@ where
         &mut self,
         _global_id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
-        bounds: Bounds<Pixels>,
+        _bounds: Bounds<Pixels>,
         _request_layout: &mut Self::RequestLayoutState,
         _window: &mut Window,
-        cx: &mut App,
+        _cx: &mut App,
     ) -> Self::PrepaintState {
-        EditorTextMetrics::resolve(cx.text_system(), &self.text_style).layout_for_bounds(bounds)
     }
 
     fn paint(
@@ -80,11 +79,11 @@ where
         _inspector_id: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
         _request_layout: &mut Self::RequestLayoutState,
-        after_layout: &mut Self::PrepaintState,
+        _after_layout: &mut Self::PrepaintState,
         window: &mut Window,
         cx: &mut App,
     ) {
-        (self.paint)(bounds, after_layout, window, cx);
+        (self.paint)(bounds, &self.layout, window, cx);
     }
 }
 
@@ -102,7 +101,13 @@ mod tests {
         let line_height = Rc::new(Cell::new(px(0.0)));
         let painted_clone = Rc::clone(&painted);
         let line_height_clone = Rc::clone(&line_height);
-        let text_style = TextStyle::default();
+        let layout = EditorLayout {
+            rows: 4,
+            columns: 15,
+            line_height: px(20.0),
+            font_size: px(16.0),
+            cell_width: px(8.0),
+        };
 
         let window = cx.add_empty_window();
         window.draw(
@@ -110,19 +115,16 @@ mod tests {
             size(px(120.0), px(80.0)),
             |_, _| {
                 div().size_full().child(
-                    EditorDocumentElement::new(
-                        text_style.clone(),
-                        move |_bounds, layout, _window, _cx| {
-                            painted_clone.set(true);
-                            line_height_clone.set(layout.line_height);
-                        },
-                    )
+                    EditorDocumentElement::new(layout, move |_bounds, layout, _window, _cx| {
+                        painted_clone.set(true);
+                        line_height_clone.set(layout.line_height);
+                    })
                     .into_element(),
                 )
             },
         );
 
         assert!(painted.get());
-        assert!(line_height.get() > px(0.0));
+        assert_eq!(line_height.get(), px(20.0));
     }
 }

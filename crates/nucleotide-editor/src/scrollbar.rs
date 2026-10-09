@@ -6,7 +6,8 @@ use std::{cell::Cell, rc::Rc};
 use gpui::InteractiveElement as _;
 use gpui::{
     Along, App, Axis, Bounds, Component, EntityId, Hsla, IntoElement, MouseButton,
-    ParentElement as _, Pixels, RenderOnce, Styled as _, Window, div, hsla, px,
+    ParentElement as _, Pixels, RenderOnce, Styled as _, Window, canvas, div, fill, hsla, point,
+    px, size,
 };
 use nucleotide_types::scrollbar::{
     SCROLLBAR_ALPHA_DRAGGING, SCROLLBAR_ALPHA_INACTIVE, SCROLLBAR_ALPHA_THUMB_HOVER,
@@ -335,55 +336,54 @@ impl RenderOnce for EditorScrollbar {
             }
         });
 
-        let track_length = self
-            .state
-            .track_bounds()
-            .map(|bounds| bounds.size.along(self.axis))
-            .unwrap_or_else(|| self.viewport.viewport_bounds().size.along(self.axis));
-        if self.axis == Axis::Vertical {
-            for marker in &self.markers {
-                let top = scrollbar_marker_top(marker.position, track_length);
-                track = track.child(
-                    div()
-                        .absolute()
-                        .left((SCROLLBAR_THICKNESS - SCROLLBAR_MARKER_WIDTH) / 2.0)
-                        .top(top)
-                        .w(SCROLLBAR_MARKER_WIDTH)
-                        .h(SCROLLBAR_MARKER_HEIGHT)
-                        .rounded(px(1.0))
-                        .bg(marker.color),
-                );
-            }
-        }
-        if let Some(thumb) = editor_scrollbar_thumb(
-            track_length,
-            self.viewport.viewport_bounds().size.along(self.axis),
-            self.viewport.max_scroll_offset().along(self.axis),
-            self.viewport.scroll_position().along(self.axis),
-        ) {
-            let visual = scrollbar_visual(thumb, track_length, width_ratio);
-            let thumb_el = div()
-                .absolute()
-                .rounded(visual.cross_size / 2.0)
-                .bg(thumb_color);
-            track = if self.axis == Axis::Vertical {
-                track.child(
-                    thumb_el
-                        .left(visual.cross_offset)
-                        .top(visual.along_offset)
-                        .w(visual.cross_size)
-                        .h(visual.along_size),
-                )
-            } else {
-                track.child(
-                    thumb_el
-                        .left(visual.along_offset)
-                        .top(visual.cross_offset)
-                        .w(visual.along_size)
-                        .h(visual.cross_size),
-                )
-            };
-        }
+        let viewport = self.viewport.clone();
+        let markers = self.markers;
+        track = track.child(
+            canvas(
+                move |bounds, _, _| {
+                    thumb_for_bounds(&viewport, axis, bounds)
+                        .map(|thumb| scrollbar_visual(thumb, bounds.size.along(axis), width_ratio))
+                },
+                move |bounds, visual, window, _| {
+                    // Use this frame's track bounds, never the previous frame's size.
+                    if axis == Axis::Vertical {
+                        for marker in &markers {
+                            let origin = bounds.origin
+                                + point(
+                                    (SCROLLBAR_THICKNESS - SCROLLBAR_MARKER_WIDTH) / 2.0,
+                                    scrollbar_marker_top(marker.position, bounds.size.height),
+                                );
+                            let mut quad = fill(
+                                Bounds::new(
+                                    origin,
+                                    size(SCROLLBAR_MARKER_WIDTH, SCROLLBAR_MARKER_HEIGHT),
+                                ),
+                                marker.color,
+                            );
+                            quad.corner_radii = px(1.0).into();
+                            window.paint_quad(quad);
+                        }
+                    }
+                    if let Some(visual) = visual {
+                        let (offset, size) = if axis == Axis::Vertical {
+                            (
+                                point(visual.cross_offset, visual.along_offset),
+                                size(visual.cross_size, visual.along_size),
+                            )
+                        } else {
+                            (
+                                point(visual.along_offset, visual.cross_offset),
+                                size(visual.along_size, visual.cross_size),
+                            )
+                        };
+                        let mut quad = fill(Bounds::new(bounds.origin + offset, size), thumb_color);
+                        quad.corner_radii = (visual.cross_size / 2.0).into();
+                        window.paint_quad(quad);
+                    }
+                },
+            )
+            .size_full(),
+        );
 
         scrollbar_track(self.axis)
             .on_children_prepainted({

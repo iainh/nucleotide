@@ -112,6 +112,26 @@ its captured previous focus. Dismissing a completion that never owned focus
 must not move keyboard focus. Workspace mouse bubbling must not override a
 child's focus choice.
 
+## Native editor geometry
+
+`NativeEditorView` prepares each frame in prepaint, once its pane bounds are
+known, before constructing and prepainting `EditorSurface`. Preparation uses
+`prepare_native_editor_frame` to synchronize gutters, soft wrap, scroll extent,
+cursor reveal and surface metrics. `EditorDocumentElement` paints that prepared
+frame with the same immutable layout. Do not synchronize geometry in paint or
+schedule a second render to repair scrollbar geometry.
+
+Scrollbar thumbs and markers use the current prepaint track bounds, not the
+previous frame's stored bounds. The active Helix split publishes its shaped
+cursor anchor during prepaint; completion overlays read it during their own
+prepaint. Inactive splits must not overwrite the active split's anchor. Keep
+per-pane native bounds local: Helix's tree remains authoritative for split
+layout.
+
+Completion content stays in layout flow so its anchor can measure the list and
+documentation panel together. Use deferred drawing for the popup so window-edge
+snapping does not leave it clipped by its editor container.
+
 ## Lists And Menus
 
 Use `nucleotide_ui::Navigable` for action-driven focus traversal in list-like

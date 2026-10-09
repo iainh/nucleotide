@@ -4,8 +4,8 @@
 use std::time::Duration;
 
 use gpui::{
-    App, Bounds, CursorStyle, FocusHandle, Hsla, Pixels, SharedString, TextStyle,
-    TransformationMatrix, Window,
+    App, Bounds, CursorStyle, Hsla, Pixels, SharedString, TextStyle, TransformationMatrix, Window,
+    WindowTextSystem,
 };
 use helix_core::{Rope, RopeSlice, visual_offset_from_block};
 use helix_view::{
@@ -327,25 +327,98 @@ pub struct NativeEditorFramePaintParams<'a> {
     pub element_focused: bool,
 }
 
-pub struct NativeEditorFrameRenderParams<'a> {
-    pub editor: &'a mut Editor,
-    pub view_id: ViewId,
-    pub editor_state: &'a mut EditorViewState,
-    pub theme: &'a Theme,
-    pub bounds: Bounds<Pixels>,
-    pub layout: &'a mut EditorLayout,
-    pub text_style: &'a TextStyle,
-    pub font_size: Pixels,
-    pub is_focused: bool,
-    pub focus: &'a FocusHandle,
-    pub soft_wrap_minimum_columns: u16,
-    pub theme_styles: NativeEditorFrameThemeStyles,
-    pub palette: NativeEditorFramePalette,
-}
-
 pub struct NativeEditorPreparedFrame {
     pub frame_state: EditorViewFrameState,
     pub paint_plan: NativeEditorFramePaintPlan,
+}
+
+impl NativeEditorPreparedFrame {
+    /// Resolve the overlay anchor during prepaint using the same cursor plans
+    /// and text shaping as painting, before sibling overlays are prepainted.
+    pub fn cursor_overlay_plan(
+        &self,
+        text_system: &WindowTextSystem,
+        layout: &EditorLayout,
+        text_style: &TextStyle,
+    ) -> Option<CursorOverlayPlan> {
+        let plan = &self.paint_plan;
+        let frame = &plan.frame;
+        let geometry =
+            EditorSurfaceGeometry::new(plan.bounds, frame.gutter_width, layout.cell_width);
+        let paint_position = if let Some(wrapped) = &frame.soft_wrap_render_plan {
+            soft_wrap_cursor_paint_plan(SoftWrapCursorPaintPlanParams {
+                text: plan.text.slice(..),
+                text_format: &wrapped.text_format,
+                text_annotations: None,
+                precomputed_visual_position: frame.soft_wrap_cursor_position.clone(),
+                anchor: wrapped.view_offset.anchor,
+                cursor_char_idx: frame.cursor_presentation.cursor_char_idx,
+                geometry,
+                line_height: layout.line_height,
+                cell_width: layout.cell_width,
+                scroll_line_offset: self.frame_state.scroll_line_offset,
+                vertical_offset: wrapped.view_offset.vertical_offset,
+                viewport_height: wrapped.viewport_height,
+                horizontal_offset: wrapped.view_offset.horizontal_offset,
+            })?
+            .paint_position
+        } else {
+            let unwrapped = frame.unwrapped_render_plan.as_ref()?;
+            let cursor = frame.render_snapshot.cursor_viewport_position?;
+            let line_layout = unwrapped
+                .line_paint_plans()
+                .into_iter()
+                .zip(&frame.unwrapped_highlighted_lines)
+                .find(|(line, _)| line.line.line_idx == cursor.line)
+                .map(|(line, highlighted)| {
+                    let runs = crate::line_text::normalize_text_runs_for_display_text(
+                        highlighted.line_text.display.as_ref(),
+                        &highlighted.line_runs,
+                    );
+                    let shaped = self.frame_state.line_cache.shape_line_cached(
+                        text_system,
+                        highlighted.line_text.display.clone(),
+                        plan.font_size,
+                        plan.bounds.size.width,
+                        runs.as_ref(),
+                    );
+                    crate::LineLayout::from_visible_line_with_origin_x_and_display_map(
+                        line.line,
+                        shaped,
+                        line.line_origin.x,
+                        highlighted.line_text.map.clone(),
+                    )
+                });
+            let viewport = frame.render_snapshot.line_viewport;
+            unwrapped_cursor_paint_plan(UnwrappedCursorPaintPlanParams {
+                text: plan.text.slice(..),
+                geometry,
+                cursor_char_idx: frame.cursor_presentation.cursor_char_idx,
+                cursor_at_trailing_newline: viewport.cursor_at_end
+                    && viewport.file_ends_with_newline,
+                cursor_viewport_position: Some(cursor),
+                line_layout: line_layout.as_ref(),
+                line_height: layout.line_height,
+                scroll_line_offset: self.frame_state.scroll_line_offset,
+            })?
+            .paint_position
+        };
+        let cursor = &frame.cursor_presentation;
+        let shape = crate::shape_cursor_text(
+            text_system,
+            cursor.block_text.clone(),
+            &text_style.font(),
+            plan.font_size,
+            &cursor.text_style_at_cursor,
+            cursor.block_text_color(plan.style.bg_color),
+            plan.style.bg_color,
+        );
+        Some(crate::cursor_overlay_plan(
+            paint_position,
+            shape.width_or(layout.cell_width),
+            layout.line_height,
+        ))
+    }
 }
 
 struct UnwrappedDocumentFramePaintParams<'a> {
@@ -456,62 +529,6 @@ pub fn prepare_native_editor_frame(
         frame_state,
         paint_plan,
     })
-}
-
-pub fn render_native_editor_frame(
-    window: &mut Window,
-    cx: &mut App,
-    params: NativeEditorFrameRenderParams<'_>,
-) -> Option<CursorOverlayPlan> {
-    let _timer =
-        PerfTimer::new("render_native_editor_frame").with_warn_threshold(Duration::from_millis(16));
-    let NativeEditorFrameRenderParams {
-        editor,
-        view_id,
-        editor_state,
-        theme,
-        bounds,
-        layout,
-        text_style,
-        font_size,
-        is_focused,
-        focus,
-        soft_wrap_minimum_columns,
-        theme_styles,
-        palette,
-    } = params;
-
-    let Some(prepared_frame) = prepare_native_editor_frame(NativeEditorFramePrepareParams {
-        editor,
-        view_id,
-        editor_state: &mut *editor_state,
-        theme,
-        bounds,
-        layout: &mut *layout,
-        text_style,
-        font_size,
-        is_focused,
-        soft_wrap_minimum_columns,
-        theme_styles,
-        palette,
-    }) else {
-        editor_state.clear_gutter_run_button_hits();
-        return None;
-    };
-
-    paint_native_editor_frame(
-        window,
-        cx,
-        NativeEditorFramePaintParams {
-            editor_state,
-            frame_state: &prepared_frame.frame_state,
-            plan: &prepared_frame.paint_plan,
-            layout,
-            text_style,
-            diagnostic_theme: theme,
-            element_focused: focus.is_focused(window),
-        },
-    )
 }
 
 pub fn native_editor_frame_paint_plan(
@@ -1891,5 +1908,176 @@ mod tests {
         );
         assert_eq!(state.surface_metrics().get().cell_width, px(8.0));
         assert_eq!(state.surface_metrics().get().line_height, px(20.0));
+    }
+
+    #[gpui::test]
+    fn native_geometry_matches_paint_and_pointer_on_first_frame_and_resize(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use crate::NativeEditorView;
+        use gpui::{AppContext as _, Empty, IntoElement as _, MouseButton};
+        use std::{
+            cell::{Cell, RefCell},
+            rc::Rc,
+        };
+
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let _guard = runtime.enter();
+        let entity_id = cx.update(|cx| cx.new(|_| Empty).entity_id());
+        let window = cx.add_empty_window();
+
+        for wrapped in [false, true] {
+            let mut config = Config::default();
+            config.soft_wrap.enable = Some(wrapped);
+            let text = "0123456789 abcdefghijklmnopqrstuvwxyz ".repeat(6) + "\n\twide 界 text\n";
+            let (mut editor, doc_id, view_id) = test_editor_with_config(&text.repeat(100), config);
+            editor
+                .document_mut(doc_id)
+                .unwrap()
+                .set_selection(view_id, helix_core::Selection::single(7, 7));
+            let original_area = editor.tree.try_get(view_id).unwrap().area;
+            let editor = Rc::new(RefCell::new(editor));
+            let state = EditorViewState::new(px(20.0), px(8.0));
+            let anchor = Rc::new(Cell::new(None));
+            let mut previous_rows = 0;
+
+            for (width, height, extra_gutter) in
+                [(900.0, 180.0, 0), (280.0, 93.0, 3), (720.0, 227.0, 1)]
+            {
+                state.set_gutter_extra_columns(extra_gutter);
+                let theme = theme::Loader::new(&[]).default_theme(true);
+                let paint_theme = theme.clone();
+                let style = TextStyle::default();
+                let paint_style = style.clone();
+                let editor_prepare = editor.clone();
+                let editor_pointer = editor.clone();
+                let state_pointer = state.clone();
+                let anchor_prepare = anchor.clone();
+                let anchor_paint = anchor.clone();
+                window.draw(
+                    point(px(37.0), px(19.0)),
+                    size(px(width), px(height)),
+                    |_, _| {
+                        NativeEditorView::new(
+                            entity_id,
+                            state.clone(),
+                            style.clone(),
+                            move |state, bounds, layout, window, _| {
+                                let font_size = layout.font_size;
+                                let prepared =
+                                    prepare_native_editor_frame(NativeEditorFramePrepareParams {
+                                        editor: &mut editor_prepare.borrow_mut(),
+                                        view_id,
+                                        editor_state: state,
+                                        theme: &theme,
+                                        bounds,
+                                        layout,
+                                        text_style: &style,
+                                        font_size,
+                                        is_focused: true,
+                                        soft_wrap_minimum_columns: EDITOR_MINIMUM_VIEWPORT_COLUMNS,
+                                        theme_styles: NativeEditorFrameThemeStyles::default(),
+                                        palette: paint_palette(),
+                                    })
+                                    .unwrap();
+                                anchor_prepare.set(prepared.cursor_overlay_plan(
+                                    window.text_system(),
+                                    layout,
+                                    &style,
+                                ));
+                                prepared
+                            },
+                            move |state, prepared, layout, window, cx| {
+                                let painted = paint_native_editor_frame(
+                                    window,
+                                    cx,
+                                    NativeEditorFramePaintParams {
+                                        editor_state: state,
+                                        frame_state: &prepared.frame_state,
+                                        plan: &prepared.paint_plan,
+                                        layout,
+                                        text_style: &paint_style,
+                                        diagnostic_theme: &paint_theme,
+                                        element_focused: true,
+                                    },
+                                );
+                                assert_eq!(
+                                    anchor_paint.get(),
+                                    painted,
+                                    "prepaint and painted cursor must agree"
+                                );
+                                painted
+                            },
+                        )
+                        .on_pointer_selection(move |phase, event, _| {
+                            state_pointer
+                                .handle_pointer_selection_for_view_outcome(
+                                    &mut editor_pointer.borrow_mut(),
+                                    view_id,
+                                    phase,
+                                    event,
+                                )
+                                .is_some_and(|outcome| outcome.changed())
+                        })
+                        .into_element()
+                    },
+                );
+
+                assert_eq!(
+                    editor.borrow().tree.try_get(view_id).unwrap().area,
+                    original_area
+                );
+                let viewport = state.viewport().viewport_bounds().size;
+                let expected_gutter = editor
+                    .borrow()
+                    .tree
+                    .try_get(view_id)
+                    .unwrap()
+                    .gutter_offset(editor.borrow().document(doc_id).unwrap())
+                    + extra_gutter;
+                assert_eq!(
+                    state.layout_snapshot().gutter_width,
+                    state.surface_metrics().get().cell_width * f32::from(expected_gutter)
+                );
+                assert_eq!(
+                    viewport.width,
+                    px(width) - state.layout_snapshot().gutter_width
+                );
+                // The text viewport excludes the editor's 1px top padding.
+                assert_eq!(viewport.height, px(height - 1.0));
+                let rows = state.viewport().content_visual_rows();
+                if wrapped && width == 280.0 {
+                    assert!(rows > previous_rows);
+                }
+                if wrapped && width == 720.0 {
+                    assert!(rows < previous_rows);
+                }
+                previous_rows = rows;
+
+                // Click the first line at the third ASCII cell using the new
+                // gutter and metrics immediately, without another draw.
+                let metrics = state.surface_metrics().get();
+                let position = point(
+                    px(37.0) + state.layout_snapshot().gutter_width + metrics.cell_width * 2.2,
+                    px(19.0) + metrics.line_height / 2.0,
+                );
+                window.simulate_mouse_down(position, MouseButton::Left, gpui::Modifiers::none());
+                window.simulate_mouse_up(position, MouseButton::Left, gpui::Modifiers::none());
+                assert_eq!(
+                    editor
+                        .borrow()
+                        .document(doc_id)
+                        .unwrap()
+                        .selection(view_id)
+                        .primary()
+                        .cursor(editor.borrow().document(doc_id).unwrap().text().slice(..)),
+                    2
+                );
+                assert!(
+                    anchor.get().is_some(),
+                    "missing cursor for wrapped={wrapped}, width={width}"
+                );
+            }
+        }
     }
 }
