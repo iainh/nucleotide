@@ -495,20 +495,10 @@ pub fn sidebar_split<L: IntoElement, R: IntoElement>(
                     cx.stop_propagation();
                 }
             },
-            {
-                move |_ev: &MouseUpEvent, window: &mut Window, cx: &mut App| {
-                    if cx.stop_active_drag(window) {
-                        window.refresh();
-                    }
-                }
-            },
-            {
-                move |_ev: &MouseUpEvent, window: &mut Window, cx: &mut App| {
-                    if cx.stop_active_drag(window) {
-                        window.refresh();
-                    }
-                }
-            },
+            // GPUI ends resize drags after delivering the release to drop
+            // targets. An outside release must not cancel unrelated tab drags.
+            |_, _, _| {},
+            |_, _, _| {},
         )
         .absolute()
         .top_0()
@@ -599,20 +589,8 @@ pub fn right_sidebar_split<L: IntoElement, R: IntoElement>(
                         cx.stop_propagation();
                     }
                 },
-                {
-                    move |_ev: &MouseUpEvent, window: &mut Window, cx: &mut App| {
-                        if cx.stop_active_drag(window) {
-                            window.refresh();
-                        }
-                    }
-                },
-                {
-                    move |_ev: &MouseUpEvent, window: &mut Window, cx: &mut App| {
-                        if cx.stop_active_drag(window) {
-                            window.refresh();
-                        }
-                    }
-                },
+                |_, _, _| {},
+                |_, _, _| {},
             )
             .absolute()
             .top_0()
@@ -688,20 +666,8 @@ pub fn bottom_panel_split<C: IntoElement>(
                         cx.stop_propagation();
                     }
                 },
-                {
-                    move |_ev: &MouseUpEvent, window: &mut Window, cx: &mut App| {
-                        if cx.stop_active_drag(window) {
-                            window.refresh();
-                        }
-                    }
-                },
-                {
-                    move |_ev: &MouseUpEvent, window: &mut Window, cx: &mut App| {
-                        if cx.stop_active_drag(window) {
-                            window.refresh();
-                        }
-                    }
-                },
+                |_, _, _| {},
+                |_, _, _| {},
             )
             .absolute()
             .left_0()

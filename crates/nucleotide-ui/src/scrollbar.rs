@@ -363,10 +363,10 @@ impl RenderOnce for Scrollbar {
             .on_mouse_up_out(MouseButton::Left, {
                 let state = state.clone();
                 move |_event, window, cx| {
-                    if state.is_dragging() {
-                        state.scroll_handle().drag_ended();
+                    if !state.is_dragging() {
+                        return;
                     }
-
+                    state.scroll_handle().drag_ended();
                     state.set_track_hovered(false);
                     state.set_thumb_hovered(false);
                     window.refresh();
@@ -463,9 +463,93 @@ fn scroll_offset_for_pointer(
 
 #[cfg(test)]
 mod tests {
-    use gpui::{point, size};
+    use gpui::{Context, Modifiers, Render, TestAppContext, point, size};
 
     use super::*;
+
+    struct ScrollbarReleaseHarness {
+        scroll: ScrollHandle,
+        state: ScrollbarState,
+        releases: Rc<Cell<usize>>,
+    }
+
+    impl Render for ScrollbarReleaseHarness {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            let releases = self.releases.clone();
+            div()
+                .size_full()
+                .on_mouse_up(MouseButton::Left, move |_, _, _| {
+                    releases.set(releases.get() + 1);
+                })
+                .child(
+                    div()
+                        .relative()
+                        .flex()
+                        .w(px(112.0))
+                        .h(px(100.0))
+                        .child(
+                            div()
+                                .id("overflowing-content")
+                                .w(px(100.0))
+                                .h_full()
+                                .flex_none()
+                                .overflow_y_scroll()
+                                .track_scroll(&self.scroll)
+                                .child(div().h(px(400.0))),
+                        )
+                        .children(Scrollbar::vertical(self.state.clone())),
+                )
+        }
+    }
+
+    #[gpui::test]
+    fn idle_scrollbar_does_not_consume_outside_releases(cx: &mut TestAppContext) {
+        let releases = Rc::new(Cell::new(0));
+        let (harness, cx) = cx.add_window_view(|_, _| {
+            let scroll = ScrollHandle::new();
+            ScrollbarReleaseHarness {
+                state: ScrollbarState::new(scroll.clone()),
+                scroll,
+                releases: releases.clone(),
+            }
+        });
+        // The first layout populates the scroll handle; the second renders
+        // the thumb and its mouse listeners.
+        for _ in 0..2 {
+            cx.update(|window, cx| {
+                window.refresh();
+                window.draw(cx).clear();
+            });
+        }
+        harness.read_with(cx, |harness, _| {
+            assert!(harness.scroll.max_offset().y > px(0.0));
+        });
+        let outside = point(px(150.0), px(50.0));
+        cx.simulate_mouse_move(outside, None, Modifiers::none());
+        cx.simulate_mouse_down(outside, MouseButton::Left, Modifiers::none());
+        cx.simulate_mouse_up(outside, MouseButton::Left, Modifiers::none());
+        assert_eq!(releases.get(), 1);
+
+        // A scrollbar-owned drag still finishes outside the track, then stops
+        // consuming subsequent unrelated releases.
+        let thumb = point(px(106.0), px(10.0));
+        cx.simulate_mouse_move(thumb, None, Modifiers::none());
+        cx.simulate_mouse_down(thumb, MouseButton::Left, Modifiers::none());
+        cx.simulate_mouse_move(
+            point(px(106.0), px(50.0)),
+            MouseButton::Left,
+            Modifiers::none(),
+        );
+        cx.simulate_mouse_move(outside, MouseButton::Left, Modifiers::none());
+        cx.simulate_mouse_up(outside, MouseButton::Left, Modifiers::none());
+        harness.read_with(cx, |harness, _| {
+            assert!(harness.scroll.offset().y < px(0.0));
+        });
+        assert_eq!(releases.get(), 1);
+        cx.simulate_mouse_down(outside, MouseButton::Left, Modifiers::none());
+        cx.simulate_mouse_up(outside, MouseButton::Left, Modifiers::none());
+        assert_eq!(releases.get(), 2);
+    }
 
     #[test]
     fn scrollbar_visual_applies_track_padding() {

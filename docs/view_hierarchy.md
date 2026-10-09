@@ -25,8 +25,12 @@ Window
     │   │
     │   └── Main Content (vertical flex)
     │       ├── Document Area
-    │       │   └── DocumentView(s) (one per split)
-    │       │       └── DocumentElement (text rendering)
+    │       │   └── EditorPaneGrid
+    │       │       ├── Editor pane (one per Helix ViewId)
+    │       │       │   ├── TabBar (pane-local tabs and scrolling)
+    │       │       │   └── DocumentView or image viewer
+    │       │       │       └── DocumentElement (text rendering)
+    │       │       └── Split dividers and resize handles
     │       │
     │       ├── NotificationView (stacked notifications)
     │       │   └── Individual Notification Items
@@ -50,6 +54,27 @@ Window
 - Controls layout (file tree visibility, splits)
 - Focus management and restoration
 - Theme application
+
+#### Pane-local tabs
+
+`crates/nucleotide/src/workspace/pane_tabs.rs` stores ordered tab membership,
+image selection and tab-strip scroll state for each Helix `ViewId`. Helix still
+owns the split tree, active document in each view and shared document buffers.
+The workspace reconciles tab membership after both GUI actions and Helix commands.
+
+- A new split starts with the document displayed in that split. Other tabs stay
+  in their original pane.
+- Selecting a tab or using a tab-bar control targets that bar's pane.
+- Drag a tab onto another tab to insert it before that tab, or onto empty bar
+  space to append it. The same gestures reorder tabs within a pane.
+- Transfers remove the source tab and activate it in the destination. If the
+  destination already has that document, it keeps one tab rather than a duplicate.
+- Moving the last tab out closes the empty split without closing its buffer.
+- Closing a tab shared with another pane removes only the local copy. Closing
+  its last copy retains the existing unsaved-change confirmation.
+- Closing a split through Helix returns its otherwise unassigned tabs to the
+  focused pane. Tab context-menu ranges apply to that pane, not the workspace.
+- Image viewers render inside their pane and do not replace the split grid.
 
 #### **DocumentView** (`src/document.rs`)
 - Individual editor view for each split

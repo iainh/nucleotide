@@ -1,6 +1,7 @@
 // ABOUTME: Workspace module decomposition for cleaner architecture
 // ABOUTME: Separates view management from workspace coordination logic
 
+mod pane_tabs;
 pub mod prefix_extraction;
 mod split_resize;
 pub mod view_manager;
@@ -1011,9 +1012,7 @@ pub struct Workspace {
     needs_appearance_update: bool,
     needs_window_appearance_update: bool,
     pending_appearance: Option<gpui::WindowAppearance>,
-    tab_bar_scroll_handle: ScrollHandle,
-    last_scrolled_tab_doc_id: Option<TabId>,
-    suppress_tab_bar_auto_scroll: bool,
+    pane_tabs: pane_tabs::PaneTabState,
     image_tabs: Vec<ImageTab>,
     active_image_tab_id: Option<u64>,
     next_image_tab_index: u64,
@@ -1033,7 +1032,6 @@ pub struct Workspace {
     tab_bar_split_menu: ContextMenuController,
     tab_bar_split_popup_menu: Option<Entity<PopupMenu>>,
     tab_bar_split_popup_menu_subscription: Option<Subscription>,
-    tab_bar_split_button_bounds: Option<Bounds<Pixels>>,
     split_pane_resize: Option<SplitPaneResizeState>,
     // Tab bar new item menu state
     tab_bar_new_menu: ContextMenuController,
@@ -4310,6 +4308,156 @@ impl Workspace {
         self.tab_bar_document_generation = self.tab_bar_document_generation.wrapping_add(1);
     }
 
+    fn sync_pane_tabs(&mut self, cx: &Context<Self>) {
+        let editor = &self.core.read(cx).editor;
+        let views = editor
+            .tree
+            .views()
+            .map(|(view, _)| (view.id, view.doc))
+            .collect::<Vec<_>>();
+        let mut available = self
+            .document_order
+            .iter()
+            .copied()
+            .filter(|id| editor.documents.contains_key(id))
+            .map(TabId::Document)
+            .collect::<Vec<_>>();
+        available.extend(
+            editor
+                .documents
+                .keys()
+                .copied()
+                .map(TabId::Document)
+                .filter(|id| {
+                    !self
+                        .document_order
+                        .iter()
+                        .any(|doc| TabId::Document(*doc) == *id)
+                }),
+        );
+        available.extend(self.image_tabs.iter().map(|tab| TabId::Image(tab.id)));
+        self.pane_tabs.sync(
+            &views,
+            editor.tree.focus,
+            &available,
+            &mut self.active_image_tab_id,
+        );
+    }
+
+    fn focus_tab_pane(&mut self, pane: ViewId, cx: &mut Context<Self>) {
+        let handle = self.handle.clone();
+        self.core.update(cx, |core, _| {
+            let _guard = handle.enter();
+            if core.editor.tree.contains(pane) {
+                core.editor.focus(pane);
+            }
+        });
+        self.sync_pane_tabs(cx);
+        self.update_document_views(cx);
+    }
+
+    fn move_pane_tab(
+        &mut self,
+        source: ViewId,
+        target: ViewId,
+        tab: TabId,
+        before: Option<TabId>,
+        cx: &mut Context<Self>,
+    ) {
+        self.sync_pane_tabs(cx);
+        let source_active = self.pane_tabs.panes.get(&source).map(|pane| pane.active());
+        if !self.pane_tabs.move_tab(source, target, tab, before) {
+            return;
+        }
+        // Dragging a preview is an explicit decision to keep it open.
+        if let TabId::Document(doc) = tab {
+            self.unregister_preview_document(doc, cx);
+        }
+        let replacement = self.pane_tabs.panes[&source].tabs.first().copied();
+        let source_empty = self.pane_tabs.panes[&source].tabs.is_empty();
+        let handle = self.handle.clone();
+        self.core.update(cx, |core, cx| {
+            let _guard = handle.enter();
+            // Display the buffer in its destination before replacing the source:
+            // Helix otherwise discards an undisplayed, empty scratch buffer.
+            core.editor.focus(target);
+            if let TabId::Document(doc) = tab {
+                core.editor.switch(doc, helix_view::editor::Action::Replace);
+            }
+            if source != target {
+                if source_empty {
+                    core.editor.close(source);
+                } else if source_active == Some(tab) {
+                    core.editor.focus(source);
+                    if let Some(TabId::Document(doc)) = replacement {
+                        core.editor.switch(doc, helix_view::editor::Action::Replace);
+                    }
+                }
+            }
+            core.editor.focus(target);
+            cx.emit(crate::Update::Redraw);
+        });
+        if source != target && source_active == Some(tab) {
+            self.pane_tabs.panes.get_mut(&source).unwrap().active_image = match replacement {
+                Some(TabId::Image(id)) => Some(id),
+                _ => None,
+            };
+        }
+        self.pane_tabs.panes.get_mut(&target).unwrap().active_image = match tab {
+            TabId::Image(id) => Some(id),
+            _ => None,
+        };
+        self.active_image_tab_id = self.pane_tabs.panes[&target].active_image;
+        self.allow_tab_bar_auto_scroll();
+        self.update_document_views(cx);
+        cx.notify();
+    }
+
+    /// Closing a copy in one split must not unload a buffer used by another.
+    fn detach_shared_pane_tab(
+        &mut self,
+        pane_id: ViewId,
+        tab: TabId,
+        activation: Option<TabId>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !self
+            .pane_tabs
+            .panes
+            .iter()
+            .any(|(id, pane)| *id != pane_id && pane.tabs.contains(&tab))
+        {
+            return false;
+        }
+        let pane = self.pane_tabs.panes.get_mut(&pane_id).unwrap();
+        let was_active = pane.active() == tab;
+        pane.tabs.retain(|id| *id != tab);
+        let replacement = activation
+            .filter(|id| pane.tabs.contains(id))
+            .or_else(|| pane.tabs.first().copied());
+        if was_active {
+            pane.active_image = match replacement {
+                Some(TabId::Image(id)) => Some(id),
+                _ => None,
+            };
+            self.active_image_tab_id = pane.active_image;
+        }
+        let handle = self.handle.clone();
+        self.core.update(cx, |core, cx| {
+            let _guard = handle.enter();
+            if replacement.is_none() {
+                core.editor.close(pane_id);
+            } else if was_active && let Some(TabId::Document(doc)) = replacement {
+                core.editor.focus(pane_id);
+                core.editor.switch(doc, helix_view::editor::Action::Replace);
+            }
+            cx.emit(crate::Update::Redraw);
+        });
+        self.update_document_views(cx);
+        cx.notify();
+        true
+    }
+
     fn invalidate_tab_bar_document_if_presentation_changed(
         &mut self,
         doc_id: DocumentId,
@@ -4401,6 +4549,7 @@ impl Workspace {
 
         self.invalidate_tab_bar_documents();
         self.allow_tab_bar_auto_scroll();
+        self.sync_pane_tabs(cx);
 
         if let Some(file_tree) = &self.file_tree {
             file_tree.update(cx, |tree, cx| {
@@ -4421,6 +4570,7 @@ impl Workspace {
             self.active_image_tab_id = Some(image_id);
             self.invalidate_tab_bar_documents();
             self.allow_tab_bar_auto_scroll();
+            self.sync_pane_tabs(cx);
             cx.notify();
         }
     }
@@ -4435,6 +4585,10 @@ impl Workspace {
     fn visible_tab_document_ids(&self, cx: &mut Context<Self>) -> Vec<TabId> {
         let core = self.core.read(cx);
         let editor = &core.editor;
+
+        if let Some(pane) = self.pane_tabs.panes.get(&editor.tree.focus) {
+            return zed_style_tab_order(&pane.tabs, &self.pinned_documents);
+        }
 
         let mut visible_doc_ids = self
             .document_order
@@ -4594,6 +4748,10 @@ impl Workspace {
     fn close_tab_ids(&mut self, tab_ids: impl IntoIterator<Item = TabId>, cx: &mut Context<Self>) {
         let mut document_ids = Vec::new();
         for tab_id in tab_ids {
+            let pane = self.core.read(cx).editor.tree.focus;
+            if self.detach_shared_pane_tab(pane, tab_id, None, cx) {
+                continue;
+            }
             match tab_id {
                 TabId::Document(doc_id) => document_ids.push(doc_id),
                 TabId::Image(image_id) => self.close_image_tab(image_id, None, cx),
@@ -4626,6 +4784,10 @@ impl Workspace {
         activation_target: Option<TabId>,
         cx: &mut Context<Self>,
     ) {
+        let pane = self.core.read(cx).editor.tree.focus;
+        if self.detach_shared_pane_tab(pane, TabId::Image(image_id), activation_target, cx) {
+            return;
+        }
         let Some(index) = self.image_tabs.iter().position(|tab| tab.id == image_id) else {
             return;
         };
@@ -4654,11 +4816,38 @@ impl Workspace {
         force: bool,
         cx: &mut Context<Self>,
     ) {
+        let pane = self.core.read(cx).editor.tree.focus;
+        if self.detach_shared_pane_tab(pane, TabId::Document(doc_id), activation_target, cx) {
+            return;
+        }
         let handle = self.handle.clone();
         let (closed, close_status, modified_name) = self.core.update(cx, |core, cx| {
             let _guard = handle.enter();
 
-            match core.editor.close_document(doc_id, force) {
+            // Switch within the same pane before unloading its active buffer.
+            // Helix otherwise may close the view and focus a different split.
+            let can_close = core
+                .editor
+                .documents
+                .get(&doc_id)
+                .is_some_and(|doc| force || !doc.is_modified());
+            let mut removed_empty_scratch = false;
+            if can_close
+                && core.editor.tree.get(core.editor.tree.focus).doc == doc_id
+                && let Some(TabId::Document(target)) = activation_target
+                && target != doc_id
+                && core.editor.documents.contains_key(&target)
+            {
+                core.editor
+                    .switch(target, helix_view::editor::Action::Replace);
+                removed_empty_scratch = !core.editor.documents.contains_key(&doc_id);
+            }
+            let result = if removed_empty_scratch {
+                Ok(())
+            } else {
+                core.editor.close_document(doc_id, force)
+            };
+            match result {
                 Ok(()) => {
                     if let Some(TabId::Document(target_doc_id)) = activation_target
                         && core.editor.documents.contains_key(&target_doc_id)
@@ -4776,7 +4965,13 @@ impl Workspace {
     }
 
     fn allow_tab_bar_auto_scroll(&mut self) {
-        self.suppress_tab_bar_auto_scroll = false;
+        if let Some(pane) = self
+            .pane_tabs
+            .focused
+            .and_then(|id| self.pane_tabs.panes.get_mut(&id))
+        {
+            pane.suppress_auto_scroll = false;
+        }
     }
 
     fn active_document_and_view(&self, cx: &mut Context<Self>) -> Option<(DocumentId, ViewId)> {
@@ -5607,9 +5802,7 @@ impl Workspace {
             needs_appearance_update: false,
             needs_window_appearance_update: false,
             pending_appearance: None,
-            tab_bar_scroll_handle: ScrollHandle::new(),
-            last_scrolled_tab_doc_id: None,
-            suppress_tab_bar_auto_scroll: false,
+            pane_tabs: pane_tabs::PaneTabState::default(),
             image_tabs: Vec::new(),
             active_image_tab_id: None,
             next_image_tab_index: 1,
@@ -5626,7 +5819,6 @@ impl Workspace {
             tab_bar_split_menu: ContextMenuController::new(),
             tab_bar_split_popup_menu: None,
             tab_bar_split_popup_menu_subscription: None,
-            tab_bar_split_button_bounds: None,
             split_pane_resize: None,
             tab_bar_new_menu: ContextMenuController::new(),
             tab_bar_new_popup_menu: None,
@@ -10642,20 +10834,25 @@ impl Workspace {
     }
 
     /// Render the tab bar showing all open documents
-    fn render_tab_bar(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_tab_bar(
+        &mut self,
+        pane_id: ViewId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         use crate::tab_bar::{DocumentInfo, TabBar};
         use helix_view::editor::BufferLine;
 
         let tab_bar_button_size = cx.theme().tokens.sizes.button_height_sm;
         let active_document_focused = self
             .view_manager
-            .focused_view_id()
-            .and_then(|view_id| self.view_manager.get_document_view(&view_id))
+            .get_document_view(&pane_id)
             .is_some_and(|doc_view| doc_view.focus_handle(cx).contains_focused(window, cx));
         let tab_bar_menu_focused = self.any_tab_bar_menu_open();
         let workspace_focused = self.focus_handle.contains_focused(window, cx);
         let terminal_pane_focused = self.terminal_is_focused(window, cx);
-        let editor_pane_focused = workspace_focused || active_document_focused;
+        let editor_pane_focused = self.pane_tabs.focused == Some(pane_id)
+            && (workspace_focused || active_document_focused);
         let show_focused_tab_bar_buttons =
             editor_pane_focused || terminal_pane_focused || tab_bar_menu_focused;
 
@@ -10669,7 +10866,7 @@ impl Workspace {
             bufferline_config,
             editor.documents.len() + self.image_tabs.len()
         );
-        let tab_count = editor.documents.len() + self.image_tabs.len();
+        let tab_count = self.pane_tabs.panes[&pane_id].tabs.len();
 
         let should_show_tabs = core.config.gui.tab_bar.show
             && match bufferline_config {
@@ -10696,12 +10893,7 @@ impl Workspace {
         debug!("Tab bar visible, rendering tabs");
 
         // Get the currently active tab ID
-        let active_doc_id = self.active_image_tab_id.map(TabId::Image).or_else(|| {
-            self.view_manager
-                .focused_view_id()
-                .and_then(|focused_view_id| editor.tree.try_get(focused_view_id))
-                .map(|view| TabId::Document(view.doc))
-        });
+        let active_doc_id = Some(self.pane_tabs.panes[&pane_id].active());
 
         // Get project directory for relative paths first
         let project_directory = core.project_directory.clone();
@@ -10881,20 +11073,31 @@ impl Workspace {
             documents
         };
 
+        let pane = self.pane_tabs.panes.get_mut(&pane_id).unwrap();
+        let mut documents = pane
+            .tabs
+            .iter()
+            .filter_map(|id| documents.iter().find(|doc| doc.id == *id).cloned())
+            .enumerate()
+            .map(|(order, mut doc)| {
+                doc.order = order;
+                doc
+            })
+            .collect::<Vec<_>>();
+        documents.sort_by_key(|doc| (!doc.is_pinned, doc.order));
+        let documents: Arc<[DocumentInfo]> = documents.into();
+        let scroll_handle = pane.scroll.clone();
         let visible_doc_ids = documents.iter().map(|doc| doc.id).collect::<Vec<_>>();
-        if should_scroll_active_tab(
-            self.suppress_tab_bar_auto_scroll,
-            self.last_scrolled_tab_doc_id,
-            active_doc_id,
-        ) && let Some(active_doc_id) = active_doc_id
+        if should_scroll_active_tab(pane.suppress_auto_scroll, pane.last_scrolled, active_doc_id)
+            && let Some(active_doc_id) = active_doc_id
             && let Some(active_index) = active_unpinned_tab_scroll_index(
                 &visible_doc_ids,
                 &self.pinned_documents,
                 active_doc_id,
             )
         {
-            self.tab_bar_scroll_handle.scroll_to_item(active_index);
-            self.last_scrolled_tab_doc_id = Some(active_doc_id);
+            scroll_handle.scroll_to_item(active_index);
+            pane.last_scrolled = Some(active_doc_id);
         }
 
         let has_documents = !documents.is_empty();
@@ -10926,6 +11129,7 @@ impl Workspace {
                 let handle = self.handle.clone();
                 move |doc_id, _window, cx| {
                     workspace.update(cx, |workspace, cx| {
+                        workspace.focus_tab_pane(pane_id, cx);
                         match doc_id {
                             TabId::Image(image_id) => {
                                 workspace.switch_to_image_tab(image_id, cx);
@@ -10960,6 +11164,7 @@ impl Workspace {
                 let activation_documents = activation_documents.clone();
                 move |doc_id, _window, cx| {
                     workspace.update(cx, |workspace, cx| {
+                        workspace.focus_tab_pane(pane_id, cx);
                         workspace.close_tab_context_menu();
                         let activation_target = tab_activation_target_after_close(
                             &activation_documents,
@@ -10967,6 +11172,10 @@ impl Workspace {
                             active_doc_id,
                             activate_on_close,
                         );
+                        if workspace.detach_shared_pane_tab(pane_id, doc_id, activation_target, cx)
+                        {
+                            return;
+                        }
                         match doc_id {
                             TabId::Image(image_id) => {
                                 workspace.close_image_tab(image_id, activation_target, cx);
@@ -10992,12 +11201,23 @@ impl Workspace {
         .show_diagnostics(show_diagnostics)
         .loading_documents(self.loading_documents.keys().copied().map(TabId::Document))
         .deemphasized(!editor_pane_focused)
-        .track_scroll(&self.tab_bar_scroll_handle)
+        .track_scroll(&scroll_handle)
+        .with_pane_drag_drop(pane_id, {
+            let workspace = cx.entity().clone();
+            move |dragged, before, window, cx| {
+                workspace.update(cx, |workspace, cx| {
+                    workspace.move_pane_tab(dragged.pane, pane_id, dragged.tab, before, cx);
+                    workspace.focus_editor(window, cx);
+                });
+            }
+        })
         .with_scroll_wheel_handler({
             let workspace = cx.entity().clone();
             move |_event, _window, cx| {
                 workspace.update(cx, |workspace, _cx| {
-                    workspace.suppress_tab_bar_auto_scroll = true;
+                    if let Some(pane) = workspace.pane_tabs.panes.get_mut(&pane_id) {
+                        pane.suppress_auto_scroll = true;
+                    }
                 });
             }
         })
@@ -11014,6 +11234,7 @@ impl Workspace {
                             let workspace = cx.entity().clone();
                             move |_event, _window, cx| {
                                 workspace.update(cx, |workspace, cx| {
+                                    workspace.focus_tab_pane(pane_id, cx);
                                     workspace.send_helix_key("ctrl-o", cx);
                                 });
                                 cx.stop_propagation();
@@ -11031,6 +11252,7 @@ impl Workspace {
                             let workspace = cx.entity().clone();
                             move |_event, _window, cx| {
                                 workspace.update(cx, |workspace, cx| {
+                                    workspace.focus_tab_pane(pane_id, cx);
                                     workspace.send_helix_key("ctrl-i", cx);
                                 });
                                 cx.stop_propagation();
@@ -11050,6 +11272,7 @@ impl Workspace {
                             let workspace = cx.entity().clone();
                             move |_event, _window, cx| {
                                 workspace.update(cx, |workspace, cx| {
+                                    workspace.focus_tab_pane(pane_id, cx);
                                     workspace.close_tab_bar_menus();
                                     workspace.tab_bar_action_new_file(cx);
                                 });
@@ -11068,7 +11291,10 @@ impl Workspace {
                                     return;
                                 };
                                 workspace.update(cx, |workspace, _cx| {
-                                    workspace.tab_bar_split_button_bounds = Some(bounds);
+                                    if let Some(pane) = workspace.pane_tabs.panes.get_mut(&pane_id)
+                                    {
+                                        pane.split_button_bounds = Some(bounds);
+                                    }
                                 });
                             }
                         })
@@ -11083,6 +11309,7 @@ impl Workspace {
                                     let workspace = cx.entity().clone();
                                     move |event, window, cx| {
                                         workspace.update(cx, |workspace, cx| {
+                                            workspace.focus_tab_pane(pane_id, cx);
                                             if workspace.tab_bar_split_menu.is_open() {
                                                 workspace.close_tab_bar_menus();
                                                 cx.notify();
@@ -11091,7 +11318,10 @@ impl Workspace {
 
                                             let fallback_position = event.position();
                                             let menu_position = workspace
-                                                .tab_bar_split_button_bounds
+                                                .pane_tabs
+                                                .panes
+                                                .get(&pane_id)
+                                                .and_then(|pane| pane.split_button_bounds)
                                                 .map(|bounds| bounds.bottom_right())
                                                 .unwrap_or(fallback_position);
                                             workspace.close_tab_context_menu();
@@ -11133,6 +11363,7 @@ impl Workspace {
             let workspace = cx.entity().clone();
             move |_event, _window, cx| {
                 workspace.update(cx, |workspace, cx| {
+                    workspace.focus_tab_pane(pane_id, cx);
                     workspace.close_tab_bar_menus();
                     workspace.tab_bar_action_new_file(cx);
                 });
@@ -11142,6 +11373,7 @@ impl Workspace {
             let workspace = cx.entity().clone();
             move |doc_id, _window, cx| {
                 workspace.update(cx, |workspace, cx| {
+                    workspace.focus_tab_pane(pane_id, cx);
                     workspace.close_tab_bar_menus();
                     workspace.tab_action_double_click(doc_id, cx);
                 });
@@ -11151,6 +11383,7 @@ impl Workspace {
             let workspace = cx.entity().clone();
             move |doc_id, event, window, cx| {
                 workspace.update(cx, |workspace, cx| {
+                    workspace.focus_tab_pane(pane_id, cx);
                     workspace.close_tab_bar_split_menu();
                     workspace.close_tab_bar_new_menu();
                     workspace
@@ -13653,38 +13886,63 @@ impl Workspace {
     }
 
     fn render_document_view_layout(
-        &self,
+        &mut self,
         layout: DocumentViewLayout,
         total_area: HelixRect,
         editor_width: f32,
         editor_height: f32,
         show_focus_indicator: bool,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
         let view_entity = self
             .view_manager
             .get_document_view(&layout.view_id)?
             .clone();
-        let theme = cx.theme();
+        let tokens = cx.theme().tokens;
         let (left, top, width, height) =
             helix_rect_to_scaled_pixel_bounds(layout.area, total_area, editor_width, editor_height);
+        let tab_bar = self
+            .render_tab_bar(layout.view_id, window, cx)
+            .into_any_element();
+        let image = self.pane_tabs.panes[&layout.view_id]
+            .active_image
+            .and_then(|id| self.image_tabs.iter().find(|tab| tab.id == id).cloned());
+        let content = if let Some(image) = image {
+            self.render_image_viewer(image, cx)
+        } else {
+            view_entity.into_any_element()
+        };
 
         Some(
             div()
+                .id(SharedString::from(format!(
+                    "editor-pane-{:?}",
+                    layout.view_id
+                )))
                 .absolute()
+                .flex()
+                .flex_col()
                 .left(left)
                 .top(top)
                 .w(width)
                 .h(height)
                 .overflow_hidden()
                 .when(self.debug_colors_enabled, |d| {
-                    d.border_1()
-                        .border_color(theme.tokens.chrome.border_default)
+                    d.border_1().border_color(tokens.chrome.border_default)
                 })
-                .child(view_entity)
+                .child(tab_bar)
+                .child(
+                    div()
+                        .relative()
+                        .flex_1()
+                        .min_h(px(0.0))
+                        .overflow_hidden()
+                        .child(content),
+                )
                 .when(show_focus_indicator && layout.is_focused, |d| {
                     d.child(div().absolute().top_0().left_0().bottom_0().w(px(2.0)).bg(
-                        nucleotide_ui::tokens::with_alpha(theme.tokens.editor.focus_ring, 0.8),
+                        nucleotide_ui::tokens::with_alpha(tokens.editor.focus_ring, 0.8),
                     ))
                 })
                 .into_any_element(),
@@ -13736,12 +13994,16 @@ impl Workspace {
                 cx.stop_propagation();
             }),
             cx.listener(|workspace, _event: &MouseUpEvent, window, cx| {
-                workspace.finish_split_pane_resize(window, cx);
-                cx.stop_propagation();
+                if workspace.split_pane_resize.is_some() {
+                    workspace.finish_split_pane_resize(window, cx);
+                    cx.stop_propagation();
+                }
             }),
             cx.listener(|workspace, _event: &MouseUpEvent, window, cx| {
-                workspace.finish_split_pane_resize(window, cx);
-                cx.stop_propagation();
+                if workspace.split_pane_resize.is_some() {
+                    workspace.finish_split_pane_resize(window, cx);
+                    cx.stop_propagation();
+                }
             }),
         );
 
@@ -13903,6 +14165,7 @@ impl Workspace {
         view_ids: &mut HashSet<ViewId>,
         cx: &mut Context<Self>,
     ) -> Option<String> {
+        self.sync_pane_tabs(cx);
         let mut focused_file_name = None;
         let mut focused_doc_path = None;
         self.view_manager.set_focused_view_id(None);
@@ -14039,24 +14302,22 @@ impl Workspace {
     fn visible_tab_bar_height(&self, cx: &Context<Self>) -> Pixels {
         let core = self.core.read(cx);
         let editor = &core.editor;
-        let has_pinned_tabs = editor
-            .documents
-            .keys()
-            .copied()
-            .map(TabId::Document)
-            .chain(self.image_tabs.iter().map(|tab| TabId::Image(tab.id)))
-            .any(|tab_id| self.pinned_documents.contains(&tab_id));
-        let has_unpinned_tabs = editor
-            .documents
-            .keys()
-            .copied()
-            .map(TabId::Document)
-            .chain(self.image_tabs.iter().map(|tab| TabId::Image(tab.id)))
-            .any(|tab_id| !self.pinned_documents.contains(&tab_id));
+        let tabs = self
+            .pane_tabs
+            .panes
+            .get(&editor.tree.focus)
+            .map(|pane| pane.tabs.as_slice())
+            .unwrap_or_default();
+        let has_pinned_tabs = tabs
+            .iter()
+            .any(|tab_id| self.pinned_documents.contains(tab_id));
+        let has_unpinned_tabs = tabs
+            .iter()
+            .any(|tab_id| !self.pinned_documents.contains(tab_id));
         tab_bar_height_for_editor(
             core.config.gui.tab_bar.show,
             &editor.config().bufferline,
-            editor.documents.len() + self.image_tabs.len(),
+            tabs.len(),
             crate::tab::tab_container_height(cx.theme().tokens),
             core.config.gui.tab_bar.show_pinned_tabs_in_separate_row,
             has_pinned_tabs,
@@ -14314,6 +14575,7 @@ impl Render for Workspace {
         }
 
         self.sync_file_tree_width_for_viewport(f32::from(window.viewport_size().width));
+        self.sync_pane_tabs(cx);
 
         // Update global workspace layout information for completion positioning
         self.update_workspace_layout_info(window, cx);
@@ -14453,7 +14715,8 @@ impl Render for Workspace {
         } else {
             available_h
         };
-        let editor_content_h_px = (editor_h - f32::from(tab_bar_height)).max(1.0);
+        // Each pane reserves its own chrome inside its split bounds.
+        let editor_content_h_px = editor_h.max(1.0);
 
         let rows = (editor_content_h_px / line_h_value).floor().max(1.0) as u16;
         let cols = (editor_content_w_px / char_w_value).floor().max(1.0) as u16;
@@ -14482,20 +14745,7 @@ impl Render for Workspace {
             cx.theme().tokens.chrome.border_strong,
         );
 
-        let active_image_tab = self
-            .active_image_tab_id
-            .and_then(|doc_id| self.image_tabs.iter().find(|tab| tab.id == doc_id).cloned());
-        if let Some(image_tab) = active_image_tab {
-            docs_root = docs_root.child(
-                div()
-                    .id("image-viewer-container")
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .size_full()
-                    .child(self.render_image_viewer(image_tab, cx)),
-            );
-        } else {
+        {
             let editor_pane_layout = EditorPaneLayout::new(self.document_view_layouts(cx));
 
             if editor_pane_layout.is_empty() {
@@ -14529,6 +14779,7 @@ impl Render for Workspace {
                             editor_content_w_px,
                             editor_content_h_px,
                             editor_pane_layout.show_focus_indicator(),
+                            window,
                             cx,
                         ) {
                             docs_root = docs_root.child(doc_element);
@@ -14583,19 +14834,6 @@ impl Render for Workspace {
             .w_full()
             .h_full()
             // Background color inherited
-            // No gap needed between tab bar and content
-            .child({
-                // Tab bar at the top of editor area, consistently wrapped in a Div
-                let debug = self.debug_colors_enabled;
-                let debug_border = cx.theme().tokens.chrome.border_default;
-                let tab = self.render_tab_bar(window, cx);
-                div()
-                    .when(debug, |d| {
-                        // Tab bar wrapper (blue)
-                        d.border_1().border_color(debug_border)
-                    })
-                    .child(tab)
-            })
             .child(
                 // Editor content container
                 div()
@@ -14603,7 +14841,7 @@ impl Render for Workspace {
                     .flex()
                     .flex_col()
                     .w_full()
-                    .flex_1() // Take remaining height after tab bar
+                    .flex_1()
                     .relative()
                     // Debug: container styling; label appended later to ensure on top
                     .when(self.debug_colors_enabled, |d| {

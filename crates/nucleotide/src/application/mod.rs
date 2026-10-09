@@ -11322,6 +11322,133 @@ mod tests {
     }
 
     #[gpui::test]
+    fn split_tabs_transfer_through_drag_and_drop(cx: &mut gpui::TestAppContext) {
+        use gpui::{Modifiers, MouseButton, point, px};
+        let _runtime = TEST_RUNTIME.enter();
+        let root = tempdir().unwrap();
+        let alpha_path = root.path().join("alpha.txt");
+        let beta_path = root.path().join("beta.txt");
+        fs::write(&alpha_path, "alpha\n").unwrap();
+        fs::write(&beta_path, "beta\n").unwrap();
+        let (core, workspace, cx) = new_test_workspace(cx, &alpha_path);
+        let (left, alpha, beta) = core.update(cx, |core, cx| {
+            let mut config = (**core.helix_config_arc.load()).clone();
+            config.editor.bufferline = helix_view::editor::BufferLine::Always;
+            core.helix_config_arc.store(Arc::new(config));
+            let left = core.editor.tree.focus;
+            let alpha = core.editor.tree.get(left).doc;
+            let beta = core.editor.open(&beta_path, Action::Load).unwrap();
+            cx.emit(crate::Update::Redraw);
+            (left, alpha, beta)
+        });
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.focus_editor(window, cx)
+        });
+        cx.simulate_keystrokes("ctrl-w v");
+        let right = core.read_with(cx, |core, _| core.editor.tree.focus);
+        assert_ne!(left, right);
+        cx.update(|window, cx| {
+            window.draw(cx).clear();
+        });
+
+        // Selectors locate public tab hitboxes; clicks and drops exercise the
+        // actual callbacks rather than calling workspace transfer helpers.
+        let alpha_left = Box::leak(format!("pane-tab-{:?}-{}", left, alpha).into_boxed_str());
+        let beta_left = Box::leak(format!("pane-tab-{:?}-{}", left, beta).into_boxed_str());
+        let alpha_right = Box::leak(format!("pane-tab-{:?}-{}", right, alpha).into_boxed_str());
+        let beta_right = Box::leak(format!("pane-tab-{:?}-{}", right, beta).into_boxed_str());
+        let start = cx.debug_bounds(beta_left).unwrap().center();
+        let end = cx.debug_bounds(alpha_right).unwrap().center();
+        cx.simulate_mouse_move(start, None, Modifiers::none());
+        cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::none());
+        cx.update(|window, cx| {
+            window.draw(cx).clear();
+        });
+        cx.simulate_mouse_move(
+            start + point(px(20.0), px(0.0)),
+            MouseButton::Left,
+            Modifiers::none(),
+        );
+        cx.update(|window, cx| {
+            window.draw(cx).clear();
+        });
+        cx.simulate_mouse_move(end, MouseButton::Left, Modifiers::none());
+        cx.update(|window, cx| {
+            window.draw(cx).clear();
+        });
+        cx.simulate_mouse_up(end, MouseButton::Left, Modifiers::none());
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.draw(cx).clear();
+        });
+        core.read_with(cx, |core, _| {
+            assert_eq!(core.editor.tree.views().count(), 2);
+            assert_eq!(core.editor.tree.get(left).doc, alpha);
+            assert_eq!(core.editor.tree.get(right).doc, beta);
+        });
+        assert!(cx.debug_bounds(beta_left).is_none());
+        assert!(cx.debug_bounds(beta_right).is_some());
+        assert!(cx.debug_bounds(alpha_right).is_some());
+
+        // A click in the unfocused pane targets that pane, not the destination.
+        let position = cx.debug_bounds(alpha_left).unwrap().center();
+        cx.simulate_click(position, Modifiers::none());
+        core.read_with(cx, |core, _| assert_eq!(core.editor.tree.focus, left));
+
+        // Moving its last tab onto an existing copy closes only the empty pane.
+        let start = cx.debug_bounds(alpha_left).unwrap().center();
+        let end = cx.debug_bounds(alpha_right).unwrap().center();
+        cx.simulate_mouse_move(start, None, Modifiers::none());
+        cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::none());
+        cx.simulate_mouse_move(
+            start + point(px(20.0), px(0.0)),
+            MouseButton::Left,
+            Modifiers::none(),
+        );
+        cx.simulate_mouse_move(end, MouseButton::Left, Modifiers::none());
+        cx.simulate_mouse_up(end, MouseButton::Left, Modifiers::none());
+        cx.run_until_parked();
+        core.read_with(cx, |core, _| {
+            assert_eq!(core.editor.tree.views().count(), 1);
+            assert_eq!(core.editor.tree.get(right).doc, alpha);
+            assert_eq!(core.editor.documents[&beta].text().to_string(), "beta\n");
+        });
+
+        // Closing a shared dirty tab removes only that pane's copy; closing
+        // the last copy must keep its unsaved buffer until confirmed.
+        cx.simulate_keystrokes("i");
+        cx.simulate_input("changed");
+        cx.simulate_keystrokes("escape ctrl-w v");
+        let copy = core.read_with(cx, |core, _| core.editor.tree.focus);
+        cx.update(|window, cx| {
+            window.draw(cx).clear();
+        });
+        let alpha_copy = Box::leak(format!("pane-tab-{:?}-{}", copy, alpha).into_boxed_str());
+        let point = cx.debug_bounds(alpha_copy).unwrap().center();
+        cx.simulate_mouse_down(point, MouseButton::Middle, Modifiers::none());
+        cx.simulate_mouse_up(point, MouseButton::Middle, Modifiers::none());
+        cx.run_until_parked();
+        core.read_with(cx, |core, _| {
+            assert_eq!(core.editor.tree.views().count(), 1);
+            assert!(core.editor.documents[&alpha].is_modified());
+        });
+        cx.update(|window, cx| {
+            window.draw(cx).clear();
+        });
+        let point = cx.debug_bounds(alpha_right).unwrap().center();
+        cx.simulate_mouse_down(point, MouseButton::Middle, Modifiers::none());
+        cx.simulate_mouse_up(point, MouseButton::Middle, Modifiers::none());
+        cx.run_until_parked();
+        core.read_with(cx, |core, _| {
+            assert_eq!(core.editor.tree.get(right).doc, alpha);
+            assert_eq!(
+                core.editor.documents[&alpha].text().to_string(),
+                "changedalpha\n"
+            );
+        });
+    }
+
+    #[gpui::test]
     fn workspace_focus_follows_splits_and_overlay_dismissal_without_stealing_tree_focus(
         cx: &mut gpui::TestAppContext,
     ) {
