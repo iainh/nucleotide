@@ -98,6 +98,20 @@ as a role registry for major surfaces such as the editor, terminal, picker,
 prompt, diagnostics, and file tree. It should not become a second per-widget
 navigation system.
 
+GPUI owns keyboard focus. Helix's active view, mirrored by `ViewManager` and
+`DocumentView::is_focused`, identifies the active editor split, not the focused
+UI surface. A document's GPUI focus subscription activates its Helix split.
+Helix split transitions move GPUI focus only while the previous editor surface
+still owns it; they must not take focus from the tree, terminal or an overlay.
+
+Perform focus changes in actions, lifecycle subscriptions and explicit opening
+or dismissal transitions, never in `render`. Windowless core events defer their
+transition until the current effect cycle ends. `Workspace` uses
+`on_focus_lost` when a focused surface disappears, while `ModalLayer` restores
+its captured previous focus. Dismissing a completion that never owned focus
+must not move keyboard focus. Workspace mouse bubbling must not override a
+child's focus choice.
+
 ## Lists And Menus
 
 Use `nucleotide_ui::Navigable` for action-driven focus traversal in list-like

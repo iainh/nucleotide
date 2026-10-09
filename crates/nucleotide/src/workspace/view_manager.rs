@@ -5,7 +5,7 @@ use crate::document::DocumentView;
 use crate::workspace::Workspace;
 use gpui::{Context, Entity, Focusable, Window};
 use helix_view::ViewId;
-use nucleotide_logging::{debug, info, instrument};
+use nucleotide_logging::{debug, instrument};
 use std::collections::HashMap;
 
 /// Manages document views, focus state, and view coordination
@@ -14,7 +14,8 @@ pub struct ViewManager {
     /// Map of view IDs to document views
     documents: HashMap<ViewId, Entity<DocumentView>>,
 
-    /// Currently focused view ID
+    /// Active Helix view ID, mirrored for presentation and editor focus actions.
+    /// This does not indicate which GPUI surface owns keyboard focus.
     focused_view_id: Option<ViewId>,
 }
 
@@ -57,23 +58,6 @@ impl ViewManager {
         self.documents.remove(view_id)
     }
 
-    /// Handle view focus change
-    #[instrument(skip(self, cx))]
-    pub fn handle_view_focused(&mut self, view_id: ViewId, cx: &mut Context<Workspace>) {
-        info!(view_id = ?view_id, "View focused");
-        self.focused_view_id = Some(view_id);
-
-        // Update focus state in document views
-        for (id, view) in &self.documents {
-            let is_focused = *id == view_id;
-            view.update(cx, |view, cx| {
-                if view.set_focused(is_focused) {
-                    cx.notify();
-                }
-            });
-        }
-    }
-
     /// Focus the editor area by focusing the active document view
     #[instrument(skip(self, cx, window))]
     pub fn focus_editor_area(&mut self, cx: &mut Context<Workspace>, window: &mut Window) {
@@ -89,18 +73,6 @@ impl ViewManager {
             }
             window.focus(&doc_focus, cx);
             debug!(view_id = ?view_id, "Focused active document view");
-            return;
-        }
-
-        // If no focused view, try to focus the first available view
-        if let Some((view_id, doc_view)) = self.documents.iter().next() {
-            let doc_focus = doc_view.focus_handle(cx);
-            if let Some(coord) = cx.try_global::<nucleotide_ui::FocusCoordinator>().cloned() {
-                coord.set_editor_focus(doc_focus.clone());
-            }
-            window.focus(&doc_focus, cx);
-            self.focused_view_id = Some(*view_id);
-            debug!(view_id = ?view_id, "Focused first available document view");
         }
     }
 

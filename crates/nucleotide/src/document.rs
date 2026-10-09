@@ -106,6 +106,7 @@ pub struct DocumentView {
     view_id: ViewId,
     style: TextStyle,
     focus: FocusHandle,
+    // Active Helix split for painting; keyboard ownership is queried from `focus`.
     is_focused: bool,
     editor_state: EditorViewState,
     markdown_modes: BTreeMap<DocumentId, MarkdownDisplayMode>,
@@ -146,6 +147,19 @@ impl DocumentView {
             runnable_tasks_cache: None,
             runnable_tasks_pending: None,
         }
+    }
+
+    /// GPUI owns keyboard focus; entering a surface activates that Helix split.
+    pub fn observe_focus(&self, window: &mut Window, cx: &mut Context<Self>) {
+        cx.on_focus(&self.focus, window, |view, _window, cx| {
+            if view.core.read(cx).editor.tree.focus != view.view_id {
+                focus_editor_view(&view.core, view.view_id, cx);
+            }
+            cx.notify();
+        })
+        .detach();
+        cx.on_blur(&self.focus, window, |_view, _window, cx| cx.notify())
+            .detach();
     }
 
     pub fn set_focused(&mut self, is_focused: bool) -> bool {

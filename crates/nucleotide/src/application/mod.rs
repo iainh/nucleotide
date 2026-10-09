@@ -11005,6 +11005,218 @@ mod tests {
         })
     }
 
+    #[gpui::test]
+    fn workspace_focus_follows_splits_and_overlay_dismissal_without_stealing_tree_focus(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use crate::workspace::Workspace;
+        use gpui::Focusable;
+        use nucleotide_ui::FocusCoordinator;
+
+        let _runtime = TEST_RUNTIME.enter();
+        let root = tempdir().unwrap();
+        let path = root.path().join("focus.txt");
+        fs::write(&path, "first line\nsecond line\n").unwrap();
+        let core = new_test_application(cx);
+        core.update(cx, |core, _cx| {
+            let _runtime = TEST_RUNTIME.enter();
+            core.project_directory = Some(root.path().to_path_buf());
+            core.editor.open(&path, Action::VerticalSplit).unwrap();
+        });
+        cx.update(|cx| {
+            nucleotide_appearance::SystemAppearance::init(cx);
+            nucleotide_ui::init(cx, None);
+            let config = &core.read(cx).config;
+            let editor_font = config.editor_font();
+            let ui_font = config.ui_font();
+            let font = nucleotide_types::Font {
+                family: editor_font.family.clone(),
+                weight: editor_font.weight,
+                style: nucleotide_types::FontStyle::Normal,
+            };
+            cx.set_global(crate::types::FontSettings {
+                fixed_font: font.clone(),
+                var_font: font,
+            });
+            cx.set_global(crate::types::EditorFontConfig {
+                family: editor_font.family,
+                size: editor_font.size,
+                weight: editor_font.weight,
+                line_height: editor_font.line_height,
+            });
+            cx.set_global(crate::types::UiFontConfig {
+                family: ui_font.family,
+                size: ui_font.size,
+                weight: ui_font.weight,
+            });
+            let theme = crate::ThemeManager::new(core.read(cx).editor.theme.clone());
+            cx.set_global(theme.ui_theme().clone());
+            cx.set_global(theme);
+            cx.set_global(FocusCoordinator::default());
+            let vcs = nucleotide_vcs::VcsServiceHandle::new(Default::default(), cx);
+            cx.set_global(vcs);
+        });
+        let input = cx.new(|_| crate::Input);
+        let core_for_input = core.clone();
+        cx.update(|cx| {
+            cx.subscribe(&input, move |_, event: &crate::InputEvent, cx| {
+                core_for_input.update(cx, |core, cx| {
+                    core.handle_input_event(event.clone(), cx, TEST_RUNTIME.handle().clone());
+                });
+            })
+            .detach();
+        });
+        let core_for_workspace = core.clone();
+        let (workspace, cx) = cx.add_window_view(move |window, cx| {
+            let _runtime = TEST_RUNTIME.enter();
+            let overlay = cx.new(|cx| {
+                let view = crate::overlay::OverlayView::new(
+                    &cx.focus_handle(),
+                    &core_for_workspace,
+                    TEST_RUNTIME.handle().clone(),
+                );
+                view.subscribe(&core_for_workspace, cx);
+                view
+            });
+            let notifications = cx.new(|_| crate::notification::NotificationView::new());
+            let info = cx.new(|_| crate::info_box::InfoBoxView::new());
+            let updates = cx.new(|cx| {
+                crate::updates::UpdateController::new(
+                    crate::config::UpdatesConfig {
+                        enabled: false,
+                        ..Default::default()
+                    },
+                    cx,
+                )
+            });
+            Workspace::with_views(
+                core_for_workspace,
+                input,
+                TEST_RUNTIME.handle().clone(),
+                overlay,
+                notifications,
+                info,
+                Arc::new(crate::input_coordinator::InputCoordinator::new()),
+                updates,
+                window,
+                cx,
+            )
+        });
+        cx.update(|window, _| window.activate_window());
+        cx.run_until_parked();
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.focus_file_tree(window, cx)
+        });
+        // A non-focus update and redraw must leave the tree's keyboard receiver intact.
+        core.update(cx, |_, cx| {
+            cx.emit(crate::Update::Info(helix_view::info::Info {
+                title: "hint".into(),
+                text: "hint".into(),
+                width: 4,
+                height: 1,
+            }));
+            cx.emit(crate::Update::Redraw);
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            assert!(
+                cx.global::<FocusCoordinator>()
+                    .file_tree_focus()
+                    .unwrap()
+                    .is_focused(window)
+            );
+        });
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.focus_editor(window, cx)
+        });
+        // A completion may remain behind a prompt but must not block restoration.
+        let completion = cx.new(nucleotide_ui::completion_v2::CompletionView::new);
+        core.update(cx, |_, cx| cx.emit(crate::Update::Completion(completion)));
+        cx.simulate_keystrokes(":");
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            assert!(
+                cx.global::<FocusCoordinator>()
+                    .prompt_focus()
+                    .unwrap()
+                    .is_focused(window)
+            );
+        });
+        cx.simulate_keystrokes("escape");
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            assert!(
+                cx.global::<FocusCoordinator>()
+                    .editor_focus()
+                    .unwrap()
+                    .is_focused(window)
+            );
+        });
+        cx.simulate_keystrokes("ctrl-w v");
+        cx.run_until_parked();
+        let right_view = core.read_with(cx, |core, _| {
+            assert_eq!(core.editor.tree.views().count(), 2);
+            core.editor.tree.focus
+        });
+        let right_focus =
+            cx.update(|_, cx| cx.global::<FocusCoordinator>().editor_focus().unwrap());
+        cx.update(|window, cx| {
+            assert!(
+                cx.global::<FocusCoordinator>()
+                    .editor_focus()
+                    .unwrap()
+                    .is_focused(window)
+            );
+        });
+        cx.simulate_keystrokes("ctrl-w h");
+        cx.run_until_parked();
+        core.read_with(cx, |core, _| assert_ne!(core.editor.tree.focus, right_view));
+        cx.update(|window, cx| {
+            assert!(
+                cx.global::<FocusCoordinator>()
+                    .editor_focus()
+                    .unwrap()
+                    .is_focused(window)
+            );
+            assert!(workspace.focus_handle(cx).contains_focused(window, cx));
+        });
+        // GPUI traversal into a split must activate it even without a pointer event.
+        cx.update(|window, cx| {
+            window.focus(&right_focus, cx);
+            window.draw(cx).clear();
+        });
+        cx.run_until_parked();
+        core.read_with(cx, |core, _| assert_eq!(core.editor.tree.focus, right_view));
+
+        // The terminal must retain focus even before its async model is registered.
+        cx.dispatch_action(crate::actions::workspace::ToggleTerminal);
+        cx.update(|window, cx| {
+            window.draw(cx).clear();
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            assert!(
+                cx.global::<FocusCoordinator>()
+                    .terminal_focus()
+                    .unwrap()
+                    .is_focused(window)
+            );
+        });
+        cx.dispatch_action(crate::actions::workspace::ToggleTerminal);
+        cx.update(|window, cx| {
+            window.draw(cx).clear();
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            assert!(
+                cx.global::<FocusCoordinator>()
+                    .editor_focus()
+                    .unwrap()
+                    .is_focused(window)
+            );
+        });
+    }
+
     fn subscribe_application_updates(
         cx: &mut gpui::TestAppContext,
         app: &Entity<Application>,

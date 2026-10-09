@@ -370,12 +370,16 @@ impl OverlayView {
         }
     }
 
+    /// Completion is presented without owning keyboard focus.
+    pub fn has_focusable_overlay(&self) -> bool {
+        self.native_picker_view.is_some()
+            || self.native_prompt_view.is_some()
+            || self.remote_connection_manager_view.is_some()
+            || self.terminal_panel.is_some()
+    }
+
     pub fn is_empty(&self) -> bool {
-        let empty = self.native_picker_view.is_none()
-            && self.native_prompt_view.is_none()
-            && self.remote_connection_manager_view.is_none()
-            && self.completion_view.is_none()
-            && self.terminal_panel.is_none();
+        let empty = !self.has_focusable_overlay() && self.completion_view.is_none();
 
         if !empty && self.completion_view.is_some() {
             nucleotide_logging::debug!("COMP: Overlay not empty - has completion view");
