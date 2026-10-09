@@ -2687,7 +2687,8 @@ impl Interactivity {
                             && mouse_down.button == MouseButton::Left
                         {
                             *clicked_state.borrow_mut() = ElementClickedState::default();
-                            let cursor_offset = event.position - hitbox.origin;
+                            // Preserve the grab point, including movement before the drag threshold.
+                            let cursor_offset = mouse_down.position - hitbox.origin;
                             let drag =
                                 (drag_listener)(drag_value.as_ref(), cursor_offset, window, cx);
                             cx.active_drag = Some(AnyDrag {

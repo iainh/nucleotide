@@ -461,7 +461,18 @@ pub fn sidebar_split<L: IntoElement, R: IntoElement>(
             ),
     );
 
-    // Handle: transparent hitbox centered over the pane boundary.
+    // Right pane fills remaining space; do not allow it to overflow its box.
+    root = root.child(
+        div()
+            .flex_1()
+            .h_full()
+            .min_h(px(0.0))
+            .overflow_hidden()
+            .child(right),
+    );
+
+    // Paint the centered hitbox last so both halves cover pane content and
+    // drag initiation runs before the editor consumes mouse selection events.
     let handle_hit_w = resize_handle_hitbox_px(handle_px).unwrap_or(RESIZE_HANDLE_MIN_HITBOX_PX);
 
     root = root.child({
@@ -505,15 +516,7 @@ pub fn sidebar_split<L: IntoElement, R: IntoElement>(
         .left(px(width_px - handle_hit_w * 0.5))
     });
 
-    // Right pane fills remaining space; do not allow it to overflow its box
-    root.child(
-        div()
-            .flex_1()
-            .h_full()
-            .min_h(px(0.0))
-            .overflow_hidden()
-            .child(right),
-    )
+    root
 }
 
 /// A right sidebar split with flexible main content and a fixed-width right pane.
@@ -910,7 +913,11 @@ mod tests {
                         let right_width = Rc::clone(&self.right_width);
                         move |width, _| right_width.set(width)
                     },
-                    div().size_full(),
+                    // Model the editor consuming pointer selection events.
+                    div()
+                        .size_full()
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_mouse_move(|_, _, cx| cx.stop_propagation()),
                     bottom_panel_split(
                         120.0,
                         80.0,
@@ -947,35 +954,42 @@ mod tests {
 
         let modifiers = Modifiers::none();
 
-        window.simulate_mouse_down(point(px(200.0), px(30.0)), MouseButton::Left, modifiers);
-        window.simulate_mouse_move(point(px(206.0), px(30.0)), MouseButton::Left, modifiers);
-        window.simulate_mouse_move(point(px(250.0), px(30.0)), MouseButton::Left, modifiers);
-        window.simulate_mouse_up(point(px(250.0), px(30.0)), MouseButton::Left, modifiers);
-        assert!(
-            left_width.get() > 200.0,
-            "left sidebar did not resize: {}",
-            left_width.get()
-        );
+        // Both halves of the hitbox must work, even when the first move jumps
+        // into the editor. The full displacement is relative to mouse-down,
+        // not the later move that crosses GPUI's drag threshold.
+        for start_x in [196.0, 204.0] {
+            window.simulate_mouse_down(point(px(start_x), px(30.0)), MouseButton::Left, modifiers);
+            window.simulate_mouse_move(
+                point(px(start_x + 40.0), px(30.0)),
+                MouseButton::Left,
+                modifiers,
+            );
+            window.simulate_mouse_move(
+                point(px(start_x + 120.0), px(30.0)),
+                MouseButton::Left,
+                modifiers,
+            );
+            window.simulate_mouse_up(
+                point(px(start_x + 120.0), px(30.0)),
+                MouseButton::Left,
+                modifiers,
+            );
+            assert_eq!(left_width.get(), 320.0, "drag started at {start_x}");
+            assert_eq!(right_width.get(), 200.0);
+            assert_eq!(bottom_height.get(), 120.0);
+        }
 
         window.simulate_mouse_down(point(px(600.0), px(30.0)), MouseButton::Left, modifiers);
         window.simulate_mouse_move(point(px(594.0), px(30.0)), MouseButton::Left, modifiers);
         window.simulate_mouse_move(point(px(550.0), px(30.0)), MouseButton::Left, modifiers);
         window.simulate_mouse_up(point(px(550.0), px(30.0)), MouseButton::Left, modifiers);
-        assert!(
-            right_width.get() > 200.0,
-            "right sidebar did not resize: {}",
-            right_width.get()
-        );
+        assert_eq!(right_width.get(), 250.0);
 
         window.simulate_mouse_down(point(px(700.0), px(180.0)), MouseButton::Left, modifiers);
         window.simulate_mouse_move(point(px(700.0), px(174.0)), MouseButton::Left, modifiers);
         window.simulate_mouse_move(point(px(700.0), px(140.0)), MouseButton::Left, modifiers);
         window.simulate_mouse_up(point(px(700.0), px(140.0)), MouseButton::Left, modifiers);
-        assert!(
-            bottom_height.get() > 120.0,
-            "bottom panel did not resize: {}",
-            bottom_height.get()
-        );
+        assert_eq!(bottom_height.get(), 160.0);
     }
 
     #[test]
