@@ -223,6 +223,20 @@ from the original mouse-down position, including movement before GPUI's drag
 threshold. Cover both sides of the divider and a first move that leaves its
 hitbox in interaction tests.
 
+Editor selection drags stay with the pane that accepted the initial left-button
+press, even when the pointer leaves its bounds or crosses another pane. GPUI's
+hover-only `on_mouse_move` is not sufficient for this lifecycle: `EditorSurface`
+registers window-level move/up listeners during paint and gates them on its
+per-pane drag state. Other buttons and presses begun elsewhere do not arm it.
+
+After movement begins, holding the pointer near or beyond an edge scrolls the
+existing viewport on a 16 ms executor timer. Speed scales with overshoot and
+elapsed time; viewport limits still apply. Re-entering the centre pauses scroll
+without dropping the selection anchor. Each tick hit-tests the painted line
+cache before scrolling for the next frame, preserving same-frame geometry.
+Release (including outside), editor blur, window deactivation, and overlay focus
+transfer end the drag. A new press is required to resume after cancellation.
+
 ## Layout
 
 Prefer semantic layout wrappers and token-based sizes over ad-hoc absolute

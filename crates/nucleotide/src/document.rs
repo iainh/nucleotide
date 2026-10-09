@@ -159,8 +159,17 @@ impl DocumentView {
             cx.notify();
         })
         .detach();
-        cx.on_blur(&self.focus, window, |_view, _window, cx| cx.notify())
-            .detach();
+        cx.on_blur(&self.focus, window, |view, _window, cx| {
+            view.editor_state.clear_pointer_selection();
+            cx.notify();
+        })
+        .detach();
+        cx.observe_window_activation(window, |view, window, _cx| {
+            if !window.is_window_active() {
+                view.editor_state.clear_pointer_selection();
+            }
+        })
+        .detach();
     }
 
     pub fn set_focused(&mut self, is_focused: bool) -> bool {
@@ -687,7 +696,7 @@ impl Render for DocumentView {
                                 .and_then(|line| runnable_tasks_by_line.get(&line).cloned())
                         {
                             run_gutter_task(&core, view_id, task, cx);
-                            return true;
+                            return false;
                         }
 
                         handle_editor_pointer_selection(

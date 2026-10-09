@@ -1,13 +1,17 @@
 // ABOUTME: Native GPUI surface element for editor viewport input
 // ABOUTME: Wraps editor content while owning scroll-wheel capture for the viewport
 
-use std::{cell::Cell, rc::Rc};
+use std::{
+    cell::Cell,
+    rc::Rc,
+    time::{Duration, Instant},
+};
 
 use gpui::InteractiveElement as _;
 use gpui::{
-    AnyElement, App, Bounds, Component, EntityId, FocusHandle, Hsla, IntoElement, KeyDownEvent,
-    Modifiers, MouseButton, ParentElement as _, Pixels, Point, RenderOnce, ScrollWheelEvent,
-    Styled as _, Window, div, fill, hsla, point, px,
+    AnyElement, App, Bounds, Component, DispatchPhase, EntityId, FocusHandle, Hsla, IntoElement,
+    KeyDownEvent, Modifiers, MouseButton, MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels,
+    Point, RenderOnce, ScrollWheelEvent, Styled as _, Window, canvas, div, fill, hsla, point, px,
 };
 
 use crate::{
@@ -30,6 +34,9 @@ pub struct EditorSurfaceMetricSnapshot {
 pub struct EditorSurfaceMetrics {
     current: Rc<Cell<EditorSurfaceMetricSnapshot>>,
     line_cache: LineLayoutCache,
+    drag: Rc<Cell<Option<EditorSurfacePointerEvent>>>,
+    drag_tick: Rc<Cell<Option<Instant>>>,
+    drag_tick_scheduled: Rc<Cell<bool>>,
 }
 
 impl EditorSurfaceMetrics {
@@ -40,7 +47,15 @@ impl EditorSurfaceMetrics {
                 cell_width,
             })),
             line_cache: LineLayoutCache::new(),
+            drag: Rc::default(),
+            drag_tick: Rc::default(),
+            drag_tick_scheduled: Rc::default(),
         }
+    }
+
+    pub fn clear_pointer_drag(&self) {
+        self.drag.set(None);
+        self.drag_tick.set(None);
     }
 
     pub fn set(&self, line_height: Pixels, cell_width: Pixels) {
@@ -147,6 +162,8 @@ impl EditorSurface {
         self
     }
 
+    /// Return true when the press starts a selection drag. Rejected presses
+    /// (for example a gutter action or failed hit test) do not arm autoscroll.
     pub fn on_mouse_down(
         mut self,
         callback: impl Fn(EditorSurfacePointerEvent, &mut App) -> bool + 'static,
@@ -216,6 +233,33 @@ impl IntoElement for EditorSurface {
 }
 
 impl EditorSurface {
+    fn edge_velocity(event: EditorSurfacePointerEvent) -> Point<Pixels> {
+        fn axis(position: Pixels, start: Pixels, end: Pixels, margin: Pixels) -> Pixels {
+            let margin = margin.max(px(1.0)).min((end - start) / 2.0);
+            if position < start + margin {
+                ((start + margin - position) / margin).min(4.0) * margin * 20.0
+            } else if position > end - margin {
+                -((position - end + margin) / margin).min(4.0) * margin * 20.0
+            } else {
+                px(0.0)
+            }
+        }
+        point(
+            axis(
+                event.position.x,
+                event.bounds.left(),
+                event.bounds.right(),
+                event.cell_width * 2.0,
+            ),
+            axis(
+                event.position.y,
+                event.bounds.top(),
+                event.bounds.bottom(),
+                event.line_height,
+            ),
+        )
+    }
+
     fn surface_event(
         metrics: EditorSurfaceMetrics,
         bounds: Bounds<Pixels>,
@@ -290,7 +334,11 @@ impl RenderOnce for EditorSurface {
             cx.stop_propagation();
         });
 
-        if let Some(on_mouse_down) = self.on_mouse_down.clone() {
+        if self.on_mouse_down.is_some()
+            || self.on_mouse_drag.is_some()
+            || self.on_mouse_up.is_some()
+        {
+            let on_mouse_down = self.on_mouse_down.clone();
             let metrics = self.metrics.clone();
             let view_entity_id = self.view_entity_id;
             let content_bounds = Rc::clone(&content_bounds);
@@ -308,92 +356,173 @@ impl RenderOnce for EditorSurface {
                     focus.focus(window, cx);
                 }
 
-                let changed = on_mouse_down(
-                    Self::surface_event(metrics.clone(), bounds, event.position, event.modifiers),
-                    cx,
-                );
+                let accepted = on_mouse_down.as_ref().is_none_or(|on_mouse_down| {
+                    on_mouse_down(
+                        Self::surface_event(
+                            metrics.clone(),
+                            bounds,
+                            event.position,
+                            event.modifiers,
+                        ),
+                        cx,
+                    )
+                });
 
-                if changed {
+                if accepted {
+                    metrics.drag.set(Some(Self::surface_event(
+                        metrics.clone(),
+                        bounds,
+                        event.position,
+                        event.modifiers,
+                    )));
+                    metrics.drag_tick.set(None);
                     cx.notify(view_entity_id);
                 }
                 cx.stop_propagation();
             });
         }
 
-        if let Some(on_mouse_drag) = self.on_mouse_drag.clone() {
-            let metrics = self.metrics.clone();
-            let view_entity_id = self.view_entity_id;
-            let content_bounds = Rc::clone(&content_bounds);
-
-            content = content.on_mouse_move(move |event, _window, cx| {
-                if !event.dragging() {
-                    return;
-                }
-                let Some(bounds) = content_bounds.get() else {
-                    return;
-                };
-                if !bounds.contains(&event.position) {
-                    return;
-                }
-
-                let changed = on_mouse_drag(
-                    Self::surface_event(metrics.clone(), bounds, event.position, event.modifiers),
-                    cx,
-                );
-
-                if changed {
-                    cx.notify(view_entity_id);
-                }
-                cx.stop_propagation();
-            });
-        }
-
-        if let Some(on_mouse_up) = self.on_mouse_up.clone() {
-            let metrics = self.metrics.clone();
-            let view_entity_id = self.view_entity_id;
-            let mouse_up_bounds = Rc::clone(&content_bounds);
-            let on_mouse_up_inside = on_mouse_up.clone();
-
-            content = content.on_mouse_up(MouseButton::Left, move |event, _window, cx| {
-                let Some(bounds) = mouse_up_bounds.get() else {
-                    return;
-                };
-                if !bounds.contains(&event.position) {
-                    return;
-                }
-
-                let changed = on_mouse_up_inside(
-                    Self::surface_event(metrics.clone(), bounds, event.position, event.modifiers),
-                    cx,
-                );
-
-                if changed {
-                    cx.notify(view_entity_id);
-                }
-                cx.stop_propagation();
-            });
-
-            let metrics = self.metrics.clone();
-            let view_entity_id = self.view_entity_id;
-            let mouse_up_out_bounds = Rc::clone(&content_bounds);
-            let on_mouse_up_out = on_mouse_up.clone();
-
-            content = content.on_mouse_up_out(MouseButton::Left, move |event, _window, cx| {
-                let Some(bounds) = mouse_up_out_bounds.get() else {
-                    return;
-                };
-
-                let changed = on_mouse_up_out(
-                    Self::surface_event(metrics.clone(), bounds, event.position, event.modifiers),
-                    cx,
-                );
-
-                if changed {
-                    cx.notify(view_entity_id);
-                }
-                cx.stop_propagation();
-            });
-        }
+        // Div mouse-move handlers are hover-only. Register window listeners in
+        // paint instead, gated by this pane's persisted left-button origin.
+        let metrics = self.metrics.clone();
+        let viewport = self.viewport.clone();
+        let on_drag = self.on_mouse_drag.clone();
+        let on_up = self.on_mouse_up.clone();
+        let on_scroll = self.on_scroll.clone();
+        let drag_bounds = content_bounds.clone();
+        content = content.child(
+            canvas(
+                |_, _, _| (),
+                move |_, _, window, cx| {
+                    let Some(bounds) = drag_bounds.get() else {
+                        return;
+                    };
+                    if let Some(mut event) = metrics.drag.get() {
+                        event.bounds = bounds;
+                        let snapshot = metrics.get();
+                        event.line_height = snapshot.line_height;
+                        event.cell_width = snapshot.cell_width;
+                        metrics.drag.set(Some(event));
+                        if metrics.drag_tick.get().is_some()
+                            && Self::edge_velocity(event) != point(px(0.0), px(0.0))
+                            && !metrics.drag_tick_scheduled.replace(true)
+                        {
+                            let metrics = metrics.clone();
+                            let viewport = viewport.clone();
+                            let on_drag = on_drag.clone();
+                            let on_scroll = on_scroll.clone();
+                            let focus = focus.clone();
+                            let timer = cx.background_executor().timer(Duration::from_millis(16));
+                            window
+                                .spawn(cx, async move |cx| {
+                                    timer.await;
+                                    let _ = cx.update(move |window, cx| {
+                                        metrics.drag_tick_scheduled.set(false);
+                                        if !window.is_window_active()
+                                            || focus
+                                                .as_ref()
+                                                .is_some_and(|focus| !focus.is_focused(window))
+                                        {
+                                            metrics.clear_pointer_drag();
+                                            return;
+                                        }
+                                        let Some(event) = metrics.drag.get() else {
+                                            return;
+                                        };
+                                        // Hit-test the frame just painted, then scroll for the next
+                                        // frame. Never combine a new offset with an old line cache.
+                                        if let Some(on_drag) = &on_drag {
+                                            on_drag(event, cx);
+                                        }
+                                        let now = cx.background_executor().now();
+                                        let elapsed = metrics
+                                            .drag_tick
+                                            .replace(Some(now))
+                                            .map_or(0.0, |last| {
+                                                now.duration_since(last).as_secs_f32().min(0.05)
+                                            });
+                                        let update = viewport
+                                            .scroll_by_delta(Self::edge_velocity(event) * elapsed);
+                                        if update.changed {
+                                            if let Some(on_scroll) = &on_scroll {
+                                                on_scroll(&viewport, update, cx);
+                                            }
+                                            cx.notify(view_entity_id);
+                                        }
+                                    });
+                                })
+                                .detach();
+                        } else if metrics.drag_tick.get().is_some()
+                            && Self::edge_velocity(event) == point(px(0.0), px(0.0))
+                        {
+                            metrics.drag_tick.set(Some(cx.background_executor().now()));
+                        }
+                    }
+                    let move_metrics = metrics.clone();
+                    let on_drag_move = on_drag.clone();
+                    window.on_mouse_event(move |event: &MouseMoveEvent, phase, _window, cx| {
+                        if phase != DispatchPhase::Capture || move_metrics.drag.get().is_none() {
+                            return;
+                        }
+                        if !event.dragging() {
+                            move_metrics.clear_pointer_drag();
+                            return;
+                        }
+                        let event = Self::surface_event(
+                            move_metrics.clone(),
+                            bounds,
+                            event.position,
+                            event.modifiers,
+                        );
+                        move_metrics.drag.set(Some(event));
+                        if move_metrics.drag_tick.get().is_none() {
+                            move_metrics
+                                .drag_tick
+                                .set(Some(cx.background_executor().now()));
+                        }
+                        if let Some(on_drag) = &on_drag_move {
+                            on_drag(event, cx);
+                        }
+                        cx.notify(view_entity_id);
+                        cx.stop_propagation();
+                    });
+                    let up_metrics = metrics.clone();
+                    let on_drag_up = on_drag.clone();
+                    let on_up = on_up.clone();
+                    window.on_mouse_event(move |event: &MouseUpEvent, phase, _window, cx| {
+                        if phase != DispatchPhase::Capture
+                            || event.button != MouseButton::Left
+                            || up_metrics.drag.get().is_none()
+                        {
+                            return;
+                        }
+                        let event = Self::surface_event(
+                            up_metrics.clone(),
+                            bounds,
+                            event.position,
+                            event.modifiers,
+                        );
+                        if (up_metrics.drag_tick.get().is_some()
+                            || up_metrics
+                                .drag
+                                .get()
+                                .is_some_and(|last| last.position != event.position))
+                            && let Some(on_drag) = &on_drag_up
+                        {
+                            on_drag(event, cx);
+                        }
+                        up_metrics.clear_pointer_drag();
+                        if let Some(on_up) = &on_up {
+                            on_up(event, cx);
+                        }
+                        cx.notify(view_entity_id);
+                        cx.stop_propagation();
+                    });
+                },
+            )
+            .absolute()
+            .size_full(),
+        );
 
         let mut surface = div()
             .relative()
@@ -644,6 +773,128 @@ mod tests {
         });
 
         assert!(viewport.scroll_position().y > px(0.0));
+    }
+
+    struct SelectionDragHost {
+        viewport: [EditorViewport; 2],
+        metrics: [EditorSurfaceMetrics; 2],
+        drags: [Rc<Cell<usize>>; 2],
+    }
+
+    impl Render for SelectionDragHost {
+        fn render(&mut self, _: &mut Window, cx: &mut gpui::Context<Self>) -> impl IntoElement {
+            let mut row = div().flex().gap(px(20.0));
+            for index in 0..2 {
+                let drags = self.drags[index].clone();
+                row = row.child(
+                    div().w(px(200.0)).h(px(120.0)).child(
+                        EditorSurface::new(
+                            cx.entity_id(),
+                            self.viewport[index].clone(),
+                            self.metrics[index].clone(),
+                            EditorScrollbarState::default(),
+                            EditorScrollbarState::default(),
+                            div().size_full(),
+                        )
+                        .on_mouse_down(|_, _| true)
+                        .on_mouse_drag(move |_, _| {
+                            drags.set(drags.get() + 1);
+                            true
+                        }),
+                    ),
+                );
+            }
+            row
+        }
+    }
+
+    #[gpui::test]
+    fn selection_drag_owns_origin_and_scrolls_while_stationary(cx: &mut TestAppContext) {
+        use std::time::Duration;
+        let (host, cx) = cx.add_window_view(|window, _cx| {
+            window.activate_window();
+            let viewport = std::array::from_fn(|_| {
+                let mut viewport = EditorViewport::new(px(20.0));
+                viewport.set_layout(px(20.0), size(px(200.0), px(120.0)), 100);
+                viewport.set_content_width(px(2000.0));
+                viewport
+            });
+            SelectionDragHost {
+                viewport,
+                metrics: std::array::from_fn(|_| EditorSurfaceMetrics::new(px(20.0), px(8.0))),
+                drags: std::array::from_fn(|_| Rc::new(Cell::new(0))),
+            }
+        });
+        let (viewport, drags) = cx.update(|_, cx| {
+            let host = host.read(cx);
+            (host.viewport.clone(), host.drags.clone())
+        });
+        let none = gpui::Modifiers::none();
+        // A pressed button entering from elsewhere, and a right-button drag,
+        // must not arm either editor's selection or scrolling.
+        cx.simulate_mouse_down(point(px(500.0), px(200.0)), MouseButton::Left, none);
+        cx.simulate_mouse_move(point(px(190.0), px(115.0)), MouseButton::Left, none);
+        cx.simulate_mouse_up(point(px(190.0), px(115.0)), MouseButton::Left, none);
+        cx.simulate_mouse_down(point(px(50.0), px(40.0)), MouseButton::Right, none);
+        cx.simulate_mouse_move(point(px(190.0), px(115.0)), MouseButton::Right, none);
+        cx.simulate_mouse_up(point(px(190.0), px(115.0)), MouseButton::Right, none);
+        assert_eq!(drags[0].get(), 0);
+        assert_eq!(viewport[0].scroll_position(), point(px(0.0), px(0.0)));
+
+        cx.simulate_mouse_down(point(px(50.0), px(40.0)), MouseButton::Left, none);
+        // Cross the originating pane's bounds into the second pane.
+        cx.simulate_mouse_move(point(px(260.0), px(115.0)), MouseButton::Left, none);
+        assert!(drags[0].get() > 0);
+        assert_eq!(drags[1].get(), 0);
+        for _ in 0..3 {
+            cx.executor().advance_clock(Duration::from_millis(20));
+            cx.run_until_parked();
+        }
+        let first = viewport[0].scroll_position();
+        assert!(first.x > px(0.0) && first.y > px(0.0));
+        for _ in 0..3 {
+            cx.executor().advance_clock(Duration::from_millis(20));
+            cx.run_until_parked();
+        }
+        let later = viewport[0].scroll_position();
+        assert!(
+            later.x > first.x && later.y > first.y,
+            "stationary pointer must keep scrolling"
+        );
+        assert_eq!(viewport[1].scroll_position(), point(px(0.0), px(0.0)));
+        assert_eq!(drags[1].get(), 0);
+
+        // Re-entering the centre pauses scrolling without relinquishing the drag.
+        cx.simulate_mouse_move(point(px(100.0), px(60.0)), MouseButton::Left, none);
+        let centre = viewport[0].scroll_position();
+        cx.executor().advance_clock(Duration::from_millis(100));
+        cx.run_until_parked();
+        assert_eq!(viewport[0].scroll_position(), centre);
+        // Top/left overshoot reverses both axes.
+        cx.simulate_mouse_move(point(px(-10.0), px(-10.0)), MouseButton::Left, none);
+        cx.executor().advance_clock(Duration::from_millis(20));
+        cx.run_until_parked();
+        let reversed = viewport[0].scroll_position();
+        assert!(reversed.x < centre.x && reversed.y < centre.y);
+        cx.simulate_mouse_up(point(px(260.0), px(150.0)), MouseButton::Left, none);
+        let released = viewport[0].scroll_position();
+        let count = drags[0].get();
+        cx.executor().advance_clock(Duration::from_millis(200));
+        cx.run_until_parked();
+        cx.simulate_mouse_move(point(px(190.0), px(115.0)), MouseButton::Left, none);
+        assert_eq!(viewport[0].scroll_position(), released);
+        assert_eq!(drags[0].get(), count);
+
+        cx.simulate_mouse_down(point(px(50.0), px(40.0)), MouseButton::Left, none);
+        cx.simulate_mouse_move(point(px(190.0), px(115.0)), MouseButton::Left, none);
+        cx.deactivate_window();
+        cx.executor().advance_clock(Duration::from_millis(100));
+        cx.run_until_parked();
+        assert_eq!(
+            viewport[0].scroll_position(),
+            released,
+            "window blur stops scrolling"
+        );
     }
 
     struct SurfacePointerFocusHost {

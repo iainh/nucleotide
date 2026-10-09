@@ -428,6 +428,7 @@ impl EditorViewState {
 
     pub fn clear_pointer_selection(&self) {
         self.selection_drag_state.clear();
+        self.surface_metrics.clear_pointer_drag();
     }
 
     fn update_pointer_selection_at_event_outcome(
