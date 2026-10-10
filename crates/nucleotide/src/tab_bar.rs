@@ -162,6 +162,7 @@ struct TabStripOptions {
     scroll_handle: Option<ScrollHandle>,
     on_empty_double_click: Option<EmptyTabBarClickHandler>,
     on_scroll_wheel: Option<TabBarScrollWheelHandler>,
+    on_drop: Option<TabDropHandler>,
     forced_pin_state: Option<bool>,
     tokens: nucleotide_ui::tokens::DesignTokens,
     border_color: gpui::Hsla,
@@ -667,6 +668,7 @@ impl TabBar {
             scroll_handle,
             on_empty_double_click,
             on_scroll_wheel,
+            on_drop: self.pane_drag_drop.map(|(_, on_drop)| on_drop),
             forced_pin_state: None,
             tokens: *tokens,
             border_color,
@@ -830,6 +832,7 @@ impl TabBar {
         let start_children = self.start_children;
         let end_children = self.end_children;
         let row_height = tab_container_height(*tokens);
+        let on_drop = self.pane_drag_drop.map(|(_, on_drop)| on_drop);
 
         let pinned_strip = Self::render_tab_strip(TabStripOptions {
             id: "pinned-tabs",
@@ -837,6 +840,7 @@ impl TabBar {
             scroll_handle: None,
             on_empty_double_click: on_empty_double_click.clone(),
             on_scroll_wheel: None,
+            on_drop: on_drop.clone(),
             forced_pin_state: Some(true),
             tokens: *tokens,
             border_color,
@@ -847,6 +851,7 @@ impl TabBar {
             scroll_handle,
             on_empty_double_click,
             on_scroll_wheel,
+            on_drop,
             forced_pin_state: Some(false),
             tokens: *tokens,
             border_color,
@@ -902,6 +907,7 @@ impl TabBar {
             .children(options.tabs)
             .child(Self::render_end_drop_target(
                 options.on_empty_double_click,
+                options.on_drop,
                 options.forced_pin_state,
                 options.tokens,
                 options.border_color,
@@ -911,6 +917,7 @@ impl TabBar {
 
     fn render_end_drop_target(
         on_empty_double_click: Option<EmptyTabBarClickHandler>,
+        on_drop: Option<TabDropHandler>,
         forced_pin_state: Option<bool>,
         tokens: nucleotide_ui::tokens::DesignTokens,
         border_color: gpui::Hsla,
@@ -931,6 +938,18 @@ impl TabBar {
             );
 
         target
+            .when_some(on_drop, |target, on_drop| {
+                target
+                    .drag_over::<DraggedTab>(|style, _, _, cx| {
+                        style
+                            .border_l_2()
+                            .border_color(cx.theme().tokens.chrome.border_focus)
+                    })
+                    .on_drop(move |dragged: &DraggedTab, window, cx| {
+                        on_drop(dragged, None, window, cx);
+                        cx.stop_propagation();
+                    })
+            })
             .when_some(on_empty_double_click, |target, handler| {
                 target.on_click(move |event, window, cx| {
                     if event.click_count() >= 2 {
