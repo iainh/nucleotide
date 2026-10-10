@@ -11643,24 +11643,27 @@ mod tests {
         let root = tempdir().unwrap();
         let alpha_path = root.path().join("alpha.txt");
         let beta_path = root.path().join("beta.txt");
+        let gamma_path = root.path().join("gamma.txt");
         fs::write(&alpha_path, "alpha\n").unwrap();
         fs::write(&beta_path, "beta\n").unwrap();
+        fs::write(&gamma_path, "gamma\n").unwrap();
 
         for (horizontal, before) in [(true, true), (true, false), (false, true), (false, false)] {
             for active in [false, true] {
                 let (core, workspace, cx) = new_test_workspace(cx, &alpha_path);
-                let (source, alpha, beta) = core.update(cx, |core, cx| {
+                let (source, alpha, beta, gamma) = core.update(cx, |core, cx| {
                     let mut config = (**core.helix_config_arc.load()).clone();
                     config.editor.bufferline = helix_view::editor::BufferLine::Always;
                     core.helix_config_arc.store(Arc::new(config));
                     let source = core.editor.tree.focus;
                     let alpha = core.editor.tree.get(source).doc;
                     let beta = core.editor.open(&beta_path, Action::Load).unwrap();
+                    let gamma = core.editor.open(&gamma_path, Action::Load).unwrap();
                     if active {
                         core.editor.switch(beta, Action::Replace);
                     }
                     cx.emit(crate::Update::Redraw);
-                    (source, alpha, beta)
+                    (source, alpha, beta, gamma)
                 });
                 workspace.update_in(cx, |workspace, window, cx| {
                     workspace.focus_editor(window, cx)
@@ -11746,8 +11749,10 @@ mod tests {
                 assert!(cx.debug_bounds(moved_tab).is_some());
 
                 // A lone tab cannot be transferred into a split of its own pane.
-                let start = cx.debug_bounds(lone_tab).unwrap().center();
-                let end = cx.debug_bounds(pane).unwrap().center();
+                let destination_pane =
+                    Box::leak(format!("editor-pane-{destination:?}").into_boxed_str());
+                let start = cx.debug_bounds(moved_tab).unwrap().center();
+                let end = cx.debug_bounds(destination_pane).unwrap().center();
                 cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::none());
                 cx.simulate_mouse_move(
                     start + point(px(20.0), px(0.0)),
@@ -11763,6 +11768,36 @@ mod tests {
                 core.read_with(cx, |core, _| {
                     assert_eq!(core.editor.tree.views().count(), 2)
                 });
+
+                // Closing the moved tab must close its split, even if that
+                // view inherited history for documents in the source pane.
+                let position = cx.debug_bounds(moved_tab).unwrap().center();
+                cx.simulate_mouse_down(position, MouseButton::Middle, Modifiers::none());
+                cx.simulate_mouse_up(position, MouseButton::Middle, Modifiers::none());
+                draw(cx);
+                core.read_with(cx, |core, _| {
+                    assert_eq!(core.editor.tree.views().count(), 1);
+                    assert!(!core.editor.tree.contains(destination));
+                    assert_eq!(core.editor.tree.get(source).doc, alpha);
+                    assert!(!core.editor.documents.contains_key(&beta));
+                    assert_eq!(core.editor.documents[&gamma].text().to_string(), "gamma\n");
+                });
+                assert!(cx.debug_bounds(destination_pane).is_none());
+                assert!(cx.debug_bounds(moved_tab).is_none());
+                assert!(cx.debug_bounds(lone_tab).is_some());
+                let gamma_tab = Box::leak(format!("pane-tab-{source:?}-{gamma}").into_boxed_str());
+                assert!(cx.debug_bounds(gamma_tab).is_some());
+
+                // Closing the remaining tabs must leave the final editor pane.
+                for tab in [&*gamma_tab, &*lone_tab] {
+                    let position = cx.debug_bounds(tab).unwrap().center();
+                    cx.simulate_mouse_down(position, MouseButton::Middle, Modifiers::none());
+                    cx.simulate_mouse_up(position, MouseButton::Middle, Modifiers::none());
+                    draw(cx);
+                    core.read_with(cx, |core, _| {
+                        assert_eq!(core.editor.tree.views().count(), 1)
+                    });
+                }
             }
         }
     }
