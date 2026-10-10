@@ -67,6 +67,15 @@ The workspace reconciles tab membership after both GUI actions and Helix command
 - Selecting a tab or using a tab-bar control targets that bar's pane.
 - Drag a tab onto another tab to insert it before that tab, or onto empty bar
   space to append it. The same gestures reorder tabs within a pane.
+- Drag a tab over another pane's editor body to preview a new split. The nearest
+  edge, measured relative to the pane's width and height, selects its left,
+  right, top or bottom half. A flat theme-colour rectangle at 30% opacity marks
+  the destination while the existing layout stays unchanged.
+- Release over the editor body to divide only that destination into equal
+  halves and move the tab into the highlighted half. Tab-bar drops still
+  reorder or merge tabs. Hovering the source pane does not create a split;
+  leaving the editor or pressing Escape clears the preview without changing
+  the layout.
 - Transfers remove the source tab and activate it in the destination. If the
   destination already has that document, it keeps one tab rather than a duplicate.
 - Moving the last tab out closes the empty split without closing its buffer.

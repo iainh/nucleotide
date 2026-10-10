@@ -33,16 +33,22 @@ pub(crate) struct DraggedTab {
 }
 
 impl Render for DraggedTab {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let tokens = cx.theme().tokens;
-        div()
-            .px(tokens.sizes.space_3)
-            .h(tab_container_height(tokens))
-            .bg(tokens.chrome.surface)
-            .text_color(tokens.chrome.text_on_chrome)
-            .border_1()
-            .border_color(tokens.editor.focus_ring)
-            .child(self.label.clone())
+        gpui::anchored()
+            .position(
+                window.mouse_position() + gpui::point(tokens.sizes.space_3, tokens.sizes.space_3),
+            )
+            .child(
+                div()
+                    .px(tokens.sizes.space_3)
+                    .h(tab_container_height(tokens))
+                    .bg(tokens.chrome.surface)
+                    .text_color(tokens.chrome.text_on_chrome)
+                    .border_1()
+                    .border_color(tokens.chrome.border_focus)
+                    .child(self.label.clone()),
+            )
     }
 }
 

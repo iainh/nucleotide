@@ -142,6 +142,16 @@ impl Tree {
     }
 
     pub fn split(&mut self, view: View, layout: Layout) -> ViewId {
+        self.split_inner(view, layout, None)
+    }
+
+    /// Split only the focused view, without redistributing its siblings.
+    /// `before` places the new view above or to the left of the focused view.
+    pub fn split_at(&mut self, view: View, layout: Layout, before: bool) -> ViewId {
+        self.split_inner(view, layout, Some(before))
+    }
+
+    fn split_inner(&mut self, view: View, layout: Layout, before: Option<bool>) -> ViewId {
         let focus = self.focus;
         let parent = self.nodes[focus].parent;
 
@@ -156,7 +166,7 @@ impl Tree {
             } => container,
             _ => unreachable!(),
         };
-        if container.layout == layout {
+        if container.layout == layout && before.is_none() {
             // insert node after the current item if there is children already
             let pos = if container.children.is_empty() {
                 0
@@ -182,8 +192,11 @@ impl Tree {
                 } => container,
                 _ => unreachable!(),
             };
-            container.children.push(focus);
-            container.children.push(node);
+            container.children = if before == Some(true) {
+                vec![node, focus]
+            } else {
+                vec![focus, node]
+            };
             self.nodes[focus].parent = split;
             self.nodes[node].parent = split;
 
