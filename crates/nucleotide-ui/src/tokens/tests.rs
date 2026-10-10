@@ -788,9 +788,11 @@ mod component_token_tests {
             assert_eq!(status_bar.border, tokens.chrome.border_shadow);
             assert_eq!(tab_bar.tab_border, tokens.chrome.border_shadow);
 
-            // Verify internal separators remain consistent.
+            // Tab dividers match the titlebar edge above them.
+            assert_eq!(tab_bar.tab_separator, titlebar.border);
+
+            // File-tree separators retain the theme's separator color.
             assert_eq!(file_tree.separator, tokens.chrome.separator_color);
-            assert_eq!(tab_bar.tab_separator, tokens.chrome.separator_color);
 
             // Verify row content states are represented by file-tree tokens.
             assert_eq!(file_tree.item_text, tokens.chrome.text_on_chrome);
