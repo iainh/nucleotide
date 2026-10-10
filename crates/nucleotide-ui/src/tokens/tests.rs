@@ -678,6 +678,53 @@ mod component_token_tests {
         );
     }
 
+    #[test]
+    fn status_bar_metadata_and_diagnostics_contrast_with_the_active_footer() {
+        for is_dark in [false, true] {
+            let mut tokens = if is_dark {
+                DesignTokens::dark()
+            } else {
+                DesignTokens::light()
+            };
+            // Opposite active/inactive surfaces catch checking metadata against
+            // the inactive statusline instead of the footer where it is drawn.
+            tokens.chrome.statusline_active =
+                gpui::hsla(0.0, 0.0, if is_dark { 0.12 } else { 0.78 }, 1.0);
+            tokens.chrome.statusline_inactive =
+                gpui::hsla(0.0, 0.0, if is_dark { 0.9 } else { 0.15 }, 1.0);
+            tokens.chrome.statusline_inactive_foreground =
+                gpui::hsla(0.0, 0.0, if is_dark { 0.2 } else { 0.9 }, 1.0);
+            tokens.editor.warning =
+                gpui::hsla(35.0 / 360.0, 0.75, if is_dark { 0.2 } else { 0.85 }, 1.0);
+            tokens.editor.error =
+                gpui::hsla(5.0 / 360.0, 0.75, if is_dark { 0.2 } else { 0.85 }, 1.0);
+
+            let footer = tokens.status_bar_tokens();
+            for (name, color) in [
+                ("metadata", footer.text_secondary),
+                ("warning", footer.warning),
+                ("error", footer.error),
+            ] {
+                let contrast = ColorTheory::contrast_ratio(footer.background_active, color);
+                assert!(
+                    contrast >= 4.5,
+                    "{name}: dark={is_dark}, contrast={contrast}"
+                );
+            }
+            assert_ne!(footer.warning, footer.error);
+
+            // Already readable theme colours should not be changed.
+            let readable = gpui::hsla(0.0, 0.0, if is_dark { 1.0 } else { 0.0 }, 1.0);
+            tokens.chrome.statusline_inactive_foreground = readable;
+            tokens.editor.warning = readable;
+            tokens.editor.error = readable;
+            let footer = tokens.status_bar_tokens();
+            assert_eq!(footer.text_secondary, readable);
+            assert_eq!(footer.warning, readable);
+            assert_eq!(footer.error, readable);
+        }
+    }
+
     /// Test tab bar active/inactive distinction
     #[test]
     fn test_tab_bar_states() {

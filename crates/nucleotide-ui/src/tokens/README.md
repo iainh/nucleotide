@@ -114,6 +114,11 @@ let theme = Theme::from_tokens(DesignTokens::dark());
 - **Brand**: `primary`, `primary_hover`, `primary_active`
 - **Feedback**: `success`, `warning`, `error`, `info`
 
+Status bar metadata and diagnostic icons use `StatusBarTokens.text_secondary`,
+`warning` and `error`. These colours are checked against `background_active` at
+a minimum contrast ratio of 4.5:1. Use these tokens in the footer rather than
+notification colours, which are calibrated for notification backgrounds.
+
 ### Light vs Dark Themes
 
 The system automatically provides appropriate colors for both themes:
