@@ -85,6 +85,9 @@ The workspace reconciles tab membership after both GUI actions and Helix command
 - Moving the last tab out closes the empty split without closing its buffer.
 - Closing a tab shared with another pane removes only the local copy. Closing
   its last copy retains the existing unsaved-change confirmation.
+- Closing a split's only document tab closes that split after any unsaved-change
+  confirmation, rather than showing a file from another pane's history. The final
+  editor pane remains open.
 - Closing a split through Helix returns its otherwise unassigned tabs to the
   focused pane. Tab context-menu ranges apply to that pane, not the workspace.
 - Image viewers render inside their pane and do not replace the split grid.

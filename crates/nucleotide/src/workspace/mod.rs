@@ -4845,6 +4845,12 @@ impl Workspace {
         if self.detach_shared_pane_tab(pane, TabId::Document(doc_id), activation_target, cx) {
             return;
         }
+        let close_pane = self
+            .pane_tabs
+            .panes
+            .get(&pane)
+            .is_some_and(|pane| pane.tabs == [TabId::Document(doc_id)])
+            && self.core.read(cx).editor.tree.views().count() > 1;
         let handle = self.handle.clone();
         let (closed, close_status, modified_name) = self.core.update(cx, |core, cx| {
             let _guard = handle.enter();
@@ -4874,6 +4880,11 @@ impl Workspace {
             };
             match result {
                 Ok(()) => {
+                    // Inherited Helix history must not keep an empty split alive.
+                    // Wait for success so unsaved buffers retain their pane.
+                    if close_pane && core.editor.tree.contains(pane) {
+                        core.editor.close(pane);
+                    }
                     if let Some(TabId::Document(target_doc_id)) = activation_target
                         && core.editor.documents.contains_key(&target_doc_id)
                     {
