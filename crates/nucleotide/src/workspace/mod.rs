@@ -3663,9 +3663,7 @@ impl Workspace {
         &self,
         metadata: &StatusBarDocumentMetadata,
         status_bar_tokens: &nucleotide_ui::tokens::StatusBarTokens,
-        cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let notification_tokens = cx.theme().tokens.notification_tokens();
         div()
             .h_full()
             .px_2()
@@ -3682,7 +3680,7 @@ impl Workspace {
                         svg()
                             .path("icons/triangle-alert.svg")
                             .size(px(12.0))
-                            .text_color(notification_tokens.warning_text),
+                            .text_color(status_bar_tokens.warning),
                     )
                     .child(metadata.warnings.to_string()),
             )
@@ -3695,7 +3693,7 @@ impl Workspace {
                         svg()
                             .path("icons/circle-x.svg")
                             .size(px(12.0))
-                            .text_color(notification_tokens.error_text),
+                            .text_color(status_bar_tokens.error),
                     )
                     .child(metadata.errors.to_string()),
             )
@@ -3976,7 +3974,7 @@ impl Workspace {
             }
             if let Some(metadata) = model.document_metadata.as_ref() {
                 context =
-                    context.child(self.statusbar_diagnostics_item(metadata, status_bar_tokens, cx));
+                    context.child(self.statusbar_diagnostics_item(metadata, status_bar_tokens));
             }
         }
 

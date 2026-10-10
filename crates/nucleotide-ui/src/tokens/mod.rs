@@ -1490,6 +1490,8 @@ pub struct StatusBarTokens {
     pub text_primary: Hsla,
     pub text_secondary: Hsla,
     pub text_accent: Hsla,
+    pub warning: Hsla,
+    pub error: Hsla,
     pub border: Hsla,
     pub mode_normal: Hsla,
     pub mode_normal_text: Hsla,
@@ -1505,9 +1507,17 @@ impl StatusBarTokens {
         let bg_active = chrome.statusline_active;
         let bg_inactive = chrome.statusline_inactive;
         let text_primary = chrome.statusline_active_foreground;
-        let text_secondary = chrome.statusline_inactive_foreground;
+        // Secondary metadata is rendered on the active footer, not the inactive statusline.
+        let text_secondary = ensure_visual_contrast(
+            &[bg_active],
+            chrome.statusline_inactive_foreground,
+            ContrastRatios::AA_NORMAL,
+        );
         let text_accent =
             ColorTheory::ensure_contrast(bg_active, chrome.primary, ContrastRatios::AA_NORMAL);
+        let warning =
+            ensure_visual_contrast(&[bg_active], editor.warning, ContrastRatios::AA_NORMAL);
+        let error = ensure_visual_contrast(&[bg_active], editor.error, ContrastRatios::AA_NORMAL);
         let border = chrome.border_shadow;
         let mode_normal = editor.cursor_normal;
         let mode_insert = editor.cursor_insert;
@@ -1546,6 +1556,8 @@ impl StatusBarTokens {
             text_primary,
             text_secondary,
             text_accent,
+            warning,
+            error,
             border,
             mode_normal,
             mode_normal_text,
