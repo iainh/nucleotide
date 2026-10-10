@@ -11449,6 +11449,193 @@ mod tests {
     }
 
     #[gpui::test]
+    fn pane_edge_drag_previews_and_splits_only_the_destination(cx: &mut gpui::TestAppContext) {
+        use gpui::{Modifiers, MouseButton, point, px};
+        let _runtime = TEST_RUNTIME.enter();
+        let root = tempdir().unwrap();
+        let alpha_path = root.path().join("alpha.txt");
+        let beta_path = root.path().join("beta.txt");
+        fs::write(&alpha_path, "alpha\n").unwrap();
+        fs::write(&beta_path, "beta\n").unwrap();
+
+        for (horizontal, before) in [(true, true), (true, false), (false, true), (false, false)] {
+            let (core, workspace, cx) = new_test_workspace(cx, &alpha_path);
+            let (source, alpha, beta) = core.update(cx, |core, cx| {
+                let mut config = (**core.helix_config_arc.load()).clone();
+                config.editor.bufferline = helix_view::editor::BufferLine::Always;
+                core.helix_config_arc.store(Arc::new(config));
+                let source = core.editor.tree.focus;
+                let alpha = core.editor.tree.get(source).doc;
+                let beta = core.editor.open(&beta_path, Action::Load).unwrap();
+                cx.emit(crate::Update::Redraw);
+                (source, alpha, beta)
+            });
+            cx.run_until_parked();
+            cx.update(|window, cx| window.draw(cx).clear());
+            let (target, sibling) = core.update(cx, |core, cx| {
+                core.editor.switch(alpha, Action::VerticalSplit);
+                let target = core.editor.tree.focus;
+                core.editor.switch(alpha, Action::VerticalSplit);
+                let sibling = core.editor.tree.focus;
+                cx.emit(crate::Update::Redraw);
+                (target, sibling)
+            });
+            workspace.update_in(cx, |workspace, window, cx| {
+                workspace.focus_editor(window, cx)
+            });
+            let draw = |cx: &mut gpui::VisualTestContext| {
+                cx.run_until_parked();
+                cx.update(|window, cx| window.draw(cx).clear());
+            };
+            draw(cx);
+            let tab = Box::leak(format!("pane-tab-{source:?}-{beta}").into_boxed_str());
+            let target_selector = Box::leak(format!("editor-pane-{target:?}").into_boxed_str());
+            let source_body = Box::leak(format!("pane-drop-body-{source:?}").into_boxed_str());
+            let target_body = Box::leak(format!("pane-drop-body-{target:?}").into_boxed_str());
+            let start = cx.debug_bounds(tab).unwrap().center();
+            let bounds = cx.debug_bounds(target_selector).unwrap();
+            let body = cx.debug_bounds(target_body).unwrap();
+            let end = if horizontal {
+                point(
+                    if before {
+                        bounds.left() + px(8.0)
+                    } else {
+                        bounds.right() - px(8.0)
+                    },
+                    body.center().y,
+                )
+            } else {
+                point(
+                    bounds.center().x,
+                    if before {
+                        body.top() + px(8.0)
+                    } else {
+                        bounds.bottom() - px(8.0)
+                    },
+                )
+            };
+            let original = core.read_with(cx, |core, _| {
+                [source, target, sibling].map(|id| core.editor.tree.get(id).area)
+            });
+            cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::none());
+            cx.simulate_mouse_move(
+                start + point(px(20.0), px(0.0)),
+                MouseButton::Left,
+                Modifiers::none(),
+            );
+            draw(cx);
+            // This tall, narrow pane distinguishes normalized edge distance
+            // from pixel distance: the latter would incorrectly choose left.
+            cx.simulate_mouse_move(
+                bounds.origin + point(bounds.size.width * 0.2, bounds.size.height * 0.175),
+                MouseButton::Left,
+                Modifiers::none(),
+            );
+            draw(cx);
+            let normalized_preview = cx.debug_bounds("pane-drop-preview").unwrap();
+            assert!((normalized_preview.size.width - bounds.size.width).abs() < px(1.0));
+            cx.simulate_mouse_move(end, MouseButton::Left, Modifiers::none());
+            draw(cx);
+            let preview = cx.debug_bounds("pane-drop-preview").unwrap();
+            assert!(
+                (preview.size.width - bounds.size.width / if horizontal { 2.0 } else { 1.0 }).abs()
+                    < px(1.0)
+            );
+            assert!(
+                (preview.size.height - bounds.size.height / if horizontal { 1.0 } else { 2.0 })
+                    .abs()
+                    < px(1.0)
+            );
+            assert!(
+                (preview.left()
+                    - if horizontal && !before {
+                        bounds.center().x
+                    } else {
+                        bounds.left()
+                    })
+                .abs()
+                    < px(1.0)
+            );
+            assert!(
+                (preview.top()
+                    - if !horizontal && !before {
+                        bounds.center().y
+                    } else {
+                        bounds.top()
+                    })
+                .abs()
+                    < px(1.0)
+            );
+            core.read_with(cx, |core, _| {
+                assert_eq!(core.editor.tree.views().count(), 3);
+                assert_eq!(core.editor.tree.get(target).area, original[1]);
+            });
+
+            // Leaving the target, hovering the source, and cancelling cannot
+            // change the layout or leave a stale shaded rectangle behind.
+            cx.simulate_mouse_move(
+                point(px(5.0), px(5.0)),
+                MouseButton::Left,
+                Modifiers::none(),
+            );
+            draw(cx);
+            assert!(cx.debug_bounds("pane-drop-preview").is_none());
+            let source_center = cx.debug_bounds(source_body).unwrap().center();
+            cx.simulate_mouse_move(source_center, MouseButton::Left, Modifiers::none());
+            draw(cx);
+            assert!(cx.debug_bounds("pane-drop-preview").is_none());
+            cx.simulate_mouse_move(end, MouseButton::Left, Modifiers::none());
+            draw(cx);
+            cx.simulate_keystrokes("escape");
+            draw(cx);
+            assert!(cx.debug_bounds("pane-drop-preview").is_none());
+            cx.simulate_mouse_up(end, MouseButton::Left, Modifiers::none());
+            core.read_with(cx, |core, _| {
+                assert_eq!(core.editor.tree.views().count(), 3)
+            });
+
+            cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::none());
+            cx.simulate_mouse_move(
+                start + point(px(20.0), px(0.0)),
+                MouseButton::Left,
+                Modifiers::none(),
+            );
+            draw(cx);
+            cx.simulate_mouse_move(end, MouseButton::Left, Modifiers::none());
+            draw(cx);
+            cx.simulate_mouse_up(end, MouseButton::Left, Modifiers::none());
+            draw(cx);
+            assert!(cx.debug_bounds("pane-drop-preview").is_none());
+            let destination = core.read_with(cx, |core, _| {
+                let destination = core.editor.tree.focus;
+                assert_eq!(core.editor.tree.views().count(), 4);
+                assert_eq!(core.editor.tree.get(source).area, original[0]);
+                assert_eq!(core.editor.tree.get(sibling).area, original[2]);
+                assert_eq!(core.editor.tree.get(source).doc, alpha);
+                assert_eq!(core.editor.tree.get(target).doc, alpha);
+                assert_eq!(core.editor.tree.get(destination).doc, beta);
+                let moved = core.editor.tree.get(destination).area;
+                let remaining = core.editor.tree.get(target).area;
+                if horizontal {
+                    assert_eq!(moved.height, original[1].height);
+                    assert!(moved.width.abs_diff(remaining.width) <= 1);
+                    assert_eq!(moved.x < remaining.x, before);
+                } else {
+                    assert_eq!(moved.width, original[1].width);
+                    assert!(moved.height.abs_diff(remaining.height) <= 1);
+                    assert_eq!(moved.y < remaining.y, before);
+                }
+                destination
+            });
+            assert!(cx.debug_bounds(tab).is_none());
+            let moved_tab = Box::leak(format!("pane-tab-{destination:?}-{beta}").into_boxed_str());
+            let retained_tab = Box::leak(format!("pane-tab-{source:?}-{alpha}").into_boxed_str());
+            assert!(cx.debug_bounds(moved_tab).is_some());
+            assert!(cx.debug_bounds(retained_tab).is_some());
+        }
+    }
+
+    #[gpui::test]
     fn workspace_focus_follows_splits_and_overlay_dismissal_without_stealing_tree_focus(
         cx: &mut gpui::TestAppContext,
     ) {

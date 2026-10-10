@@ -77,7 +77,7 @@ use crate::remote_open::{
     RemoteOpenRequest, RemoteOpenTarget, RemoteOpenTargetKind, parse_remote_open_input,
     parse_remote_open_request,
 };
-use crate::tab::TabId;
+use crate::tab::{DraggedTab, TabId};
 use crate::types::{
     EditorStatus, GlobalSearchLocation, HoverDocEntry, RegexSelectionAction, Severity,
 };
@@ -1013,6 +1013,7 @@ pub struct Workspace {
     needs_window_appearance_update: bool,
     pending_appearance: Option<gpui::WindowAppearance>,
     pane_tabs: pane_tabs::PaneTabState,
+    pane_drop_target: Option<(ViewId, pane_tabs::PaneDropEdge)>,
     image_tabs: Vec<ImageTab>,
     active_image_tab_id: Option<u64>,
     next_image_tab_index: u64,
@@ -4356,6 +4357,42 @@ impl Workspace {
         self.update_document_views(cx);
     }
 
+    fn split_pane_tab(
+        &mut self,
+        dragged: &DraggedTab,
+        target: ViewId,
+        edge: pane_tabs::PaneDropEdge,
+        cx: &mut Context<Self>,
+    ) {
+        self.sync_pane_tabs(cx);
+        if dragged.pane == target
+            || !self.pane_tabs.panes.contains_key(&target)
+            || !self
+                .pane_tabs
+                .panes
+                .get(&dragged.pane)
+                .is_some_and(|pane| pane.tabs.contains(&dragged.tab))
+        {
+            return;
+        }
+        let handle = self.handle.clone();
+        let destination = self.core.update(cx, |core, _| {
+            let _guard = handle.enter();
+            let document = match dragged.tab {
+                TabId::Document(doc) => doc,
+                TabId::Image(_) => core.editor.tree.get(target).doc,
+            };
+            core.editor.focus(target);
+            core.editor.switch(document, edge.split_action());
+            core.editor.tree.focus
+        });
+        self.move_pane_tab(dragged.pane, destination, dragged.tab, None, cx);
+        // An image's Helix view needs a backing document, not an extra visible tab.
+        if matches!(dragged.tab, TabId::Image(_)) {
+            self.pane_tabs.panes.get_mut(&destination).unwrap().tabs = vec![dragged.tab];
+        }
+    }
+
     fn move_pane_tab(
         &mut self,
         source: ViewId,
@@ -5803,6 +5840,7 @@ impl Workspace {
             needs_window_appearance_update: false,
             pending_appearance: None,
             pane_tabs: pane_tabs::PaneTabState::default(),
+            pane_drop_target: None,
             image_tabs: Vec::new(),
             active_image_tab_id: None,
             next_image_tab_index: 1,
@@ -13902,6 +13940,32 @@ impl Workspace {
         let tokens = cx.theme().tokens;
         let (left, top, width, height) =
             helix_rect_to_scaled_pixel_bounds(layout.area, total_area, editor_width, editor_height);
+        let pane_id = layout.view_id;
+        if !cx.has_active_drag() {
+            self.pane_drop_target = None;
+        }
+        let preview = self
+            .pane_drop_target
+            .filter(|(target, _)| *target == pane_id)
+            .map(|(_, edge)| {
+                let bounds = edge.preview_bounds(Bounds {
+                    origin: point(px(0.0), px(0.0)),
+                    size: gpui::size(width, height),
+                });
+                div()
+                    .absolute()
+                    .left(bounds.left())
+                    .top(bounds.top())
+                    .w(bounds.size.width)
+                    .h(bounds.size.height)
+                    .bg(nucleotide_ui::tokens::with_alpha(
+                        tokens.chrome.border_focus,
+                        0.3,
+                    ))
+                    .when(cfg!(test), |preview| {
+                        preview.debug_selector(|| "pane-drop-preview".to_string())
+                    })
+            });
         let tab_bar = self
             .render_tab_bar(layout.view_id, window, cx)
             .into_any_element();
@@ -13920,6 +13984,9 @@ impl Workspace {
                     "editor-pane-{:?}",
                     layout.view_id
                 )))
+                .when(cfg!(test), |pane| {
+                    pane.debug_selector(move || format!("editor-pane-{pane_id:?}"))
+                })
                 .absolute()
                 .flex()
                 .flex_col()
@@ -13934,12 +14001,61 @@ impl Workspace {
                 .child(tab_bar)
                 .child(
                     div()
+                        .id(SharedString::from(format!("pane-drop-body-{pane_id:?}")))
+                        .when(cfg!(test), |body| {
+                            body.debug_selector(move || format!("pane-drop-body-{pane_id:?}"))
+                        })
                         .relative()
                         .flex_1()
                         .min_h(px(0.0))
                         .overflow_hidden()
+                        .on_drag_move::<DraggedTab>(cx.listener(
+                            move |workspace, event: &gpui::DragMoveEvent<DraggedTab>, _, cx| {
+                                // Use the full pane for preview geometry, but leave its
+                                // tab bar available for the existing reorder/merge drops.
+                                let pane_bounds = Bounds {
+                                    origin: point(
+                                        event.bounds.left(),
+                                        event.bounds.bottom() - height,
+                                    ),
+                                    size: gpui::size(width, height),
+                                };
+                                let target = (event.drag(cx).pane != pane_id
+                                    && event.bounds.contains(&event.event.position))
+                                .then(|| {
+                                    pane_tabs::PaneDropEdge::nearest(
+                                        event.event.position,
+                                        pane_bounds,
+                                    )
+                                })
+                                .flatten()
+                                .map(|edge| (pane_id, edge));
+                                if target.is_some()
+                                    || workspace
+                                        .pane_drop_target
+                                        .is_some_and(|(id, _)| id == pane_id)
+                                {
+                                    if workspace.pane_drop_target != target {
+                                        workspace.pane_drop_target = target;
+                                        cx.notify();
+                                    }
+                                }
+                            },
+                        ))
+                        .on_drop(
+                            cx.listener(move |workspace, dragged: &DraggedTab, window, cx| {
+                                if let Some((target, edge)) = workspace.pane_drop_target.take()
+                                    && target == pane_id
+                                {
+                                    workspace.split_pane_tab(dragged, target, edge, cx);
+                                    workspace.focus_editor(window, cx);
+                                }
+                                cx.stop_propagation();
+                            }),
+                        )
                         .child(content),
                 )
+                .children(preview)
                 .when(show_focus_indicator && layout.is_focused, |d| {
                     d.child(div().absolute().top_0().left_0().bottom_0().w(px(2.0)).bg(
                         nucleotide_ui::tokens::with_alpha(tokens.editor.focus_ring, 0.8),
@@ -14939,7 +15055,13 @@ impl Render for Workspace {
         // regardless of focus state or overlay presence for global shortcuts to work
         workspace_div = workspace_div
             .track_focus(&self.focus_handle)
-            .capture_key_down(cx.listener(|view, ev, _window, cx| {
+            .capture_key_down(cx.listener(|view, ev: &KeyDownEvent, window, cx| {
+                if ev.keystroke.key == "escape" && cx.stop_active_drag(window) {
+                    view.pane_drop_target = None;
+                    cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
                 if view.handle_regular_completion_menu_key(ev, cx) {
                     cx.stop_propagation();
                 }

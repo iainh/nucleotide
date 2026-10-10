@@ -1391,6 +1391,11 @@ pub enum Action {
     Replace,
     HorizontalSplit,
     VerticalSplit,
+    /// Divide only the focused pane into equal halves.
+    SplitAt {
+        layout: tree::Layout,
+        before: bool,
+    },
 }
 
 impl Action {
@@ -2088,7 +2093,7 @@ impl Editor {
                 doc.mark_as_focused();
                 return;
             }
-            Action::HorizontalSplit | Action::VerticalSplit => {
+            Action::HorizontalSplit | Action::VerticalSplit | Action::SplitAt { .. } => {
                 let focus_lost = self.tree.try_get(self.tree.focus).map(|view| view.doc);
                 // copy the current view, unless there is no view yet
                 let view = self
@@ -2097,14 +2102,12 @@ impl Editor {
                     .filter(|v| id == v.doc) // Different Document
                     .cloned()
                     .unwrap_or_else(|| View::new(id, self.config().gutters.clone()));
-                let view_id = self.tree.split(
-                    view,
-                    match action {
-                        Action::HorizontalSplit => Layout::Horizontal,
-                        Action::VerticalSplit => Layout::Vertical,
-                        _ => unreachable!(),
-                    },
-                );
+                let view_id = match action {
+                    Action::SplitAt { layout, before } => self.tree.split_at(view, layout, before),
+                    Action::HorizontalSplit => self.tree.split(view, Layout::Horizontal),
+                    Action::VerticalSplit => self.tree.split(view, Layout::Vertical),
+                    _ => unreachable!(),
+                };
                 // initialize selection for view
                 let doc = doc_mut!(self, &id);
                 doc.ensure_view_init(view_id);
