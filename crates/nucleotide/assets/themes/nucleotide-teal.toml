@@ -52,14 +52,19 @@ tabstop = { modifiers = ["italic"], bg = "panel" }
 "comment.line.documentation" = { fg = "muted_mid", modifiers = ["italic"] }
 # concat (ERROR) @error.syntax and "MISSING ;" selectors for errors
 
-"ui.background" = { bg = "base" }
+"ui.background" = { fg = "ink", bg = "base" }
 "ui.background.separator" = { fg = "separator" }
 "ui.linenr" = { fg = "gutter_fg" }
 "ui.linenr.selected" = { fg = "link" }
-"ui.statusline" = { fg = "ink", bg = "base" }
-"ui.statusline.inactive" = { fg = "muted_mid", bg = "base" }
-"ui.popup" = { bg = "panel" }
-"ui.window" = { fg = "separator" }
+"ui.gutter" = { bg = "base" }
+"ui.statusline" = { fg = "ink", bg = "chrome" }
+"ui.statusline.inactive" = { fg = "muted_mid", bg = "chrome" }
+"ui.bufferline" = { fg = "muted_mid", bg = "chrome" }
+"ui.bufferline.active" = { fg = "ink", bg = "base" }
+"ui.bufferline.inactive" = { fg = "muted_mid", bg = "chrome" }
+"ui.popup" = { fg = "ink", bg = "panel" }
+"ui.window" = { fg = "separator", bg = "chrome" }
+"ui.focus" = { fg = "link" }
 "ui.help" = { bg = "link", fg = "base" }
 "ui.text" = { fg = "ink" }
 "ui.text.focus" = { fg = "white" }
@@ -81,14 +86,14 @@ tabstop = { modifiers = ["italic"], bg = "panel" }
 "ui.cursor.primary.select" = { bg = "matched" }
 "ui.cursor.primary.insert" = { bg = "white" }
 "ui.cursor.match" = { fg = "base", bg = "matched" }
-"ui.cursor" = { modifiers = ["reversed"] }
+"ui.cursor" = { fg = "base", bg = "link" }
 "ui.cursorline.primary" = { bg = "caret_row" }
 "ui.highlight" = { bg = "caret_row" }
 "ui.highlight.frameline" = { bg = "folded_bg" }
 "ui.debug" = { fg = "link" }
 "ui.debug.breakpoint" = { fg = "coral" }
 "ui.menu" = { fg = "ink", bg = "panel" }
-"ui.menu.selected" = { fg = "base", bg = "link" }
+"ui.menu.selected" = { fg = "white", bg = "selection" }
 "ui.menu.scroll" = { fg = "ink", bg = "gutter_fg" }
 
 "diagnostic.hint" = { underline = { color = "muted_mid", style = "curl" } }
@@ -108,10 +113,11 @@ hint = "muted_mid"
 
 # Backgrounds and surfaces
 base = "#102423"
+chrome = "#142b29"
 gutter_bg = "#132927"
 caret_row = "#112726"
 panel = "#183432"
-separator = "#2f5854"
+separator = "#284743"
 separator_selected = "#47736f"
 indent = "#274743"
 indent_selected = "#315650"

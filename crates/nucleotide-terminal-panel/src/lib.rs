@@ -160,7 +160,7 @@ impl Render for TerminalPanel {
             .child(
                 svg()
                     .path("icons/terminal.svg")
-                    .size(tokens.sizes.text_md)
+                    .size(px(nucleotide_ui::tokens::SMALL_ICON_SIZE))
                     .text_color(tokens.chrome.text_chrome_secondary)
                     .flex_shrink_0(),
             )
@@ -202,6 +202,7 @@ impl Render for TerminalPanel {
                     .w_full()
                     .overflow_hidden()
                     .bg(tokens.editor.background)
+                    .px(tokens.sizes.space_3)
                     .child(view.clone()),
             );
         } else {

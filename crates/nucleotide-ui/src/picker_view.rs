@@ -337,7 +337,7 @@ impl PickerView {
     fn new_query_input(cx: &mut Context<Self>) -> Entity<TextInput> {
         let input = cx.new(|cx| {
             TextInput::new("picker-query-input", cx)
-                .variant(InputVariant::Ghost)
+                .variant(InputVariant::Default)
                 .size(InputSize::Small)
                 .placeholder("Search")
         });
@@ -1592,7 +1592,7 @@ impl PickerView {
         let show_preview = dimensions.show_preview;
         let truncate_row_text = Self::should_truncate_row_text(show_preview);
         let is_diagnostic_picker = self.is_diagnostic_picker();
-        let ui_theme = cx.global::<crate::Theme>();
+        let ui_theme = cx.global::<crate::Theme>().clone();
 
         div()
             .flex()
@@ -1713,12 +1713,14 @@ impl PickerView {
                         .flex()
                         .items_center()
                         .px_3()
-                        .h_10()
+                        .gap(ui_theme.tokens.sizes.space_3)
+                        .h_12()
                         .border_b_1()
                         .border_color(self.style.modal_style.border)
                         .child(
                             div()
                                 .flex_1()
+                                .min_w(px(0.0))
                                 .flex()
                                 .items_center()
                                 .child(self.query_input.clone()),
@@ -1787,7 +1789,8 @@ impl PickerView {
                 // Main content area - horizontal split
                 div()
                     .flex()
-                    .h_full() // Use full height of remaining space
+                    .flex_1()
+                    .min_h(px(0.0))
                     .overflow_hidden()
                     .child(
                         // File list using proper GPUI uniform_list
@@ -2024,8 +2027,30 @@ impl PickerView {
                                                                                         this.overflow_hidden().text_ellipsis()
                                                                                     })
                                                                                     .font_family(Self::ui_font_family(cx))
-                                                                                    .child(item.label.clone())
+                                                                                    .when(item.file_path.is_some(), |this| {
+                                                                                        this.font_weight(gpui::FontWeight::MEDIUM)
+                                                                                    })
+                                                                                    .child(if item.file_path.is_some() {
+                                                                                        item.label.rsplit(['/', '\\']).next().unwrap_or(&item.label).to_string()
+                                                                                    } else {
+                                                                                        item.label.to_string()
+                                                                                    })
                                                                             )
+                                                                            .when(item.file_path.is_some(), |this| {
+                                                                                let parent = item.label.rsplit_once(['/', '\\']).map(|(parent, _)| parent);
+                                                                                this.when_some(parent, |this, parent| {
+                                                                                    this.child(
+                                                                                        div()
+                                                                                            .min_w(px(0.0))
+                                                                                            .max_w(list_width * 0.55)
+                                                                                            .overflow_hidden()
+                                                                                            .text_ellipsis()
+                                                                                            .text_size(cx.global::<crate::Theme>().tokens.sizes.text_sm)
+                                                                                            .text_color(picker.style.modal_style.prompt_text)
+                                                                                            .child(parent.to_string())
+                                                                                    )
+                                                                                })
+                                                                            })
                                                                             .into_any_element()
                                                                     }
                                                                 },
@@ -2155,6 +2180,27 @@ impl PickerView {
                                 ),
                         )
                     }),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_shrink_0()
+                    .items_center()
+                    .justify_end()
+                    .gap(ui_theme.tokens.sizes.space_4)
+                    .px(ui_theme.tokens.sizes.space_3)
+                    .py(ui_theme.tokens.sizes.space_2)
+                    .border_t_1()
+                    .border_color(self.style.modal_style.border)
+                    .text_size(ui_theme.tokens.sizes.text_sm)
+                    .text_color(self.style.modal_style.prompt_text)
+                    .children([("↑ ↓", "Navigate"), ("Enter", "Open"), ("Esc", "Close")].map(|(key, label)| {
+                        div()
+                            .flex()
+                            .gap(ui_theme.tokens.sizes.space_2)
+                            .child(div().text_color(self.style.modal_style.text).font_weight(gpui::FontWeight::MEDIUM).child(key))
+                            .child(label)
+                    })),
             )
     }
 }

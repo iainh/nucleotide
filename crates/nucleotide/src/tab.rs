@@ -123,11 +123,11 @@ struct TabEndButtonProps {
 }
 
 const MODIFIED_TAB_SLOT_SIZE: f32 = 12.0;
-const END_TAB_SLOT_SIZE: f32 = 14.0;
-const TAB_SLOT_ICON_SIZE: f32 = 12.0;
+const END_TAB_SLOT_SIZE: f32 = 16.0;
+const TAB_SLOT_ICON_SIZE: f32 = nucleotide_ui::tokens::SMALL_ICON_SIZE;
 const TAB_MIN_WIDTH: f32 = 112.0;
 const TAB_MAX_WIDTH: f32 = 280.0;
-const ACTIVE_TAB_HIGHLIGHT_HEIGHT: f32 = 3.0;
+const ACTIVE_TAB_HIGHLIGHT_HEIGHT: f32 = 2.0;
 
 pub(crate) fn tab_container_height(tokens: nucleotide_ui::tokens::DesignTokens) -> gpui::Pixels {
     tokens.sizes.button_height_md
@@ -723,20 +723,28 @@ impl RenderOnce for Tab {
             .bg(bg_color)
             .when(!disabled, |tab| tab.hover(|style| style.bg(hover_bg)))
             .when(!disabled, |tab| tab.cursor(CursorStyle::PointingHand))
-            .border_color(tab_tokens.tab_separator)
+            .border_color(nucleotide_ui::tokens::with_alpha(
+                tab_tokens.tab_separator,
+                0.5,
+            ))
             .border_r_1()
-            .when(!is_active, |tab| tab.border_b_1())
-            .when(is_active, |tab| {
-                tab.child(
-                    div()
-                        .absolute()
-                        .bottom_0()
-                        .left_0()
-                        .right_0()
-                        .h(px(ACTIVE_TAB_HIGHLIGHT_HEIGHT))
-                        .bg(tokens.chrome.border_focus),
-                )
-            })
+            .child(
+                div()
+                    .absolute()
+                    .bottom_0()
+                    .left_0()
+                    .right_0()
+                    .h(px(if is_active {
+                        ACTIVE_TAB_HIGHLIGHT_HEIGHT
+                    } else {
+                        1.0
+                    }))
+                    .bg(if is_active {
+                        tokens.chrome.border_focus
+                    } else {
+                        tab_tokens.tab_separator
+                    }),
+            )
             .when(!disabled, |tab| {
                 tab.on_mouse_down(MouseButton::Left, {
                     let on_click = self.on_click.clone();
@@ -843,7 +851,7 @@ impl Tab {
                     div()
                         .size(px(6.0))
                         .rounded(px(3.0))
-                        .bg(tokens.tab_bar_tokens().tab_modified_indicator),
+                        .bg(tokens.editor.diagnostic_warning),
                 )
             })
             .into_any_element()
@@ -860,12 +868,12 @@ impl Tab {
         let vcs_status = Tab::icon_vcs_status(git_status, diagnostic_severity);
         let icon = if let Some(ref path) = file_path {
             VcsIcon::from_path(path, false)
-                .size(tokens.sizes.text_lg.into())
+                .size(TAB_SLOT_ICON_SIZE)
                 .text_color(icon_color)
                 .vcs_status(vcs_status)
         } else {
             VcsIcon::scratch()
-                .size(tokens.sizes.text_lg.into())
+                .size(TAB_SLOT_ICON_SIZE)
                 .text_color(icon_color)
                 .vcs_status(vcs_status)
         };
@@ -873,7 +881,7 @@ impl Tab {
 
         div()
             .relative()
-            .size(tokens.sizes.text_lg)
+            .size(px(TAB_SLOT_ICON_SIZE))
             .flex_none()
             .flex()
             .items_center()
@@ -891,7 +899,7 @@ impl Tab {
         let icon = div()
             .id("tab-readonly-lock")
             .relative()
-            .size(tokens.sizes.text_lg)
+            .size(px(TAB_SLOT_ICON_SIZE))
             .flex_none()
             .flex()
             .items_center()
@@ -899,7 +907,7 @@ impl Tab {
             .child(
                 svg()
                     .path("icons/file-lock.svg")
-                    .size(tokens.sizes.text_lg)
+                    .size(px(TAB_SLOT_ICON_SIZE))
                     .text_color(Tab::content_icon_color(tokens)),
             )
             .when(is_toggleable, |icon| {
@@ -1296,10 +1304,10 @@ mod tests {
     }
 
     #[test]
-    fn tab_slot_geometry_matches_zed() {
+    fn tab_slot_geometry_uses_consistent_small_icons() {
         assert_eq!(MODIFIED_TAB_SLOT_SIZE, 12.0);
-        assert_eq!(END_TAB_SLOT_SIZE, 14.0);
-        assert_eq!(TAB_SLOT_ICON_SIZE, 12.0);
+        assert_eq!(END_TAB_SLOT_SIZE, 16.0);
+        assert_eq!(TAB_SLOT_ICON_SIZE, nucleotide_ui::tokens::SMALL_ICON_SIZE);
     }
 
     #[test]

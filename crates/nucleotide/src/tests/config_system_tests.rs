@@ -113,6 +113,45 @@ mod tests {
                 panic!("Failed to load bundled theme {theme_name}: {error}")
             });
         }
+        for (name, editor, chrome) in [
+            ("nucleotide-teal", 0x102423, 0x142b29),
+            ("nucleotide-graphite", 0x171a1f, 0x20242b),
+            ("nucleotide-paper", 0xf6f4ee, 0xece9e1),
+        ] {
+            let theme = loader.load(name).unwrap();
+            let manager = nucleotide_ui::theme_manager::ThemeManager::new(theme);
+            let tokens = manager.ui_theme().tokens;
+            assert_eq!(
+                tokens.editor.background,
+                gpui::Hsla::from(gpui::rgb(editor)),
+                "{name}"
+            );
+            assert_eq!(
+                tokens.chrome.file_tree_background,
+                gpui::Hsla::from(gpui::rgb(chrome)),
+                "{name}"
+            );
+            for (background, text) in [
+                (tokens.editor.background, tokens.editor.text_primary),
+                (
+                    tokens.chrome.file_tree_background,
+                    tokens.chrome.text_on_chrome,
+                ),
+                (
+                    tokens.chrome.popup_background,
+                    tokens.chrome.popup_foreground,
+                ),
+                (
+                    tokens.chrome.menu_selected,
+                    tokens.chrome.menu_selected_foreground,
+                ),
+            ] {
+                assert!(
+                    nucleotide_ui::ColorTheory::contrast_ratio(background, text) >= 4.5,
+                    "{name} must keep readable text"
+                );
+            }
+        }
     }
 
     #[test]

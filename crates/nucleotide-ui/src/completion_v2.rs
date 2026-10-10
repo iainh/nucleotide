@@ -2301,14 +2301,6 @@ impl Render for CompletionView {
                                                         let is_selected =
                                                             index == self.selected_index;
 
-                                                        // Add explicit ID for scroll-to-element functionality
-                                                        let completion_element =
-                                                            CompletionItemElement::new(
-                                                                item.clone(),
-                                                                string_match.clone(),
-                                                                is_selected,
-                                                            );
-
                                                         // Wrap in div with ID for scroll targeting
                                                         Some(
                                                             div()
@@ -2318,17 +2310,34 @@ impl Render for CompletionView {
                                                                 ))
                                                                 .w_full()
                                                                 .child(
-                                                                    completion_element
-                                                                        .compact()
-                                                                        .into_element_with_theme(
-                                                                            theme,
-                                                                        ),
+                                                                    CompletionItemElement::new(
+                                                                        item.clone(),
+                                                                        string_match.clone(),
+                                                                        is_selected,
+                                                                    )
+                                                                    .compact()
+                                                                    .into_element_with_theme(theme),
                                                                 ),
                                                         )
                                                     })
                                                     .collect::<Vec<_>>()
                                             }),
                                     ),
+                            )
+                            .child(
+                                div()
+                                    .border_t_1()
+                                    .border_color(tokens.chrome.popup_border)
+                                    .mt(tokens.sizes.space_1)
+                                    .px(tokens.sizes.space_2)
+                                    .py(tokens.sizes.space_2)
+                                    .text_size(tokens.sizes.text_sm)
+                                    .text_color(tokens.chrome.text_chrome_secondary)
+                                    .child(format!(
+                                        "{} suggestion{}",
+                                        filtered_entries.len(),
+                                        if filtered_entries.len() == 1 { "" } else { "s" }
+                                    )),
                             ),
                     )
                     .when_some(selected_documentation, |layout, documentation| {

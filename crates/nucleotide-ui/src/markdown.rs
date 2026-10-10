@@ -6,7 +6,7 @@ use gpui::{
     AppContext, ElementId, FontStyle, FontWeight, HighlightStyle, Hsla, InteractiveElement,
     InteractiveText, IntoElement, MouseButton, ParentElement, Pixels, Render, RenderOnce,
     SharedString, StatefulInteractiveElement, StrikethroughStyle, Styled, StyledText,
-    UnderlineStyle, Window, div, img, px, relative, rems,
+    UnderlineStyle, Window, div, img, px, relative,
 };
 use helix_core::{
     RopeSlice, Syntax,
@@ -1490,9 +1490,9 @@ fn block_gap(style: &MarkdownStyle) -> Pixels {
     if style.preview {
         px(0.0)
     } else if style.compact {
-        px(6.0)
+        px(8.0)
     } else {
-        px(10.0)
+        px(12.0)
     }
 }
 
@@ -1513,7 +1513,7 @@ fn render_blocks(
                 style.body_color,
                 format!("{id_prefix}-paragraph-{block_index}"),
             )
-            .line_height(relative(if style.preview { 1.55 } else { 1.45 }))
+            .line_height(relative(if style.compact { 1.45 } else { 1.55 }))
             .when(style.preview, |this| this.mb(px(10.0)))
             .into_any_element(),
             MarkdownBlock::Heading { level, text } => {
@@ -1524,7 +1524,7 @@ fn render_blocks(
                     format!("{id_prefix}-heading-{block_index}"),
                 )
                 .font_weight(FontWeight::BOLD)
-                .line_height(relative(1.2));
+                .line_height(relative(1.3));
 
                 if style.preview {
                     heading
@@ -1539,11 +1539,14 @@ fn render_blocks(
                         .into_any_element()
                 } else {
                     let size = match level {
-                        1 => 1.16,
-                        2 => 1.08,
+                        1 => 1.4,
+                        2 => 1.2,
                         _ => 1.0,
                     };
-                    heading.text_size(rems(size)).into_any_element()
+                    heading
+                        .text_size(style.body_font_size * size)
+                        .when(block_index > 0, |this| this.mt(block_gap(style)))
+                        .into_any_element()
                 }
             }
             MarkdownBlock::CodeBlock { language, text } => render_code_block(
@@ -1921,14 +1924,14 @@ fn render_code_block(
     let code = div()
         .id(block_id.to_string())
         .w_full()
-        .px(px(10.0))
-        .py(px(8.0))
+        .px(px(12.0))
+        .py(px(10.0))
         .rounded(px(4.0))
         .bg(style.code_background)
         .border_1()
         .border_color(style.code_border)
-        .text_sm()
-        .line_height(relative(1.45))
+        .text_size(style.body_font_size)
+        .line_height(relative(1.5))
         .font_family(style.code_font_family.clone())
         .text_color(style.body_color)
         .when_else(
@@ -3015,6 +3018,9 @@ fn render_list_item(
             ))
             .children(child_blocks)
     };
+
+    // Allow the text column to shrink beside its marker and wrap in narrow panels.
+    let content = content.min_w(px(0.0));
 
     div()
         .flex()

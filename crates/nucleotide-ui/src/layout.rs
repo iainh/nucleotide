@@ -121,7 +121,8 @@ impl RenderOnce for EditorPaneGrid {
             .min_w(px(0.0))
             .min_h(px(0.0))
             .overflow_hidden()
-            .bg(tokens.editor.background)
+            // Document views paint their opaque content. Leave tab/chrome regions
+            // unpainted here so their translucency can reach the window backdrop.
             .text_color(tokens.chrome.text_on_chrome)
             .when_some(self.debug_border, |this, color| {
                 this.border_1().border_color(color)
@@ -357,6 +358,7 @@ pub struct Toolbar {
     id: ElementId,
     label: Option<SharedString>,
     compact: bool,
+    height: Option<Pixels>,
     border_color: Option<Hsla>,
     children: Vec<AnyElement>,
 }
@@ -367,6 +369,7 @@ impl Toolbar {
             id: id.into(),
             label: None,
             compact: false,
+            height: None,
             border_color: None,
             children: Vec::new(),
         }
@@ -379,6 +382,11 @@ impl Toolbar {
 
     pub fn compact(mut self, compact: bool) -> Self {
         self.compact = compact;
+        self
+    }
+
+    pub fn height(mut self, height: impl Into<Pixels>) -> Self {
+        self.height = Some(height.into());
         self
     }
 
@@ -397,11 +405,13 @@ impl ParentElement for Toolbar {
 impl RenderOnce for Toolbar {
     fn render(self, _window: &mut gpui::Window, cx: &mut App) -> impl IntoElement {
         let tokens = &cx.global::<crate::Theme>().tokens;
-        let height = if self.compact {
-            crate::DensityMetrics::for_density(crate::ControlDensity::Comfortable).row_height
-        } else {
-            tokens.sizes.space_10
-        };
+        let height = self.height.unwrap_or_else(|| {
+            if self.compact {
+                crate::DensityMetrics::for_density(crate::ControlDensity::Comfortable).row_height
+            } else {
+                tokens.sizes.space_10
+            }
+        });
         let border_color = self.border_color.unwrap_or(tokens.chrome.separator_color);
 
         div()

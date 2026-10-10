@@ -2197,7 +2197,7 @@ impl Render for OverlayView {
 
         if let Some(completion_view) = &self.completion_view {
             nucleotide_logging::trace!("DIAG: Render overlay branch: completion");
-            use gpui::{Anchor, AvailableSpace, anchored, canvas, point};
+            use gpui::{AvailableSpace, canvas, point};
 
             // Read both the exact anchor and its fallback in prepaint, after
             // the panes have synchronized this frame.
@@ -2223,24 +2223,36 @@ impl Render for OverlayView {
                     canvas(
                         move |bounds, window, cx| {
                             let (x, y) = overlay.read(cx).calculate_completion_position(cx);
-                            let mut popup = anchored()
-                                .position(point(x, y))
-                                .anchor(Anchor::TopLeft)
-                                .offset(point(px(0.0), px(2.0)))
-                                .snap_to_window_with_margin(px(8.0))
-                                .child(
-                                    div()
-                                        .on_mouse_down(MouseButton::Left, |_, _, _| {})
-                                        .child(completion_view),
-                                )
+                            let mut content = div()
+                                .on_mouse_down(MouseButton::Left, |_, _, _| {})
+                                .child(completion_view)
                                 .into_any_element();
-                            popup.prepaint_as_root(
-                                bounds.origin,
-                                bounds.size.map(AvailableSpace::Definite),
+                            let popup_size = content.layout_as_root(
+                                gpui::size(AvailableSpace::MaxContent, AvailableSpace::MaxContent),
                                 window,
                                 cx,
                             );
-                            popup
+                            // Measure the whole popup, including its footer/docs, and
+                            // flip above the cursor before it reaches editor chrome.
+                            let above = y + px(2.0) + popup_size.height > bounds.bottom();
+                            let popup_y = if above {
+                                y - overlay.read(cx).get_workspace_layout_info(cx).line_height
+                                    - popup_size.height
+                                    - px(2.0)
+                            } else {
+                                y + px(2.0)
+                            };
+                            // Window snapping alone includes the status bar/terminal;
+                            // contain this overlay in the actual editor bounds instead.
+                            let popup_x = x
+                                .min(bounds.right() - popup_size.width - px(8.0))
+                                .max(bounds.left() + px(8.0));
+                            content.prepaint_at(
+                                point(popup_x, popup_y.max(bounds.top() + px(8.0))),
+                                window,
+                                cx,
+                            );
+                            content
                         },
                         |_, mut popup, window, cx| popup.paint(window, cx),
                     )
