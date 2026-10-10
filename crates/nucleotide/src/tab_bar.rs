@@ -642,11 +642,7 @@ impl TabBar {
         tab_bar_tokens: &nucleotide_ui::tokens::TabBarTokens,
     ) -> gpui::AnyElement {
         let tabbar_bg = tab_bar_tokens.container_background;
-        let border_color = tab_bar_tokens.tab_border;
-        let first_tab_is_active = pinned_tabs
-            .first()
-            .or_else(|| unpinned_tabs.first())
-            .is_some_and(|tab| tab.is_active);
+        let border_color = tab_bar_tokens.tab_separator;
         let active_doc_id = self.active_doc_id;
         let has_active_unpinned_tab = self
             .documents
@@ -694,8 +690,8 @@ impl TabBar {
                         .gap(tab_bar_control_gap(tokens))
                         .px(tab_bar_control_padding_x())
                         .border_b_1()
+                        .border_r_1()
                         .border_color(border_color)
-                        .when(!first_tab_is_active, |controls| controls.border_r_1())
                         .children(start_children),
                 )
             })
@@ -761,7 +757,6 @@ impl TabBar {
         end_children: Vec<AnyElement>,
         tokens: &nucleotide_ui::tokens::DesignTokens,
         border_color: gpui::Hsla,
-        first_tab_is_active: bool,
     ) -> gpui::AnyElement {
         div()
             .id(id)
@@ -779,8 +774,8 @@ impl TabBar {
                         .gap(tab_bar_control_gap(tokens))
                         .px(tab_bar_control_padding_x())
                         .border_b_1()
+                        .border_r_1()
                         .border_color(border_color)
-                        .when(!first_tab_is_active, |controls| controls.border_r_1())
                         .children(start_children),
                 )
             })
@@ -828,14 +823,13 @@ impl TabBar {
         tab_bar_tokens: &nucleotide_ui::tokens::TabBarTokens,
     ) -> gpui::AnyElement {
         let tabbar_bg = tab_bar_tokens.container_background;
-        let border_color = tab_bar_tokens.tab_border;
+        let border_color = tab_bar_tokens.tab_separator;
         let scroll_handle = self.scroll_handle;
         let on_empty_double_click = self.on_empty_double_click;
         let on_scroll_wheel = self.on_scroll_wheel;
         let start_children = self.start_children;
         let end_children = self.end_children;
         let row_height = tab_container_height(*tokens);
-        let first_pinned_tab_is_active = pinned_tabs.first().is_some_and(|tab| tab.is_active);
 
         let pinned_strip = Self::render_tab_strip(TabStripOptions {
             id: "pinned-tabs",
@@ -874,7 +868,6 @@ impl TabBar {
                 end_children,
                 tokens,
                 border_color,
-                first_pinned_tab_is_active,
             ))
             .child(Self::render_tab_bar_row(
                 "unpinned-tabs-row",
@@ -883,7 +876,6 @@ impl TabBar {
                 Vec::new(),
                 tokens,
                 border_color,
-                false,
             ))
             .into_any_element()
     }
