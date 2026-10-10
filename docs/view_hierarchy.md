@@ -66,7 +66,9 @@ The workspace reconciles tab membership after both GUI actions and Helix command
   in their original pane.
 - Selecting a tab or using a tab-bar control targets that bar's pane.
 - Drag a tab onto another tab to insert it before that tab, or onto empty bar
-  space to append it. The same gestures reorder tabs within a pane.
+  space to append it. A theme-coloured insertion line marks the destination,
+  including the end of each strip in separate pinned-tab rows. The same gestures
+  reorder tabs within a pane.
 - Drag a tab over another pane's editor body to preview a new split. The nearest
   edge, measured relative to the pane's width and height, selects its left,
   right, top or bottom half. A flat theme-colour rectangle at 30% opacity marks
