@@ -122,6 +122,10 @@ show_tab_bar_buttons = true
 show_pinned_tabs_in_separate_row = false
 
 [tabs]
+# Tabs use flat, contiguous surfaces with subtle separators and a bottom accent
+# on the active tab. Unsaved dots and diagnostic markers sit after the label;
+# the configured close or pin control remains separate from these indicators.
+
 # Show git status decorations on tabs. Default: false.
 git_status = false
 

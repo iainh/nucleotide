@@ -122,17 +122,15 @@ struct TabEndButtonProps {
     close_button_visibility: TabCloseButtonVisibility,
 }
 
-const START_TAB_SLOT_SIZE: f32 = 12.0;
+const MODIFIED_TAB_SLOT_SIZE: f32 = 12.0;
 const END_TAB_SLOT_SIZE: f32 = 14.0;
 const TAB_SLOT_ICON_SIZE: f32 = 12.0;
 const TAB_MIN_WIDTH: f32 = 112.0;
 const TAB_MAX_WIDTH: f32 = 280.0;
 const ACTIVE_TAB_HIGHLIGHT_HEIGHT: f32 = 3.0;
 
-pub(crate) fn tab_container_height(_tokens: nucleotide_ui::tokens::DesignTokens) -> gpui::Pixels {
-    // Zed tabs use DynamicSpacing::Base32 for the tab container height.
-    nucleotide_ui::DensityMetrics::for_density(nucleotide_ui::ControlDensity::Comfortable)
-        .row_height
+pub(crate) fn tab_container_height(tokens: nucleotide_ui::tokens::DesignTokens) -> gpui::Pixels {
+    tokens.sizes.button_height_md
 }
 
 /// Tab variant for different tab states
@@ -290,7 +288,7 @@ impl Tab {
             .drag_over::<DraggedTab>(|style, _, _, cx| {
                 style
                     .border_l_2()
-                    .border_color(cx.theme().tokens.editor.focus_ring)
+                    .border_color(cx.theme().tokens.chrome.border_focus)
             })
             .on_drop(move |dragged: &DraggedTab, window, cx| {
                 on_drop(dragged, window, cx);
@@ -628,8 +626,6 @@ impl RenderOnce for Tab {
         let theme = cx.theme();
         let tokens = theme.tokens; // DesignTokens is Copy
 
-        let enable_animations = nucleotide_ui::animations_enabled(cx);
-
         // Compute component styles using nucleotide-ui styling system
         let component_state = self.component_state();
         let _style_variant: StyleVariant = self.variant.into();
@@ -638,25 +634,18 @@ impl RenderOnce for Tab {
         let tab_tokens = tokens.tab_bar_tokens();
         let inactive_bg = Tab::inactive_background_color(tab_tokens);
         let inactive_hover_bg = Tab::inactive_hover_background_color(tab_tokens);
-        let (bg_color, text_color, hover_bg, border_color) = match component_state {
+        let (bg_color, text_color, hover_bg) = match component_state {
             ComponentState::Active => (
                 tab_tokens.tab_active_background,
                 tab_tokens.tab_text_active,
                 tab_tokens.tab_active_background, // No hover change for active tabs
-                tab_tokens.tab_border,
             ),
             ComponentState::Disabled => (
                 nucleotide_ui::styling::ColorTheory::with_alpha(inactive_bg, 0.5),
                 nucleotide_ui::styling::ColorTheory::with_alpha(tab_tokens.tab_text_inactive, 0.5),
                 inactive_bg, // No hover for disabled tabs
-                tab_tokens.tab_border,
             ),
-            _ => (
-                inactive_bg,
-                tab_tokens.tab_text_inactive,
-                inactive_hover_bg,
-                tab_tokens.tab_border,
-            ),
+            _ => (inactive_bg, tab_tokens.tab_text_inactive, inactive_hover_bg),
         };
 
         // Extract values we need before moving self
@@ -732,12 +721,10 @@ impl RenderOnce for Tab {
             .min_w(min_width)
             .max_w(max_width)
             .bg(bg_color)
-            .when(enable_animations && !disabled, |tab| {
-                tab.hover(|style| style.bg(hover_bg))
-            })
+            .when(!disabled, |tab| tab.hover(|style| style.bg(hover_bg)))
             .when(!disabled, |tab| tab.cursor(CursorStyle::PointingHand))
-            .border_color(border_color)
-            .when(is_active, |tab| tab.border_l_1().border_r_1())
+            .border_color(tab_tokens.tab_separator)
+            .border_r_1()
             .when(!is_active, |tab| tab.border_b_1())
             .when(is_active, |tab| {
                 tab.child(
@@ -747,10 +734,7 @@ impl RenderOnce for Tab {
                         .left_0()
                         .right_0()
                         .h(px(ACTIVE_TAB_HIGHLIGHT_HEIGHT))
-                        .bg(nucleotide_ui::tokens::with_alpha(
-                            tokens.editor.focus_ring,
-                            0.9,
-                        )),
+                        .bg(tokens.chrome.border_focus),
                 )
             })
             .when(!disabled, |tab| {
@@ -806,7 +790,7 @@ impl RenderOnce for Tab {
                     .w_full()
                     .min_w(px(0.0))
                     .h(content_height)
-                    .px(tokens.sizes.space_2)
+                    .px(tokens.sizes.space_3)
                     .gap(tokens.sizes.space_2)
                     .text_color(text_color)
                     .child(content_row),
@@ -844,12 +828,12 @@ impl Tab {
         }
     }
 
-    fn build_start_indicator(
+    fn build_modified_indicator(
         is_modified: bool,
         tokens: nucleotide_ui::tokens::DesignTokens,
     ) -> gpui::AnyElement {
         div()
-            .size(px(START_TAB_SLOT_SIZE))
+            .size(px(MODIFIED_TAB_SLOT_SIZE))
             .flex_none()
             .flex()
             .items_center()
@@ -895,15 +879,11 @@ impl Tab {
             .items_center()
             .justify_center()
             .child(icon.render_with_theme(theme))
-            .when_some(diagnostic_severity, |icon, severity| {
-                icon.child(Tab::build_diagnostic_decoration(severity, tokens))
-            })
             .into_any_element()
     }
 
     fn build_readonly_icon(
         tokens: nucleotide_ui::tokens::DesignTokens,
-        diagnostic_severity: Option<DiagnosticSeverity>,
         on_toggle_readonly: Option<MouseEventHandler>,
     ) -> gpui::AnyElement {
         let is_toggleable = on_toggle_readonly.is_some();
@@ -925,9 +905,6 @@ impl Tab {
             .when(is_toggleable, |icon| {
                 icon.cursor(CursorStyle::PointingHand)
                     .hover(|icon| icon.bg(button_tokens.ghost_background_hover))
-            })
-            .when_some(diagnostic_severity, |icon, severity| {
-                icon.child(Tab::build_diagnostic_decoration(severity, tokens))
             })
             .tooltip(move |_window, cx| {
                 let title = Self::readonly_tooltip_title(is_toggleable);
@@ -1005,14 +982,17 @@ impl Tab {
         };
 
         div()
-            .absolute()
-            .top(px(-2.0))
-            .left(px(-2.0))
-            .size(px(9.0))
+            .size(px(TAB_SLOT_ICON_SIZE))
+            .flex_none()
             .flex()
             .items_center()
             .justify_center()
-            .child(svg().path(path).size(px(9.0)).text_color(color))
+            .child(
+                svg()
+                    .path(path)
+                    .size(px(TAB_SLOT_ICON_SIZE))
+                    .text_color(color),
+            )
             .into_any_element()
     }
 
@@ -1058,7 +1038,7 @@ impl Tab {
         div()
             .flex()
             .items_center()
-            .gap(tokens.sizes.space_1)
+            .gap(tokens.sizes.space_2)
             .flex_1()
             .min_w(px(0.0))
             .overflow_hidden()
@@ -1233,7 +1213,6 @@ impl Tab {
         show_file_icons: bool,
         cx: &mut App,
     ) -> gpui::AnyElement {
-        let start_slot = Tab::build_start_indicator(is_modified, tokens);
         let end_slot = Tab::build_end_button(
             TabEndButtonProps {
                 doc_id,
@@ -1249,12 +1228,13 @@ impl Tab {
         );
 
         let (leading_slot, trailing_slot) = match close_position {
-            TabClosePosition::Left => (end_slot, start_slot),
-            TabClosePosition::Right => (start_slot, end_slot),
+            TabClosePosition::Left => (Some(end_slot), None),
+            TabClosePosition::Right => (None, Some(end_slot)),
         };
-        let trailing_slot = div().flex_none().ml_auto().child(trailing_slot);
         let content_icon = Tab::content_icon_kind(is_readonly, show_file_icons);
-        let readonly_diagnostic_severity = show_file_icons.then_some(diagnostic_severity).flatten();
+        let visible_diagnostic_severity = (!is_loading && show_file_icons)
+            .then_some(diagnostic_severity)
+            .flatten();
         let loading_indicator =
             IndeterminateProgressIndicator::new(format!("tab-loading-{}", doc_id))
                 .size(TAB_SLOT_ICON_SIZE)
@@ -1267,7 +1247,7 @@ impl Tab {
             .w_full()
             .min_w(px(0.0))
             .gap(tokens.sizes.space_2)
-            .child(leading_slot)
+            .when_some(leading_slot, |row, slot| row.child(slot))
             .when(is_loading, |row| row.child(loading_indicator))
             .when(!is_loading, |row| {
                 row.when_some(content_icon, |row, content_icon| match content_icon {
@@ -1278,11 +1258,9 @@ impl Tab {
                         tokens,
                         cx,
                     )),
-                    TabContentIcon::Readonly => row.child(Tab::build_readonly_icon(
-                        tokens,
-                        readonly_diagnostic_severity,
-                        on_toggle_readonly.clone(),
-                    )),
+                    TabContentIcon::Readonly => {
+                        row.child(Tab::build_readonly_icon(tokens, on_toggle_readonly.clone()))
+                    }
                 })
             })
             .child(Tab::build_label(
@@ -1294,7 +1272,14 @@ impl Tab {
                 text_color,
                 tokens,
             ))
-            .child(trailing_slot)
+            .when_some(visible_diagnostic_severity, |row, severity| {
+                row.child(Tab::build_diagnostic_decoration(severity, tokens))
+            })
+            .when(
+                is_modified || visible_diagnostic_severity.is_none(),
+                |row| row.child(Tab::build_modified_indicator(is_modified, tokens)),
+            )
+            .when_some(trailing_slot, |row, slot| row.child(slot))
             .into_any_element()
     }
 }
@@ -1304,16 +1289,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tab_container_height_matches_zed_base32() {
+    fn tab_container_height_matches_standard_control_height() {
         let tokens = nucleotide_ui::DesignTokens::dark();
 
-        assert_eq!(tab_container_height(tokens), px(32.0));
-        assert_ne!(tab_container_height(tokens), tokens.sizes.button_height_md);
+        assert_eq!(tab_container_height(tokens), tokens.sizes.button_height_md);
     }
 
     #[test]
     fn tab_slot_geometry_matches_zed() {
-        assert_eq!(START_TAB_SLOT_SIZE, 12.0);
+        assert_eq!(MODIFIED_TAB_SLOT_SIZE, 12.0);
         assert_eq!(END_TAB_SLOT_SIZE, 14.0);
         assert_eq!(TAB_SLOT_ICON_SIZE, 12.0);
     }
