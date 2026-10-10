@@ -73,8 +73,10 @@ The workspace reconciles tab membership after both GUI actions and Helix command
   the destination while the existing layout stays unchanged.
 - Release over the editor body to divide only that destination into equal
   halves and move the tab into the highlighted half. Tab-bar drops still
-  reorder or merge tabs. Hovering the source pane does not create a split;
-  leaving the editor or pressing Escape clears the preview without changing
+  reorder or merge tabs. You can also split the source pane when it contains
+  more than one tab, including when no split exists yet. The other tabs stay
+  in the original pane; dragging its only tab over its own body does nothing.
+  Leaving the editor or pressing Escape clears the preview without changing
   the layout.
 - Transfers remove the source tab and activate it in the destination. If the
   destination already has that document, it keeps one tab rather than a duplicate.

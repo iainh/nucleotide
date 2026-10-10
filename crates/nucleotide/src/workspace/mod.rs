@@ -4365,13 +4365,10 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.sync_pane_tabs(cx);
-        if dragged.pane == target
-            || !self.pane_tabs.panes.contains_key(&target)
-            || !self
-                .pane_tabs
-                .panes
-                .get(&dragged.pane)
-                .is_some_and(|pane| pane.tabs.contains(&dragged.tab))
+        if !self.pane_tabs.panes.contains_key(&target)
+            || !self.pane_tabs.panes.get(&dragged.pane).is_some_and(|pane| {
+                pane.tabs.contains(&dragged.tab) && (dragged.pane != target || pane.tabs.len() > 1)
+            })
         {
             return;
         }
@@ -14020,7 +14017,8 @@ impl Workspace {
                                     ),
                                     size: gpui::size(width, height),
                                 };
-                                let target = (event.drag(cx).pane != pane_id
+                                let target = ((event.drag(cx).pane != pane_id
+                                    || workspace.pane_tabs.panes[&pane_id].tabs.len() > 1)
                                     && event.bounds.contains(&event.event.position))
                                 .then(|| {
                                     pane_tabs::PaneDropEdge::nearest(
