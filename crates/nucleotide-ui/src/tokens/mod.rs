@@ -1600,7 +1600,7 @@ impl TabBarTokens {
         let tab_text_active = chrome.bufferline_active_foreground;
         let tab_text_inactive = chrome.bufferline_inactive_foreground;
         let tab_border = chrome.border_shadow;
-        let tab_separator = chrome.separator_color;
+        let tab_separator = chrome.border_shadow;
         let tab_close = chrome.text_chrome_secondary;
         let tab_modified = editor.warning;
 
