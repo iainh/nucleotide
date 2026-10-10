@@ -1173,6 +1173,7 @@ fn gui_main(
             let mut theme_manager =
                 crate::ThemeManager::new_with_chrome_style(helix_theme, config.ui_chrome_style());
             theme_manager.set_ui_font_size(px(ui_font_config.size));
+            theme_manager.set_chrome_opacity(config.gui.window.chrome_opacity);
 
             theme_manager
                 .set_system_appearance(nucleotide_appearance::SystemAppearance::global(cx));

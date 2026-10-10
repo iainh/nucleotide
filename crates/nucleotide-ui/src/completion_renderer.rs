@@ -155,10 +155,12 @@ impl CompletionItemElement {
                 .h(px(slot_size))
                 .flex_shrink_0()
                 .rounded_sm()
-                .bg(icon_background)
-                .border_1()
-                .border_color(icon_tokens.icon_border)
-                .when(!self.is_selected, |div| {
+                .when(!self.compact, |div| {
+                    div.bg(icon_background)
+                        .border_1()
+                        .border_color(icon_tokens.icon_border)
+                })
+                .when(!self.is_selected && !self.compact, |div| {
                     div.hover(|style| style.bg(icon_tokens.icon_background_hover))
                 })
                 .child(svg.size(px(icon_size)).text_color(icon_color))
@@ -265,7 +267,7 @@ impl CompletionItemElement {
             } else {
                 tokens.chrome.popup_foreground
             };
-            let secondary_color = label_color;
+            let secondary_color = tokens.chrome.text_chrome_secondary;
 
             return div()
                 .flex()
@@ -274,7 +276,7 @@ impl CompletionItemElement {
                 .w_full()
                 .h(px(26.0))
                 .px(tokens.sizes.space_2)
-                .gap(tokens.sizes.space_2)
+                .gap(tokens.sizes.space_3)
                 .rounded(tokens.sizes.radius_sm)
                 .line_height(relative(1.0))
                 .when(self.is_selected, |div| div.bg(tokens.chrome.menu_selected))
@@ -295,7 +297,7 @@ impl CompletionItemElement {
                         .child(
                             div()
                                 .text_size(tokens.sizes.text_base)
-                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .font_weight(gpui::FontWeight::NORMAL)
                                 .text_color(label_color)
                                 .min_w(px(0.0))
                                 .overflow_hidden()
@@ -317,31 +319,21 @@ impl CompletionItemElement {
                                     .text_ellipsis()
                                     .child(signature),
                             )
-                        })
-                        .when_some(detail_text, |row, detail| {
-                            row.child(
-                                div()
-                                    .text_size(tokens.sizes.text_base)
-                                    .text_color(secondary_color)
-                                    .overflow_hidden()
-                                    .whitespace_nowrap()
-                                    .text_ellipsis()
-                                    .child(detail),
-                            )
-                        })
-                        .when_some(type_text, |row, type_info| {
-                            row.child(
-                                div()
-                                    .ml_auto()
-                                    .text_size(tokens.sizes.text_sm)
-                                    .text_color(secondary_color)
-                                    .overflow_hidden()
-                                    .whitespace_nowrap()
-                                    .text_ellipsis()
-                                    .child(type_info),
-                            )
                         }),
                 )
+                .when_some(type_text.or(detail_text), |row, secondary| {
+                    row.child(
+                        div()
+                            .min_w(px(0.0))
+                            .max_w(px(280.0))
+                            .text_size(tokens.sizes.text_sm)
+                            .text_color(secondary_color)
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .child(secondary),
+                    )
+                })
                 .into_any_element();
         }
 

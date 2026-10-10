@@ -294,6 +294,13 @@ pub struct WindowConfig {
     #[serde(default)]
     pub blur_dark_themes: bool,
 
+    /// Opacity of chrome backgrounds only (0.0–1.0). Text and editor stay opaque.
+    #[serde(
+        default = "default_chrome_opacity",
+        deserialize_with = "deserialize_chrome_opacity"
+    )]
+    pub chrome_opacity: f32,
+
     /// Automatically adjust window appearance based on theme
     #[serde(default = "default_true")]
     pub appearance_follows_theme: bool,
@@ -307,9 +314,25 @@ impl Default for WindowConfig {
     fn default() -> Self {
         Self {
             blur_dark_themes: false,
+            chrome_opacity: default_chrome_opacity(),
             appearance_follows_theme: true,
             directwrite: None,
         }
+    }
+}
+
+fn default_chrome_opacity() -> f32 {
+    1.0
+}
+
+fn deserialize_chrome_opacity<'de, D: Deserializer<'de>>(deserializer: D) -> Result<f32, D::Error> {
+    let opacity = f32::deserialize(deserializer)?;
+    if opacity.is_finite() && (0.0..=1.0).contains(&opacity) {
+        Ok(opacity)
+    } else {
+        Err(serde::de::Error::custom(
+            "chrome_opacity must be between 0.0 and 1.0",
+        ))
     }
 }
 
@@ -1080,11 +1103,18 @@ impl Config {
         &self,
         is_dark_chrome: bool,
     ) -> gpui::WindowBackgroundAppearance {
-        nucleotide_appearance::window_background_appearance(
+        let appearance = nucleotide_appearance::window_background_appearance(
             self.ui_chrome_style(),
             is_dark_chrome,
             self.gui.window.blur_dark_themes,
-        )
+        );
+        if self.gui.window.chrome_opacity < 1.0
+            && appearance == gpui::WindowBackgroundAppearance::Opaque
+        {
+            gpui::WindowBackgroundAppearance::Transparent
+        } else {
+            appearance
+        }
     }
 
     /// Check if project-based LSP startup is enabled
@@ -1992,6 +2022,41 @@ auto_download = true
 
         assert_eq!(themed.look, UiLook::Theme);
         assert_eq!(system.look, UiLook::System);
+    }
+
+    #[test]
+    fn chrome_opacity_validates_and_requests_transparent_window_material() {
+        assert_eq!(WindowConfig::default().chrome_opacity, 1.0);
+        for opacity in [0.0, 0.92, 1.0] {
+            let window: WindowConfig =
+                toml::from_str(&format!("chrome_opacity = {opacity:?}")).unwrap();
+            assert_eq!(window.chrome_opacity, opacity);
+        }
+        for invalid in ["-0.01", "1.01", "nan", "inf"] {
+            assert!(
+                toml::from_str::<WindowConfig>(&format!("chrome_opacity = {invalid}")).is_err()
+            );
+        }
+        let mut config = Config {
+            helix: HelixConfig::default(),
+            gui: GuiConfig::default(),
+        };
+        config.gui.window.chrome_opacity = 0.92;
+        for is_dark in [false, true] {
+            assert_eq!(
+                config.window_background_appearance(is_dark),
+                gpui::WindowBackgroundAppearance::Transparent
+            );
+        }
+        config.gui.window.blur_dark_themes = true;
+        assert_eq!(
+            config.window_background_appearance(true),
+            gpui::WindowBackgroundAppearance::Blurred
+        );
+        assert_eq!(
+            config.window_background_appearance(false),
+            gpui::WindowBackgroundAppearance::Transparent
+        );
     }
 
     #[test]

@@ -35,6 +35,8 @@ pub struct ThemeManager {
     ui_chrome_style: UiChromeStyle,
     /// Configured UI font size used as the medium typography token.
     ui_font_size: Option<Pixels>,
+    /// Background-only opacity for window chrome; content and text stay opaque.
+    chrome_opacity: f32,
 }
 
 impl ThemeManager {
@@ -57,6 +59,7 @@ impl ThemeManager {
             system_appearance,
             ui_chrome_style,
             ui_font_size: None,
+            chrome_opacity: 1.0,
         }
     }
 
@@ -67,7 +70,7 @@ impl ThemeManager {
             self.system_appearance,
             self.ui_chrome_style,
         );
-        self.apply_ui_font_size();
+        self.apply_ui_preferences();
         self.helix_theme = helix_theme;
     }
 
@@ -378,7 +381,7 @@ impl ThemeManager {
     /// Set the configured UI font size used by design token typography.
     pub fn set_ui_font_size(&mut self, ui_font_size: Pixels) {
         self.ui_font_size = Some(ui_font_size);
-        self.apply_ui_font_size();
+        self.apply_ui_preferences();
     }
 
     /// Get the configured UI font size override, if one has been applied.
@@ -403,12 +406,39 @@ impl ThemeManager {
             self.system_appearance,
             self.ui_chrome_style,
         );
-        self.apply_ui_font_size();
+        self.apply_ui_preferences();
     }
 
-    fn apply_ui_font_size(&mut self) {
+    fn apply_ui_preferences(&mut self) {
         if let Some(ui_font_size) = self.ui_font_size {
             self.ui_theme.tokens.set_ui_font_size(ui_font_size);
+        }
+        let chrome = &mut self.ui_theme.tokens.chrome;
+        for background in [
+            &mut chrome.titlebar_background,
+            &mut chrome.footer_background,
+            &mut chrome.file_tree_background,
+            &mut chrome.tab_empty_background,
+            &mut chrome.statusline_active,
+            &mut chrome.statusline_inactive,
+            &mut chrome.bufferline_background,
+            &mut chrome.bufferline_inactive,
+        ] {
+            background.a = background.a.min(self.chrome_opacity);
+        }
+        if self.chrome_opacity < 1.0 {
+            // Inactive tabs sit on the strip: a second translucent fill would
+            // compound alpha and make them almost opaque. Share its backdrop.
+            chrome.bufferline_inactive.a = 0.0;
+        }
+    }
+
+    /// Set chrome translucency without changing editor, popup or text opacity.
+    pub fn set_chrome_opacity(&mut self, opacity: f32) {
+        if self.chrome_opacity != opacity {
+            self.chrome_opacity = opacity;
+            // Re-derive so raising opacity restores original theme/material alphas.
+            self.set_theme(self.helix_theme.clone());
         }
     }
 
@@ -426,7 +456,7 @@ impl ThemeManager {
             self.system_appearance,
             self.ui_chrome_style,
         );
-        self.apply_ui_font_size();
+        self.apply_ui_preferences();
     }
 
     /// Check if the current theme is dark based on background luminance
@@ -915,7 +945,7 @@ impl ThemeManager {
         let theme_colors = HelixThemeColors {
             // Core selection and cursor colors
             selection: accent,
-            cursor_normal: accent,
+            cursor_normal: ui_cursor.bg.and_then(color_to_hsla).unwrap_or(accent),
             cursor_insert,
             cursor_select,
             cursor_match,
@@ -965,7 +995,7 @@ impl ThemeManager {
         };
 
         let is_dark_theme = background.l < 0.5;
-        let tokens = match ui_chrome_style {
+        let mut tokens = match ui_chrome_style {
             UiChromeStyle::Theme => crate::DesignTokens::from_helix_and_surface(
                 theme_colors,
                 surface,    // computed chrome surface
@@ -978,6 +1008,16 @@ impl ThemeManager {
                 NativeChromePalette::current(system_appearance),
             ),
         };
+
+        // Honour explicit chrome surfaces without changing third-party fallbacks.
+        if ui_chrome_style == UiChromeStyle::Theme
+            && let Some(chrome_background) = ui_window.bg.and_then(color_to_hsla)
+        {
+            tokens.chrome.surface = chrome_background;
+            tokens.chrome.file_tree_background = chrome_background;
+            tokens.chrome.surface_hover = crate::tokens::with_alpha(text, 0.06);
+            tokens.chrome.surface_active = crate::tokens::with_alpha(text, 0.10);
+        }
 
         nucleotide_logging::info!(
             surface_color = ?surface,
@@ -1157,5 +1197,52 @@ mod surface_extraction_tests {
 
         assert!(tm.is_dark_chrome());
         assert!(light_surface.l > dark_surface.l);
+    }
+
+    #[test]
+    fn chrome_opacity_survives_theme_changes_without_fading_content() {
+        let helix_theme = helix_view::Theme::default();
+        let mut manager = ThemeManager::new(helix_theme.clone());
+        let original = manager.ui_theme().tokens;
+        manager.set_chrome_opacity(0.82);
+        manager.set_ui_font_size(gpui::px(15.0));
+        manager.set_system_appearance(SystemAppearance::Dark);
+        manager.set_theme(helix_theme);
+        let translucent = manager.ui_theme().tokens;
+        assert_eq!(translucent.chrome.file_tree_background.a, 0.82);
+        assert_eq!(translucent.chrome.titlebar_background.a, 0.82);
+        assert_eq!(translucent.chrome.statusline_active.a, 0.82);
+        assert_eq!(translucent.chrome.bufferline_background.a, 0.82);
+        assert_eq!(translucent.chrome.bufferline_inactive.a, 0.0);
+        assert_eq!(
+            translucent.chrome.popup_background,
+            original.chrome.popup_background
+        );
+        assert_eq!(
+            translucent.chrome.popup_foreground,
+            original.chrome.popup_foreground
+        );
+        assert_eq!(
+            translucent.chrome.text_on_chrome,
+            original.chrome.text_on_chrome
+        );
+        assert_eq!(translucent.editor.background, original.editor.background);
+        assert_eq!(
+            translucent.editor.text_primary,
+            original.editor.text_primary
+        );
+        manager.set_chrome_opacity(1.0);
+        assert_eq!(
+            manager.ui_theme().tokens.chrome.file_tree_background,
+            original.chrome.file_tree_background
+        );
+        assert_eq!(
+            manager.ui_theme().tokens.chrome.bufferline_background,
+            original.chrome.bufferline_background
+        );
+        assert_eq!(
+            manager.ui_theme().tokens.chrome.bufferline_inactive,
+            original.chrome.bufferline_inactive
+        );
     }
 }

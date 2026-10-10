@@ -52,8 +52,8 @@ use nucleotide_ui::scrollbar::{Scrollbar, ScrollbarState};
 use nucleotide_ui::{
     AboutWindow, Button, ButtonSize, ButtonVariant, ConfirmDialog, ConfirmDialogEvent,
     ConfirmDialogView, ContextMenuController, EditorPaneGrid, IndeterminateProgressIndicator,
-    MarkdownStyle, ModalLayer, PopupMenu, PopupMenuSurface, StateView, StatusBar, Tooltipped,
-    completion_menu_action_for_key, markdown_extended,
+    MarkdownStyle, ModalLayer, PopupMenu, PopupMenuSurface, StateView, StatusBar, Toolbar,
+    Tooltipped, completion_menu_action_for_key, markdown_extended,
 };
 
 use crate::input_coordinator::{InputContext, InputCoordinator};
@@ -3736,7 +3736,6 @@ impl Workspace {
         model: &StatusBarModel,
         geometry: StatusBarGeometry,
         status_bar_tokens: &nucleotide_ui::tokens::StatusBarTokens,
-        border_radius: Pixels,
     ) -> gpui::AnyElement {
         let (mode_color, mode_text) = match model.mode {
             helix_view::document::Mode::Normal => (
@@ -3761,13 +3760,11 @@ impl Workspace {
             .justify_center()
             .child(
                 div()
-                    .min_w(px(60.0))
-                    .h(px(22.0))
+                    .size_full()
                     .px_2()
                     .flex()
                     .items_center()
                     .justify_center()
-                    .rounded(border_radius)
                     .bg(mode_color)
                     .text_color(mode_text)
                     .font_weight(FontWeight::MEDIUM)
@@ -3927,7 +3924,6 @@ impl Workspace {
         model: &StatusBarModel,
         geometry: StatusBarGeometry,
         status_bar_tokens: &nucleotide_ui::tokens::StatusBarTokens,
-        button_border_radius: Pixels,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let mut context = div().flex_none().h_full().flex().items_center();
@@ -3969,9 +3965,6 @@ impl Workspace {
         ));
 
         if model.density == StatusBarDensity::Wide {
-            if let Some(vcs_ref) = model.vcs_ref.as_ref() {
-                context = context.child(self.statusbar_vcs_item(vcs_ref, status_bar_tokens));
-            }
             if let Some(metadata) = model.document_metadata.as_ref() {
                 context =
                     context.child(self.statusbar_diagnostics_item(metadata, status_bar_tokens));
@@ -3985,12 +3978,12 @@ impl Workspace {
             .flex_row()
             .items_center()
             .h_full()
-            .child(self.statusbar_mode_item(
-                model,
-                geometry,
-                status_bar_tokens,
-                button_border_radius,
-            ))
+            .child(self.statusbar_mode_item(model, geometry, status_bar_tokens))
+            .when(model.density == StatusBarDensity::Wide, |content| {
+                content.when_some(model.vcs_ref.as_ref(), |content, vcs_ref| {
+                    content.child(self.statusbar_vcs_item(vcs_ref, status_bar_tokens))
+                })
+            })
             .child(
                 div()
                     .flex_1()
@@ -6236,7 +6229,8 @@ impl Workspace {
         let tokens = &cx.theme().tokens;
         let gui_config = &self.core.read(cx).config.gui;
         let file_tree_tokens = file_tree_tokens_for_gui_config(tokens, gui_config);
-        let markdown_style = MarkdownStyle::from_tokens(tokens).compact();
+        let mut markdown_style = MarkdownStyle::from_tokens(tokens);
+        markdown_style.body_font_size = tokens.sizes.text_base;
 
         let mut body = div()
             .id("documentation-sidebar-body")
@@ -6246,8 +6240,8 @@ impl Workspace {
             .min_h(px(0.0))
             .overflow_y_scroll()
             .track_scroll(&self.doc_sidebar_scroll_handle)
-            .px(tokens.sizes.space_3)
-            .py(tokens.sizes.space_3)
+            .px(tokens.sizes.space_4)
+            .py(tokens.sizes.space_4)
             .gap(tokens.sizes.space_4);
 
         if self.doc_sidebar_loading {
@@ -6329,17 +6323,13 @@ impl Workspace {
             .text_color(file_tree_tokens.item_text)
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(
-                div()
-                    .h(tokens.sizes.space_8)
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .px(tokens.sizes.space_3)
-                    .border_b_1()
+                Toolbar::new("documentation-sidebar-header")
+                    .height(crate::tab::tab_container_height(*tokens))
                     .border_color(file_tree_tokens.separator)
                     .child(
                         div()
                             .flex()
+                            .flex_1()
                             .items_center()
                             .gap(tokens.sizes.space_2)
                             .text_sm()
@@ -6348,35 +6338,23 @@ impl Workspace {
                             .child(
                                 svg()
                                     .path("icons/book-text.svg")
-                                    .size(px(14.0))
+                                    .size(tokens.sizes.space_4)
                                     .text_color(file_tree_tokens.item_text)
                                     .flex_shrink_0(),
                             )
                             .child("Documentation"),
                     )
                     .child(
-                        div()
-                            .id("documentation-sidebar-close")
-                            .size(tokens.sizes.space_6)
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .rounded(tokens.sizes.radius_sm)
-                            .cursor_pointer()
-                            .hover(move |button| button.bg(file_tree_tokens.item_background_hover))
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|workspace, _event, _window, cx| {
-                                    workspace.close_documentation_sidebar(cx);
-                                    cx.stop_propagation();
-                                }),
-                            )
-                            .child(
-                                svg()
-                                    .path("icons/close.svg")
-                                    .size(px(12.0))
-                                    .text_color(file_tree_tokens.item_text_secondary),
-                            ),
+                        Button::icon_only("documentation-sidebar-close", "icons/close.svg")
+                            .variant(ButtonVariant::Ghost)
+                            .size(ButtonSize::ExtraSmall)
+                            .tooltip("Close Documentation")
+                            .aria_label("Close documentation sidebar")
+                            .activate_on_mouse_down()
+                            .on_click(cx.listener(|workspace, _event, _window, cx| {
+                                workspace.close_documentation_sidebar(cx);
+                                cx.stop_propagation();
+                            })),
                     ),
             )
             .child(body_container)
@@ -7921,7 +7899,9 @@ impl Workspace {
                 })
                 .unwrap_or(false);
 
-        self.cached_bg_color = if uses_windows_material_backdrop {
+        self.cached_bg_color = if uses_windows_material_backdrop
+            || self.core.read(cx).config.gui.window.chrome_opacity < 1.0
+        {
             gpui::hsla(0.0, 0.0, 0.0, 0.0)
         } else {
             tokens.editor.background
@@ -9951,8 +9931,11 @@ impl Workspace {
         cx.update_global(|theme_manager: &mut crate::ThemeManager, _cx| {
             theme_manager.set_ui_chrome_style(ui_chrome_style);
             theme_manager.set_ui_font_size(gpui::px(ui_font.size));
+            theme_manager.set_chrome_opacity(config.gui.window.chrome_opacity);
         });
         Self::sync_ui_theme_from_theme_manager(cx);
+        self.colors_dirty = true;
+        self.schedule_window_appearance_update(cx);
 
         info!(
             ui_font_family = %ui_font.family,
@@ -11654,9 +11637,10 @@ impl Workspace {
             )
         };
         let viewport_width = f32::from(window.viewport_size().width);
+        let native_sidebar_enabled = macos_system_sidebar_enabled(&self.core.read(cx).config.gui);
         let geometry = StatusBarGeometry::new(
             viewport_width,
-            self.show_file_tree,
+            self.show_file_tree && native_sidebar_enabled,
             self.file_tree_width,
             &sizes,
         );
@@ -11664,7 +11648,6 @@ impl Workspace {
         let chrome_metrics =
             nucleotide_ui::DensityMetrics::for_density(nucleotide_ui::ControlDensity::Comfortable);
         let divider_color = status_bar_tokens.border;
-        let native_sidebar_enabled = macos_system_sidebar_enabled(&self.core.read(cx).config.gui);
         let extend_sidebar_into_status_bar = should_extend_translucent_sidebar_into_status_bar(
             self.show_file_tree,
             self.file_tree_width,
@@ -11683,13 +11666,7 @@ impl Workspace {
             .when(extend_sidebar_into_status_bar, |content| {
                 content.border_t_1().border_color(divider_color)
             })
-            .child(self.statusbar_main_content(
-                &model,
-                geometry,
-                &status_bar_tokens,
-                sizes.radius_md,
-                cx,
-            ));
+            .child(self.statusbar_main_content(&model, geometry, &status_bar_tokens, cx));
 
         let workspace_entity = cx.entity().clone();
         let file_tree_button = Button::icon_only("file-tree-toggle", "icons/folder-tree.svg")
@@ -14595,7 +14572,7 @@ impl Workspace {
         let bounds = TerminalBounds::from_pixels(
             cell_width_px,
             cell_height_px,
-            available_width_px,
+            available_width_px - 2.0 * f32::from(cx.theme().tokens.sizes.space_3),
             terminal_content_height_px,
         );
         let panel_pixel_height = nucleotide_terminal_panel::snapped_terminal_panel_height(

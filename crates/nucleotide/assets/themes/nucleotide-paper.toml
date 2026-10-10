@@ -1,0 +1,32 @@
+# Warm Paper: ivory editor, quiet warm-grey chrome and deep teal accents.
+inherits = "nucleotide-sandcastle"
+
+"ui.window" = { fg = "border", bg = "sand_dark" }
+"ui.menu.selected" = { fg = "foreground", bg = "seafoam" }
+"ui.cursor" = { fg = "sand", bg = "deep_ocean" }
+"ui.linenr.selected" = { fg = "deep_ocean" }
+keyword = "sunset"
+function = "ocean"
+
+[palette]
+sand = "#f6f4ee"
+sand_dark = "#ece9e1"
+sand_light = "#faf8f3"
+sand_shadow = "#e5e1d7"
+border = "#d4d0c5"
+border_strong = "#b3afa4"
+foreground = "#29343a"
+driftwood = "#4f514b"
+muted = "#66685f"
+ocean = "#205b69"
+deep_ocean = "#21665f"
+lagoon = "#276b5d"
+coral = "#a0443c"
+shell = "#755487"
+sunset = "#8c530c"
+palm = "#39653a"
+warning = "#7b5a12"
+error = "#a12f35"
+seafoam = "#d4e6de"
+aqua = "#a3cbc1"
+sunshine = "#eee0a9"

@@ -41,7 +41,6 @@ struct ProjectTreeDensityMetrics {
     row_height_px: f32,
     indent_px: f32,
     row_gap_px: f32,
-    row_radius_px: f32,
     padding_right_px: f32,
     icon_size_px: f32,
     disclosure_icon_size_px: f32,
@@ -55,7 +54,6 @@ impl ProjectTreeDensityMetrics {
             row_height_px: f32::from(metrics.row_height),
             indent_px: f32::from(metrics.indent),
             row_gap_px: f32::from(metrics.gap),
-            row_radius_px: f32::from(metrics.radius),
             padding_right_px: f32::from(metrics.padding_x),
             icon_size_px: f32::from(metrics.icon_size),
             disclosure_icon_size_px: nucleotide_ui::tokens::SMALL_ICON_SIZE,
@@ -345,7 +343,7 @@ pub fn render_project_tree_row(
         .h(px(metrics.row_height_px))
         .px(px(0.0))
         .py(px(0.0))
-        .rounded(px(metrics.row_radius_px))
+        .rounded(theme.tokens.sizes.radius_sm)
         .can_drop(move |dragged, _, _| {
             dragged
                 .downcast_ref::<ProjectTreeDraggedEntry>()
@@ -385,24 +383,31 @@ pub fn render_project_tree_row(
                 .pl(indentation)
                 .pr(px(metrics.padding_right_px))
                 .relative()
+                .rounded(theme.tokens.sizes.radius_sm)
                 .text_color(row_foreground)
                 .when(row.is_selected, |row| {
-                    row.bg(file_tree_tokens.item_background_selected).child(
-                        div()
-                            .absolute()
-                            .top_0()
-                            .bottom_0()
-                            .left_0()
-                            .w(px(2.0))
-                            .bg(theme.tokens.editor.focus_ring),
-                    )
+                    row.bg(file_tree_tokens.item_background_selected)
                 })
                 .when(!row.is_selected, |row| {
                     row.hover(move |row| {
-                        row.bg(file_tree_tokens.item_background_hover)
-                            .text_color(file_tree_tokens.item_text)
+                        row.bg(nucleotide_ui::tokens::with_alpha(
+                            file_tree_tokens.item_background_hover,
+                            0.5,
+                        ))
+                        .text_color(file_tree_tokens.item_text)
                     })
                 })
+                .children((0..row.depth).map(|depth| {
+                    div()
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .left(px(
+                            depth as f32 * metrics.indent_px + metrics.icon_slot_px / 2.0
+                        ))
+                        .w(px(1.0))
+                        .bg(theme.tokens.chrome.border_muted)
+                }))
                 .child(render_chevron_slot(&row, file_tree_tokens, metrics))
                 .child(render_icon(&row, theme, file_tree_tokens, metrics))
                 .child(render_filename(&row, theme, file_tree_tokens))

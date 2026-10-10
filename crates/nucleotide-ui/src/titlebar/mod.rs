@@ -174,6 +174,7 @@ impl Render for TitleBar {
         {
             if let Some(menu) = &self.application_menu {
                 let titlebar_height = TitleBar::height(window, cx);
+                let separator_color = cx.global::<crate::Theme>().tokens.chrome.separator_color;
                 menu.update(cx, |menu, _cx| menu.set_row_height(titlebar_height));
 
                 return div()
@@ -207,6 +208,17 @@ impl Render for TitleBar {
                                 .child(trailing_view),
                         )
                     })
+                    // Paint after the menu so its background cannot obscure
+                    // the separator above the sidebar and navigation controls.
+                    .child(
+                        div()
+                            .absolute()
+                            .left_0()
+                            .right_0()
+                            .bottom_0()
+                            .h(px(1.0))
+                            .bg(separator_color),
+                    )
                     .into_any_element();
             }
         }
