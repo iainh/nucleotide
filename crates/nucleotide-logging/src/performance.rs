@@ -4,17 +4,6 @@
 use std::time::{Duration, Instant};
 use tracing::{Level, Span, field, span, warn};
 
-/// Create a performance monitoring span for timing operations
-#[macro_export]
-macro_rules! perf_span {
-    ($name:expr) => {
-        tracing::span!(tracing::Level::DEBUG, "perf", operation = $name, elapsed_ms = field::Empty)
-    };
-    ($name:expr, $($field:tt)*) => {
-        tracing::span!(tracing::Level::DEBUG, "perf", operation = $name, elapsed_ms = field::Empty, $($field)*)
-    };
-}
-
 /// Timer guard that records elapsed time when dropped
 pub struct PerfTimer {
     span: Span,
@@ -94,50 +83,6 @@ macro_rules! timed {
     }};
 }
 
-/// Performance statistics aggregator
-pub struct PerfStats {
-    operation_counts: std::collections::HashMap<String, u64>,
-    total_time: std::collections::HashMap<String, Duration>,
-}
-
-impl PerfStats {
-    pub fn new() -> Self {
-        Self {
-            operation_counts: std::collections::HashMap::new(),
-            total_time: std::collections::HashMap::new(),
-        }
-    }
-
-    pub fn record_operation(&mut self, operation: &str, duration: Duration) {
-        *self
-            .operation_counts
-            .entry(operation.to_string())
-            .or_insert(0) += 1;
-        *self
-            .total_time
-            .entry(operation.to_string())
-            .or_insert(Duration::ZERO) += duration;
-    }
-
-    pub fn get_stats(&self, operation: &str) -> Option<(u64, Duration, Duration)> {
-        let count = *self.operation_counts.get(operation)?;
-        let total = *self.total_time.get(operation)?;
-        let average = total / u32::try_from(count).unwrap_or(u32::MAX);
-        Some((count, total, average))
-    }
-
-    pub fn clear(&mut self) {
-        self.operation_counts.clear();
-        self.total_time.clear();
-    }
-}
-
-impl Default for PerfStats {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -151,27 +96,6 @@ mod tests {
         thread::sleep(Duration::from_millis(10));
         let elapsed = timer.elapsed();
         assert!(elapsed >= Duration::from_millis(10));
-    }
-
-    #[test]
-    fn test_perf_stats() {
-        let mut stats = PerfStats::new();
-        stats.record_operation("test_op", Duration::from_millis(100));
-        stats.record_operation("test_op", Duration::from_millis(200));
-
-        let (count, total, average) = stats.get_stats("test_op").unwrap();
-        assert_eq!(count, 2);
-        assert_eq!(total, Duration::from_millis(300));
-        assert_eq!(average, Duration::from_millis(150));
-    }
-
-    #[test]
-    fn test_timed_macro() {
-        let result = timed!("test_macro", {
-            thread::sleep(Duration::from_millis(1));
-            42
-        });
-        assert_eq!(result, 42);
     }
 
     #[test]
@@ -205,45 +129,6 @@ mod tests {
                 PerfTimer::new("slow_operation").with_warn_threshold(Duration::from_millis(1));
             thread::sleep(Duration::from_millis(10));
             drop(timer);
-        });
-
-        handle.assert_finished();
-    }
-
-    #[test]
-    fn test_perf_span_macro() {
-        let (subscriber, handle) = subscriber::mock()
-            .new_span(
-                expect::span()
-                    .named("perf")
-                    .with_fields(expect::field("operation").with_value(&"test_macro_operation")),
-            )
-            .only()
-            .run_with_handle();
-
-        tracing::subscriber::with_default(subscriber, || {
-            let _span = perf_span!("test_macro_operation");
-        });
-
-        handle.assert_finished();
-    }
-
-    #[test]
-    fn test_perf_span_macro_with_fields() {
-        let (subscriber, handle) = subscriber::mock()
-            .new_span(
-                expect::span().named("perf").with_fields(
-                    expect::field("operation")
-                        .with_value(&"complex_operation")
-                        .and(expect::field("items").with_value(&42))
-                        .and(expect::field("category").with_value(&"processing")),
-                ),
-            )
-            .only()
-            .run_with_handle();
-
-        tracing::subscriber::with_default(subscriber, || {
-            let _span = perf_span!("complex_operation", items = 42, category = "processing");
         });
 
         handle.assert_finished();
