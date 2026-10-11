@@ -32,21 +32,6 @@ pub fn builtin_providers() -> Vec<Box<dyn ManifestProvider>> {
     ]
 }
 
-/// Get providers sorted by priority (highest first)
-pub fn builtin_providers_by_priority() -> Vec<Box<dyn ManifestProvider>> {
-    let mut providers = builtin_providers();
-    providers.sort_by_key(|b| std::cmp::Reverse(b.priority()));
-    providers
-}
-
-/// Get provider names for all built-in providers
-pub fn builtin_provider_names() -> Vec<String> {
-    builtin_providers()
-        .into_iter()
-        .map(|p| p.name().as_str().to_string())
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -68,22 +53,5 @@ mod tests {
         assert!(names.contains(&"pom.xml".to_string()));
         assert!(names.contains(&"project.csproj".to_string()));
         assert!(names.contains(&"CMakeLists.txt".to_string()));
-    }
-
-    #[test]
-    fn test_providers_by_priority() {
-        let providers = builtin_providers_by_priority();
-
-        // Verify sorting by priority
-        for i in 1..providers.len() {
-            assert!(providers[i - 1].priority() >= providers[i].priority());
-        }
-    }
-
-    #[test]
-    fn test_provider_names() {
-        let names = builtin_provider_names();
-        assert!(!names.is_empty());
-        assert!(names.iter().all(|name| !name.is_empty()));
     }
 }

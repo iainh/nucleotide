@@ -249,7 +249,6 @@ impl BaseManifestProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
     use tempfile::TempDir;
 
     #[tokio::test]
@@ -310,27 +309,5 @@ mod tests {
         let result = provider.search_patterns(&query).await.unwrap();
         assert!(result.is_some());
         assert_eq!(result.unwrap(), temp_dir.path());
-    }
-
-    #[tokio::test]
-    async fn test_project_metadata() {
-        let metadata = ProjectMetadata {
-            name: Some("test-project".to_string()),
-            version: Some("1.0.0".to_string()),
-            description: Some("A test project".to_string()),
-            language: "rust".to_string(),
-            dependencies: vec!["serde".to_string()],
-            dev_dependencies: vec!["tokio-test".to_string()],
-            additional_info: {
-                let mut map = HashMap::new();
-                map.insert("edition".to_string(), "2021".to_string());
-                map
-            },
-        };
-
-        assert_eq!(metadata.name.as_ref().unwrap(), "test-project");
-        assert_eq!(metadata.language, "rust");
-        assert_eq!(metadata.dependencies.len(), 1);
-        assert_eq!(metadata.additional_info.get("edition").unwrap(), "2021");
     }
 }

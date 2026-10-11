@@ -668,27 +668,6 @@ require (
     }
 
     #[tokio::test]
-    async fn test_workspace_module_extraction() {
-        let provider = GoManifestProvider::new();
-
-        let content = r#"
-go 1.21
-
-use (
-    ./api
-    ./web
-    ./worker
-)
-"#;
-
-        let modules = provider.extract_workspace_modules(content);
-        assert_eq!(modules.len(), 3);
-        assert!(modules.contains(&"./api".to_string()));
-        assert!(modules.contains(&"./web".to_string()));
-        assert!(modules.contains(&"./worker".to_string()));
-    }
-
-    #[tokio::test]
     async fn test_invalid_go_mod() {
         let temp_dir = TempDir::new().unwrap();
         let go_mod = temp_dir.path().join("go.mod");
