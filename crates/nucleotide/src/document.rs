@@ -911,6 +911,8 @@ impl DocumentView {
         let editor_font = cx.global::<crate::types::EditorFontConfig>();
         let mut markdown_style = MarkdownStyle::preview_from_tokens(tokens);
         markdown_style.code_font_family = SharedString::from(editor_font.family.clone());
+        // Keep prose readable on wide editor panes without fixing narrow-pane width.
+        let reading_width = markdown_style.body_font_size * 52.0;
         let focus = self.focus.clone();
         let click_focus = focus.clone();
         let core = self.core.clone();
@@ -922,8 +924,6 @@ impl DocumentView {
             )))
             .size_full()
             .min_h(px(0.0))
-            .focusable()
-            .track_focus(&focus)
             .overflow_y_scroll()
             .track_scroll(&self.markdown_scroll_handle)
             .on_mouse_down(MouseButton::Left, move |_event, window, cx| {
@@ -932,7 +932,12 @@ impl DocumentView {
             })
             .px(tokens.sizes.space_8)
             .py(tokens.sizes.space_8)
-            .child(markdown_extended(snapshot.source.clone(), markdown_style));
+            .child(
+                div().w_full().max_w(reading_width).mx_auto().child(
+                    markdown_extended(snapshot.source.clone(), markdown_style)
+                        .selectable(format!("markdown-selection-{}", snapshot.doc_id), focus),
+                ),
+            );
 
         div()
             .id(SharedString::from(format!(
