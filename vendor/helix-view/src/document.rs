@@ -786,6 +786,12 @@ async fn save_to_local_path(
 
     // Assume it is a hardlink to prevent data loss if the metadata cant be read (e.g. on certain Windows configurations)
     let is_hardlink = helix_stdx::faccess::hardlink_count(&write_path).unwrap_or(2) > 1;
+    let is_symlink = match tokio::fs::symlink_metadata(&write_path).await {
+        Ok(meta) => meta.is_symlink(),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => false,
+        Err(err) => return Err(err.into()),
+    };
+    let must_copy = is_hardlink || is_symlink;
     let backup = if path.exists() && atomic_save {
         let path_ = write_path.clone();
         // hacks: we use tempfile to handle the complex task of creating
@@ -797,7 +803,7 @@ async fn save_to_local_path(
             let mut builder = tempfile::Builder::new();
             builder.prefix(path_.file_name()?).suffix(".bck");
 
-            let backup_path = if is_hardlink {
+            let backup_path = if must_copy {
                 builder
                     .make_in(path_.parent()?, |backup| std::fs::copy(&path_, backup))
                     .ok()?
@@ -821,7 +827,20 @@ async fn save_to_local_path(
     let write_result: anyhow::Result<_> = async {
         let mut dst = tokio::fs::File::create(&write_path).await?;
         to_writer(&mut dst, save.encoding_with_bom_info, &save.text).await?;
-        dst.sync_all().await?;
+        // Ignore ENOTSUP/EOPNOTSUPP (Operation not supported) errors from sync_all()
+        // This is known to occur on SMB filesystems on macOS where fsync is not supported
+        match dst.sync_all().await {
+            Ok(_) => (),
+            Err(err) if err.kind() == io::ErrorKind::Unsupported => (),
+            // Some extra OS errors are thrown on macOS for example if fsync is not
+            // available for this filesystem. NOTE: on macOS, ENOTSUP and EOPNOTSUPP are
+            // not the same code, so we need to suppress the unreachable_patterns lint on
+            // Unix generally.
+            #[allow(unreachable_patterns)]
+            #[cfg(unix)]
+            Err(err) if matches!(err.raw_os_error(), Some(libc::ENOTSUP | libc::EOPNOTSUPP)) => {}
+            Err(err) => return Err(err.into()),
+        }
         Ok(())
     }
     .await;
@@ -832,7 +851,7 @@ async fn save_to_local_path(
     };
 
     if let Some(backup) = backup {
-        if is_hardlink {
+        if must_copy {
             let mut delete = true;
             if write_result.is_err() {
                 // Restore backup
@@ -2834,6 +2853,61 @@ mod test {
 
         assert_eq!(doc.last_saved_time(), next_save_time);
         assert_eq!(doc.file_version(), Some(&[5, 6, 7, 8][..]));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn save_preserves_symlink_chain_and_hardlinks() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target.txt");
+        let hardlink = dir.path().join("hardlink.txt");
+        let intermediate = dir.path().join("intermediate.txt");
+        let link = dir.path().join("link.txt");
+        symlink("target.txt", &intermediate).unwrap();
+        symlink("intermediate.txt", &link).unwrap();
+
+        // Exercise the symlink-only case first: a hardlink would mask the
+        // missing symlink safeguard by forcing the backup-copy branch.
+        for with_hardlink in [false, true] {
+            std::fs::write(&target, "original\n").unwrap();
+            if with_hardlink {
+                std::fs::hard_link(&target, &hardlink).unwrap();
+            }
+            let mut config = Config::default();
+            config.atomic_save = true;
+            let mut doc = Document::from(
+                Rope::from("replacement\n"),
+                None,
+                Arc::new(ArcSwap::from_pointee(config)),
+                Arc::new(ArcSwap::from_pointee(syntax::Loader::default())),
+            );
+            doc.set_path(Some(&link));
+
+            let event = doc
+                .save(Option::<PathBuf>::None, true)
+                .unwrap()
+                .await
+                .unwrap();
+            assert_eq!(event.path, link);
+            assert_eq!(std::fs::read_to_string(&target).unwrap(), "replacement\n");
+            assert_eq!(
+                std::fs::read_link(&link).unwrap(),
+                Path::new("intermediate.txt")
+            );
+            assert_eq!(
+                std::fs::read_link(&intermediate).unwrap(),
+                Path::new("target.txt")
+            );
+            if with_hardlink {
+                assert_eq!(std::fs::read_to_string(&hardlink).unwrap(), "replacement\n");
+            }
+            assert_eq!(
+                std::fs::read_dir(dir.path()).unwrap().count(),
+                if with_hardlink { 4 } else { 3 }
+            );
+        }
     }
 
     #[test]
