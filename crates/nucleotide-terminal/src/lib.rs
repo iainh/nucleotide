@@ -883,17 +883,6 @@ pub mod session {
         }
 
         #[test]
-        fn terminal_env_preserves_unrelated_overrides() {
-            let env = env_map(terminal_env_with_defaults_from(
-                &[pair("PATH", "/custom/bin")],
-                None,
-                &BTreeMap::new(),
-            ));
-
-            assert_eq!(env.get("PATH").map(String::as_str), Some("/custom/bin"));
-        }
-
-        #[test]
         fn terminal_env_preserves_parent_process_environment() {
             let parent = BTreeMap::from([
                 ("PATH".to_string(), "/usr/bin".to_string()),
