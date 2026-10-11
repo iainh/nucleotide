@@ -13654,7 +13654,8 @@ impl Workspace {
 
     fn show_command_prompt(&mut self, cx: &mut Context<Self>) {
         let prompt = crate::prompt::Prompt::native(":", "", |_| {}).with_cancel(|| {});
-        cx.emit(crate::Update::Prompt(prompt));
+        self.core
+            .update(cx, |_, cx| cx.emit(crate::Update::Prompt(prompt)));
     }
 
     fn show_open_remote_prompt(&mut self, cx: &mut Context<Self>) {
@@ -15198,6 +15199,156 @@ impl Render for Workspace {
             },
         ));
 
+        use crate::application::editor_input::{EditorSemanticAction, NativeLspNavigationRequest};
+        workspace_div = workspace_div
+            .on_action(cx.listener(
+                |workspace, _: &crate::actions::text_input::Cut, window, cx| {
+                    workspace.send_editor_semantic_action(EditorSemanticAction::Cut, window, cx);
+                },
+            ))
+            .on_action(cx.listener(
+                |workspace, _: &crate::actions::text_input::SelectAll, window, cx| {
+                    workspace.send_editor_semantic_action(
+                        EditorSemanticAction::SelectAll,
+                        window,
+                        cx,
+                    );
+                },
+            ))
+            .on_action(
+                cx.listener(|workspace, _: &crate::actions::editor::Find, window, cx| {
+                    workspace.send_editor_semantic_action(EditorSemanticAction::Find, window, cx);
+                }),
+            )
+            .on_action(cx.listener(
+                |workspace, _: &crate::actions::editor::FindNext, window, cx| {
+                    workspace.send_editor_semantic_action(
+                        EditorSemanticAction::FindNext,
+                        window,
+                        cx,
+                    );
+                },
+            ))
+            .on_action(cx.listener(
+                |workspace, _: &crate::actions::editor::FindPrevious, window, cx| {
+                    workspace.send_editor_semantic_action(
+                        EditorSemanticAction::FindPrevious,
+                        window,
+                        cx,
+                    );
+                },
+            ))
+            .on_action(cx.listener(
+                |workspace, _: &crate::actions::editor::FindInProject, _, cx| {
+                    workspace.start_global_search(cx);
+                },
+            ))
+            .on_action(cx.listener(
+                |workspace, _: &crate::actions::editor::ExpandSelection, window, cx| {
+                    workspace.send_editor_semantic_action(
+                        EditorSemanticAction::ExpandSelection,
+                        window,
+                        cx,
+                    );
+                },
+            ))
+            .on_action(cx.listener(
+                |workspace, _: &crate::actions::editor::ShrinkSelection, window, cx| {
+                    workspace.send_editor_semantic_action(
+                        EditorSemanticAction::ShrinkSelection,
+                        window,
+                        cx,
+                    );
+                },
+            ))
+            .on_action(cx.listener(
+                |workspace, _: &crate::actions::editor::SelectNextOccurrence, window, cx| {
+                    workspace.send_editor_semantic_action(
+                        EditorSemanticAction::SelectNextOccurrence,
+                        window,
+                        cx,
+                    );
+                },
+            ))
+            .on_action(cx.listener(
+                |workspace, _: &crate::actions::editor::SelectPreviousOccurrence, window, cx| {
+                    workspace.send_editor_semantic_action(
+                        EditorSemanticAction::SelectPreviousOccurrence,
+                        window,
+                        cx,
+                    );
+                },
+            ))
+            .on_action(cx.listener(
+                |workspace, _: &crate::actions::editor::SplitSelectionOnNewline, window, cx| {
+                    workspace.send_editor_semantic_action(
+                        EditorSemanticAction::SplitSelectionOnNewline,
+                        window,
+                        cx,
+                    );
+                },
+            ))
+            .on_action(cx.listener(
+                |workspace, _: &crate::actions::editor::MergeSelections, window, cx| {
+                    workspace.send_editor_semantic_action(
+                        EditorSemanticAction::MergeSelections,
+                        window,
+                        cx,
+                    );
+                },
+            ))
+            .on_action(cx.listener(
+                |workspace, _: &crate::actions::editor::NextDiagnostic, window, cx| {
+                    workspace.send_editor_semantic_action(
+                        EditorSemanticAction::NextDiagnostic,
+                        window,
+                        cx,
+                    );
+                },
+            ))
+            .on_action(cx.listener(
+                |workspace, _: &crate::actions::editor::PreviousDiagnostic, window, cx| {
+                    workspace.send_editor_semantic_action(
+                        EditorSemanticAction::PreviousDiagnostic,
+                        window,
+                        cx,
+                    );
+                },
+            ))
+            .on_action(cx.listener(
+                |workspace, _: &crate::actions::workspace::ShowSymbolPicker, _, cx| {
+                    workspace
+                        .core
+                        .update(cx, |core, cx| core.trigger_lsp_symbol_picker(false, cx));
+                },
+            ))
+            .on_action(cx.listener(
+                |workspace, _: &crate::actions::workspace::ShowWorkspaceSymbolPicker, _, cx| {
+                    workspace
+                        .core
+                        .update(cx, |core, cx| core.trigger_lsp_symbol_picker(true, cx));
+                },
+            ))
+            .on_action(cx.listener(
+                |workspace, _: &crate::actions::workspace::GoToDefinition, _, cx| {
+                    workspace.core.update(cx, |core, cx| {
+                        core.trigger_lsp_navigation(NativeLspNavigationRequest::GotoDefinition, cx)
+                    });
+                },
+            ))
+            .on_action(cx.listener(
+                |workspace, _: &crate::actions::workspace::FindReferences, _, cx| {
+                    workspace.core.update(cx, |core, cx| {
+                        core.trigger_lsp_navigation(NativeLspNavigationRequest::GotoReference, cx)
+                    });
+                },
+            ))
+            .on_action(cx.listener(
+                |workspace, _: &crate::actions::editor::ResetFontSize, _, cx| {
+                    workspace.reset_font_size(cx);
+                },
+            ));
+
         // Font size actions
         workspace_div = workspace_div.on_action(cx.listener(
             move |workspace, _: &crate::actions::editor::IncreaseFontSize, _window, cx| {
@@ -15470,6 +15621,12 @@ impl Render for Workspace {
         workspace_div = workspace_div.on_action(cx.listener(
             move |_, _: &crate::actions::help::OpenTutorial, _window, cx| {
                 load_tutor(core.clone(), handle.clone(), cx)
+            },
+        ));
+
+        workspace_div = workspace_div.on_action(cx.listener(
+            |_, _: &crate::actions::help::Documentation, _, cx| {
+                cx.open_url("https://github.com/iainh/nucleotide/tree/main/docs");
             },
         ));
 

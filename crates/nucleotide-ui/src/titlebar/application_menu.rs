@@ -196,7 +196,7 @@ impl ApplicationMenu {
                 .with_menu_items(items, window, cx)
         });
         popup_menu.update(cx, |menu, cx| {
-            menu.set_action_context(action_context, cx);
+            menu.set_action_context(action_context, window, cx);
         });
         self._subscription = Some(cx.subscribe_in(&popup_menu, window, Self::handle_popup_dismiss));
         self.popup_index = Some(index);

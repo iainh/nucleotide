@@ -11,7 +11,7 @@ use gpui::{
 };
 
 use crate::ThemedContext;
-use crate::actions::{completion, editor, menu, workspace};
+use crate::actions::menu;
 use menu::{Cancel, Confirm, SelectDown, SelectLeft, SelectRight, SelectUp};
 
 use super::POPUP_MENU_CONTEXT;
@@ -157,60 +157,6 @@ impl PopupMenuItem {
     }
 }
 
-fn shortcut_label_for_action(action: &dyn Action) -> Option<&'static str> {
-    if action.partial_eq(&editor::Quit) {
-        Some("Ctrl+Q")
-    } else if action.partial_eq(&editor::OpenFile) {
-        Some("Ctrl+O")
-    } else if action.partial_eq(&editor::OpenDirectory) {
-        Some("Ctrl+Shift+O")
-    } else if action.partial_eq(&editor::Save) {
-        Some("Ctrl+S")
-    } else if action.partial_eq(&editor::SaveAs) {
-        Some("Ctrl+Shift+S")
-    } else if action.partial_eq(&editor::CloseFile) {
-        Some("Ctrl+W")
-    } else if action.partial_eq(&workspace::NewFile) {
-        Some("Ctrl+N")
-    } else if action.partial_eq(&workspace::NewWindow) {
-        Some("Ctrl+Shift+N")
-    } else if action.partial_eq(&workspace::ShowFileFinder) {
-        Some("Ctrl+P")
-    } else if action.partial_eq(&workspace::ShowCommandPrompt) {
-        Some("Ctrl+Shift+P")
-    } else if action.partial_eq(&workspace::ShowBufferPicker) {
-        Some("Ctrl+B")
-    } else if action.partial_eq(&editor::Undo) {
-        Some("Ctrl+Z")
-    } else if action.partial_eq(&editor::Redo) {
-        Some("Ctrl+Shift+Z")
-    } else if action.partial_eq(&editor::Copy) {
-        Some("Ctrl+C")
-    } else if action.partial_eq(&editor::Paste) {
-        Some("Ctrl+V")
-    } else if action.partial_eq(&editor::IncreaseFontSize) {
-        Some("Ctrl++")
-    } else if action.partial_eq(&editor::DecreaseFontSize) {
-        Some("Ctrl+-")
-    } else if action.partial_eq(&completion::TriggerCompletion) {
-        Some("Ctrl+Space")
-    } else if action.partial_eq(&workspace::ShowCodeActions) {
-        Some("Ctrl+.")
-    } else if action.partial_eq(&workspace::ShowRunnables) {
-        Some("Ctrl+R")
-    } else if action.partial_eq(&workspace::RunNearest) {
-        Some("Ctrl+Shift+R")
-    } else if action.partial_eq(&workspace::RunLast) {
-        Some("Ctrl+Alt+R")
-    } else if action.partial_eq(&workspace::RunFileTests) {
-        Some("Ctrl+Alt+T")
-    } else if action.partial_eq(&workspace::ToggleTerminal) {
-        Some("Ctrl+`")
-    } else {
-        None
-    }
-}
-
 fn popup_menu_item_height() -> Pixels {
     #[cfg(target_os = "windows")]
     {
@@ -315,15 +261,40 @@ impl PopupMenu {
     pub(crate) fn set_action_context(
         &mut self,
         action_context: Option<FocusHandle>,
+        window: &Window,
         cx: &mut Context<Self>,
     ) {
         self.action_context = action_context.clone();
 
-        for item in &self.menu_items {
-            if let PopupMenuItem::Submenu { menu, .. } = item {
-                menu.update(cx, |menu, cx| {
-                    menu.set_action_context(action_context.clone(), cx);
-                });
+        for item in &mut self.menu_items {
+            match item {
+                PopupMenuItem::Item {
+                    action: Some(action),
+                    shortcut,
+                    ..
+                } => {
+                    let binding = match action_context.as_ref() {
+                        Some(focus) => {
+                            window.highest_precedence_binding_for_action_in(action.as_ref(), focus)
+                        }
+                        None => window.highest_precedence_binding_for_action(action.as_ref()),
+                    };
+                    *shortcut = binding.map(|binding| {
+                        binding
+                            .keystrokes()
+                            .iter()
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                            .into()
+                    });
+                }
+                PopupMenuItem::Submenu { menu, .. } => {
+                    menu.update(cx, |menu, cx| {
+                        menu.set_action_context(action_context.clone(), window, cx);
+                    });
+                }
+                _ => {}
             }
         }
     }
@@ -432,15 +403,10 @@ impl PopupMenu {
                     disabled,
                     ..
                 } => {
-                    let shortcut = shortcut_label_for_action(action.as_ref());
-                    let mut item = PopupMenuItem::new(name)
+                    let item = PopupMenuItem::new(name)
                         .checked(checked)
                         .disabled(disabled)
                         .action(action.boxed_clone());
-
-                    if let Some(shortcut) = shortcut {
-                        item = item.shortcut(shortcut);
-                    }
 
                     self = self.item(item);
                 }
@@ -871,7 +837,9 @@ impl PopupMenu {
                                     div()
                                         .occlude()
                                         .when(opens_up, |this| this.bottom_0())
-                                        .when(!opens_up, |this| this.top(-submenu_overlap()))
+                                        .when(!opens_up, |this| {
+                                            this.top(-item_height - submenu_overlap())
+                                        })
                                         .left(left)
                                         .child(menu.clone()),
                                 ),
@@ -1042,24 +1010,6 @@ mod tests {
                 .child(div().id("second").track_focus(&self.second_focus))
                 .child(self.menu.clone())
         }
-    }
-
-    #[test]
-    fn shortcut_labels_cover_primary_app_menu_actions() {
-        assert_eq!(shortcut_label_for_action(&editor::OpenFile), Some("Ctrl+O"));
-        assert_eq!(shortcut_label_for_action(&editor::Save), Some("Ctrl+S"));
-        assert_eq!(
-            shortcut_label_for_action(&workspace::ShowCommandPrompt),
-            Some("Ctrl+Shift+P")
-        );
-        assert_eq!(
-            shortcut_label_for_action(&workspace::RunFileTests),
-            Some("Ctrl+Alt+T")
-        );
-        assert_eq!(
-            shortcut_label_for_action(&workspace::ToggleTerminal),
-            Some("Ctrl+`")
-        );
     }
 
     #[test]
