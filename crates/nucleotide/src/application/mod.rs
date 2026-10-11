@@ -11318,6 +11318,34 @@ mod tests {
     }
 
     #[gpui::test]
+    fn command_prompt_action_accepts_and_executes_native_commands(cx: &mut gpui::TestAppContext) {
+        let _runtime = TEST_RUNTIME.enter();
+        let root = tempdir().unwrap();
+        let path = root.path().join("original.txt");
+        fs::write(&path, "original document\n").unwrap();
+        let (core, _workspace, cx) = new_test_workspace(cx, &path);
+        let before_count = core.read_with(cx, |core, _| core.editor.documents.len());
+
+        cx.dispatch_action(crate::actions::workspace::ShowCommandPrompt);
+        cx.run_until_parked();
+        cx.simulate_keystrokes("n e w enter");
+        cx.run_until_parked();
+
+        core.read_with(cx, |core, _| {
+            assert_eq!(core.editor.documents.len(), before_count + 1);
+            let view = core.editor.tree.get(core.editor.tree.focus);
+            assert!(core.editor.documents[&view.doc].path().is_none());
+            assert!(
+                core.editor.documents[&view.doc]
+                    .text()
+                    .to_string()
+                    .trim()
+                    .is_empty()
+            );
+        });
+    }
+
+    #[gpui::test]
     fn opening_directory_closes_file_buffers_but_preserves_scratch(cx: &mut gpui::TestAppContext) {
         let _runtime = TEST_RUNTIME.enter();
         let root = tempdir().unwrap();

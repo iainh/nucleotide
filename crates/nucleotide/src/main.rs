@@ -862,26 +862,24 @@ fn is_running_in_wsl() -> bool {
 }
 
 // Import actions from our centralized definitions
-use nucleotide::actions::text_input::{Copy, Paste, Redo, Undo};
+use nucleotide::actions::text_input::{Copy, Cut, Paste, Redo, SelectAll, Undo};
 use nucleotide::actions::updates::Check as CheckForUpdates;
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "macos")]
 use nucleotide::actions::window::{Hide, HideOthers, ShowAll};
-#[cfg(target_os = "windows")]
 use nucleotide::actions::workspace::{
-    NewFile, NewWindow, ShowBufferPicker, ShowCodeActions, ShowCommandPrompt, ShowFileFinder,
+    FindReferences, GoToDefinition, NewFile, ShowBufferPicker, ShowCodeActions, ShowCommandPrompt,
+    ShowFileFinder, ShowSymbolPicker, ShowWorkspaceSymbolPicker,
 };
-#[cfg(target_os = "windows")]
 use nucleotide::actions::{
     completion::TriggerCompletion,
-    editor::{CloseFile, DecreaseFontSize, IncreaseFontSize, Save, SaveAs},
-};
-use nucleotide::actions::{
     editor::{
-        CancelRemoteConnection, OpenDirectory, OpenFile, OpenRemote, OpenSettings, Quit,
-        ReconnectRemote, ReloadConfiguration, RevertCurrentChange,
+        CancelRemoteConnection, CloseFile, DecreaseFontSize, ExpandSelection, Find, FindInProject,
+        FindNext, FindPrevious, IncreaseFontSize, MergeSelections, NextDiagnostic, OpenDirectory,
+        OpenFile, OpenRemote, OpenSettings, PreviousDiagnostic, Quit, ReconnectRemote,
+        ReloadConfiguration, ResetFontSize, RevertCurrentChange, Save, SelectNextOccurrence,
+        SelectPreviousOccurrence, ShrinkSelection, SplitSelectionOnNewline,
     },
-    help::{About, ComponentGallery, OpenTutorial, ThemeDebug},
-    test::{TestCompletion, TestPrompt},
+    help::{About, Documentation, OpenTutorial},
     window::{Minimize, Zoom},
     workspace::{
         RunFileTests, RunLast, RunNearest, ShowRunnables, SplitPaneDown, SplitPaneLeft,
@@ -889,161 +887,88 @@ use nucleotide::actions::{
         ToggleTerminal, UnpinAllTabs,
     },
 };
+#[cfg(debug_assertions)]
+use nucleotide::actions::{
+    help::{ComponentGallery, ThemeDebug},
+    test::{TestCompletion, TestPrompt},
+};
 
 fn app_menus() -> Vec<Menu> {
-    #[cfg(target_os = "windows")]
-    {
-        windows_app_menus()
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        default_app_menus()
-    }
-}
-
-#[cfg(not(target_os = "windows"))]
-fn default_app_menus() -> Vec<Menu> {
     vec![
-        Menu {
-            name: "Nucleotide".into(),
-            disabled: false,
-            items: vec![
-                MenuItem::action("About", About),
-                MenuItem::action("Check for Updates…", CheckForUpdates),
-                MenuItem::action("Settings...", OpenSettings),
-                MenuItem::action("Reload Configuration", ReloadConfiguration),
-                MenuItem::separator(),
-                MenuItem::action("Hide Nucleotide", Hide),
-                MenuItem::action("Hide Others", HideOthers),
-                MenuItem::action("Show All", ShowAll),
-                MenuItem::action("Quit", Quit),
-            ],
-        },
-        Menu {
-            name: "File".into(),
-            disabled: false,
-            items: vec![
-                MenuItem::action("Open...", OpenFile),
-                MenuItem::action("Open Directory", OpenDirectory),
-                MenuItem::action("Open Remote...", OpenRemote),
-                MenuItem::action("Reconnect Remote", ReconnectRemote),
-                MenuItem::action("Cancel Remote Connection", CancelRemoteConnection),
-            ],
-        },
-        Menu {
-            name: "Edit".into(),
-            disabled: false,
-            items: vec![
-                MenuItem::action("Undo", Undo),
-                MenuItem::action("Redo", Redo),
-                MenuItem::separator(),
-                MenuItem::action("Revert Current Change", RevertCurrentChange),
-                MenuItem::separator(),
-                MenuItem::action("Copy", Copy),
-                MenuItem::action("Paste", Paste),
-            ],
-        },
-        Menu {
-            name: "View".into(),
-            disabled: false,
-            items: vec![
-                MenuItem::action("Toggle File Tree", ToggleFileTree),
-                MenuItem::action("Toggle Documentation", ToggleDocumentation),
-                MenuItem::action("Toggle Terminal", ToggleTerminal),
-                MenuItem::separator(),
-                MenuItem::action("Split Right", SplitPaneRight),
-                MenuItem::action("Split Left", SplitPaneLeft),
-                MenuItem::action("Split Up", SplitPaneUp),
-                MenuItem::action("Split Down", SplitPaneDown),
-                MenuItem::separator(),
-                MenuItem::action("Toggle Preview Tab", TogglePreviewTab),
-                MenuItem::action("Unpin All Tabs", UnpinAllTabs),
-            ],
-        },
-        Menu {
-            name: "Run".into(),
-            disabled: false,
-            items: vec![
-                MenuItem::action("Run...", ShowRunnables),
-                MenuItem::action("Run Nearest", RunNearest),
-                MenuItem::action("Run File Tests", RunFileTests),
-                MenuItem::separator(),
-                MenuItem::action("Run Last", RunLast),
-            ],
-        },
-        Menu {
-            name: "Window".into(),
-            disabled: false,
-            items: vec![
-                MenuItem::action("Minimize", Minimize),
-                MenuItem::action("Zoom", Zoom),
-            ],
-        },
-        Menu {
-            name: "Debug".into(),
-            disabled: false,
-            items: vec![
-                MenuItem::action("Test Prompt", TestPrompt),
-                MenuItem::action("Test Completion", TestCompletion),
-                MenuItem::separator(),
-                MenuItem::action("Component Gallery", ComponentGallery),
-                MenuItem::action("Theme Debug", ThemeDebug),
-            ],
-        },
-        Menu {
-            name: "Help".into(),
-            disabled: false,
-            items: vec![MenuItem::action("Tutorial", OpenTutorial)],
-        },
-    ]
-}
-
-#[cfg(target_os = "windows")]
-fn windows_app_menus() -> Vec<Menu> {
-    vec![
+        #[cfg(not(target_os = "windows"))]
+        Menu::new("Nucleotide").items([
+            MenuItem::action("About Nucleotide", About),
+            MenuItem::action("Check for Updates…", CheckForUpdates),
+            MenuItem::separator(),
+            settings_menu(),
+            #[cfg(target_os = "macos")]
+            MenuItem::separator(),
+            #[cfg(target_os = "macos")]
+            MenuItem::action("Hide Nucleotide", Hide),
+            #[cfg(target_os = "macos")]
+            MenuItem::action("Hide Others", HideOthers),
+            #[cfg(target_os = "macos")]
+            MenuItem::action("Show All", ShowAll),
+            MenuItem::separator(),
+            MenuItem::action("Quit Nucleotide", Quit),
+        ]),
         Menu::new("File").items([
             MenuItem::action("New File", NewFile),
-            MenuItem::action("New Window", NewWindow),
             MenuItem::separator(),
-            MenuItem::action("Open File...", OpenFile),
-            MenuItem::action("Open Folder...", OpenDirectory),
+            MenuItem::action("Open File…", OpenFile),
+            MenuItem::action("Open Folder…", OpenDirectory),
+            MenuItem::separator(),
             MenuItem::action("Open Remote...", OpenRemote),
             MenuItem::action("Reconnect Remote", ReconnectRemote),
             MenuItem::action("Cancel Remote Connection", CancelRemoteConnection),
             MenuItem::separator(),
             MenuItem::action("Save", Save),
-            MenuItem::action("Save As...", SaveAs),
             MenuItem::action("Close File", CloseFile),
+            #[cfg(target_os = "windows")]
             MenuItem::separator(),
-            MenuItem::action("Settings...", OpenSettings),
-            MenuItem::action("Reload Configuration", ReloadConfiguration),
+            #[cfg(target_os = "windows")]
+            settings_menu(),
+            #[cfg(target_os = "windows")]
             MenuItem::separator(),
+            #[cfg(target_os = "windows")]
             MenuItem::action("Exit", Quit),
         ]),
         Menu::new("Edit").items([
             MenuItem::action("Undo", Undo),
             MenuItem::action("Redo", Redo),
             MenuItem::separator(),
-            MenuItem::action("Revert Current Change", RevertCurrentChange),
-            MenuItem::separator(),
+            MenuItem::action("Cut", Cut),
             MenuItem::action("Copy", Copy),
             MenuItem::action("Paste", Paste),
             MenuItem::separator(),
+            MenuItem::action("Find…", Find),
+            MenuItem::action("Find Next", FindNext),
+            MenuItem::action("Find Previous", FindPrevious),
+            MenuItem::action("Find in Project…", FindInProject),
+            MenuItem::separator(),
             MenuItem::action("Trigger Completion", TriggerCompletion),
-            MenuItem::action("Code Actions", ShowCodeActions),
+            MenuItem::action("Code Actions…", ShowCodeActions),
+            MenuItem::separator(),
+            MenuItem::action("Revert Current Change", RevertCurrentChange),
+        ]),
+        Menu::new("Selection").items([
+            MenuItem::action("Select All", SelectAll),
+            MenuItem::separator(),
+            MenuItem::action("Expand Selection", ExpandSelection),
+            MenuItem::action("Shrink Selection", ShrinkSelection),
+            MenuItem::separator(),
+            MenuItem::action("Select Next Occurrence", SelectNextOccurrence),
+            MenuItem::action("Select Previous Occurrence", SelectPreviousOccurrence),
+            MenuItem::separator(),
+            MenuItem::action("Split Selection into Lines", SplitSelectionOnNewline),
+            MenuItem::action("Merge Selections", MergeSelections),
         ]),
         Menu::new("View").items([
-            MenuItem::action("Command Palette...", ShowCommandPrompt),
-            MenuItem::action("Go to File...", ShowFileFinder),
-            MenuItem::action("Open Buffer...", ShowBufferPicker),
+            MenuItem::action("Toggle File Tree", ToggleFileTree),
+            MenuItem::action("Toggle Documentation", ToggleDocumentation),
+            MenuItem::action("Toggle Terminal", ToggleTerminal),
             MenuItem::separator(),
-            MenuItem::action("File Tree", ToggleFileTree),
-            MenuItem::action("Documentation", ToggleDocumentation),
-            MenuItem::action("Terminal", ToggleTerminal),
-            MenuItem::action("Preview Tab", TogglePreviewTab),
-            MenuItem::separator(),
-            MenuItem::submenu(Menu::new("Split").items([
+            MenuItem::submenu(Menu::new("Editor Layout").items([
                 MenuItem::action("Split Right", SplitPaneRight),
                 MenuItem::action("Split Left", SplitPaneLeft),
                 MenuItem::action("Split Up", SplitPaneUp),
@@ -1052,11 +977,27 @@ fn windows_app_menus() -> Vec<Menu> {
             MenuItem::separator(),
             MenuItem::action("Increase Font Size", IncreaseFontSize),
             MenuItem::action("Decrease Font Size", DecreaseFontSize),
+            MenuItem::action("Reset Font Size", ResetFontSize),
             MenuItem::separator(),
+            MenuItem::action("Toggle Preview Tab", TogglePreviewTab),
             MenuItem::action("Unpin All Tabs", UnpinAllTabs),
         ]),
+        Menu::new("Go").items([
+            MenuItem::action("Command Prompt…", ShowCommandPrompt),
+            MenuItem::separator(),
+            MenuItem::action("Go to File…", ShowFileFinder),
+            MenuItem::action("Open Buffer…", ShowBufferPicker),
+            MenuItem::action("Go to Symbol…", ShowSymbolPicker),
+            MenuItem::action("Go to Symbol in Project…", ShowWorkspaceSymbolPicker),
+            MenuItem::separator(),
+            MenuItem::action("Go to Definition", GoToDefinition),
+            MenuItem::action("Find References", FindReferences),
+            MenuItem::separator(),
+            MenuItem::action("Next Diagnostic", NextDiagnostic),
+            MenuItem::action("Previous Diagnostic", PreviousDiagnostic),
+        ]),
         Menu::new("Run").items([
-            MenuItem::action("Run...", ShowRunnables),
+            MenuItem::action("Run…", ShowRunnables),
             MenuItem::action("Run Nearest", RunNearest),
             MenuItem::action("Run File Tests", RunFileTests),
             MenuItem::separator(),
@@ -1064,8 +1005,16 @@ fn windows_app_menus() -> Vec<Menu> {
         ]),
         Menu::new("Window").items([
             MenuItem::action("Minimize", Minimize),
-            MenuItem::action("Maximize/Restore", Zoom),
+            MenuItem::action(
+                if cfg!(target_os = "windows") {
+                    "Maximize/Restore"
+                } else {
+                    "Zoom"
+                },
+                Zoom,
+            ),
         ]),
+        #[cfg(debug_assertions)]
         Menu::new("Debug").items([
             MenuItem::action("Component Gallery", ComponentGallery),
             MenuItem::action("Theme Debug", ThemeDebug),
@@ -1075,11 +1024,22 @@ fn windows_app_menus() -> Vec<Menu> {
         ]),
         Menu::new("Help").items([
             MenuItem::action("Tutorial", OpenTutorial),
+            MenuItem::action("Documentation", Documentation),
+            #[cfg(target_os = "windows")]
             MenuItem::separator(),
+            #[cfg(target_os = "windows")]
             MenuItem::action("Check for Updates…", CheckForUpdates),
+            #[cfg(target_os = "windows")]
             MenuItem::action("About Nucleotide", About),
         ]),
     ]
+}
+
+fn settings_menu() -> MenuItem {
+    MenuItem::submenu(Menu::new("Settings").items([
+        MenuItem::action("Open Nucleotide Settings File…", OpenSettings),
+        MenuItem::action("Reload Configuration", ReloadConfiguration),
+    ]))
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -1866,10 +1826,14 @@ mod tests {
             .map(|menu| menu.name.as_ref())
             .collect::<Vec<_>>();
 
-        assert_eq!(
-            names,
-            ["File", "Edit", "View", "Run", "Window", "Debug", "Help"]
-        );
+        assert_eq!(names, {
+            let mut expected = vec!["File", "Edit", "Selection", "View", "Go", "Run", "Window"];
+            if cfg!(debug_assertions) {
+                expected.push("Debug");
+            }
+            expected.push("Help");
+            expected
+        });
         assert!(menus.iter().all(|menu| menu.name.as_ref() != "Nucleotide"));
 
         let file_menu = &menus[0];
@@ -1892,6 +1856,7 @@ mod tests {
         )));
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     fn debug_menu_exposes_component_gallery() {
         let menus = app_menus();
@@ -1908,9 +1873,8 @@ mod tests {
         )));
     }
 
-    #[cfg(target_os = "windows")]
     #[test]
-    fn windows_view_menu_groups_split_commands_under_submenu() {
+    fn view_menu_groups_split_commands_under_editor_layout() {
         let menus = app_menus();
         let view_menu = menus
             .iter()
@@ -1921,12 +1885,78 @@ mod tests {
             .items
             .iter()
             .find_map(|item| match item {
-                MenuItem::Submenu(menu) if menu.name.as_ref() == "Split" => Some(menu),
+                MenuItem::Submenu(menu) if menu.name.as_ref() == "Editor Layout" => Some(menu),
                 _ => None,
             })
-            .expect("Split submenu should exist");
+            .expect("Editor Layout submenu should exist");
 
         assert_eq!(split_menu.items.len(), 4);
+    }
+
+    #[test]
+    fn menus_expose_supported_file_navigation_and_selection_actions() {
+        let menus = app_menus();
+        for (menu_name, expected_actions) in [
+            (
+                "File",
+                vec![
+                    Box::new(NewFile) as Box<dyn gpui::Action>,
+                    Box::new(Save),
+                    Box::new(CloseFile),
+                ],
+            ),
+            (
+                "Go",
+                vec![
+                    Box::new(ShowCommandPrompt) as Box<dyn gpui::Action>,
+                    Box::new(ShowSymbolPicker),
+                    Box::new(GoToDefinition),
+                    Box::new(NextDiagnostic),
+                ],
+            ),
+            (
+                "Selection",
+                vec![
+                    Box::new(SelectAll) as Box<dyn gpui::Action>,
+                    Box::new(ExpandSelection),
+                    Box::new(SelectNextOccurrence),
+                    Box::new(SplitSelectionOnNewline),
+                ],
+            ),
+        ] {
+            let menu = menus
+                .iter()
+                .find(|menu| menu.name.as_ref() == menu_name)
+                .unwrap();
+            for expected in expected_actions {
+                assert!(menu.items.iter().any(|item| matches!(item, MenuItem::Action { action, .. } if action.partial_eq(expected.as_ref()))), "missing {} in {menu_name}", expected.name());
+            }
+        }
+        let file = menus
+            .iter()
+            .find(|menu| menu.name.as_ref() == "File")
+            .unwrap();
+        assert!(!file.items.iter().any(|item| matches!(item, MenuItem::Action { action, .. } if action.partial_eq(&nucleotide::actions::editor::SaveAs) || action.partial_eq(&nucleotide::actions::workspace::NewWindow))));
+        let settings_owner = menus
+            .iter()
+            .find(|menu| {
+                menu.name.as_ref()
+                    == if cfg!(target_os = "windows") {
+                        "File"
+                    } else {
+                        "Nucleotide"
+                    }
+            })
+            .unwrap();
+        assert!(settings_owner.items.iter().any(
+            |item| matches!(item, MenuItem::Submenu(menu) if menu.name.as_ref() == "Settings")
+        ));
+        assert_eq!(
+            menus.iter().any(|menu| menu.name.as_ref() == "Debug"),
+            cfg!(debug_assertions)
+        );
+        #[cfg(target_os = "linux")]
+        assert!(!settings_owner.items.iter().any(|item| matches!(item, MenuItem::Action { action, .. } if action.partial_eq(&nucleotide::actions::window::Hide))));
     }
 
     #[test]

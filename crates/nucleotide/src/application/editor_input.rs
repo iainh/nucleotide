@@ -132,6 +132,48 @@ pub enum EditorSemanticAction {
     FindPrevious,
     NextBuffer,
     PreviousBuffer,
+    ExpandSelection,
+    ShrinkSelection,
+    SelectNextOccurrence,
+    SelectPreviousOccurrence,
+    SplitSelectionOnNewline,
+    MergeSelections,
+    NextDiagnostic,
+    PreviousDiagnostic,
+}
+
+impl EditorSemanticAction {
+    fn commands(self) -> &'static [&'static MappableCommand] {
+        match self {
+            Self::Undo => &[&MappableCommand::undo],
+            Self::Redo => &[&MappableCommand::redo],
+            Self::Copy => &[&MappableCommand::yank_to_clipboard],
+            Self::Cut => &[
+                &MappableCommand::yank_to_clipboard,
+                &MappableCommand::delete_selection,
+            ],
+            Self::SelectAll => &[&MappableCommand::select_all],
+            Self::FindNext => &[&MappableCommand::search_next],
+            Self::FindPrevious => &[&MappableCommand::search_prev],
+            Self::NextBuffer => &[&MappableCommand::goto_next_buffer],
+            Self::PreviousBuffer => &[&MappableCommand::goto_previous_buffer],
+            Self::ExpandSelection => &[&MappableCommand::expand_selection],
+            Self::ShrinkSelection => &[&MappableCommand::shrink_selection],
+            Self::SelectNextOccurrence => &[
+                &MappableCommand::search_selection,
+                &MappableCommand::extend_search_next,
+            ],
+            Self::SelectPreviousOccurrence => &[
+                &MappableCommand::search_selection,
+                &MappableCommand::extend_search_prev,
+            ],
+            Self::SplitSelectionOnNewline => &[&MappableCommand::split_selection_on_newline],
+            Self::MergeSelections => &[&MappableCommand::merge_selections],
+            Self::NextDiagnostic => &[&MappableCommand::goto_next_diag],
+            Self::PreviousDiagnostic => &[&MappableCommand::goto_prev_diag],
+            Self::Paste | Self::Find => &[],
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -344,22 +386,6 @@ impl EditorInputBridge {
         if action == EditorSemanticAction::Find {
             prompt_requested = Some(NativePromptRequest::Search);
         } else {
-            let commands: &[&MappableCommand] = match action {
-                EditorSemanticAction::Undo => &[&MappableCommand::undo],
-                EditorSemanticAction::Redo => &[&MappableCommand::redo],
-                EditorSemanticAction::Copy => &[&MappableCommand::yank_to_clipboard],
-                EditorSemanticAction::Cut => &[
-                    &MappableCommand::yank_to_clipboard,
-                    &MappableCommand::delete_selection,
-                ],
-                EditorSemanticAction::Paste => &[],
-                EditorSemanticAction::SelectAll => &[&MappableCommand::select_all],
-                EditorSemanticAction::FindNext => &[&MappableCommand::search_next],
-                EditorSemanticAction::FindPrevious => &[&MappableCommand::search_prev],
-                EditorSemanticAction::NextBuffer => &[&MappableCommand::goto_next_buffer],
-                EditorSemanticAction::PreviousBuffer => &[&MappableCommand::goto_previous_buffer],
-                EditorSemanticAction::Find => unreachable!(),
-            };
             let callbacks = {
                 let mut context = commands::Context {
                     editor,
@@ -375,7 +401,7 @@ impl EditorInputBridge {
                     execute_clipboard_paste(&mut context, &mut last_mode);
                     context.editor.count = None;
                 } else {
-                    for command in commands {
+                    for command in action.commands() {
                         execute_native_command(command, &mut context, &mut last_mode);
                     }
                 }
@@ -1331,24 +1357,8 @@ fn execute_editor_semantic_action(
         execute_clipboard_paste(context, &mut last_mode);
         return NativeCommandResult::Handled(Vec::new());
     }
-    let commands: &[&MappableCommand] = match action {
-        EditorSemanticAction::Undo => &[&MappableCommand::undo],
-        EditorSemanticAction::Redo => &[&MappableCommand::redo],
-        EditorSemanticAction::Copy => &[&MappableCommand::yank_to_clipboard],
-        EditorSemanticAction::Cut => &[
-            &MappableCommand::yank_to_clipboard,
-            &MappableCommand::delete_selection,
-        ],
-        EditorSemanticAction::Paste => unreachable!(),
-        EditorSemanticAction::SelectAll => &[&MappableCommand::select_all],
-        EditorSemanticAction::FindNext => &[&MappableCommand::search_next],
-        EditorSemanticAction::FindPrevious => &[&MappableCommand::search_prev],
-        EditorSemanticAction::NextBuffer => &[&MappableCommand::goto_next_buffer],
-        EditorSemanticAction::PreviousBuffer => &[&MappableCommand::goto_previous_buffer],
-        EditorSemanticAction::Find => unreachable!(),
-    };
     let mut last_mode = context.editor.mode();
-    for command in commands {
+    for command in action.commands() {
         execute_native_command(command, context, &mut last_mode);
     }
     NativeCommandResult::Handled(Vec::new())
@@ -2988,6 +2998,40 @@ mod tests {
 
         assert_eq!(outcome.prompt_requested, Some(NativePromptRequest::Search));
         assert_eq!(focused_selection_fragments(&editor), before);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn semantic_occurrence_actions_add_matches_in_the_requested_direction() {
+        for (action, expected) in [
+            (
+                EditorSemanticAction::SelectNextOccurrence,
+                vec![(12, 15), (20, 23)],
+            ),
+            (
+                EditorSemanticAction::SelectPreviousOccurrence,
+                vec![(4, 7), (12, 15)],
+            ),
+        ] {
+            let mut editor = test_editor_with_text("one cat mid cat end cat\n");
+            editor.mode = Mode::Insert;
+            set_test_selection(&mut editor, 12, 15);
+            let before_text = focused_document_text(&editor);
+            let mut bridge = EditorInputBridge::new(disposition_test_keymaps(Mode::Insert));
+            let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));
+            let mut jobs = Jobs::new();
+            bridge.handle_semantic_action(action, &mut compositor, &mut editor, &mut jobs);
+
+            let view = editor.tree.get(editor.tree.focus);
+            let selection = editor.document(view.doc).unwrap().selection(view.id);
+            let ranges = selection
+                .ranges()
+                .iter()
+                .map(|range| (range.from(), range.to()))
+                .collect::<Vec<_>>();
+            assert_eq!(ranges, expected, "{action:?}");
+            assert_eq!(focused_document_text(&editor), before_text);
+            assert_eq!(editor.mode(), Mode::Insert);
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]
