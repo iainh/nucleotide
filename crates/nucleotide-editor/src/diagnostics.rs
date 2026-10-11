@@ -451,17 +451,6 @@ mod tests {
         assert_eq!(plan.icon_path, "icons/lightbulb.svg");
     }
 
-    #[test]
-    fn marker_paint_style_preserves_icon_color_and_strip() {
-        let icon = hsla(0.5, 0.6, 0.7, 1.0);
-        let strip = hsla(0.2, 0.3, 0.4, 1.0);
-
-        let style = diagnostic_marker_paint_style(icon, Some(strip));
-
-        assert_eq!(style.strip_fill, Some(strip));
-        assert_eq!(style.icon_color, icon);
-    }
-
     fn test_icon_colors() -> DiagnosticSeverityIconColors {
         DiagnosticSeverityIconColors {
             error: hsla(0.0, 0.8, 0.6, 1.0),

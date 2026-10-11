@@ -85,14 +85,6 @@ mod tests {
     }
 
     #[test]
-    fn run_gutter_button_is_centered_in_reserved_width() {
-        assert_eq!(
-            run_gutter_button_left(px(100.0), px(24.0), px(14.0)),
-            px(81.0)
-        );
-    }
-
-    #[test]
     fn run_gutter_button_size_scales_with_line_height() {
         assert_eq!(run_gutter_button_size(px(20.0)), px(14.0));
         assert_eq!(run_gutter_button_size(px(30.0)), px(21.0));

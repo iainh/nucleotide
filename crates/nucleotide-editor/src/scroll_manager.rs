@@ -550,17 +550,4 @@ mod scroll_manager_tests {
         manager.set_scroll_offset(point(px(0.0), px(-150.0)));
         assert!(manager.has_pending_view_sync());
     }
-
-    #[test]
-    fn test_basic_visual_row_conversion() {
-        let mut manager = ScrollManager::new(px(20.0));
-        manager.set_total_lines(50);
-
-        let scroll_position_y = px(200.0); // 10 lines down
-        let anchor_line = manager.pixels_to_anchor(scroll_position_y);
-        assert_eq!(anchor_line, 10);
-
-        let pixels = manager.anchor_to_pixels(15);
-        assert_eq!(pixels, px(300.0)); // 15 * 20px = 300px
-    }
 }

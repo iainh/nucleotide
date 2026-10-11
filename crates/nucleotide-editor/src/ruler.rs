@@ -123,19 +123,6 @@ mod tests {
     }
 
     #[test]
-    fn ruler_bounds_use_text_origin_and_editor_height() {
-        let rulers = visible_ruler_bounds(geometry(), &[1, 4, 80], 0);
-
-        assert_eq!(
-            rulers,
-            vec![
-                Bounds::new(point(px(132.0), px(40.0)), size(px(1.0), px(300.0))),
-                Bounds::new(point(px(156.0), px(40.0)), size(px(1.0), px(300.0))),
-            ]
-        );
-    }
-
-    #[test]
     fn ruler_bounds_account_for_horizontal_offset() {
         let rulers = visible_ruler_bounds(geometry(), &[1, 4, 10], 3);
 

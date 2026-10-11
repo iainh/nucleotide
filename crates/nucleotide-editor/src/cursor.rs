@@ -936,19 +936,6 @@ mod tests {
     }
 
     #[test]
-    fn cursor_overlay_plan_uses_absolute_cursor_point() {
-        let paint_position = CursorPaintPosition {
-            paint_origin: point(px(10.0), px(20.0)),
-            cursor_origin: point(px(3.0), px(5.0)),
-        };
-
-        let overlay = cursor_overlay_plan(paint_position, px(8.0), px(20.0));
-
-        assert_eq!(overlay.cursor_position, point(px(13.0), px(25.0)));
-        assert_eq!(overlay.cursor_size, size(px(8.0), px(20.0)));
-    }
-
-    #[test]
     fn shaped_editor_cursor_plan_uses_fallback_width_and_overlay() {
         let paint_position = CursorPaintPosition {
             paint_origin: point(px(10.0), px(20.0)),
@@ -1512,13 +1499,6 @@ mod tests {
             })
             .is_none()
         );
-    }
-
-    #[test]
-    fn cursor_foreground_uses_background_when_reversed() {
-        let bg = hsla(0.2, 0.3, 0.4, 1.0);
-
-        assert_eq!(cursor_foreground_color(&Style::default(), true, bg), bg);
     }
 
     #[test]

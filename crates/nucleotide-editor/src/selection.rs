@@ -220,23 +220,6 @@ pub fn begin_pointer_selection_at_event(
     })
 }
 
-pub fn update_pointer_selection_at_event(
-    document: &mut Document,
-    view_id: ViewId,
-    gutter_columns: u16,
-    line_cache: &LineLayoutCache,
-    drag_state: &EditorSelectionDragState,
-    event: EditorSurfacePointerEvent,
-) -> Option<EditorPointerSelectionUpdate> {
-    let hit_test = hit_test_document_position(event, gutter_columns, line_cache, document)?;
-    let selection = update_pointer_selection(document, view_id, drag_state, hit_test.char_idx)?;
-
-    Some(EditorPointerSelectionUpdate {
-        hit_test,
-        selection,
-    })
-}
-
 fn editor_gutter_columns(editor: &Editor, doc_id: DocumentId, view_id: ViewId) -> Option<u16> {
     let document = editor.document(doc_id)?;
     let view = editor.tree.try_get(view_id)?;
@@ -261,29 +244,6 @@ pub fn begin_editor_pointer_selection_at_event(
     let document = editor.document_mut(doc_id)?;
 
     begin_pointer_selection_at_event(
-        document,
-        view_id,
-        gutter_columns,
-        line_cache,
-        drag_state,
-        event,
-    )
-}
-
-pub fn update_editor_pointer_selection_at_event(
-    editor: &mut Editor,
-    doc_id: DocumentId,
-    view_id: ViewId,
-    extra_gutter_columns: u16,
-    line_cache: &LineLayoutCache,
-    drag_state: &EditorSelectionDragState,
-    event: EditorSurfacePointerEvent,
-) -> Option<EditorPointerSelectionUpdate> {
-    let gutter_columns =
-        editor_gutter_columns(editor, doc_id, view_id)?.saturating_add(extra_gutter_columns);
-    let document = editor.document_mut(doc_id)?;
-
-    update_pointer_selection_at_event(
         document,
         view_id,
         gutter_columns,
