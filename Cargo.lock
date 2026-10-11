@@ -3824,7 +3824,7 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 [[package]]
 name = "helix-core"
 version = "25.7.1"
-source = "git+https://github.com/helix-editor/helix?rev=14d6bc0febed9c692048271a8ae2362ac969c6e0#14d6bc0febed9c692048271a8ae2362ac969c6e0"
+source = "git+https://github.com/helix-editor/helix?rev=ba40e547426b0f9896c8bdc699a4ab11f2b37dbc#ba40e547426b0f9896c8bdc699a4ab11f2b37dbc"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -3839,7 +3839,6 @@ dependencies = [
  "imara-diff",
  "log",
  "nucleo",
- "once_cell",
  "parking_lot",
  "regex",
  "regex-cursor",
@@ -3860,7 +3859,7 @@ dependencies = [
 [[package]]
 name = "helix-dap"
 version = "25.7.1"
-source = "git+https://github.com/helix-editor/helix?rev=14d6bc0febed9c692048271a8ae2362ac969c6e0#14d6bc0febed9c692048271a8ae2362ac969c6e0"
+source = "git+https://github.com/helix-editor/helix?rev=ba40e547426b0f9896c8bdc699a4ab11f2b37dbc#ba40e547426b0f9896c8bdc699a4ab11f2b37dbc"
 dependencies = [
  "anyhow",
  "futures-executor",
@@ -3881,7 +3880,7 @@ dependencies = [
 [[package]]
 name = "helix-dap-types"
 version = "25.7.1"
-source = "git+https://github.com/helix-editor/helix?rev=14d6bc0febed9c692048271a8ae2362ac969c6e0#14d6bc0febed9c692048271a8ae2362ac969c6e0"
+source = "git+https://github.com/helix-editor/helix?rev=ba40e547426b0f9896c8bdc699a4ab11f2b37dbc#ba40e547426b0f9896c8bdc699a4ab11f2b37dbc"
 dependencies = [
  "serde",
  "serde_json",
@@ -3890,14 +3889,13 @@ dependencies = [
 [[package]]
 name = "helix-event"
 version = "25.7.1"
-source = "git+https://github.com/helix-editor/helix?rev=14d6bc0febed9c692048271a8ae2362ac969c6e0#14d6bc0febed9c692048271a8ae2362ac969c6e0"
+source = "git+https://github.com/helix-editor/helix?rev=ba40e547426b0f9896c8bdc699a4ab11f2b37dbc#ba40e547426b0f9896c8bdc699a4ab11f2b37dbc"
 dependencies = [
  "anyhow",
  "foldhash 0.2.0",
  "futures-executor",
  "hashbrown 0.17.1",
  "log",
- "once_cell",
  "parking_lot",
  "tokio",
 ]
@@ -3905,7 +3903,7 @@ dependencies = [
 [[package]]
 name = "helix-loader"
 version = "25.7.1"
-source = "git+https://github.com/helix-editor/helix?rev=14d6bc0febed9c692048271a8ae2362ac969c6e0#14d6bc0febed9c692048271a8ae2362ac969c6e0"
+source = "git+https://github.com/helix-editor/helix?rev=ba40e547426b0f9896c8bdc699a4ab11f2b37dbc#ba40e547426b0f9896c8bdc699a4ab11f2b37dbc"
 dependencies = [
  "anyhow",
  "cc",
@@ -3913,7 +3911,6 @@ dependencies = [
  "globset",
  "helix-stdx",
  "log",
- "once_cell",
  "parking_lot",
  "serde",
  "sha2 0.11.0",
@@ -3961,7 +3958,7 @@ dependencies = [
 [[package]]
 name = "helix-parsec"
 version = "25.7.1"
-source = "git+https://github.com/helix-editor/helix?rev=14d6bc0febed9c692048271a8ae2362ac969c6e0#14d6bc0febed9c692048271a8ae2362ac969c6e0"
+source = "git+https://github.com/helix-editor/helix?rev=ba40e547426b0f9896c8bdc699a4ab11f2b37dbc#ba40e547426b0f9896c8bdc699a4ab11f2b37dbc"
 
 [[package]]
 name = "helix-stdx"
@@ -3970,7 +3967,6 @@ dependencies = [
  "bitflags 2.13.2",
  "dunce",
  "etcetera",
- "once_cell",
  "percent-encoding",
  "regex-automata",
  "regex-cursor",
@@ -3987,7 +3983,7 @@ dependencies = [
 [[package]]
 name = "helix-term"
 version = "25.7.1"
-source = "git+https://github.com/helix-editor/helix?rev=14d6bc0febed9c692048271a8ae2362ac969c6e0#14d6bc0febed9c692048271a8ae2362ac969c6e0"
+source = "git+https://github.com/helix-editor/helix?rev=ba40e547426b0f9896c8bdc699a4ab11f2b37dbc#ba40e547426b0f9896c8bdc699a4ab11f2b37dbc"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -4011,7 +4007,6 @@ dependencies = [
  "libc",
  "log",
  "nucleo",
- "once_cell",
  "open",
  "parking_lot",
  "pulldown-cmark",
@@ -4030,7 +4025,7 @@ dependencies = [
 [[package]]
 name = "helix-tui"
 version = "25.7.1"
-source = "git+https://github.com/helix-editor/helix?rev=14d6bc0febed9c692048271a8ae2362ac969c6e0#14d6bc0febed9c692048271a8ae2362ac969c6e0"
+source = "git+https://github.com/helix-editor/helix?rev=ba40e547426b0f9896c8bdc699a4ab11f2b37dbc#ba40e547426b0f9896c8bdc699a4ab11f2b37dbc"
 dependencies = [
  "arrayvec",
  "bitflags 2.13.2",
@@ -4039,7 +4034,6 @@ dependencies = [
  "helix-core",
  "helix-view",
  "log",
- "once_cell",
  "termina",
  "termini",
  "unicode-segmentation",
@@ -4048,7 +4042,7 @@ dependencies = [
 [[package]]
 name = "helix-vcs"
 version = "25.7.1"
-source = "git+https://github.com/helix-editor/helix?rev=14d6bc0febed9c692048271a8ae2362ac969c6e0#14d6bc0febed9c692048271a8ae2362ac969c6e0"
+source = "git+https://github.com/helix-editor/helix?rev=ba40e547426b0f9896c8bdc699a4ab11f2b37dbc#ba40e547426b0f9896c8bdc699a4ab11f2b37dbc"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -4085,7 +4079,6 @@ dependencies = [
  "kstring",
  "libc",
  "log",
- "once_cell",
  "parking_lot",
  "quickcheck",
  "rustix 1.1.5",

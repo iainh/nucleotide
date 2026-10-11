@@ -19,8 +19,8 @@ let
   helix-src = fetchFromGitHub {
     owner = "helix-editor";
     repo = "helix";
-    rev = "a05c151bb6e8e9c65ec390b0ae2afe7a5efd619b"; # tag 25.07.1
-    sha256 = lib.fakeSha256; # Replace with actual hash after first run
+    rev = "ba40e547426b0f9896c8bdc699a4ab11f2b37dbc";
+    sha256 = "sha256-ZjMduEHRsY0H8OHJ5oiF/AcxOBhIiCBwo7D+g1yYwKc=";
   };
 in
 
@@ -61,7 +61,7 @@ stdenv.mkDerivation {
     
     [source."https://github.com/helix-editor/helix"]
     git = "https://github.com/helix-editor/helix"
-    tag = "25.07.1"
+    rev = "ba40e547426b0f9896c8bdc699a4ab11f2b37dbc"
     replace-with = "vendored-helix"
     
     [source.vendored-helix]

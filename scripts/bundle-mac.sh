@@ -299,7 +299,10 @@ if [ -z "${HELIX_RUNTIME_SOURCE}" ] || [ ! -d "${HELIX_RUNTIME_SOURCE}" ]; then
     echo "  - ~/.cargo/git/checkouts/helix-*/runtime"
     echo ""
     echo "You can clone helix and copy the runtime directory:"
-    echo "  git clone --depth 1 --branch 25.07.1 https://github.com/helix-editor/helix.git helix-temp"
+    echo "  git init helix-temp"
+    echo "  git -C helix-temp remote add origin https://github.com/helix-editor/helix.git"
+    echo "  git -C helix-temp fetch --depth 1 origin ${HELIX_REV}"
+    echo "  git -C helix-temp checkout --detach FETCH_HEAD"
     echo "  cp -r helix-temp/runtime ./runtime"
     echo "  rm -rf helix-temp"
     exit 1

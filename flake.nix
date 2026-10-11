@@ -20,7 +20,7 @@
 
     # Helix repository for runtime files
     helix = {
-      url = "github:helix-editor/helix/25.07.1";
+      url = "github:helix-editor/helix/ba40e547426b0f9896c8bdc699a4ab11f2b37dbc";
       flake = false;
     };
 

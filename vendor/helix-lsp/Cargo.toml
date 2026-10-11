@@ -14,8 +14,8 @@ homepage = "https://helix-editor.com"
 
 [dependencies]
 helix-stdx = { path = "../helix-stdx" }
-helix-core = { git = "https://github.com/helix-editor/helix", rev = "14d6bc0febed9c692048271a8ae2362ac969c6e0" }
-helix-loader = { git = "https://github.com/helix-editor/helix", rev = "14d6bc0febed9c692048271a8ae2362ac969c6e0" }
+helix-core = { git = "https://github.com/helix-editor/helix", rev = "ba40e547426b0f9896c8bdc699a4ab11f2b37dbc" }
+helix-loader = { git = "https://github.com/helix-editor/helix", rev = "ba40e547426b0f9896c8bdc699a4ab11f2b37dbc" }
 helix-lsp-types = { path = "../helix-lsp-types" }
 
 anyhow = "1.0"
