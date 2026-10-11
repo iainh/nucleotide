@@ -127,9 +127,12 @@ impl PlatformDispatcher for LinuxDispatcher {
     }
 
     fn dispatch_after(&self, duration: Duration, runnable: RunnableVariant) {
-        self.timer_sender
-            .send(TimerAfter { duration, runnable })
-            .ok();
+        if let Err(err) = self.timer_sender.send(TimerAfter { duration, runnable }) {
+            // The timer thread has shut down. Dropping a scheduled runnable cancels its task
+            // and makes the next poll of any awaiter panic. Leaking leaves the task pending,
+            // which is acceptable during shutdown.
+            std::mem::forget(err);
+        }
     }
 
     fn spawn_realtime(&self, f: Box<dyn FnOnce() + Send>) {
@@ -303,6 +306,33 @@ impl<T> calloop::EventSource for PriorityQueueCalloopReceiver<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn timer_shutdown_leaves_scheduled_task_pending() {
+        use futures::{Future, task::noop_waker};
+        use std::{pin::pin, sync::Arc, task::Context};
+
+        let (main_sender, _main_receiver) = PriorityQueueCalloopReceiver::new();
+        let (background_sender, background_receiver) = PriorityQueueReceiver::new();
+        let (timer_sender, timer_receiver) = calloop::channel::channel();
+        drop(timer_receiver);
+        let dispatcher = Arc::new(LinuxDispatcher {
+            main_sender,
+            timer_sender,
+            background_sender,
+            _background_threads: Vec::new(),
+            main_thread_id: thread::current().id(),
+        });
+        let executor = gpui::BackgroundExecutor::new(dispatcher.clone());
+        let task = executor.spawn(async { 42 });
+        let runnable = background_receiver.try_iter().next().unwrap().unwrap();
+        dispatcher.dispatch_after(Duration::from_millis(1), runnable);
+
+        // Dropping the failed send would cancel this task and panic on poll.
+        let waker = noop_waker();
+        let mut cx = Context::from_waker(&waker);
+        assert!(pin!(task).as_mut().poll(&mut cx).is_pending());
+    }
 
     #[test]
     fn calloop_works() {
