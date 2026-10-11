@@ -52,7 +52,6 @@ pub mod theme_utils;
 pub mod titlebar;
 pub mod tokens;
 pub mod traits;
-pub mod utils;
 pub mod vcs_icon;
 
 #[cfg(test)]
@@ -147,7 +146,6 @@ pub use traits::{
     Interactive, KeyboardNavigable, Loadable, Measurable, Slotted, Styled, ThemedContext,
     Tooltipped, Validatable, ValidationState, compute_component_state,
 };
-pub use utils::{ExperimentalFeatures, FeatureFlags, PerformanceFeatures};
 pub use vcs_icon::{VcsIcon, VcsIconRenderer};
 // VcsStatus is now re-exported from nucleotide-types
 

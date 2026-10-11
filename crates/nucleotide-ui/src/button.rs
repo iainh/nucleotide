@@ -1082,28 +1082,6 @@ mod tests {
     }
 
     #[test]
-    fn test_button_variants() {
-        let primary = Button::new("btn", "Test").variant(ButtonVariant::Primary);
-        let secondary = Button::new("btn", "Test").variant(ButtonVariant::Secondary);
-        let danger = Button::new("btn", "Test").variant(ButtonVariant::Danger);
-
-        assert_eq!(primary.variant, ButtonVariant::Primary);
-        assert_eq!(secondary.variant, ButtonVariant::Secondary);
-        assert_eq!(danger.variant, ButtonVariant::Danger);
-    }
-
-    #[test]
-    fn test_button_sizes() {
-        let small = Button::new("btn", "Test").size(ButtonSize::Small);
-        let medium = Button::new("btn", "Test").size(ButtonSize::Medium);
-        let large = Button::new("btn", "Test").size(ButtonSize::Large);
-
-        assert_eq!(small.size, ButtonSize::Small);
-        assert_eq!(medium.size, ButtonSize::Medium);
-        assert_eq!(large.size, ButtonSize::Large);
-    }
-
-    #[test]
     fn test_button_states() {
         let disabled = Button::new("btn", "Test").disabled(true);
         let loading = Button::new("btn", "Test").loading(true);

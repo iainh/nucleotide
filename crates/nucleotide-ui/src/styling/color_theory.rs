@@ -806,19 +806,6 @@ pub struct ChromeColors {
     pub separator_color: Hsla,
 }
 
-impl ChromeColors {
-    /// Create ChromeColors with all colors set to a single color (for testing)
-    pub fn uniform(color: Hsla) -> Self {
-        Self {
-            titlebar_background: color,
-            footer_background: color,
-            file_tree_background: color,
-            tab_empty_background: color,
-            separator_color: color,
-        }
-    }
-}
-
 /// Contextually computed colors
 #[derive(Debug, Clone, Copy)]
 pub struct ContextualColors {
@@ -1007,18 +994,6 @@ mod tests {
         let hue_diff = (chrome_colors.separator_color.h - blue_surface.h).abs();
         // Allow for hue wrap-around by ensuring it's not in the middle range
         assert!(!(0.1..=0.9).contains(&hue_diff));
-    }
-
-    #[test]
-    fn test_chrome_colors_uniform() {
-        let test_color = hsla(120.0 / 360.0, 0.5, 0.6, 1.0);
-        let uniform_colors = ChromeColors::uniform(test_color);
-
-        assert_eq!(uniform_colors.titlebar_background, test_color);
-        assert_eq!(uniform_colors.footer_background, test_color);
-        assert_eq!(uniform_colors.file_tree_background, test_color);
-        assert_eq!(uniform_colors.tab_empty_background, test_color);
-        assert_eq!(uniform_colors.separator_color, test_color);
     }
 
     #[test]

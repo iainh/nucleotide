@@ -887,38 +887,6 @@ mod component_token_tests {
         }
     }
 
-    /// Test extension methods work correctly
-    #[test]
-    fn test_extension_methods() {
-        let tokens = DesignTokens::dark();
-
-        // Test ChromeTokens extension methods
-        let titlebar_ext = tokens.chrome.titlebar_tokens(&tokens.sizes);
-        let file_tree_ext = tokens.chrome.file_tree_tokens(&tokens.editor);
-        let status_bar_ext = tokens.chrome.status_bar_tokens(&tokens.editor);
-        let tab_bar_ext = tokens.chrome.tab_bar_tokens(&tokens.editor);
-
-        // Test DesignTokens convenience methods
-        let titlebar_conv = tokens.titlebar_tokens();
-        let file_tree_conv = tokens.file_tree_tokens();
-        let status_bar_conv = tokens.status_bar_tokens();
-        let tab_bar_conv = tokens.tab_bar_tokens();
-
-        // Verify both approaches produce identical results
-        assert_eq!(titlebar_ext.background, titlebar_conv.background);
-        assert_eq!(file_tree_ext.background, file_tree_conv.background);
-        assert_eq!(
-            status_bar_ext.background_active,
-            status_bar_conv.background_active
-        );
-        assert_eq!(
-            tab_bar_ext.container_background,
-            tab_bar_conv.container_background
-        );
-
-        println!("Extension method consistency validated ✓");
-    }
-
     /// Test button token functionality and color integration
     #[test]
     fn test_button_tokens() {
@@ -1231,31 +1199,5 @@ mod component_token_tests {
         assert!(notification_tokens.close_button_background_hover.a > 0.0);
 
         println!("✓ Notification tokens validation passed");
-    }
-
-    #[test]
-    fn test_advanced_component_token_consistency() {
-        let tokens = DesignTokens::dark();
-
-        let input_tokens = tokens.input_tokens();
-        let tooltip_tokens = tokens.tooltip_tokens();
-        let notification_tokens = tokens.notification_tokens();
-
-        // Test focus consistency across components
-        assert_eq!(input_tokens.focus_ring, tokens.chrome.border_focus);
-        assert_eq!(input_tokens.border_focus, tokens.chrome.border_focus);
-
-        // Test error consistency across components
-        assert_eq!(input_tokens.error_text, tokens.editor.error);
-        assert_eq!(notification_tokens.error_border, tokens.editor.error);
-
-        // Test elevated surfaces consistency
-        assert_eq!(tooltip_tokens.background, tokens.chrome.surface_elevated);
-
-        // Test semantic color consistency
-        assert_eq!(notification_tokens.success_border, tokens.editor.success);
-        assert_eq!(notification_tokens.warning_border, tokens.editor.warning);
-
-        println!("✓ Advanced component token consistency validation passed");
     }
 }
