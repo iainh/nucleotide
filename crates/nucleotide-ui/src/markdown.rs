@@ -21,8 +21,10 @@ use pulldown_cmark::{
 };
 use std::{
     borrow::Cow,
+    cell::RefCell,
     ops::Range,
     panic::{AssertUnwindSafe, catch_unwind},
+    rc::Rc,
     sync::Arc,
 };
 
@@ -53,6 +55,8 @@ pub struct MarkdownStyle {
     pub alert_important_color: Hsla,
     pub alert_warning_color: Hsla,
     pub alert_caution_color: Hsla,
+    selection: Option<MarkdownSelection>,
+    selection_color: Hsla,
 }
 
 impl MarkdownStyle {
@@ -81,11 +85,13 @@ impl MarkdownStyle {
             alert_important_color: tokens.editor.info,
             alert_warning_color: tokens.editor.warning,
             alert_caution_color: tokens.editor.error,
+            selection: None,
+            selection_color: tokens.editor.selection_primary,
         }
     }
 
     pub fn preview_from_tokens(tokens: &DesignTokens) -> Self {
-        let body_font_size = tokens.sizes.text_base;
+        let body_font_size = tokens.sizes.text_lg;
         let mut style = Self::from_tokens(tokens);
         style.preview = true;
         style.body_font_size = body_font_size;
@@ -137,6 +143,7 @@ pub struct MarkdownElement {
     source: SharedString,
     style: MarkdownStyle,
     parse_mode: MarkdownParseMode,
+    selection: Option<(ElementId, gpui::FocusHandle)>,
 }
 
 pub fn markdown(source: impl Into<SharedString>, style: MarkdownStyle) -> MarkdownElement {
@@ -144,6 +151,7 @@ pub fn markdown(source: impl Into<SharedString>, style: MarkdownStyle) -> Markdo
         source: source.into(),
         style,
         parse_mode: MarkdownParseMode::CommonMark,
+        selection: None,
     }
 }
 
@@ -152,11 +160,36 @@ pub fn markdown_extended(source: impl Into<SharedString>, style: MarkdownStyle) 
         source: source.into(),
         style,
         parse_mode: MarkdownParseMode::Extended,
+        selection: None,
+    }
+}
+
+impl MarkdownElement {
+    /// Enable document-wide mouse selection and platform Copy/Select All shortcuts.
+    pub fn selectable(mut self, id: impl Into<ElementId>, focus: gpui::FocusHandle) -> Self {
+        self.selection = Some((id.into(), focus));
+        self
     }
 }
 
 impl RenderOnce for MarkdownElement {
-    fn render(self, _window: &mut Window, cx: &mut gpui::App) -> impl IntoElement {
+    fn render(mut self, window: &mut Window, cx: &mut gpui::App) -> impl IntoElement {
+        let selection = self.selection.map(|(id, focus)| {
+            let state = window.use_keyed_state(id.clone(), cx, |_, _| MarkdownSelection::default());
+            let selection = state.read(cx).clone();
+            {
+                let mut state = selection.0.borrow_mut();
+                if state.source != self.source {
+                    *state = MarkdownSelectionState {
+                        source: self.source.clone(),
+                        ..Default::default()
+                    };
+                }
+                state.nodes.clear();
+            }
+            self.style.selection = Some(selection.clone());
+            (id, focus, selection)
+        });
         let document = MarkdownDocument::parse_with_mode(&self.source, self.parse_mode);
         let helix_theme = cx
             .try_global::<crate::theme_manager::ThemeManager>()
@@ -165,8 +198,202 @@ impl RenderOnce for MarkdownElement {
             .try_global::<MarkdownSyntaxLoader>()
             .map(MarkdownSyntaxLoader::loader);
 
-        render_document(document, self.style, helix_theme, syntax_loader)
+        let content = render_document(document, self.style, helix_theme, syntax_loader);
+        if let Some((id, focus, selection)) = selection {
+            selectable_document(content, id, focus, selection).into_any_element()
+        } else {
+            content.into_any_element()
+        }
     }
+}
+
+#[derive(Clone, Default)]
+struct MarkdownSelection(Rc<RefCell<MarkdownSelectionState>>);
+
+impl std::fmt::Debug for MarkdownSelection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MarkdownSelection").finish_non_exhaustive()
+    }
+}
+
+#[derive(Default)]
+struct MarkdownSelectionState {
+    source: SharedString,
+    nodes: Vec<(SharedString, gpui::TextLayout)>,
+    anchor: Option<(usize, usize)>,
+    head: Option<(usize, usize)>,
+    dragging: bool,
+}
+
+impl MarkdownSelectionState {
+    fn range_for(&self, node: usize, len: usize) -> Range<usize> {
+        let Some((anchor, head)) = self.anchor.zip(self.head) else {
+            return 0..0;
+        };
+        let (start, end) = if anchor <= head {
+            (anchor, head)
+        } else {
+            (head, anchor)
+        };
+        if node < start.0 || node > end.0 {
+            return 0..0;
+        }
+        let start = if node == start.0 { start.1.min(len) } else { 0 };
+        let end = if node == end.0 { end.1.min(len) } else { len };
+        start..end
+    }
+
+    fn selected_text(&self) -> String {
+        self.nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(node, (text, _))| {
+                let range = self.range_for(node, text.len());
+                (!range.is_empty()).then(|| &text[range])
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    }
+
+    fn position(&self, point: gpui::Point<Pixels>) -> Option<(usize, usize)> {
+        // The nearest rectangle also resolves drags through margins, between blocks,
+        // and above/below the document. Table cells need both axes, not just y.
+        self.nodes
+            .iter()
+            .enumerate()
+            .min_by(|(_, (_, a)), (_, (_, b))| {
+                let distance = |layout: &gpui::TextLayout| {
+                    let bounds = layout.bounds();
+                    let dx = f32::from(
+                        (bounds.left() - point.x)
+                            .max(point.x - bounds.right())
+                            .max(px(0.0)),
+                    );
+                    let dy = f32::from(
+                        (bounds.top() - point.y)
+                            .max(point.y - bounds.bottom())
+                            .max(px(0.0)),
+                    );
+                    dx * dx + dy * dy
+                };
+                distance(a).total_cmp(&distance(b))
+            })
+            .map(|(node, (_, layout))| {
+                let index = layout
+                    .index_for_position(point)
+                    .unwrap_or_else(|index| index);
+                (node, index)
+            })
+    }
+}
+
+fn selectable_document(
+    content: gpui::Div,
+    id: ElementId,
+    focus: gpui::FocusHandle,
+    selection: MarkdownSelection,
+) -> impl IntoElement {
+    let down = selection.clone();
+    let moving = selection.clone();
+    let up = selection.clone();
+    let up_out = selection.clone();
+    div()
+        .id(id)
+        .w_full()
+        .focusable()
+        .track_focus(&focus)
+        .cursor_text()
+        .on_mouse_down(MouseButton::Left, move |event, window, _cx| {
+            let mut state = down.0.borrow_mut();
+            let position = state.position(event.position);
+            if !event.modifiers.shift || state.anchor.is_none() {
+                state.anchor = position;
+            }
+            state.head = position;
+            state.dragging = true;
+            window.refresh();
+        })
+        .on_mouse_up(MouseButton::Left, move |_, _, _| {
+            up.0.borrow_mut().dragging = false;
+        })
+        .on_mouse_up_out(MouseButton::Left, move |_, _, _| {
+            up_out.0.borrow_mut().dragging = false;
+        })
+        .on_key_down(move |event, window, cx| {
+            let modifiers = event.keystroke.modifiers;
+            let command = if cfg!(target_os = "macos") {
+                modifiers.platform
+            } else {
+                modifiers.control
+            };
+            if command && !modifiers.alt && !modifiers.shift {
+                let mut state = selection.0.borrow_mut();
+                match event.keystroke.key.as_str() {
+                    "c" => {
+                        let text = state.selected_text();
+                        if !text.is_empty() {
+                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+                        }
+                    }
+                    "a" => {
+                        state.anchor = Some((0, 0));
+                        state.head = state
+                            .nodes
+                            .last()
+                            .map(|(text, _)| (state.nodes.len() - 1, text.len()));
+                        window.refresh();
+                    }
+                    _ => return,
+                }
+                cx.stop_propagation();
+                window.prevent_default();
+            }
+        })
+        // Keep receiving drag motion outside the reading column's hitbox.
+        .child(
+            gpui::canvas(
+                |_, _, _| (),
+                move |_, _, window, _| {
+                    window.on_mouse_event(move |event: &gpui::MouseMoveEvent, phase, window, _| {
+                        if phase == gpui::DispatchPhase::Bubble {
+                            let mut state = moving.0.borrow_mut();
+                            if state.dragging && event.pressed_button == Some(MouseButton::Left) {
+                                state.head = state.position(event.position);
+                                window.refresh();
+                            }
+                        }
+                    });
+                },
+            )
+            .size(px(0.0)),
+        )
+        .child(content)
+}
+
+fn selectable_styled_text(
+    text: SharedString,
+    highlights: Vec<(Range<usize>, HighlightStyle)>,
+    style: &MarkdownStyle,
+) -> StyledText {
+    let Some(selection) = &style.selection else {
+        return StyledText::new(text).with_highlights(highlights);
+    };
+    let mut state = selection.0.borrow_mut();
+    let range = state.range_for(state.nodes.len(), text.len());
+    let selection_highlight = HighlightStyle {
+        background_color: Some(style.selection_color),
+        ..Default::default()
+    };
+    let highlights = gpui::combine_highlights(highlights, [(range.clone(), selection_highlight)])
+        .map(|(span, mut highlight)| {
+            if range.contains(&span.start) {
+                highlight.background_color = Some(style.selection_color);
+            }
+            (span, highlight)
+        });
+    let element = StyledText::new(text.clone()).with_highlights(highlights);
+    state.nodes.push((text, element.layout().clone()));
+    element
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -380,6 +607,7 @@ impl RichText {
     fn into_render_parts(self, style: &MarkdownStyle) -> RichTextRenderParts {
         let mut text = String::new();
         let mut highlights = Vec::new();
+        let mut code_fonts = Vec::new();
         let mut links = Vec::new();
 
         for span in self.spans {
@@ -389,6 +617,10 @@ impl RichText {
 
             if let Some(highlight) = span.style.highlight(style) {
                 highlights.push((start..end, highlight));
+            }
+
+            if span.style.code && start < end {
+                code_fonts.push((start..end, style.code_font_family.clone()));
             }
 
             if let Some(url) = span.style.link_url
@@ -405,6 +637,7 @@ impl RichText {
         RichTextRenderParts {
             text: SharedString::from(text),
             highlights,
+            code_fonts,
             links,
         }
     }
@@ -445,6 +678,7 @@ struct LinkRange {
 struct RichTextRenderParts {
     text: SharedString,
     highlights: Vec<(Range<usize>, HighlightStyle)>,
+    code_fonts: Vec<(Range<usize>, SharedString)>,
     links: Vec<LinkRange>,
 }
 
@@ -1483,6 +1717,7 @@ fn render_document(
         .flex_none()
         .w_full()
         .gap(gap)
+        .line_height(relative(if style.compact { 1.45 } else { 1.55 }))
         .children(elements)
 }
 
@@ -1531,7 +1766,7 @@ fn render_blocks(
                         .text_size(preview_heading_size(style, level))
                         .when(block_index > 0, |this| this.mt(px(22.0)))
                         .mb(px(10.0))
-                        .when(level <= 3, |this| {
+                        .when(level <= 2, |this| {
                             this.pb(px(5.0)).border_b_1().border_color(
                                 style.heading_border_color.unwrap_or(style.rule_color),
                             )
@@ -1642,7 +1877,8 @@ fn render_rich_text_fragment(
     element_id: impl Into<gpui::ElementId>,
 ) -> gpui::Div {
     let parts = text.into_render_parts(style);
-    let text = StyledText::new(visible_rich_text(&parts.text)).with_highlights(parts.highlights);
+    let text = selectable_styled_text(visible_rich_text(&parts.text), parts.highlights, style)
+        .with_font_family_overrides(parts.code_fonts);
     let text = if parts.links.is_empty() {
         text.into_any_element()
     } else {
@@ -1654,9 +1890,16 @@ fn render_rich_text_fragment(
         let click_links = parts.links.clone();
         let tooltip_links = parts.links;
         let tooltip_style = style.clone();
+        let selection = style.selection.clone();
 
         InteractiveText::new(element_id, text)
             .on_click(click_ranges, move |range_ix, _window, cx| {
+                if selection.as_ref().is_some_and(|selection| {
+                    let state = selection.0.borrow();
+                    state.anchor != state.head
+                }) {
+                    return;
+                }
                 let Some(link) = click_links.get(range_ix) else {
                     return;
                 };
@@ -1939,7 +2182,11 @@ fn render_code_block(
             |this| this.overflow_x_scroll(),
             |this| this.overflow_hidden(),
         )
-        .child(StyledText::new(visible_code_text(&content)).with_highlights(highlights));
+        .child(selectable_styled_text(
+            visible_code_text(&content),
+            highlights,
+            style,
+        ));
 
     let block = if let Some(language) = language {
         div()
@@ -2985,6 +3232,10 @@ fn render_list_item(
             .child(bullet_for_depth(depth))
             .into_any_element()
     };
+    let needs_empty_placeholder = list_item_needs_empty_placeholder(&text, !children.is_empty());
+    // Register selectable text in reading order, before the nested blocks.
+    let text = (!text.is_empty())
+        .then(|| render_rich_text(text, style, style.body_color, block_id.to_string()));
     let child_blocks = render_blocks(
         children,
         style,
@@ -2992,32 +3243,16 @@ fn render_list_item(
         syntax_loader,
         &format!("{block_id}-child"),
     );
-    let needs_empty_placeholder =
-        list_item_needs_empty_placeholder(&text, !child_blocks.is_empty());
-    let content = if text.is_empty() {
-        div()
-            .flex()
-            .flex_col()
-            .flex_1()
-            .gap(block_gap(style))
-            .when(needs_empty_placeholder, |this| {
-                this.child(div().h(style.body_font_size))
-            })
-            .children(child_blocks)
-    } else {
-        div()
-            .flex()
-            .flex_col()
-            .flex_1()
-            .gap(block_gap(style))
-            .child(render_rich_text(
-                text,
-                style,
-                style.body_color,
-                block_id.to_string(),
-            ))
-            .children(child_blocks)
-    };
+    let content = div()
+        .flex()
+        .flex_col()
+        .flex_1()
+        .gap(block_gap(style))
+        .when(needs_empty_placeholder, |this| {
+            this.child(div().h(style.body_font_size))
+        })
+        .when_some(text, |this, text| this.child(text))
+        .children(child_blocks);
 
     // Allow the text column to shrink beside its marker and wrap in narrow panels.
     let content = content.min_w(px(0.0));
@@ -4854,6 +5089,126 @@ plain"#,
         cx.run_until_parked();
         cx.simulate_click(point(px(12.0), px(12.0)), Modifiers::default());
 
+        assert_eq!(cx.opened_url().as_deref(), Some("https://example.com"));
+    }
+
+    struct SelectableMarkdownFixture {
+        source: SharedString,
+        focus: gpui::FocusHandle,
+    }
+
+    impl Render for SelectableMarkdownFixture {
+        fn render(
+            &mut self,
+            _window: &mut Window,
+            cx: &mut gpui::Context<Self>,
+        ) -> impl IntoElement {
+            let focus = self.focus.clone();
+            div()
+                .w(px(300.0))
+                .h(px(600.0))
+                .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                    window.focus(&focus, cx)
+                })
+                .child(
+                    markdown_extended(
+                        self.source.clone(),
+                        MarkdownStyle::preview_from_tokens(&DesignTokens::dark()),
+                    )
+                    .selectable("selection-fixture", self.focus.clone()),
+                )
+        }
+    }
+
+    #[gpui::test]
+    fn markdown_selection_copies_rendered_text_across_blocks(cx: &mut gpui::TestAppContext) {
+        use gpui::{Modifiers, point};
+        let source = SharedString::from("élan **bold**\n\n```\nlet x = 7;\n```");
+        let (view, cx) = cx.add_window_view(move |_, cx| SelectableMarkdownFixture {
+            source,
+            focus: cx.focus_handle(),
+        });
+        cx.run_until_parked();
+        let first = point(px(0.0), px(8.0));
+        let last = point(px(280.0), px(60.0));
+        let outside = point(px(340.0), px(60.0));
+        let copy = if cfg!(target_os = "macos") {
+            "cmd-c"
+        } else {
+            "ctrl-c"
+        };
+        for (start, end) in [(first, outside), (last, first)] {
+            cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+            cx.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+            cx.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+            cx.simulate_keystrokes(copy);
+            assert_eq!(
+                cx.read_from_clipboard()
+                    .and_then(|item| item.text())
+                    .as_deref(),
+                Some("élan bold\n\nlet x = 7;")
+            );
+        }
+
+        // A changed document must not retain stale byte offsets or copy old text.
+        view.update(cx, |view, cx| {
+            view.source = "New".into();
+            cx.notify();
+        });
+        cx.run_until_parked();
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string("unchanged".into()));
+        cx.simulate_keystrokes(copy);
+        assert_eq!(
+            cx.read_from_clipboard()
+                .and_then(|item| item.text())
+                .as_deref(),
+            Some("unchanged")
+        );
+        cx.simulate_keystrokes(if cfg!(target_os = "macos") {
+            "cmd-a cmd-c"
+        } else {
+            "ctrl-a ctrl-c"
+        });
+        assert_eq!(
+            cx.read_from_clipboard()
+                .and_then(|item| item.text())
+                .as_deref(),
+            Some("New")
+        );
+    }
+
+    #[gpui::test]
+    fn markdown_selection_preserves_links_and_reading_order(cx: &mut gpui::TestAppContext) {
+        use gpui::{Modifiers, point};
+        let source = SharedString::from(
+            "[docs](https://example.com)\n\n- parent\n  - child\n\n> quote\n\n| A | B |\n| - | - |\n| left | right |",
+        );
+        let (_view, cx) = cx.add_window_view(move |_, cx| SelectableMarkdownFixture {
+            source,
+            focus: cx.focus_handle(),
+        });
+        cx.run_until_parked();
+        let start = point(px(0.0), px(8.0));
+        let end = point(px(280.0), px(8.0));
+        cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+        cx.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+        cx.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+        assert!(
+            cx.opened_url().is_none(),
+            "dragging a link must not open it"
+        );
+        cx.simulate_keystrokes(if cfg!(target_os = "macos") {
+            "cmd-a cmd-c"
+        } else {
+            "ctrl-a ctrl-c"
+        });
+        assert_eq!(
+            cx.read_from_clipboard()
+                .and_then(|item| item.text())
+                .as_deref(),
+            Some("docs\n\nparent\n\nchild\n\nquote\n\nA\n\nB\n\nleft\n\nright")
+        );
+        cx.simulate_click(point(px(12.0), px(8.0)), Modifiers::default());
         assert_eq!(cx.opened_url().as_deref(), Some("https://example.com"));
     }
 
