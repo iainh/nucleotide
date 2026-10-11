@@ -4478,29 +4478,6 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn local_backend_run_process_kills_timed_out_child() {
-        let temp = tempfile::tempdir().unwrap();
-        let backend = LocalWorkspaceBackend;
-
-        let output = block_on(backend.run_process(ProcessSpec {
-            program: "tail".to_string(),
-            args: vec!["-f".to_string(), "/dev/null".to_string()],
-            cwd: temp.path().to_path_buf(),
-            env: BTreeMap::new(),
-            clear_env: false,
-            inherit_project_environment: false,
-            stdin: Vec::new(),
-            max_output_bytes: None,
-            timeout_ms: Some(20),
-        }))
-        .unwrap();
-
-        assert!(!output.success);
-        assert!(output.timed_out);
-    }
-
-    #[cfg(unix)]
-    #[test]
     fn local_backend_run_process_kills_timed_out_process_group() {
         let temp = tempfile::tempdir().unwrap();
         let backend = LocalWorkspaceBackend;
@@ -4708,20 +4685,6 @@ mod tests {
     }
 
     #[test]
-    fn ssh_display_path_encodes_native_path_for_target() {
-        let target = SshWorkspaceTarget {
-            host: "example.com".to_string(),
-            user: Some("me".to_string()),
-            port: Some(2222),
-        };
-
-        assert_eq!(
-            ssh_display_path(&target, Path::new("/home/me/Project One/src/lib.rs")),
-            PathBuf::from("ssh://me@example.com:2222/home/me/Project%20One/src/lib.rs")
-        );
-    }
-
-    #[test]
     fn ssh_display_path_normalizes_mixed_native_separators() {
         let target = SshWorkspaceTarget {
             host: "example.com".to_string(),
@@ -4751,14 +4714,6 @@ mod tests {
         assert_eq!(
             wsl_display_path("Ubuntu-24.04", Path::new(r"/home\me/project\src")),
             PathBuf::from("//wsl.localhost/Ubuntu-24.04/home/me/project/src")
-        );
-    }
-
-    #[test]
-    fn wsl_display_path_uses_localhost_unc_shape() {
-        assert_eq!(
-            wsl_display_path("Ubuntu-24.04", Path::new("/home/me/project")),
-            PathBuf::from("//wsl.localhost/Ubuntu-24.04/home/me/project")
         );
     }
 
