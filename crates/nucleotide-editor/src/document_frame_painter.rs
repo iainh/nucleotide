@@ -346,11 +346,43 @@ impl NativeEditorPreparedFrame {
         let geometry =
             EditorSurfaceGeometry::new(plan.bounds, frame.gutter_width, layout.cell_width);
         let paint_position = if let Some(wrapped) = &frame.soft_wrap_render_plan {
+            let line_layout = wrapped
+                .line_paint_plans(
+                    layout.line_height,
+                    self.frame_state.scroll_line_offset,
+                    frame.render_snapshot.cursor_line,
+                )
+                .into_iter()
+                .zip(&frame.soft_wrap_line_runs)
+                .find(|(line, _)| {
+                    frame
+                        .soft_wrap_cursor_position
+                        .as_ref()
+                        .is_some_and(|cursor| {
+                            line.visual.visual_line == cursor.visual_line
+                                && !line.visual.is_phantom_line
+                        })
+                })
+                .map(|(line, runs)| {
+                    let runs = crate::line_text::normalize_text_runs_for_display_text(
+                        line.visual.text.as_ref(),
+                        runs,
+                    );
+                    let shaped = self.frame_state.line_cache.shape_line_cached(
+                        text_system,
+                        line.visual.text.clone(),
+                        plan.font_size,
+                        plan.bounds.size.width,
+                        runs.as_ref(),
+                    );
+                    crate::LineLayout::from_soft_wrap_visual(line.visual, shaped, line.y_offset)
+                });
             soft_wrap_cursor_paint_plan(SoftWrapCursorPaintPlanParams {
                 text: plan.text.slice(..),
                 text_format: &wrapped.text_format,
                 text_annotations: None,
                 precomputed_visual_position: frame.soft_wrap_cursor_position.clone(),
+                line_layout: line_layout.as_ref(),
                 anchor: wrapped.view_offset.anchor,
                 cursor_char_idx: frame.cursor_presentation.cursor_char_idx,
                 geometry,
@@ -1023,6 +1055,7 @@ fn paint_soft_wrap_document_frame(
         params.scroll_line_offset,
         frame.render_snapshot.cursor_line,
     );
+    let mut cursor_line_layout = None;
 
     for (line_plan, line_runs) in soft_wrap_paint_plans
         .into_iter()
@@ -1054,6 +1087,13 @@ fn paint_soft_wrap_document_frame(
         ) {
             Ok(Some(layout)) => {
                 source_line_width = layout.shaped_line.width;
+                if frame
+                    .soft_wrap_cursor_position
+                    .as_ref()
+                    .is_some_and(|cursor| line_plan.visual.visual_line == cursor.visual_line)
+                {
+                    cursor_line_layout = Some(layout.clone());
+                }
                 params.line_cache.push(layout);
             }
             Ok(None) => {}
@@ -1128,7 +1168,7 @@ fn paint_soft_wrap_document_frame(
         },
     );
 
-    paint_soft_wrap_cursor(window, cx, &params)
+    paint_soft_wrap_cursor(window, cx, &params, cursor_line_layout.as_ref())
 }
 
 fn paint_unwrapped_document_frame(
@@ -1315,6 +1355,7 @@ fn paint_soft_wrap_cursor(
     window: &mut Window,
     cx: &mut App,
     params: &SoftWrapDocumentFramePaintParams<'_>,
+    line_layout: Option<&crate::LineLayout>,
 ) -> Option<CursorOverlayPlan> {
     let frame = params.frame;
     let soft_wrap_render_plan = frame.soft_wrap_render_plan.as_ref()?;
@@ -1323,6 +1364,7 @@ fn paint_soft_wrap_cursor(
         text_format: &soft_wrap_render_plan.text_format,
         text_annotations: None,
         precomputed_visual_position: frame.soft_wrap_cursor_position.clone(),
+        line_layout,
         anchor: soft_wrap_render_plan.view_offset.anchor,
         cursor_char_idx: frame.cursor_presentation.cursor_char_idx,
         geometry: EditorSurfaceGeometry::new(
@@ -1975,6 +2017,112 @@ mod tests {
     }
 
     #[gpui::test]
+    fn native_pointer_clicks_select_empty_document_lines(cx: &mut gpui::TestAppContext) {
+        use crate::NativeEditorView;
+        use gpui::{AppContext as _, Empty, IntoElement as _, MouseButton};
+        use std::{cell::RefCell, rc::Rc};
+
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let _guard = runtime.enter();
+        let entity_id = cx.update(|cx| cx.new(|_| Empty).entity_id());
+        let window = cx.add_empty_window();
+
+        for wrapped in [false, true] {
+            let mut config = Config::default();
+            config.soft_wrap.enable = Some(wrapped);
+            let (editor, doc_id, view_id) = test_editor_with_config("first\n\n\nlast\n", config);
+            let editor = Rc::new(RefCell::new(editor));
+            let state = EditorViewState::new(px(20.0), px(8.0));
+            let editor_prepare = editor.clone();
+            let editor_pointer = editor.clone();
+            let state_pointer = state.clone();
+            let theme = theme::Loader::new(&[]).default_theme(true);
+            let paint_theme = theme.clone();
+            let style = TextStyle::default();
+            let paint_style = style.clone();
+
+            window.draw(
+                point(px(37.0), px(19.0)),
+                size(px(500.0), px(160.0)),
+                |_, _| {
+                    NativeEditorView::new(
+                        entity_id,
+                        state.clone(),
+                        style.clone(),
+                        move |state, bounds, layout, _, _| {
+                            let font_size = layout.font_size;
+                            prepare_native_editor_frame(NativeEditorFramePrepareParams {
+                                editor: &mut editor_prepare.borrow_mut(),
+                                view_id,
+                                editor_state: state,
+                                theme: &theme,
+                                bounds,
+                                layout,
+                                text_style: &style,
+                                font_size,
+                                is_focused: true,
+                                soft_wrap_minimum_columns: EDITOR_MINIMUM_VIEWPORT_COLUMNS,
+                                theme_styles: NativeEditorFrameThemeStyles::default(),
+                                palette: paint_palette(),
+                            })
+                            .unwrap()
+                        },
+                        move |state, prepared, layout, window, cx| {
+                            paint_native_editor_frame(
+                                window,
+                                cx,
+                                NativeEditorFramePaintParams {
+                                    editor_state: state,
+                                    frame_state: &prepared.frame_state,
+                                    plan: &prepared.paint_plan,
+                                    layout,
+                                    text_style: &paint_style,
+                                    diagnostic_theme: &paint_theme,
+                                    element_focused: true,
+                                },
+                            )
+                        },
+                    )
+                    .on_pointer_selection(move |phase, event, _| {
+                        state_pointer
+                            .handle_pointer_selection_for_view_outcome(
+                                &mut editor_pointer.borrow_mut(),
+                                view_id,
+                                phase,
+                                event,
+                            )
+                            .is_some_and(|outcome| outcome.changed())
+                    })
+                    .into_element()
+                },
+            );
+
+            let metrics = state.surface_metrics().get();
+            // Consecutive empty rows, a populated-row control, and trailing EOF.
+            // Far-right clicks must still land at column zero of each empty row.
+            for (row, column, expected_char) in
+                [(1, 1.0, 6), (2, 30.0, 7), (3, 2.2, 10), (4, 30.0, 13)]
+            {
+                let position = point(
+                    px(37.0) + state.layout_snapshot().gutter_width + metrics.cell_width * column,
+                    px(19.0) + metrics.line_height * (row as f32 + 0.5),
+                );
+                window.simulate_mouse_down(position, MouseButton::Left, gpui::Modifiers::none());
+                window.simulate_mouse_up(position, MouseButton::Left, gpui::Modifiers::none());
+                let editor = editor.borrow();
+                let doc = editor.document(doc_id).unwrap();
+                assert_eq!(
+                    doc.selection(view_id)
+                        .primary()
+                        .cursor(doc.text().slice(..)),
+                    expected_char,
+                    "wrapped={wrapped}, row={row}, column={column}",
+                );
+            }
+        }
+    }
+
+    #[gpui::test]
     fn native_geometry_matches_paint_and_pointer_on_first_frame_and_resize(
         cx: &mut gpui::TestAppContext,
     ) {
@@ -1993,7 +2141,7 @@ mod tests {
         for wrapped in [false, true] {
             let mut config = Config::default();
             config.soft_wrap.enable = Some(wrapped);
-            let text = "0123456789 abcdefghijklmnopqrstuvwxyz ".repeat(6) + "\n\twide 界 text\n";
+            let text = "012界456789 abcdefghijklmnopqrstuvwxyz ".repeat(6) + "\n\twide 界 text\n";
             let (mut editor, doc_id, view_id) = test_editor_with_config(&text.repeat(100), config);
             editor
                 .document_mut(doc_id)
@@ -2118,9 +2266,19 @@ mod tests {
                 }
                 previous_rows = rows;
 
+                // The test font shapes 界 as one cell, while Helix counts two
+                // visual columns. Cursor x must follow glyphs, not grid columns.
+                let metrics = state.surface_metrics().get();
+                let expected_x =
+                    px(37.0) + state.layout_snapshot().gutter_width + metrics.cell_width * 7.0;
+                let actual_x = anchor.get().unwrap().cursor_position.x;
+                assert!(
+                    (actual_x - expected_x).abs() < px(0.01),
+                    "cursor must align with shaped text for wrapped={wrapped}, width={width}: {actual_x:?} != {expected_x:?}",
+                );
+
                 // Click the first line at the third ASCII cell using the new
                 // gutter and metrics immediately, without another draw.
-                let metrics = state.surface_metrics().get();
                 let position = point(
                     px(37.0) + state.layout_snapshot().gutter_width + metrics.cell_width * 2.2,
                     px(19.0) + metrics.line_height / 2.0,
@@ -2193,7 +2351,7 @@ mod tests {
                     .borrow_mut()
                     .document_mut(doc_id)
                     .unwrap()
-                    .set_selection(view_id, helix_core::Selection::single(2, 2));
+                    .set_selection(view_id, helix_core::Selection::single(7, 7));
             }
         }
     }

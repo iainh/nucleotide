@@ -402,6 +402,7 @@ pub struct SoftWrapCursorPaintPlanParams<'a, 'b> {
     pub text_format: &'b TextFormat,
     pub text_annotations: Option<&'b TextAnnotations<'a>>,
     pub precomputed_visual_position: Option<SoftWrapVisualPosition>,
+    pub line_layout: Option<&'b LineLayout>,
     pub anchor: usize,
     pub cursor_char_idx: usize,
     pub geometry: EditorSurfaceGeometry,
@@ -672,7 +673,7 @@ pub fn soft_wrap_cursor_paint_plan(
             params.cursor_char_idx,
         )
     })?;
-    let paint_position = soft_wrap_cursor_paint_position(SoftWrapCursorPaintPositionParams {
+    let mut paint_position = soft_wrap_cursor_paint_position(SoftWrapCursorPaintPositionParams {
         geometry: params.geometry,
         line_height: params.line_height,
         cell_width: params.cell_width,
@@ -682,6 +683,17 @@ pub fn soft_wrap_cursor_paint_plan(
         viewport_height: params.viewport_height,
         horizontal_offset: params.horizontal_offset,
     })?;
+
+    if let Some(line_layout) = params.line_layout {
+        let line = params.text.line(line_layout.line_idx);
+        let char_offset = params.cursor_char_idx - params.text.line_to_char(line_layout.line_idx);
+        let byte_offset =
+            line.char_to_byte(char_offset) - line.char_to_byte(line_layout.segment_char_offset);
+        let display_byte = line_layout.display_byte_for_source_byte(byte_offset);
+        paint_position.paint_origin.x = params.geometry.text_bounds().origin.x
+            + line_layout.origin.x
+            + line_layout.shaped_line.x_for_index(display_byte);
+    }
 
     Some(SoftWrapCursorPaintPlan {
         visual_position,
@@ -1119,6 +1131,7 @@ mod tests {
             text_format: &text_format,
             text_annotations: None,
             precomputed_visual_position: None,
+            line_layout: None,
             anchor: 0,
             cursor_char_idx: 16,
             geometry,
@@ -1160,6 +1173,7 @@ mod tests {
             text_format: &text_format,
             text_annotations: Some(&text_annotations),
             precomputed_visual_position: None,
+            line_layout: None,
             anchor: 0,
             cursor_char_idx: 2,
             geometry,
@@ -1198,6 +1212,7 @@ mod tests {
                 text_format: &text_format,
                 text_annotations: None,
                 precomputed_visual_position: None,
+                line_layout: None,
                 anchor: 0,
                 cursor_char_idx: 16,
                 geometry,
@@ -1228,6 +1243,7 @@ mod tests {
                 text_format: &text_format,
                 text_annotations: None,
                 precomputed_visual_position: None,
+                line_layout: None,
                 anchor: 16,
                 cursor_char_idx: 0,
                 geometry,

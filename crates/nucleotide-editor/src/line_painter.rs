@@ -177,7 +177,11 @@ pub fn paint_soft_wrap_editor_line(
     params: SoftWrapEditorLinePaintParams<'_, '_>,
 ) -> Result<Option<LineLayout>> {
     if params.plan.visual.text.is_empty() {
-        return Ok(None);
+        // Empty document rows still need geometry for pointer hit testing.
+        return Ok(soft_wrap_layout_for_painted_line(
+            params.plan,
+            ShapedLine::default(),
+        ));
     }
 
     let text_system = window.text_system().clone();
@@ -207,7 +211,7 @@ fn soft_wrap_layout_for_painted_line(
     plan: SoftWrapLinePaintPlan<'_>,
     shaped_line: ShapedLine,
 ) -> Option<LineLayout> {
-    if plan.visual.text.is_empty() || plan.visual.is_phantom_line {
+    if plan.visual.is_phantom_line {
         return None;
     }
 
@@ -345,16 +349,6 @@ mod tests {
     #[test]
     fn soft_wrap_layout_skips_phantom_visual_lines() {
         let visual = soft_wrap_visual("phantom", true);
-
-        assert!(
-            soft_wrap_layout_for_painted_line(soft_wrap_plan(&visual), ShapedLine::default())
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn soft_wrap_layout_skips_empty_visual_lines() {
-        let visual = soft_wrap_visual("", false);
 
         assert!(
             soft_wrap_layout_for_painted_line(soft_wrap_plan(&visual), ShapedLine::default())
