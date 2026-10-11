@@ -57,10 +57,11 @@ impl DirectXAtlas {
     pub(crate) fn get_texture_view(
         &self,
         id: AtlasTextureId,
-    ) -> [Option<ID3D11ShaderResourceView>; 1] {
+    ) -> Option<[Option<ID3D11ShaderResourceView>; 1]> {
         let lock = self.0.lock();
-        let tex = lock.texture(id);
-        tex.view.clone()
+        // Cached scenes can still reference textures released after their last paint.
+        let tex = lock.texture(id)?;
+        Some(tex.view.clone())
     }
 
     pub(crate) fn handle_device_lost(
@@ -154,7 +155,7 @@ impl DirectXAtlasState {
     fn flush_uploads(&mut self) {
         let pending_uploads = std::mem::take(&mut self.pending_uploads);
         for upload in pending_uploads {
-            let Some(texture) = self.maybe_texture(upload.texture_id) else {
+            let Some(texture) = self.texture(upload.texture_id) else {
                 continue;
             };
             texture.upload(&self.device_context, upload.bounds, &upload.bytes);
@@ -280,16 +281,13 @@ impl DirectXAtlasState {
         }
     }
 
-    fn texture(&self, id: AtlasTextureId) -> &DirectXAtlasTexture {
-        self.maybe_texture(id).unwrap()
-    }
-
-    fn maybe_texture(&self, id: AtlasTextureId) -> Option<&DirectXAtlasTexture> {
-        match id.kind {
-            AtlasTextureKind::Monochrome => self.monochrome_textures[id.index as usize].as_ref(),
-            AtlasTextureKind::Polychrome => self.polychrome_textures[id.index as usize].as_ref(),
-            AtlasTextureKind::Subpixel => self.subpixel_textures[id.index as usize].as_ref(),
-        }
+    fn texture(&self, id: AtlasTextureId) -> Option<&DirectXAtlasTexture> {
+        let textures = match id.kind {
+            AtlasTextureKind::Monochrome => &self.monochrome_textures,
+            AtlasTextureKind::Polychrome => &self.polychrome_textures,
+            AtlasTextureKind::Subpixel => &self.subpixel_textures,
+        };
+        textures.textures.get(id.index as usize)?.as_ref()
     }
 }
 
@@ -315,6 +313,20 @@ impl DirectXAtlasTexture {
         bounds: Bounds<DevicePixels>,
         bytes: &[u8],
     ) {
+        // UpdateSubresource reads the whole destination region from the source.
+        // Reject short buffers rather than letting the driver over-read them.
+        let row_bytes = bounds.size.width.to_bytes(self.bytes_per_pixel as u8) as usize;
+        let expected = row_bytes * bounds.size.height.0.max(0) as usize;
+        if bytes.len() < expected {
+            log::error!(
+                "DirectXAtlasTexture::upload: source slice is {} bytes but the {}x{} region requires {} bytes; skipping upload",
+                bytes.len(),
+                bounds.size.width.0,
+                bounds.size.height.0,
+                expected,
+            );
+            return;
+        }
         unsafe {
             device_context.UpdateSubresource(
                 &self.texture,
@@ -431,5 +443,11 @@ mod tests {
 
         let tile_b = insert_tile(&atlas, &big_key_b, big);
         assert_eq!(tile_b.texture_id, keeper_tile.texture_id);
+        assert!(atlas.get_texture_view(tile_b.texture_id).is_some());
+        atlas.remove(&big_key_b);
+        atlas.remove(&keeper_key);
+        assert!(atlas.get_texture_view(tile_b.texture_id).is_none());
+        atlas.clear();
+        assert!(atlas.get_texture_view(tile_b.texture_id).is_none());
     }
 }
