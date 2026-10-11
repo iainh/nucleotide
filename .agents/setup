@@ -1,33 +1,49 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo "Installing Linux build dependencies..."
-sudo apt-get update
-sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-  build-essential \
-  ca-certificates \
-  clang \
-  curl \
-  git \
-  libfontconfig1-dev \
-  libfreetype6-dev \
-  libgl1-mesa-dev \
-  libssl-dev \
-  libvulkan-dev \
-  libwayland-dev \
-  libx11-dev \
-  libxcb-render0-dev \
-  libxcb-shape0-dev \
-  libxcb-xfixes0-dev \
-  libxcb1-dev \
-  libxi-dev \
-  libxkbcommon-dev \
-  libxkbcommon-x11-dev \
-  libxrandr-dev \
-  mesa-common-dev \
-  pkg-config \
-  xz-utils \
+echo "Checking Linux build and runtime dependencies..."
+# GPUI needs Mesa's software rendering drivers in GPU-less orbs, not just
+# development headers. grim captures the Wayland desktop started by
+# `amp orb desktop ensure`.
+packages=(
+  build-essential
+  ca-certificates
+  clang
+  curl
+  git
+  grim
+  libfontconfig1-dev
+  libfreetype6-dev
+  libgl1-mesa-dev
+  libgl1-mesa-dri
+  libssl-dev
+  libvulkan-dev
+  libwayland-dev
+  libx11-dev
+  libxcb-render0-dev
+  libxcb-shape0-dev
+  libxcb-xfixes0-dev
+  libxcb1-dev
+  libxi-dev
+  libxkbcommon-dev
+  libxkbcommon-x11-dev
+  libxrandr-dev
+  mesa-common-dev
+  mesa-vulkan-drivers
+  pkg-config
+  xz-utils
   zlib1g-dev
+)
+missing_packages=()
+for package in "${packages[@]}"; do
+  if [[ "$(dpkg-query -W -f='${Status}' "${package}" 2>/dev/null || true)" != "install ok installed" ]]; then
+    missing_packages+=("${package}")
+  fi
+done
+if ((${#missing_packages[@]})); then
+  sudo apt-get update
+  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${missing_packages[@]}"
+fi
 
 git config user.name 'Iain H'
 git config user.email 'iain@spiralpoint.org'
