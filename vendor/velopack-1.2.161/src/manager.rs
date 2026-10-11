@@ -10,7 +10,7 @@ use crate::{
     constants,
     locator::{self, LocationContext, VelopackLocator, VelopackLocatorConfig},
     misc,
-    sources::UpdateSource,
+    sources::{UpdateSource, VelopackFlowSource},
     Error,
 };
 
@@ -164,6 +164,21 @@ pub enum UpdateCheck {
 }
 
 impl UpdateManager {
+    /// Create a new UpdateManager instance using a `VelopackFlowSource`, which retrieves
+    /// updates from the hosted Velopack Flow service (https://velopack.io).
+    /// This is a convenience function which is equivalent to creating a `VelopackFlowSource`
+    /// and passing it to `UpdateManager::new`.
+    /// This will return an error if the application is not yet installed.
+    /// ## Example:
+    /// ```rust
+    /// use velopack::*;
+    ///
+    /// let um = UpdateManager::new_flow(None, None);
+    /// ```
+    pub fn new_flow(options: Option<UpdateOptions>, locator: Option<VelopackLocatorConfig>) -> Result<UpdateManager, Error> {
+        UpdateManager::new(VelopackFlowSource::new(None), options, locator)
+    }
+
     /// Create a new UpdateManager instance using the specified UpdateSource.
     /// This will return an error if the application is not yet installed.
     /// ## Example:
@@ -389,11 +404,10 @@ impl UpdateManager {
     ///   packages, this method will fall back to downloading the full version of the update.
     pub fn download_updates(&self, update: &UpdateInfo, progress: Option<Sender<i16>>) -> Result<(), Error> {
         let _mutex = &self.inner.locator.try_get_exclusive_lock()?;
-        let name = &update.TargetFullRelease.FileName;
         let packages_dir = &self.inner.locator.get_packages_dir();
 
         fs::create_dir_all(packages_dir)?;
-        let final_target_file = packages_dir.join(name);
+        let final_target_file = local_package_path(packages_dir, &update.TargetFullRelease)?;
         let partial_file = final_target_file.with_extension("partial");
 
         if final_target_file.exists() {
@@ -470,7 +484,7 @@ impl UpdateManager {
 
     fn download_and_apply_delta_updates(&self, update: &UpdateInfo, output_file: &PathBuf, progress: Option<Sender<i16>>) -> Result<(), Error> {
         let packages_dir = self.inner.locator.get_packages_dir();
-        let base_release_path = packages_dir.join(&update.BaseRelease.as_ref().unwrap().FileName);
+        let base_release_path = local_package_path(&packages_dir, update.BaseRelease.as_ref().unwrap())?;
 
         let mut args: Vec<OsString> = vec![
             "patch".into(),
@@ -480,18 +494,23 @@ impl UpdateManager {
             output_file.clone().into(),
         ];
 
+        let count = update.DeltasToTarget.len() as f64;
         for (i, delta) in update.DeltasToTarget.iter().enumerate() {
-            let delta_file = packages_dir.join(&delta.FileName);
+            let delta_file = local_package_path(&packages_dir, delta)?;
             let partial_file = delta_file.with_extension("partial");
 
-            info!("Downloading delta package: '{}'", &delta.FileName);
-            self.inner.source.download_release_entry(delta, &partial_file, None)?;
+            info!("Downloading delta package: '{}'", delta.FileName);
+            // each delta reports its download within its share of the 0-70% range
+            let delta_progress = progress
+                .as_ref()
+                .map(|progress| scale_progress(progress.clone(), i as f64 / count * 70.0, (i + 1) as f64 / count * 70.0));
+            self.inner.source.download_release_entry(delta, &partial_file, delta_progress)?;
             self.verify_package_checksum(&partial_file, delta)?;
 
             fs::rename(&partial_file, &delta_file)?;
-            debug!("Successfully downloaded file: '{}'", &delta.FileName);
+            debug!("Successfully downloaded file: '{}'", delta.FileName);
             if let Some(progress) = &progress {
-                let _ = progress.send(((i as f64 / update.DeltasToTarget.len() as f64) * 70.0) as i16);
+                let _ = progress.send(((i + 1) as f64 / count * 70.0) as i16);
             }
 
             args.push("--delta".into());
@@ -611,10 +630,10 @@ impl UpdateManager {
         C: IntoIterator<Item = S>,
     {
         let to_apply = to_apply.as_ref();
-        let pkg_path = self.inner.locator.get_packages_dir().join(&to_apply.FileName);
+        let pkg_path = local_package_path(&self.inner.locator.get_packages_dir(), to_apply)?;
 
         if !pkg_path.exists() {
-            error!("Package does not exist on disk: '{:?}'", &pkg_path);
+            error!("Package does not exist on disk: '{:?}'", pkg_path);
             return Err(Error::FileNotFound(pkg_path));
         }
 
@@ -666,6 +685,24 @@ impl UpdateManager {
     }
 }
 
+/// Returns the path an asset is stored at in the packages directory. Only the (sanitised) file name part of the
+/// asset's FileName is used, so feed entries in a sub-folder or at an absolute URL land directly in the packages
+/// directory and can never escape it. Mirrors `GetLocalPackagePath` in the C# library, so both pick the same file.
+fn local_package_path(packages_dir: &Path, asset: &VelopackAsset) -> Result<PathBuf, Error> {
+    let name = misc::get_safe_filename(&asset.FileName);
+    // The upstream sanitizer preserves empty names and dot segments; those are not package files.
+    // Win32 also strips trailing spaces and dots, so reject their dot-only aliases.
+    #[cfg(windows)]
+    if name.trim_end_matches([' ', '.']).is_empty() {
+        return Err(Error::InvalidPackage("Asset FileName must identify a package file".into()));
+    }
+    let mut components = Path::new(&name).components();
+    if !matches!(components.next(), Some(std::path::Component::Normal(_))) || components.next().is_some() {
+        return Err(Error::InvalidPackage("Asset FileName must identify a package file".into()));
+    }
+    Ok(packages_dir.join(name))
+}
+
 /// Converts a local manifest and path into a VelopackAsset.
 pub(crate) fn local_path_to_asset(manifest: &Manifest, path: &Path) -> VelopackAsset {
     VelopackAsset {
@@ -679,4 +716,29 @@ pub(crate) fn local_path_to_asset(manifest: &Manifest, path: &Path) -> VelopackA
         NotesMarkdown: manifest.release_notes.clone(),
         NotesHtml: manifest.release_notes_html.clone(),
     }
+}
+
+/// Returns a sender that forwards 0-100 progress values to `sender`, scaled into `start..end`, from a background
+/// thread that ends once the returned sender is dropped. The thread is not joined, so that an update source holding
+/// on to the sender cannot block the update, which means a scaled value may arrive after values sent later directly.
+fn scale_progress(sender: Sender<i16>, start: f64, end: f64) -> Sender<i16> {
+    let (scaled, receiver) = std::sync::mpsc::channel::<i16>();
+    std::thread::spawn(move || {
+        while let Ok(p) = receiver.recv() {
+            let _ = sender.send((start + (end - start) * p as f64 / 100.0) as i16);
+        }
+    });
+    scaled
+}
+
+#[test]
+fn test_scale_progress_maps_into_range() {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let scaled = scale_progress(sender, 35.0, 70.0);
+    for p in [0, 50, 100] {
+        scaled.send(p).unwrap();
+    }
+    drop(scaled);
+    // the forwarding thread owns the only sender, so this ends once it has forwarded every value
+    assert_eq!(receiver.iter().collect::<Vec<i16>>(), vec![35, 52, 70]);
 }

@@ -1,11 +1,9 @@
+use crate::wide_strings::wide_to_os_string;
 use anyhow::{bail, Result};
 use std::path::PathBuf;
-use crate::wide_strings::wide_to_os_string;
 use windows::{
     core::GUID,
-    Win32::UI::Shell::{
-        FOLDERID_LocalAppData, SHGetKnownFolderPath
-    },
+    Win32::UI::Shell::{FOLDERID_LocalAppData, SHGetKnownFolderPath},
 };
 
 #[cfg(windows)]

@@ -33,6 +33,20 @@ auto_download = false
 
 Set `NUCLEOTIDE_DISABLE_AUTO_UPDATE=1` to disable update support for a process. Developers can set `NUCLEOTIDE_UPDATE_SOURCE` to test against another Velopack source. The application does not expose this source override in user configuration.
 
+## Vendored updater
+
+The Rust client and release CLI are pinned to Velopack `1.2.161`, published on 2026-09-29. The vendor directory comes from the [released crate](https://static.crates.io/crates/velopack/velopack-1.2.161.crate), with SHA-256 `4295172ffaad78f9adbab35f7ffefa97e4ceefee9d2c38bda37fdce4d6c66e5a`, verified against the crates.io index.
+
+Nucleotide retains `ureq`'s `platform-verifier` feature and explicitly selects `RootCerts::PlatformVerifier` for feed and package requests. Upstream's release does not select this configuration. This preserves system certificate trust, including enterprise roots; a configuration assertion or successful public HTTPS request does not prove that a particular enterprise certificate works on macOS or Windows.
+
+The vendor includes these post-release fixes from upstream main audited at [301077f4](https://github.com/velopack/velopack/commit/301077f4792250d5ff4eff1ff4f22021421a506b):
+
+- [Safe feed filenames](https://github.com/velopack/velopack/commit/de48f5349ea256e51eaff1b3b5d20d0d844b8d8e): store full, base and delta packages by their sanitized basename, and resolve the same basename when applying. Remote subpaths and URLs remain unchanged. Nucleotide also rejects empty and dot-only local names, including Windows trailing-space/dot aliases, because the upstream sanitizer alone retains `..`.
+- [Delta download progress](https://github.com/velopack/velopack/commit/5852e3758a6bbad0f39aa4c247a4b05bf75509c3) and the [detached forwarder correction](https://github.com/velopack/velopack/commit/abb2622e56c691017e1259a9154b1d47a43d85dc): report progress during downloads without waiting indefinitely if a source retains a progress sender. Forwarded values can arrive after later direct progress values.
+- [Actual `sq.version` write errors](https://github.com/velopack/velopack/commit/bbde968cf55b4145a29658b7e2f2387399bf8691): distinguish a missing manifest from a Windows filesystem or ZIP error.
+
+The application and packaged smoke test still supply explicit `AutoSource` instances. They do not opt into the new default Velopack Flow source. No application adaptation to `HttpOptions` is needed.
+
 ## Build a release
 
 The `release.yml` workflow runs for a version tag such as `v0.5.1`. The tag must match `workspace.package.version` in `Cargo.toml`.
@@ -84,5 +98,13 @@ Run the focused tests with:
 ```bash
 cargo test -p nucleotide updates::
 ```
+
+Run the vendored client's unit, source, manager and documentation tests separately. Its upstream integration tests require `public-utils`:
+
+```bash
+cargo test --manifest-path vendor/velopack-1.2.161/Cargo.toml --features public-utils
+```
+
+Manager tests exercise subfolder, absolute URL, traversal and invalid names through download and apply APIs. On Unix, a stand-in patch executable verifies base/delta path handling and a source retaining progress senders verifies download completion. Windows tests cover filename aliases and `sq.version` write failures; run them on Windows for runtime coverage. Two upstream download tests use public HTTPS endpoints.
 
 For packaging commands, see `scripts/package-velopack.sh`, `scripts/package-velopack.ps1` and `docs/windows_install.md`.

@@ -24,7 +24,7 @@ members = [
 ]
 exclude = [
     "vendor/block-0.1.6",
-    "vendor/velopack-1.2.0",
+    "vendor/velopack-1.2.161",
     "vendor/zed",
 ]
 resolver = "2"
@@ -92,7 +92,7 @@ rand = "0.10"
 slotmap = "1.0"
 pulldown-cmark = { version = "0.13", default-features = false }
 zstd = { version = "0.13", default-features = false }
-velopack = "1.2.0"
+velopack = "=1.2.161"
 
 # macOS framework bindings
 objc2 = "0.6"
@@ -123,7 +123,7 @@ helix-view = { path = "vendor/helix-view" }
 
 [patch.crates-io]
 # Use system trust so enterprise TLS interception certificates are honored.
-velopack = { path = "vendor/velopack-1.2.0" }
+velopack = { path = "vendor/velopack-1.2.161" }
 # Zed workspace crates rely on these patched async primitives. Patches in
 # dependency workspaces are ignored by Cargo, so mirror the required entries here.
 async-process = { git = "https://github.com/zed-industries/async-process.git", rev = "0b6d6713570af61806e1e5cb40e0f757cb93fd9d" }
