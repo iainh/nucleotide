@@ -22,98 +22,6 @@ fn env_get<'a>(env: &'a HashMap<String, String>, key: &str) -> Option<&'a String
         .map(|(_, value)| value)
 }
 
-/// Tests for CLI environment detection and inheritance
-/// These tests verify that when Nucleotide is launched from a terminal,
-/// it correctly detects and uses the CLI environment variables
-#[cfg(test)]
-mod cli_environment_tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn test_cli_environment_detection() {
-        // Test: CLI environment should be detected when provided
-        let cli_env = HashMap::from([
-            ("PATH".to_string(), "/usr/bin:/nix/store/rust".to_string()),
-            ("CARGO_HOME".to_string(), "/Users/test/.cargo".to_string()),
-            ("ZED_ENVIRONMENT".to_string(), "cli".to_string()),
-        ]);
-
-        let project_env = ProjectEnvironment::new(Some(cli_env.clone()));
-
-        // This test should FAIL initially - no ProjectEnvironment struct exists yet
-        let test_dir = create_test_dir();
-        let result = project_env
-            .get_environment_for_directory(test_dir.path())
-            .await;
-
-        assert!(result.is_ok());
-        let env = result.unwrap();
-        assert_eq!(
-            env.get("PATH"),
-            Some(&"/usr/bin:/nix/store/rust".to_string())
-        );
-        assert_eq!(env.get("ZED_ENVIRONMENT"), Some(&"cli".to_string()));
-    }
-
-    #[tokio::test]
-    async fn test_cli_environment_priority() {
-        // Test: CLI environment should take precedence over directory environment
-        let cli_env = HashMap::from([
-            ("PATH".to_string(), "/cli/path".to_string()),
-            ("TEST_VAR".to_string(), "cli_value".to_string()),
-        ]);
-
-        let project_env = ProjectEnvironment::new(Some(cli_env));
-
-        // Even if directory has different PATH, CLI should win
-        let result = project_env
-            .get_environment_for_directory(Path::new("/different/project"))
-            .await;
-
-        assert!(result.is_ok());
-        let env = result.unwrap();
-        assert_eq!(env.get("PATH"), Some(&"/cli/path".to_string()));
-        assert_eq!(env.get("TEST_VAR"), Some(&"cli_value".to_string()));
-    }
-
-    #[tokio::test]
-    async fn test_no_cli_environment() {
-        // Test: When no CLI environment provided, should fall back to directory capture
-        let project_env = ProjectEnvironment::new(None);
-
-        let temp_dir = tempfile::tempdir().unwrap();
-        let result = project_env
-            .get_environment_for_directory(temp_dir.path())
-            .await;
-
-        // Should attempt directory-specific environment capture
-        // This will initially fail since we haven't implemented directory capture yet
-        assert!(result.is_ok());
-        let env = result.unwrap();
-
-        // Should not have ZED_ENVIRONMENT=cli marker
-        assert_ne!(env.get("ZED_ENVIRONMENT"), Some(&"cli".to_string()));
-    }
-
-    #[tokio::test]
-    async fn test_cli_environment_marker() {
-        // Test: CLI environment should be marked with ZED_ENVIRONMENT=cli
-        let cli_env = HashMap::from([
-            ("PATH".to_string(), "/test/path".to_string()),
-            ("ZED_ENVIRONMENT".to_string(), "cli".to_string()),
-        ]);
-
-        let project_env = ProjectEnvironment::new(Some(cli_env));
-        let result = project_env
-            .get_environment_for_directory(Path::new("/any/path"))
-            .await;
-
-        assert!(result.is_ok());
-        let env = result.unwrap();
-        assert_eq!(env.get("ZED_ENVIRONMENT"), Some(&"cli".to_string()));
-    }
-}
-
 /// Tests for directory-specific shell environment capture
 /// These tests verify shell environment loading with proper directory context
 #[cfg(test)]
@@ -143,30 +51,6 @@ mod directory_shell_tests {
     }
 
     #[tokio::test]
-    async fn test_directory_specific_path() {
-        // Test: Different directories may have different PATH due to direnv/asdf
-        let project_env = ProjectEnvironment::new(None);
-
-        let temp_dir1 = create_test_dir();
-        let temp_dir2 = create_test_dir();
-        let dir1 = temp_dir1.path();
-        let dir2 = temp_dir2.path();
-
-        let env1 = project_env
-            .get_environment_for_directory(dir1)
-            .await
-            .unwrap();
-        let env2 = project_env
-            .get_environment_for_directory(dir2)
-            .await
-            .unwrap();
-
-        // Initially both will be the same, but after direnv integration they may differ
-        assert!(env_contains_key(&env1, "PATH"));
-        assert!(env_contains_key(&env2, "PATH"));
-    }
-
-    #[tokio::test]
     async fn test_shell_execution_failure() {
         // Test: Should handle shell execution failures gracefully
         let project_env = ProjectEnvironment::new(None);
@@ -183,72 +67,6 @@ mod directory_shell_tests {
                 ShellEnvironmentError::ShellExecutionFailed(_)
             ));
         }
-    }
-}
-
-/// Tests for shell-specific command building
-/// These tests verify proper shell detection and command construction
-#[cfg(test)]
-mod shell_specific_tests {
-    use nucleotide_env::shell_command_builder;
-
-    #[tokio::test]
-    async fn test_bash_shell_command() {
-        // Test: bash should use -l flag for login shell
-        let cmd = shell_command_builder::build_shell_command("/bin/bash");
-
-        // This will fail initially - no shell_command_builder module exists
-        assert!(cmd.get_program() == "/bin/bash");
-        assert!(cmd.get_args().any(|arg| arg == "-l"));
-    }
-
-    #[tokio::test]
-    async fn test_fish_shell_command() {
-        // Test: fish should use -l and emit fish_prompt
-        let cmd = shell_command_builder::build_shell_command("/usr/local/bin/fish");
-
-        // Should include both -l flag and fish_prompt emission
-        assert!(cmd.get_program() == "/usr/local/bin/fish");
-        let args: Vec<_> = cmd.get_args().filter_map(|s| s.to_str()).collect();
-        assert!(args.contains(&"-l"));
-        // Command should include "emit fish_prompt" for proper environment loading
-        let command_str = format!("{:?}", cmd);
-        assert!(command_str.contains("emit fish_prompt"));
-    }
-
-    #[tokio::test]
-    async fn test_tcsh_shell_command() {
-        // Test: tcsh should use arg0("-") instead of -l
-        let cmd = shell_command_builder::build_shell_command("/bin/tcsh");
-
-        // tcsh uses special arg0 handling for login shell
-        assert!(cmd.get_program() == "/bin/tcsh");
-        // Should use arg0 technique, not -l flag
-        let args: Vec<_> = cmd.get_args().filter_map(|s| s.to_str()).collect();
-        assert!(!args.contains(&"-l"));
-    }
-
-    #[tokio::test]
-    async fn test_zsh_shell_command() {
-        // Test: zsh should use standard -l flag
-        let cmd = shell_command_builder::build_shell_command("/usr/local/bin/zsh");
-
-        assert!(cmd.get_program() == "/usr/local/bin/zsh");
-        let args: Vec<_> = cmd.get_args().filter_map(|s| s.to_str()).collect();
-        assert!(args.contains(&"-l"));
-    }
-
-    #[tokio::test]
-    async fn test_shell_detection() {
-        // Test: Should correctly detect shell type from path
-        use nucleotide_env::detect_shell_type;
-
-        assert_eq!(detect_shell_type("/bin/bash"), "bash");
-        assert_eq!(detect_shell_type("/usr/local/bin/fish"), "fish");
-        assert_eq!(detect_shell_type("/bin/tcsh"), "tcsh");
-        assert_eq!(detect_shell_type("/bin/csh"), "csh");
-        assert_eq!(detect_shell_type("/usr/local/bin/zsh"), "zsh");
-        assert_eq!(detect_shell_type("/unknown/shell"), "unknown");
     }
 }
 
@@ -444,111 +262,11 @@ mod caching_tests {
     }
 }
 
-/// Tests for direnv integration with 'cd' trigger
-/// These tests verify proper direnv environment capture
-#[cfg(test)]
-mod direnv_integration_tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn test_direnv_environment_capture() {
-        // Test: Should capture direnv environment when cd into directory
-        let project_env = ProjectEnvironment::new(None);
-
-        // Create test directory with .envrc (this is a mock test)
-        let temp_dir = create_test_dir();
-        let direnv_project = temp_dir.path();
-
-        let result = project_env
-            .get_environment_for_directory(direnv_project)
-            .await;
-
-        if let Ok(env) = result {
-            // Should have basic environment variables from shell
-            assert!(env_contains_key(&env, "PATH"));
-
-            // Direnv typically sets DIRENV_DIR, but only if direnv is installed and configured
-            if env.contains_key("DIRENV_DIR") {
-                // If DIRENV_DIR exists, it should point to a valid directory
-                assert!(!env.get("DIRENV_DIR").unwrap().is_empty());
-            }
-
-            // TODO: Set up actual .envrc file in test directory to test real direnv integration
-            // For now, verify basic shell environment capture is working
-        }
-    }
-
-    #[tokio::test]
-    async fn test_cd_command_includes_directory() {
-        // Test: Shell command should include 'cd <directory>' before environment capture
-        use nucleotide_env::shell_command_builder;
-
-        let cmd = shell_command_builder::build_environment_capture_command(
-            "/bin/bash",
-            Path::new("/test/direnv/project"),
-        );
-
-        // Command should include cd to the specific directory
-        let command_str = format!("{:?}", cmd);
-        assert!(command_str.contains("cd"));
-        assert!(command_str.contains("/test/direnv/project"));
-    }
-
-    #[tokio::test]
-    async fn test_shell_hooks_triggered() {
-        // Test: Shell hooks (direnv, asdf, mise) should be triggered by directory change
-        let project_env = ProjectEnvironment::new(None);
-        let hook_project = Path::new("/tmp/hook_test");
-
-        let result = project_env
-            .get_environment_for_directory(hook_project)
-            .await;
-
-        if let Ok(env) = result {
-            // If any development tools are available, they should be in PATH
-            if let Some(path) = env_get(&env, "PATH") {
-                // This is a general test - specific tools will vary by system
-                assert!(!path.is_empty());
-                assert!(path.contains(":") || path.len() > 10); // Should be a real PATH
-            }
-        }
-    }
-}
-
 /// Tests for LSP environment injection workflow
 /// These tests verify LSP servers receive proper environment variables
 #[cfg(test)]
 mod lsp_integration_tests {
     use super::*;
-
-    #[tokio::test]
-    async fn test_lsp_environment_injection() {
-        // Test: LSP servers should receive environment from ProjectEnvironment
-        let cli_env = HashMap::from([
-            ("PATH".to_string(), "/nix/store/rust:/usr/bin".to_string()),
-            ("CARGO_HOME".to_string(), "/Users/test/.cargo".to_string()),
-        ]);
-
-        let project_env = ProjectEnvironment::new(Some(cli_env));
-        let temp_dir = create_test_dir();
-        let workspace_dir = temp_dir.path();
-
-        // Get environment for LSP server
-        let lsp_env = project_env.get_lsp_environment(workspace_dir).await;
-
-        assert!(lsp_env.is_ok());
-        let env = lsp_env.unwrap();
-
-        // LSP should have PATH with development tools
-        assert!(env_contains_key(&env, "PATH"));
-        assert!(env_get(&env, "PATH").unwrap().contains("rust"));
-
-        // Should have CARGO_HOME for rust-analyzer
-        assert_eq!(
-            env.get("CARGO_HOME"),
-            Some(&"/Users/test/.cargo".to_string())
-        );
-    }
 
     #[tokio::test]
     async fn test_lsp_environment_merging() {

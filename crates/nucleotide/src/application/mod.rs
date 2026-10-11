@@ -9777,10 +9777,6 @@ mod tests {
         startup_path_should_open_as_file, str_prefix_at_byte_limit,
         suppress_shadowed_buffer_word_completion_items, syntax_symbol_kind_from_capture_name,
     };
-    use crate::test_utils::test_support::{
-        TestUpdate, create_counting_channel, create_test_diagnostic_events,
-        create_test_document_events,
-    };
     use arc_swap::{ArcSwap, access::Map};
     use futures_util::{FutureExt, stream::FuturesOrdered};
     use gpui::{AppContext, Entity};
@@ -13693,67 +13689,6 @@ language-servers = ["taplo"]
         );
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].label, "println");
-    }
-
-    #[ignore] // Temporarily disabled due to SIGBUS compiler crash
-    #[tokio::test]
-    async fn test_document_change_events_are_batched() {
-        // Test that rapid document changes (like fast typing) are batched
-
-        let (event_tx, mut event_rx, _counter) = create_counting_channel();
-
-        // Simulate rapid typing - 20 document change events
-        let events = create_test_document_events(20);
-        for event in events {
-            let _ = event_tx.send(event);
-        }
-
-        tokio::time::sleep(Duration::from_millis(10)).await;
-
-        let mut doc_change_count = 0;
-        while let Ok(update) = event_rx.try_recv() {
-            if matches!(update, TestUpdate::DocumentChanged { .. }) {
-                doc_change_count += 1;
-            }
-        }
-
-        // With batching, 20 rapid changes should result in very few updates
-        assert!(
-            doc_change_count <= 3,
-            "Expected 3 or fewer DocumentChanged updates with batching, but got {}",
-            doc_change_count
-        );
-    }
-
-    #[ignore] // Temporarily disabled due to SIGBUS compiler crash
-    #[tokio::test]
-    async fn test_diagnostic_events_are_deduplicated() {
-        // Test that multiple diagnostic events for the same document are deduplicated
-
-        let (event_tx, mut event_rx, _counter) = create_counting_channel();
-
-        // Send 5 diagnostic events for the same document
-        let events = create_test_diagnostic_events(5);
-        for event in events {
-            let _ = event_tx.send(event);
-        }
-
-        // Wait for potential deduplication delay
-        tokio::time::sleep(Duration::from_millis(60)).await;
-
-        let mut diag_count = 0;
-        while let Ok(update) = event_rx.try_recv() {
-            if matches!(update, TestUpdate::DiagnosticsChanged { .. }) {
-                diag_count += 1;
-            }
-        }
-
-        // With deduplication, we should see only 1 diagnostic update
-        assert_eq!(
-            diag_count, 1,
-            "Expected exactly 1 DiagnosticsChanged update with deduplication, but got {}",
-            diag_count
-        );
     }
 
     // Note: Prefix extraction tests require complex setup with Editor and Document

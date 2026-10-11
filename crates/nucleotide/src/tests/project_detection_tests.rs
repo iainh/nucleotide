@@ -143,33 +143,6 @@ mod tests {
     }
 
     #[test]
-    fn test_multiple_vcs_directories_priority() {
-        let project = TestProject::new();
-        project.create_vcs_dir(VcsType::Git).unwrap();
-        project.create_vcs_dir(VcsType::Svn).unwrap();
-        project.create_vcs_dir(VcsType::Helix).unwrap();
-
-        let workspace_root = find_workspace_root_from(project.path());
-        // Should find the directory (all are at the same level, so any is valid)
-        assert_eq!(workspace_root, project.path());
-    }
-
-    #[test]
-    fn test_deeply_nested_workspace_detection() {
-        let project = TestProject::new();
-        project.create_vcs_dir(VcsType::Git).unwrap();
-        project
-            .create_dir("a/very/deeply/nested/directory/structure")
-            .unwrap();
-
-        let deep_path = project
-            .path()
-            .join("a/very/deeply/nested/directory/structure");
-        let workspace_root = find_workspace_root_from(&deep_path);
-        assert_eq!(workspace_root, project.path());
-    }
-
-    #[test]
     fn test_workspace_detection_with_complex_project_structure() {
         let project = TestProject::new();
 

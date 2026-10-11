@@ -23,8 +23,6 @@ pub mod tab;
 pub mod tab_bar;
 pub mod terminal_input;
 #[cfg(test)]
-pub mod test_utils;
-#[cfg(test)]
 pub mod tests;
 pub mod types;
 pub mod updates;

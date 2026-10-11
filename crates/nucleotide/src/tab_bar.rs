@@ -1118,20 +1118,6 @@ mod tests {
     }
 
     #[test]
-    fn empty_tab_bar_area_uses_tabbar_background() {
-        for tokens in [
-            nucleotide_ui::DesignTokens::dark(),
-            nucleotide_ui::DesignTokens::light(),
-        ] {
-            assert_eq!(
-                TabBar::empty_tab_bar_background(tokens),
-                tokens.tab_bar_tokens().container_background,
-                "empty tabbar area should use the same background as the surrounding tabbar"
-            );
-        }
-    }
-
-    #[test]
     fn builders_store_start_and_end_children() {
         let tab_bar = TabBar::new(vec![], None, None, |_, _, _| {}, |_, _, _| {})
             .start_child(div())

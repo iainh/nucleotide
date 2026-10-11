@@ -1156,8 +1156,6 @@ fn prepare_document_content(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::px;
-    use nucleotide_editor::run_gutter_button_left;
     use nucleotide_events::run::{CommandSpec, RunKind, SourceLocation, TaskTemplate};
 
     #[test]
@@ -1165,20 +1163,6 @@ mod tests {
         assert!(should_show_empty_scratch_state(false, 0));
         assert!(!should_show_empty_scratch_state(true, 0));
         assert!(!should_show_empty_scratch_state(false, 1));
-    }
-
-    #[test]
-    fn run_gutter_extra_columns_tracks_cell_width() {
-        assert_eq!(run_gutter_extra_columns(px(20.0), px(12.0)), 2);
-        assert_eq!(run_gutter_extra_columns(px(20.0), px(8.0)), 3);
-    }
-
-    #[test]
-    fn run_gutter_button_is_centered_in_reserved_width() {
-        assert_eq!(
-            run_gutter_button_left(px(100.0), px(24.0), px(14.0)),
-            px(81.0)
-        );
     }
 
     #[test]

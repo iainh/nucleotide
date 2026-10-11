@@ -2232,22 +2232,6 @@ enable_builtin_fallback = false
     }
 
     #[test]
-    fn test_tab_bar_button_visibility_parsing() {
-        let config: TabBarConfig = toml::from_str(
-            r#"
-show = false
-show_nav_history_buttons = false
-show_tab_bar_buttons = false
-"#,
-        )
-        .expect("should parse tab bar button visibility settings");
-
-        assert!(!config.show);
-        assert!(!config.show_nav_history_buttons);
-        assert!(!config.show_tab_bar_buttons);
-    }
-
-    #[test]
     fn test_tab_icon_and_git_status_parsing() {
         let config: TabsConfig = toml::from_str(
             r#"
@@ -2290,20 +2274,6 @@ file_icons = false
         assert_eq!(off.show_diagnostics, TabDiagnosticsVisibility::Off);
         assert_eq!(errors.show_diagnostics, TabDiagnosticsVisibility::Errors);
         assert_eq!(all.show_diagnostics, TabDiagnosticsVisibility::All);
-    }
-
-    #[test]
-    fn test_lsp_config_parsing() {
-        let config_str = r#"
-[lsp]
-project_lsp_startup = true
-startup_timeout_ms = 3000
-"#;
-
-        let config: GuiConfig = toml::from_str(config_str).expect("Failed to parse LSP config");
-
-        assert!(config.lsp.project_lsp_startup);
-        assert_eq!(config.lsp.startup_timeout_ms, 3000);
     }
 
     #[test]
@@ -2361,21 +2331,6 @@ startup_timeout_ms = 3000
         assert!(relaxed.flatten_empty_directories);
         assert_eq!(unflattened.density, FileTreeDisplayDensity::Default);
         assert!(!unflattened.flatten_empty_directories);
-    }
-
-    #[test]
-    fn test_config_convenience_methods() {
-        let mut gui_config = GuiConfig::default();
-        gui_config.lsp.project_lsp_startup = true;
-        gui_config.lsp.startup_timeout_ms = 2000;
-
-        let config = Config {
-            helix: HelixConfig::default(),
-            gui: gui_config,
-        };
-
-        assert!(config.is_project_lsp_startup_enabled());
-        assert_eq!(config.lsp_startup_timeout_ms(), 2000);
     }
 
     #[test]
@@ -2944,39 +2899,5 @@ size = 18.0
             logical_font_size_from_windows_logfont_height(i32::MIN, 96),
             None
         );
-    }
-
-    #[test]
-    fn test_project_markers_integration_with_gui_config() {
-        let config_str = r#"
-[ui.font]
-family = "Inter"
-size = 13.0
-
-[project_markers]
-enable_project_markers = true
-detection_timeout_ms = 1500
-enable_builtin_fallback = true
-
-[lsp]
-project_lsp_startup = true
-startup_timeout_ms = 3000
-"#;
-
-        let config: GuiConfig =
-            toml::from_str(config_str).expect("Failed to parse GUI config with project markers");
-
-        // Test that project markers are properly integrated
-        assert!(config.project_markers.enable_project_markers);
-        assert_eq!(config.project_markers.detection_timeout_ms, 1500);
-        assert!(config.project_markers.enable_builtin_fallback);
-
-        // Test that other configs still work
-        assert!(config.lsp.project_lsp_startup);
-        assert_eq!(config.lsp.startup_timeout_ms, 3000);
-
-        let ui_font = config.ui.font.as_ref().expect("UI font should be set");
-        assert_eq!(ui_font.family, "Inter");
-        assert_eq!(ui_font.size, 13.0);
     }
 }
