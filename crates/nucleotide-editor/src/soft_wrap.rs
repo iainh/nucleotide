@@ -22,7 +22,9 @@ use crate::{
     },
 };
 
-pub type VirtualHighlightRange = VirtualTextRange<Option<syntax::Highlight>>;
+// Retain the document anchor so virtual text can receive selection overlays
+// independently of the surrounding document text's display-byte mapping.
+pub type VirtualHighlightRange = VirtualTextRange<(Option<syntax::Highlight>, usize)>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SoftWrapVisualLine {
@@ -195,12 +197,17 @@ pub fn soft_wrap_visual_lines(
 ) -> Vec<SoftWrapVisualLine> {
     let default_annotations = TextAnnotations::default();
     let annotations = text_annotations.unwrap_or(&default_annotations);
+    // Formatter output otherwise cannot distinguish a leading inlay hint from
+    // the wrap indicator. This marker is consumed here, never theme-resolved.
+    let wrap_indicator_highlight = Some(syntax::Highlight::new(u32::MAX - 1));
+    let mut text_format = text_format.clone();
+    text_format.wrap_indicator_highlight = wrap_indicator_highlight;
     let anchor_visual_row =
-        visual_offset_from_block(text, anchor, anchor, text_format, annotations)
+        visual_offset_from_block(text, anchor, anchor, &text_format, annotations)
             .0
             .row;
     let mut formatter =
-        DocumentFormatter::new_at_prev_checkpoint(text, text_format, annotations, anchor);
+        DocumentFormatter::new_at_prev_checkpoint(text, &text_format, annotations, anchor);
     let mut visual_line = 0;
     let start_visual_line = anchor_visual_row.saturating_add(vertical_offset);
     let mut current_doc_line = text.char_to_line(anchor);
@@ -257,6 +264,7 @@ pub fn soft_wrap_visual_lines(
             current_doc_line,
             &line_graphemes,
             whitespace,
+            wrap_indicator_highlight,
         );
         current_doc_line = visual.doc_line;
         lines.push(visual);
@@ -444,6 +452,7 @@ fn build_visual_line(
     fallback_doc_line: usize,
     line_graphemes: &[FormattedGrapheme<'_>],
     whitespace: Option<DisplayWhitespace>,
+    wrap_indicator_highlight: Option<syntax::Highlight>,
 ) -> SoftWrapVisualLine {
     let doc_line = line_graphemes
         .first()
@@ -453,7 +462,6 @@ fn build_visual_line(
         .map_or(0, |grapheme| grapheme.visual_pos.col);
     let mut prefix_text = String::new();
     let mut wrap_indicator_len = 0;
-    let mut prefix_visual_col = line_start_col;
 
     prefix_text.extend(std::iter::repeat_n(' ', line_start_col));
     let first_real = line_graphemes
@@ -461,13 +469,10 @@ fn build_visual_line(
         .find(|grapheme| !grapheme.is_virtual());
 
     for grapheme in line_graphemes {
-        if grapheme.is_virtual()
+        if matches!(grapheme.source, GraphemeSource::VirtualText { highlight } if highlight == wrap_indicator_highlight)
             && let Grapheme::Other { g } = &grapheme.raw
-            && first_real.is_none_or(|real| grapheme.char_idx <= real.char_idx)
-            && grapheme.visual_pos.col <= prefix_visual_col
         {
             wrap_indicator_len += g.len();
-            prefix_visual_col += helix_core::graphemes::grapheme_width(g);
             prefix_text.push_str(g);
         }
     }
@@ -504,11 +509,9 @@ fn build_visual_line(
     for grapheme in line_graphemes {
         match (&grapheme.raw, grapheme.source) {
             (Grapheme::Other { g }, GraphemeSource::VirtualText { highlight })
-                if first_real.is_some_and(|real| {
-                    grapheme.char_idx > real.char_idx || grapheme.visual_pos.col > prefix_visual_col
-                }) =>
+                if highlight != wrap_indicator_highlight =>
             {
-                builder.push_virtual(g, highlight, tab_width);
+                builder.push_virtual(g, (highlight, grapheme.char_idx), tab_width);
             }
             (Grapheme::Tab { .. }, GraphemeSource::Document { .. }) => {
                 builder.push_source_char('\t', tab_width);
