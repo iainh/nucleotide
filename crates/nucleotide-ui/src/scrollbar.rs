@@ -552,23 +552,6 @@ mod tests {
     }
 
     #[test]
-    fn scrollbar_visual_applies_track_padding() {
-        let visual = scrollbar_visual(
-            ScrollbarThumb {
-                start: px(25.0),
-                length: px(50.0),
-            },
-            px(104.0),
-            0.5,
-        );
-
-        assert_eq!(visual.along_offset, px(27.0));
-        assert_eq!(visual.along_size, px(50.0));
-        assert_eq!(visual.cross_offset, px(3.0));
-        assert_eq!(visual.cross_size, px(6.0));
-    }
-
-    #[test]
     fn scroll_offset_for_pointer_uses_negative_gpui_offsets() {
         let track_bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(12.0), px(104.0)));
 

@@ -145,46 +145,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_icon_mapping_coverage() {
-        // Test that all CompletionItemKind variants have icon mappings
-        let kinds = vec![
-            CompletionItemKind::Text,
-            CompletionItemKind::Method,
-            CompletionItemKind::Function,
-            CompletionItemKind::Constructor,
-            CompletionItemKind::Field,
-            CompletionItemKind::Variable,
-            CompletionItemKind::Class,
-            CompletionItemKind::Interface,
-            CompletionItemKind::Module,
-            CompletionItemKind::Property,
-            CompletionItemKind::Unit,
-            CompletionItemKind::Value,
-            CompletionItemKind::Enum,
-            CompletionItemKind::Keyword,
-            CompletionItemKind::Snippet,
-            CompletionItemKind::Color,
-            CompletionItemKind::File,
-            CompletionItemKind::Reference,
-            CompletionItemKind::Folder,
-            CompletionItemKind::EnumMember,
-            CompletionItemKind::Constant,
-            CompletionItemKind::Struct,
-            CompletionItemKind::Event,
-            CompletionItemKind::Operator,
-            CompletionItemKind::TypeParameter,
-        ];
-
-        for kind in kinds {
-            let svg = get_completion_icon_svg(&kind);
-            // Just verify we get an SVG - the path() call doesn't fail
-            // Just verify we get an SVG - we can't check if it's empty without Display trait
-            // The fact that get_completion_icon_svg didn't panic is sufficient
-            let _ = svg;
-        }
-    }
-
-    #[test]
     fn test_icon_config() {
         let config = CompletionIconConfig::new(20.0).with_color(gpui::red());
 

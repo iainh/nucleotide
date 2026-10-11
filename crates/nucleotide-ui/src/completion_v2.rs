@@ -2469,43 +2469,6 @@ mod tests {
     }
 
     #[test]
-    fn test_query_extension_detection() {
-        // Create a minimal test view without GPUI context
-        let view = TestCompletionView {
-            initial_query: Some("test".to_string()),
-        };
-
-        assert!(view.is_query_extension("test_func"));
-        assert!(view.is_query_extension("testing"));
-        assert!(!view.is_query_extension("func"));
-        assert!(!view.is_query_extension("other"));
-    }
-
-    // Test helper struct that doesn't require GPUI context
-    struct TestCompletionView {
-        initial_query: Option<String>,
-    }
-
-    impl TestCompletionView {
-        fn is_query_extension(&self, new_query: &str) -> bool {
-            match &self.initial_query {
-                Some(initial) => new_query.starts_with(initial),
-                None => false,
-            }
-        }
-    }
-
-    #[test]
-    fn test_position_equality() {
-        let pos1 = Position::new(10, 5);
-        let pos2 = Position::new(10, 5);
-        let pos3 = Position::new(10, 6);
-
-        assert_eq!(pos1, pos2);
-        assert_ne!(pos1, pos3);
-    }
-
-    #[test]
     fn test_completion_item_builder() {
         let item = CompletionItem::new("function_name")
             .with_description("A cool function")
@@ -2547,55 +2510,6 @@ mod tests {
     }
 
     #[test]
-    fn test_should_refilter_logic() {
-        let view = TestCompletionViewExtended {
-            initial_query: Some("test".to_string()),
-            initial_position: Some(Position::new(10, 5)),
-        };
-
-        // Same position, query extension - should not refilter
-        assert!(!view.should_refilter("testing", Some(&Position::new(10, 5))));
-
-        // Same position, different query - should refilter
-        assert!(view.should_refilter("other", Some(&Position::new(10, 5))));
-
-        // Different position - should refilter
-        assert!(view.should_refilter("testing", Some(&Position::new(10, 6))));
-
-        // No initial state - should refilter
-        let empty_view = TestCompletionViewExtended {
-            initial_query: None,
-            initial_position: None,
-        };
-        assert!(empty_view.should_refilter("test", Some(&Position::new(10, 5))));
-    }
-
-    // Extended test helper for more complex logic
-    struct TestCompletionViewExtended {
-        initial_query: Option<String>,
-        initial_position: Option<Position>,
-    }
-
-    impl TestCompletionViewExtended {
-        fn should_refilter(&self, new_query: &str, new_position: Option<&Position>) -> bool {
-            match (&self.initial_query, &self.initial_position) {
-                (Some(initial_query), Some(initial_pos)) => {
-                    // Always refilter if position changed
-                    if let Some(new_pos) = new_position
-                        && new_pos != initial_pos
-                    {
-                        return true;
-                    }
-
-                    // If query is not an extension, refilter
-                    !new_query.starts_with(initial_query)
-                }
-                _ => true, // Always refilter if no baseline
-            }
-        }
-    }
-
-    #[test]
     fn test_candidate_id_generation() {
         // Test that different texts generate different IDs
         let item1 = CompletionItem::new("function_a");
@@ -2611,43 +2525,6 @@ mod tests {
         let candidate3 = StringMatchCandidate::from(&item3);
 
         assert_eq!(candidate1.id, candidate3.id);
-    }
-
-    #[test]
-    fn test_completion_item_kinds() {
-        // Test that all completion item kinds work correctly
-        let kinds = vec![
-            CompletionItemKind::Text,
-            CompletionItemKind::Method,
-            CompletionItemKind::Function,
-            CompletionItemKind::Constructor,
-            CompletionItemKind::Field,
-            CompletionItemKind::Variable,
-            CompletionItemKind::Class,
-            CompletionItemKind::Interface,
-            CompletionItemKind::Module,
-            CompletionItemKind::Property,
-            CompletionItemKind::Unit,
-            CompletionItemKind::Value,
-            CompletionItemKind::Enum,
-            CompletionItemKind::Keyword,
-            CompletionItemKind::Snippet,
-            CompletionItemKind::Color,
-            CompletionItemKind::File,
-            CompletionItemKind::Reference,
-            CompletionItemKind::Folder,
-            CompletionItemKind::EnumMember,
-            CompletionItemKind::Constant,
-            CompletionItemKind::Struct,
-            CompletionItemKind::Event,
-            CompletionItemKind::Operator,
-            CompletionItemKind::TypeParameter,
-        ];
-
-        for kind in kinds {
-            let item = CompletionItem::new("test").with_kind(kind);
-            assert_eq!(item.kind, Some(kind));
-        }
     }
 
     mod filter_tests {

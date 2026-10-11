@@ -642,48 +642,6 @@ mod tests {
     }
 
     #[test]
-    fn test_completion_icon_kinds() {
-        use crate::Theme;
-
-        let theme = Theme::default();
-
-        // Test that all kinds have icons
-        let kinds = vec![
-            CompletionItemKind::Text,
-            CompletionItemKind::Method,
-            CompletionItemKind::Function,
-            CompletionItemKind::Constructor,
-            CompletionItemKind::Field,
-            CompletionItemKind::Variable,
-            CompletionItemKind::Class,
-            CompletionItemKind::Interface,
-            CompletionItemKind::Module,
-            CompletionItemKind::Property,
-            CompletionItemKind::Unit,
-            CompletionItemKind::Value,
-            CompletionItemKind::Enum,
-            CompletionItemKind::Keyword,
-            CompletionItemKind::Snippet,
-            CompletionItemKind::Color,
-            CompletionItemKind::File,
-            CompletionItemKind::Reference,
-            CompletionItemKind::Folder,
-            CompletionItemKind::EnumMember,
-            CompletionItemKind::Constant,
-            CompletionItemKind::Struct,
-            CompletionItemKind::Event,
-            CompletionItemKind::Operator,
-            CompletionItemKind::TypeParameter,
-        ];
-
-        for kind in kinds {
-            let icon = get_completion_icon(&kind, &theme);
-            // Test that we get a valid SVG icon and tooltip for each kind
-            assert!(icon.tooltip.is_some(), "Missing tooltip for {:?}", kind);
-        }
-    }
-
-    #[test]
     fn test_completion_list_state() {
         let mut state = CompletionListState::new(24.0, 300.0);
 

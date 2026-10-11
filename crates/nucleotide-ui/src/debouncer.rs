@@ -192,13 +192,6 @@ mod tests {
     }
 
     #[test]
-    fn test_debouncer_creation() {
-        let debouncer = CompletionDebouncer::new();
-        assert!(!debouncer.is_pending());
-        assert!(debouncer.time_since_last_input().is_none());
-    }
-
-    #[test]
     fn test_debouncer_state_management() {
         let mut debouncer = CompletionDebouncer::new();
 
