@@ -31,7 +31,9 @@ use std::{
 use crate::theme_utils::color_to_hsla;
 use crate::tokens::{DesignTokens, with_alpha};
 
-#[derive(Clone, Debug)]
+mod mermaid;
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct MarkdownStyle {
     pub body_color: Hsla,
     pub secondary_color: Hsla,
@@ -209,6 +211,13 @@ impl RenderOnce for MarkdownElement {
 
 #[derive(Clone, Default)]
 struct MarkdownSelection(Rc<RefCell<MarkdownSelectionState>>);
+
+impl PartialEq for MarkdownSelection {
+    fn eq(&self, other: &Self) -> bool {
+        // Selection contents mutate during layout; style equality compares handles.
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
 
 impl std::fmt::Debug for MarkdownSelection {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -1783,6 +1792,18 @@ fn render_blocks(
                         .when(block_index > 0, |this| this.mt(block_gap(style)))
                         .into_any_element()
                 }
+            }
+            MarkdownBlock::CodeBlock { language, text }
+                if language
+                    .as_deref()
+                    .is_some_and(|language| language.eq_ignore_ascii_case("mermaid")) =>
+            {
+                mermaid::MermaidBlock::new(
+                    text,
+                    style.clone(),
+                    format!("{id_prefix}-code-block-{block_index}"),
+                )
+                .into_any_element()
             }
             MarkdownBlock::CodeBlock { language, text } => render_code_block(
                 text,
@@ -5341,5 +5362,121 @@ plain"#,
             "expected wheel input to move markdown scroll offset, got {:?}",
             scroll.offset()
         );
+    }
+
+    struct MermaidFixture {
+        source: SharedString,
+        style: MarkdownStyle,
+        width: f32,
+    }
+
+    impl Render for MermaidFixture {
+        fn render(
+            &mut self,
+            _window: &mut Window,
+            _cx: &mut gpui::Context<Self>,
+        ) -> impl IntoElement {
+            div().w(px(self.width)).h(px(1000.0)).child(
+                div()
+                    .id("mermaid-fixture-scroll")
+                    .size_full()
+                    .min_h(px(0.0))
+                    .overflow_y_scroll()
+                    .child(markdown_extended(self.source.clone(), self.style.clone())),
+            )
+        }
+    }
+
+    #[gpui::test]
+    fn markdown_renders_mermaid_in_narrow_and_nested_blocks(cx: &mut gpui::TestAppContext) {
+        let (view, cx) = cx.add_window_view(|_, _| MermaidFixture {
+            source: "```mermaid\n%% leading comment\nflowchart LR\nA[Receive request] --> B{Valid?}\nB -->|Yes| C[Publish]\nB -->|No| D[Report error]\n```\n\n```mermaid\nsequenceDiagram\nAlice->>Bob: Open document\nBob-->>Alice: Diagnostics\n```\n\n```rust\nfn main() {}\n```\n\n> ```mermaid\n> graph TD\n> A[Résumé] --> B[Done]\n> ```".into(),
+            style: MarkdownStyle::preview_from_tokens(&DesignTokens::dark()),
+            width: 300.0,
+        });
+        cx.run_until_parked();
+        for selector in [
+            "markdown-code-block-0-diagram",
+            "markdown-code-block-1-diagram",
+            "markdown-block-quote-3-content-code-block-0-diagram",
+        ] {
+            let bounds = cx
+                .debug_bounds(selector)
+                .unwrap_or_else(|| panic!("missing {selector}"));
+            assert!(bounds.size.width > px(40.0) && bounds.size.width <= px(300.0));
+            assert!(
+                bounds.size.height > px(20.0),
+                "diagram must have a nonzero proportional height"
+            );
+        }
+        assert!(
+            cx.debug_bounds("markdown-code-block-2-diagram").is_none(),
+            "ordinary code must not become a diagram"
+        );
+
+        let wide = cx.debug_bounds("markdown-code-block-0-diagram").unwrap();
+        view.update(cx, |view, cx| {
+            view.width = 200.0;
+            cx.notify();
+        });
+        cx.run_until_parked();
+        let narrow = cx.debug_bounds("markdown-code-block-0-diagram").unwrap();
+        assert!(narrow.size.width > px(0.0) && narrow.size.height > px(0.0));
+        assert!(narrow.size.width < wide.size.width);
+        let width_ratio = narrow.size.width / wide.size.width;
+        let height_ratio = narrow.size.height / wide.size.height;
+        assert!(
+            (width_ratio - height_ratio).abs() < 0.01,
+            "shrinking a diagram must preserve its aspect ratio"
+        );
+    }
+
+    #[gpui::test]
+    fn markdown_mermaid_falls_back_and_recovers_after_edits(cx: &mut gpui::TestAppContext) {
+        let (view, cx) = cx.add_window_view(|_, _| MermaidFixture {
+            source: "```mermaid\nflowchart LR\nA --> B\n```".into(),
+            style: MarkdownStyle::from_tokens(&DesignTokens::dark()).compact(),
+            width: 300.0,
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("markdown-code-block-0-diagram").is_some());
+
+        let original = cx.debug_bounds("markdown-code-block-0-diagram").unwrap();
+        view.update(cx, |view, cx| {
+            view.style.body_font_size = px(32.0);
+            cx.notify();
+        });
+        cx.run_until_parked();
+        let enlarged = cx.debug_bounds("markdown-code-block-0-diagram").unwrap();
+        assert!(
+            enlarged.size.height > original.size.height,
+            "a text-size change must rerender unchanged Mermaid source"
+        );
+
+        for source in [
+            "```mermaid\nflowchart LR\nA[Unclosed label\n```".to_string(),
+            "```mermaid\npie\n\"Unsupported\": 42\n```".to_string(),
+            format!(
+                "```mermaid\nflowchart LR\n%% {}\nA-->B\n```",
+                "x".repeat(65_536)
+            ),
+        ] {
+            view.update(cx, |view, cx| {
+                view.source = source.into();
+                cx.notify();
+            });
+            cx.run_until_parked();
+            assert!(cx.debug_bounds("markdown-code-block-0-diagram").is_none());
+            assert!(cx.debug_bounds("markdown-code-block-0-fallback").is_some());
+        }
+
+        view.update(cx, |view, cx| {
+            view.source = "```mermaid\nsequenceDiagram\nEditor->>Server: Saved\n```".into();
+            view.style = MarkdownStyle::from_tokens(&DesignTokens::light()).compact();
+            cx.notify();
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("markdown-code-block-0-diagram").is_some());
+        assert!(cx.debug_bounds("markdown-code-block-0-fallback").is_none());
     }
 }
