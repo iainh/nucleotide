@@ -210,12 +210,12 @@ impl RenderOnce for MarkdownElement {
 }
 
 #[derive(Clone, Default)]
-struct MarkdownSelection(Rc<RefCell<MarkdownSelectionState>>);
+struct MarkdownSelection(Rc<RefCell<MarkdownSelectionState>>, Option<usize>);
 
 impl PartialEq for MarkdownSelection {
     fn eq(&self, other: &Self) -> bool {
         // Selection contents mutate during layout; style equality compares handles.
-        Rc::ptr_eq(&self.0, &other.0)
+        Rc::ptr_eq(&self.0, &other.0) && self.1 == other.1
     }
 }
 
@@ -270,6 +270,7 @@ impl MarkdownSelectionState {
         self.nodes
             .iter()
             .enumerate()
+            .filter(|(_, (text, _))| !text.is_empty())
             .min_by(|(_, (_, a)), (_, (_, b))| {
                 let distance = |layout: &gpui::TextLayout| {
                     let bounds = layout.bounds();
@@ -388,7 +389,8 @@ fn selectable_styled_text(
         return StyledText::new(text).with_highlights(highlights);
     };
     let mut state = selection.0.borrow_mut();
-    let range = state.range_for(state.nodes.len(), text.len());
+    let node = selection.1.unwrap_or(state.nodes.len());
+    let range = state.range_for(node, text.len());
     let selection_highlight = HighlightStyle {
         background_color: Some(style.selection_color),
         ..Default::default()
@@ -401,7 +403,12 @@ fn selectable_styled_text(
             (span, highlight)
         });
     let element = StyledText::new(text.clone()).with_highlights(highlights);
-    state.nodes.push((text, element.layout().clone()));
+    let entry = (text, element.layout().clone());
+    if selection.1.is_some() {
+        state.nodes[node] = entry;
+    } else {
+        state.nodes.push(entry);
+    }
     element
 }
 
@@ -1798,9 +1805,18 @@ fn render_blocks(
                     .as_deref()
                     .is_some_and(|language| language.eq_ignore_ascii_case("mermaid")) =>
             {
+                let mut style = style.clone();
+                if let Some(selection) = &mut style.selection {
+                    // The entity renders later than surrounding text. Reserve its
+                    // reading-order slot; successful images leave it empty.
+                    let mut state = selection.0.borrow_mut();
+                    selection.1 = Some(state.nodes.len());
+                    let placeholder = StyledText::new(SharedString::default());
+                    state.nodes.push(("".into(), placeholder.layout().clone()));
+                }
                 mermaid::MermaidBlock::new(
                     text,
-                    style.clone(),
+                    style,
                     format!("{id_prefix}-code-block-{block_index}"),
                 )
                 .into_any_element()
@@ -5368,6 +5384,7 @@ plain"#,
         source: SharedString,
         style: MarkdownStyle,
         width: f32,
+        focus: gpui::FocusHandle,
     }
 
     impl Render for MermaidFixture {
@@ -5376,23 +5393,34 @@ plain"#,
             _window: &mut Window,
             _cx: &mut gpui::Context<Self>,
         ) -> impl IntoElement {
-            div().w(px(self.width)).h(px(1000.0)).child(
-                div()
-                    .id("mermaid-fixture-scroll")
-                    .size_full()
-                    .min_h(px(0.0))
-                    .overflow_y_scroll()
-                    .child(markdown_extended(self.source.clone(), self.style.clone())),
-            )
+            let focus = self.focus.clone();
+            div()
+                .w(px(self.width))
+                .h(px(1000.0))
+                .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                    window.focus(&focus, cx)
+                })
+                .child(
+                    div()
+                        .id("mermaid-fixture-scroll")
+                        .size_full()
+                        .min_h(px(0.0))
+                        .overflow_y_scroll()
+                        .child(
+                            markdown_extended(self.source.clone(), self.style.clone())
+                                .selectable("mermaid-fixture-selection", self.focus.clone()),
+                        ),
+                )
         }
     }
 
     #[gpui::test]
     fn markdown_renders_mermaid_in_narrow_and_nested_blocks(cx: &mut gpui::TestAppContext) {
-        let (view, cx) = cx.add_window_view(|_, _| MermaidFixture {
+        let (view, cx) = cx.add_window_view(|_, cx| MermaidFixture {
             source: "```mermaid\n%% leading comment\nflowchart LR\nA[Receive request] --> B{Valid?}\nB -->|Yes| C[Publish]\nB -->|No| D[Report error]\n```\n\n```mermaid\nsequenceDiagram\nAlice->>Bob: Open document\nBob-->>Alice: Diagnostics\n```\n\n```rust\nfn main() {}\n```\n\n> ```mermaid\n> graph TD\n> A[Résumé] --> B[Done]\n> ```".into(),
             style: MarkdownStyle::preview_from_tokens(&DesignTokens::dark()),
             width: 300.0,
+            focus: cx.focus_handle(),
         });
         cx.run_until_parked();
         for selector in [
@@ -5474,10 +5502,11 @@ plain"#,
 
     #[gpui::test]
     fn markdown_mermaid_falls_back_and_recovers_after_edits(cx: &mut gpui::TestAppContext) {
-        let (view, cx) = cx.add_window_view(|_, _| MermaidFixture {
+        let (view, cx) = cx.add_window_view(|_, cx| MermaidFixture {
             source: "```mermaid\nflowchart LR\nA --> B\n```".into(),
             style: MarkdownStyle::from_tokens(&DesignTokens::dark()).compact(),
             width: 300.0,
+            focus: cx.focus_handle(),
         });
         cx.run_until_parked();
         assert!(cx.debug_bounds("markdown-code-block-0-diagram").is_some());
@@ -5519,5 +5548,35 @@ plain"#,
         cx.run_until_parked();
         assert!(cx.debug_bounds("markdown-code-block-0-diagram").is_some());
         assert!(cx.debug_bounds("markdown-code-block-0-fallback").is_none());
+
+        for (source, expected) in [
+            (
+                "before\n\n```mermaid\nflowchart LR\nA[Unclosed label\n```\n\nafter",
+                "before\n\nflowchart LR\nA[Unclosed label\n\nafter",
+            ),
+            (
+                "before\n\n```mermaid\npie\n\"Cached\": 70\n\"Fetched\": 30\n```\n\nafter",
+                "before\n\nafter",
+            ),
+        ] {
+            view.update(cx, |view, cx| {
+                view.source = source.into();
+                cx.notify();
+            });
+            cx.run_until_parked();
+            cx.simulate_click(gpui::point(px(10.0), px(8.0)), gpui::Modifiers::default());
+            cx.simulate_keystrokes(if cfg!(target_os = "macos") {
+                "cmd-a cmd-c"
+            } else {
+                "ctrl-a ctrl-c"
+            });
+            assert_eq!(
+                cx.read_from_clipboard()
+                    .and_then(|item| item.text())
+                    .as_deref(),
+                Some(expected),
+                "copy must follow reading order and exclude undisplayed Mermaid source"
+            );
+        }
     }
 }
