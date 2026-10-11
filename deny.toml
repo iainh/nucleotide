@@ -360,7 +360,7 @@ allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 allow-git = [
     # Zed/GPUI dependencies and their patched transitive crates
     "https://github.com/zed-industries/async-process.git",
-    "https://github.com/smol-rs/async-task.git",
+    "https://github.com/zed-industries/async-task.git",
     # GPUI and its dependencies from Zed
     "https://github.com/zed-industries/zed",
     # Font-kit (used by GPUI)
