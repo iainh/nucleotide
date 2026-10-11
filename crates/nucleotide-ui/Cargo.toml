@@ -24,7 +24,11 @@ tokio.workspace = true
 pulldown-cmark.workspace = true
 raw-window-handle = "0.6"
 serde_json.workspace = true
-merman = { version = "0.8.0", default-features = false, features = ["svg", "diagram-flowchart", "diagram-sequence"] }
+merman = { version = "0.8.0", default-features = false, features = [
+    "svg", "diagram-flowchart", "diagram-sequence", "diagram-class", "diagram-state",
+    "diagram-er", "diagram-pie", "diagram-gantt", "diagram-git-graph",
+    "system-clock", "system-timezone",
+] }
 roxmltree = "0.20"
 
 [target.'cfg(windows)'.dependencies]

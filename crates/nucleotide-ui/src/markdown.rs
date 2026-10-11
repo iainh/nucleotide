@@ -5429,6 +5429,47 @@ plain"#,
             (width_ratio - height_ratio).abs() < 0.01,
             "shrinking a diagram must preserve its aspect ratio"
         );
+
+        let diagrams = [
+            "classDiagram\nclass Document {\n+String path\n+save()\n}\nclass Editor {\n+open()\n}\nEditor --> Document : edits",
+            "stateDiagram\n[*] --> Idle\nIdle --> Editing: open\nEditing --> [*]",
+            "stateDiagram-v2\n[*] --> Idle\nIdle --> Editing: open\nEditing --> Saved: save\nSaved --> [*]",
+            "erDiagram\nCUSTOMER ||--o{ ORDER : places\nCUSTOMER {\nint id PK\nstring name\n}\nORDER {\nint id PK\nint customer_id FK\n}",
+            "pie showData\ntitle Requests\n\"Cached\": 70\n\"Fetched\": 20\n\"Failed\": 10",
+            "gantt\ntitle Release\ndateFormat YYYY-MM-DD\ntodayMarker off\nsection Work\nParse :done, p1, 2026-10-01, 2d\nRender :active, p2, after p1, 3d\nVerify :crit, p3, after p2, 1d",
+            "gitGraph\ncommit id: \"init\"\nbranch feature\ncommit id: \"work\"\ncheckout main\ncommit id: \"base\"\nmerge feature tag: \"v1\"",
+        ];
+        for tokens in [DesignTokens::dark(), DesignTokens::light()] {
+            for diagram in diagrams {
+                view.update(cx, |view, cx| {
+                    view.source = format!("```mermaid\n{diagram}\n```").into();
+                    view.style = MarkdownStyle::preview_from_tokens(&tokens);
+                    view.width = 900.0;
+                    cx.notify();
+                });
+                cx.run_until_parked();
+                let wide = cx
+                    .debug_bounds("markdown-code-block-0-diagram")
+                    .unwrap_or_else(|| panic!("diagram did not render: {diagram}"));
+                assert!(wide.size.width > px(40.0) && wide.size.height > px(20.0));
+                assert!(cx.debug_bounds("markdown-code-block-0-fallback").is_none());
+
+                view.update(cx, |view, cx| {
+                    view.width = 200.0;
+                    cx.notify();
+                });
+                cx.run_until_parked();
+                let narrow = cx.debug_bounds("markdown-code-block-0-diagram").unwrap();
+                assert!(narrow.size.width > px(0.0) && narrow.size.width <= px(200.0));
+                assert!(narrow.size.height > px(0.0));
+                assert!(
+                    (narrow.size.width / wide.size.width - narrow.size.height / wide.size.height)
+                        .abs()
+                        < 0.01,
+                    "diagram must retain its aspect ratio: {diagram}"
+                );
+            }
+        }
     }
 
     #[gpui::test]
@@ -5455,7 +5496,7 @@ plain"#,
 
         for source in [
             "```mermaid\nflowchart LR\nA[Unclosed label\n```".to_string(),
-            "```mermaid\npie\n\"Unsupported\": 42\n```".to_string(),
+            "```mermaid\nmindmap\n  root((Unsupported))\n    Child\n```".to_string(),
             format!(
                 "```mermaid\nflowchart LR\n%% {}\nA-->B\n```",
                 "x".repeat(65_536)
