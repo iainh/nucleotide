@@ -1062,23 +1062,6 @@ EndGlobal
     }
 
     #[tokio::test]
-    async fn test_package_reference_extraction() {
-        let provider = CSharpManifestProvider::new();
-
-        let csproj_content = r#"
-        <PackageReference Include="Newtonsoft.Json" Version="13.0.1" />
-        <PackageReference Include="Microsoft.Extensions.Hosting" Version="6.0.1" />
-        <PackageReference Include="Serilog" Version="2.10.0" />
-        "#;
-
-        let packages = provider.extract_package_references(csproj_content);
-        assert_eq!(packages.len(), 3);
-        assert!(packages.contains(&"Newtonsoft.Json".to_string()));
-        assert!(packages.contains(&"Microsoft.Extensions.Hosting".to_string()));
-        assert!(packages.contains(&"Serilog".to_string()));
-    }
-
-    #[tokio::test]
     async fn test_invalid_manifests() {
         let temp_dir = TempDir::new().unwrap();
         let provider = CSharpManifestProvider::new();

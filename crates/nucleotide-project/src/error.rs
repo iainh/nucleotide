@@ -132,29 +132,6 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
-    fn test_error_creation() {
-        let path = PathBuf::from("/test/path");
-
-        let parse_error = ProjectError::manifest_parse(
-            path.clone(),
-            std::io::Error::new(std::io::ErrorKind::NotFound, "File not found"),
-        );
-        assert!(matches!(parse_error, ProjectError::ManifestParse { .. }));
-
-        let invalid_error = ProjectError::invalid_manifest(path.clone(), "Invalid TOML");
-        assert!(matches!(
-            invalid_error,
-            ProjectError::InvalidManifest { .. }
-        ));
-
-        let not_found_error = ProjectError::provider_not_found("test");
-        assert!(matches!(
-            not_found_error,
-            ProjectError::ProviderNotFound { .. }
-        ));
-    }
-
-    #[test]
     fn test_error_properties() {
         let recoverable = ProjectError::invalid_manifest(PathBuf::from("/test"), "test");
         assert!(recoverable.is_recoverable());

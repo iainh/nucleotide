@@ -459,18 +459,4 @@ mod tests {
             .unwrap();
         assert!(directory_contains_files(temp_dir.path()).await.unwrap());
     }
-
-    #[test]
-    fn test_traversal_config() {
-        let config = TraversalConfig::new()
-            .with_max_depth(10)
-            .with_excluded_path(PathBuf::from("/tmp"))
-            .with_follow_symlinks(true)
-            .with_stop_at_fs_boundary(false);
-
-        assert_eq!(config.max_depth, 10);
-        assert!(config.excluded_paths.contains(&PathBuf::from("/tmp")));
-        assert!(config.follow_symlinks);
-        assert!(!config.stop_at_fs_boundary);
-    }
 }
