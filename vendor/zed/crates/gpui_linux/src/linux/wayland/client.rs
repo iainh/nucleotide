@@ -128,61 +128,6 @@ impl From<Bounds<Pixels>> for ImeCursorRectangle {
     }
 }
 
-trait ImeCursorRectangleSink {
-    fn set_ime_cursor_rectangle(&self, x: i32, y: i32, width: i32, height: i32);
-    fn commit_ime_state(&self);
-}
-
-impl ImeCursorRectangleSink for zwp_text_input_v3::ZwpTextInputV3 {
-    fn set_ime_cursor_rectangle(&self, x: i32, y: i32, width: i32, height: i32) {
-        self.set_cursor_rectangle(x, y, width, height);
-    }
-
-    fn commit_ime_state(&self) {
-        self.commit();
-    }
-}
-
-fn set_ime_cursor_rectangle(
-    text_input: &impl ImeCursorRectangleSink,
-    cursor_rectangle: ImeCursorRectangle,
-) {
-    text_input.set_ime_cursor_rectangle(
-        cursor_rectangle.x,
-        cursor_rectangle.y,
-        cursor_rectangle.width,
-        cursor_rectangle.height,
-    );
-}
-
-fn update_ime_cursor_rectangle(
-    text_input: &impl ImeCursorRectangleSink,
-    last_ime_cursor_rectangle: &mut Option<ImeCursorRectangle>,
-    bounds: Bounds<Pixels>,
-) {
-    let cursor_rectangle = ImeCursorRectangle::from(bounds);
-    if *last_ime_cursor_rectangle == Some(cursor_rectangle) {
-        return;
-    }
-
-    *last_ime_cursor_rectangle = Some(cursor_rectangle);
-    set_ime_cursor_rectangle(text_input, cursor_rectangle);
-    text_input.commit_ime_state();
-}
-
-fn set_ime_cursor_rectangle_after_done(
-    text_input: &impl ImeCursorRectangleSink,
-    last_ime_cursor_rectangle: &mut Option<ImeCursorRectangle>,
-    bounds: Bounds<Pixels>,
-    should_commit: bool,
-) {
-    if should_commit {
-        update_ime_cursor_rectangle(text_input, last_ime_cursor_rectangle, bounds);
-    } else {
-        set_ime_cursor_rectangle(text_input, ImeCursorRectangle::from(bounds));
-    }
-}
-
 #[derive(Clone)]
 pub struct Globals {
     pub qh: QueueHandle<WaylandClientStatePtr>,
@@ -408,7 +353,7 @@ impl WaylandClientStatePtr {
             drop(state);
             if let Some(area) = window.get_ime_area() {
                 let area = ImeCursorRectangle::from(area);
-                set_ime_cursor_rectangle(&text_input, area);
+                text_input.set_cursor_rectangle(area.x, area.y, area.width, area.height);
                 cursor_rectangle = Some(area);
             }
             state = client.borrow_mut();
@@ -441,10 +386,21 @@ impl WaylandClientStatePtr {
             return;
         }
 
-        let Some(text_input) = state.text_input.clone() else {
+        let Some(text_input) = state.text_input.as_ref() else {
             return;
         };
-        update_ime_cursor_rectangle(&text_input, &mut state.last_ime_cursor_rectangle, bounds);
+        let rectangle = ImeCursorRectangle::from(bounds);
+        if state.last_ime_cursor_rectangle == Some(rectangle) {
+            return;
+        }
+        text_input.set_cursor_rectangle(
+            rectangle.x,
+            rectangle.y,
+            rectangle.width,
+            rectangle.height,
+        );
+        text_input.commit();
+        state.last_ime_cursor_rectangle = Some(rectangle);
     }
 
     pub fn handle_keyboard_layout_change(&self) {
@@ -1801,12 +1757,21 @@ impl Dispatch<zwp_text_input_v3::ZwpTextInputV3, ()> for WaylandClientStatePtr {
                     window.handle_ime(ImeInput::SetMarkedText(text));
                     if let Some(area) = window.get_ime_area() {
                         let mut state = client.borrow_mut();
-                        set_ime_cursor_rectangle_after_done(
-                            text_input,
-                            &mut state.last_ime_cursor_rectangle,
-                            area,
-                            last_serial == serial,
-                        );
+                        let rectangle = ImeCursorRectangle::from(area);
+                        if last_serial != serial
+                            || state.last_ime_cursor_rectangle != Some(rectangle)
+                        {
+                            text_input.set_cursor_rectangle(
+                                rectangle.x,
+                                rectangle.y,
+                                rectangle.width,
+                                rectangle.height,
+                            );
+                            if last_serial == serial {
+                                text_input.commit();
+                                state.last_ime_cursor_rectangle = Some(rectangle);
+                            }
+                        }
                     }
                 } else {
                     state.composing = false;
@@ -2624,118 +2589,5 @@ impl Dispatch<XdgDialogV1, ()> for WaylandClientStatePtr {
         _conn: &Connection,
         _qhandle: &QueueHandle<Self>,
     ) {
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::cell::Cell;
-
-    use super::*;
-
-    #[derive(Default)]
-    struct FakeImeCursorRectangleSink {
-        cursor_rectangles: RefCell<Vec<(i32, i32, i32, i32)>>,
-        commit_count: Cell<usize>,
-    }
-
-    impl ImeCursorRectangleSink for FakeImeCursorRectangleSink {
-        fn set_ime_cursor_rectangle(&self, x: i32, y: i32, width: i32, height: i32) {
-            self.cursor_rectangles
-                .borrow_mut()
-                .push((x, y, width, height));
-        }
-
-        fn commit_ime_state(&self) {
-            self.commit_count.set(self.commit_count.get() + 1);
-        }
-    }
-
-    fn ime_cursor_bounds(x: f32) -> Bounds<Pixels> {
-        Bounds::new(point(px(x), px(20.25)), size(px(1.0), px(18.75)))
-    }
-
-    #[test]
-    fn caches_cursor_rectangle_committed_after_done() {
-        let text_input = FakeImeCursorRectangleSink::default();
-        let mut last_ime_cursor_rectangle = None;
-        let initial_bounds = ime_cursor_bounds(10.0);
-        let updated_bounds = ime_cursor_bounds(20.0);
-
-        update_ime_cursor_rectangle(&text_input, &mut last_ime_cursor_rectangle, initial_bounds);
-        set_ime_cursor_rectangle_after_done(
-            &text_input,
-            &mut last_ime_cursor_rectangle,
-            updated_bounds,
-            true,
-        );
-        update_ime_cursor_rectangle(&text_input, &mut last_ime_cursor_rectangle, updated_bounds);
-
-        assert_eq!(text_input.commit_count.get(), 2);
-        assert_eq!(text_input.cursor_rectangles.borrow().len(), 2);
-    }
-
-    #[test]
-    fn uncommitted_cursor_rectangle_does_not_advance_cache() {
-        let text_input = FakeImeCursorRectangleSink::default();
-        let mut last_ime_cursor_rectangle = None;
-        let initial_bounds = ime_cursor_bounds(10.0);
-        let updated_bounds = ime_cursor_bounds(20.0);
-
-        update_ime_cursor_rectangle(&text_input, &mut last_ime_cursor_rectangle, initial_bounds);
-        set_ime_cursor_rectangle_after_done(
-            &text_input,
-            &mut last_ime_cursor_rectangle,
-            updated_bounds,
-            false,
-        );
-        assert_eq!(text_input.commit_count.get(), 1);
-        update_ime_cursor_rectangle(&text_input, &mut last_ime_cursor_rectangle, updated_bounds);
-        assert_eq!(text_input.commit_count.get(), 2);
-        assert_eq!(
-            text_input.cursor_rectangles.borrow().as_slice(),
-            &[(10, 20, 1, 18), (20, 20, 1, 18), (20, 20, 1, 18)]
-        );
-    }
-
-    #[test]
-    fn skips_unchanged_cursor_rectangle_after_done() {
-        let text_input = FakeImeCursorRectangleSink::default();
-        let mut last_ime_cursor_rectangle = None;
-        let bounds = ime_cursor_bounds(10.0);
-
-        update_ime_cursor_rectangle(&text_input, &mut last_ime_cursor_rectangle, bounds);
-        set_ime_cursor_rectangle_after_done(
-            &text_input,
-            &mut last_ime_cursor_rectangle,
-            bounds,
-            true,
-        );
-
-        assert_eq!(text_input.commit_count.get(), 1);
-        assert_eq!(text_input.cursor_rectangles.borrow().len(), 1);
-    }
-
-    #[test]
-    fn skips_cursor_rectangles_with_unchanged_protocol_coordinates() {
-        let text_input = FakeImeCursorRectangleSink::default();
-        let mut last_ime_cursor_rectangle = None;
-
-        update_ime_cursor_rectangle(
-            &text_input,
-            &mut last_ime_cursor_rectangle,
-            ime_cursor_bounds(10.25),
-        );
-        update_ime_cursor_rectangle(
-            &text_input,
-            &mut last_ime_cursor_rectangle,
-            ime_cursor_bounds(10.75),
-        );
-
-        assert_eq!(text_input.commit_count.get(), 1);
-        assert_eq!(
-            text_input.cursor_rectangles.borrow().as_slice(),
-            &[(10, 20, 1, 18)]
-        );
     }
 }

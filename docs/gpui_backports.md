@@ -63,7 +63,7 @@ Validated in a Linux orb with Rust 1.96.0:
 - `cargo check -p gpui_windows --tests --target x86_64-pc-windows-gnu --locked`
   passes with MinGW installed. This checks Rust sources, not HLSL compilation
   or Windows runtime behaviour.
-- All 25 `gpui_linux` tests and 18 `gpui_wgpu` tests pass in a temporary copy
+- All 21 `gpui_linux` tests and 18 `gpui_wgpu` tests pass in a temporary copy
   of the vendor workspace, seeded with the root lockfile and with
   `gpui/test-support` enabled. Cargo resolves the standalone test dependencies
   there without changing Nucleotide's lockfile. The trimmed vendor workspace's
@@ -83,9 +83,12 @@ Validated in a Linux orb with Rust 1.96.0:
   cause. Missing language servers also limit this smoke run, not GPUI rendering.
 
 GPU-backed atlas regressions cover both a released slot and an index invalidated
-by clearing the atlas. IME protocol tests cover repeated rectangles, coordinate
-quantization, changed rectangles, and uncommitted state. Dispatcher tests cover
-the failed timer-send shutdown path.
+by clearing the atlas. Dispatcher tests cover the failed timer-send shutdown path.
+Four temporary source-extracted IME probes use real Wayland client proxies over
+a Unix socket to verify unchanged/quantized rectangle suppression, changed
+rectangles, uncommitted state, and composing/pre-edit guards. The probes are
+removed after validation; no fake-sink tests or test-only production abstractions
+remain. These probes do not establish compositor or input-method runtime behaviour.
 
 Windows runtime checks still require DirectWrite, DirectX, and real mixed-DPI
 monitors. macOS runtime checks still require AppKit, CoreVideo, and Metal,
