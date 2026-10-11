@@ -2,6 +2,8 @@
 // ABOUTME: Keeps one cancellable render per visible block, with readable source fallback
 
 use super::{MarkdownStyle, MarkdownSyntaxLoader, render_code_block};
+use crate::styling::{ColorTheory, ContrastRatios};
+use crate::tokens::mix;
 use anyhow::{Context as _, Result, anyhow, ensure};
 use gpui::{
     App, Context, IntoElement, Render, RenderImage, RenderOnce, SharedString, Styled, TextRun,
@@ -10,10 +12,11 @@ use gpui::{
 use merman::{
     Engine, MermaidConfig, OperationControl, RenderOutput, RenderRequest, Renderer, SvgEnvironment,
     SvgRequest,
+    runtime::RuntimePolicy,
     svg::{
         DeterministicTextMeasurer, MeasurementProfileId, RenderResourcePolicy, ResourceLimitId,
-        RootBackgroundPostprocessor, SvgPipeline, TextMeasurementPolicy, TextMeasurementProfile,
-        TextMeasurementProfileIdentity,
+        RootBackgroundPostprocessor, ScopedCssPostprocessor, SvgPipeline, TextMeasurementPolicy,
+        TextMeasurementProfile, TextMeasurementProfileIdentity,
     },
 };
 use serde_json::{Value, json};
@@ -204,6 +207,18 @@ fn theme_config(style: &MarkdownStyle) -> Value {
     let text = color(style.body_color);
     let border = color(style.code_border);
     let accent = color(style.link_color);
+    let muted = color(style.secondary_color);
+    let chart_color = |fill| {
+        color(ColorTheory::ensure_contrast(
+            style.body_color,
+            fill,
+            ContrastRatios::AA_NORMAL,
+        ))
+    };
+    let task = chart_color(style.link_color);
+    let done = chart_color(style.alert_tip_color);
+    let critical = chart_color(style.alert_caution_color);
+    let section = color(mix(style.code_background, style.secondary_color, 0.08));
     let mut variables: serde_json::Map<String, Value> = [
         ("background", &background),
         ("mainBkg", &background),
@@ -237,10 +252,70 @@ fn theme_config(style: &MarkdownStyle) -> Value {
         ("noteTextColor", &text),
         ("activationBkgColor", &background),
         ("activationBorderColor", &accent),
+        ("titleColor", &text),
+        ("nodeBorder", &accent),
+        ("classText", &text),
+        ("stateLabelColor", &text),
+        ("transitionLabelColor", &text),
+        ("stateBkg", &background),
+        ("stateBorder", &accent),
+        ("transitionColor", &text),
+        ("specialStateColor", &text),
+        ("innerEndBackground", &background),
+        ("labelBackgroundColor", &background),
+        ("compositeBackground", &background),
+        ("compositeTitleBackground", &section),
+        ("altBackground", &section),
+        ("pieTitleTextColor", &text),
+        ("pieLegendTextColor", &text),
+        ("pieSectionTextColor", &text),
+        ("pieStrokeColor", &background),
+        ("pieOuterStrokeColor", &muted),
+        ("gridColor", &border),
+        ("sectionBkgColor", &section),
+        ("sectionBkgColor2", &background),
+        ("altSectionBkgColor", &background),
+        ("excludeBkgColor", &section),
+        ("taskTextColor", &text),
+        ("taskTextDarkColor", &text),
+        ("taskTextOutsideColor", &text),
+        ("taskTextClickableColor", &accent),
+        ("taskBkgColor", &task),
+        ("taskBorderColor", &accent),
+        ("activeTaskBkgColor", &task),
+        ("activeTaskBorderColor", &accent),
+        ("doneTaskBkgColor", &done),
+        ("doneTaskBorderColor", &muted),
+        ("critBkgColor", &critical),
+        ("critBorderColor", &accent),
+        ("todayLineColor", &accent),
+        ("vertLineColor", &muted),
+        ("commitLabelColor", &text),
+        ("commitLabelBackground", &background),
+        ("tagLabelColor", &text),
+        ("tagLabelBackground", &section),
+        ("tagLabelBorder", &accent),
+        ("commitLineColor", &text),
     ]
     .into_iter()
     .map(|(key, value)| (key.to_string(), Value::String(value.clone())))
     .collect();
+    // Semantic tokens can alias the same colour. Golden-angle hue spacing
+    // distinguishes adjacent data series while retaining the theme's accent.
+    let palette = ColorTheory::hsla_to_oklch(style.link_color);
+    for index in 0..12 {
+        let mut fill = palette;
+        fill.h = (fill.h + index as f32 * std::f32::consts::TAU * 0.618_034)
+            .rem_euclid(std::f32::consts::TAU);
+        let fill = chart_color(ColorTheory::oklch_to_hsla(fill, style.link_color.a));
+        variables.insert(format!("pie{}", index + 1), json!(fill));
+        if index < 8 {
+            variables.insert(format!("git{index}"), json!(fill));
+            variables.insert(format!("gitInv{index}"), json!(text));
+            variables.insert(format!("gitBranchLabel{index}"), json!(text));
+        }
+    }
+    variables.insert("pieOpacity".into(), json!(1));
     variables.insert("darkMode".into(), json!(style.code_background.l < 0.5));
     variables.insert("fontFamily".into(), json!(style.code_font_family.as_ref()));
     variables.insert(
@@ -303,6 +378,7 @@ fn render_svg(
         .with_limit(ResourceLimitId::MaxSourceBytes, MAX_SOURCE_BYTES)?
         .with_limit(ResourceLimitId::MaxModelItems, 1000)?
         .with_limit(ResourceLimitId::MaxSvgBytes, 2 * 1024 * 1024)?;
+    let background = config["themeVariables"]["background"].as_str().unwrap();
     let request = SvgRequest {
         environment: SvgEnvironment::deterministic()
             .with_resource_policy(limits)
@@ -310,15 +386,27 @@ fn render_svg(
                 TextMeasurementProfile::new(identity, measurer),
             )),
         // A token-matched opaque canvas avoids alpha-filtering seams around labels.
-        pipeline: Some(SvgPipeline::resvg_safe().with_postprocessor(
-            RootBackgroundPostprocessor::new(
-                config["themeVariables"]["background"].as_str().unwrap(),
-            ),
-        )),
+        pipeline: Some(
+            SvgPipeline::resvg_safe()
+                .with_postprocessor(RootBackgroundPostprocessor::new(background))
+                // Classic ER hardcodes white for hollow cardinality markers.
+                .with_postprocessor(ScopedCssPostprocessor::new(format!(
+                    ".marker.er circle {{ fill: {background}; }}"
+                ))),
+        ),
         ..Default::default()
     };
+    // Gantt's partial dates and today marker must use the desktop's local date,
+    // not the deterministic engine default of 1970-01-01.
+    let runtime = RuntimePolicy::deterministic()
+        .try_with_system_clock()?
+        .try_with_system_time_zone()?;
     let output = Renderer::new()
-        .with_engine(Engine::new().with_site_config(MermaidConfig::from_value(config)))
+        .with_engine(
+            Engine::new()
+                .with_runtime_policy(runtime)
+                .with_site_config(MermaidConfig::from_value(config)),
+        )
         .with_parse_options(merman::ParseOptions::strict())
         .render(RenderRequest::svg(source, control, request))
         .context("could not render diagram")?;
