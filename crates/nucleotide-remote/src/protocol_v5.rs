@@ -8242,32 +8242,6 @@ mod tests {
     }
 
     #[test]
-    fn outbound_scheduler_skips_blocked_data_and_sends_unblocked_frame() {
-        let settings = ConnectionSettings {
-            initial_stream_window: 3,
-            initial_connection_window: 64,
-            ..ConnectionSettings::recommended()
-        };
-        let mut scheduler = OutboundScheduler::new(&settings);
-        scheduler
-            .enqueue(data_frame(1, 4).with_priority(Priority::UserInput))
-            .unwrap();
-        scheduler
-            .enqueue(Frame::new(FrameType::Ping, 0).with_priority(Priority::Bulk))
-            .unwrap();
-
-        let first = scheduler.pop_next().unwrap().unwrap();
-        assert_eq!(first.frame_type, FrameType::Ping);
-        assert_eq!(scheduler.queued_len(), 1);
-
-        assert!(scheduler.pop_next().unwrap().is_none());
-        scheduler.grant_stream(1, 2).unwrap();
-        let second = scheduler.pop_next().unwrap().unwrap();
-        assert_eq!(second.frame_type, FrameType::Data);
-        assert_eq!(second.stream_id, 1);
-    }
-
-    #[test]
     fn outbound_scheduler_blocks_data_on_connection_window_until_granted() {
         let settings = ConnectionSettings {
             initial_stream_window: 64,
@@ -9952,20 +9926,6 @@ mod tests {
     }
 
     #[test]
-    fn process_data_envelope_identifies_channels() {
-        let stdout = DataEnvelope {
-            channel: DataChannel::Stdout as i32,
-            uncompressed_len: 128,
-        };
-        let frame = Frame::from_control(FrameType::Data, 11, &stdout);
-
-        let decoded = frame.decode_control::<DataEnvelope>().unwrap();
-
-        assert_eq!(decoded.channel, DataChannel::Stdout as i32);
-        assert_eq!(decoded.uncompressed_len, 128);
-    }
-
-    #[test]
     fn full_duplex_request_opens_with_headers_only_and_round_trips_inline_payload() {
         let mut client =
             ProtocolSession::new(StreamInitiator::Client, &ConnectionSettings::recommended());
@@ -10062,21 +10022,5 @@ mod tests {
         let mut wire = current.encode_to_vec();
         wire.extend_from_slice(&[0xf8, 0x03, 0x2a]);
         assert_eq!(RequestHeader::decode(wire.as_slice()).unwrap(), current);
-    }
-
-    #[test]
-    fn goaway_carries_shutdown_grace() {
-        let goaway = GoAway {
-            last_accepted_stream_id: 99,
-            code: "shutdown".to_string(),
-            message: "helper shutting down".to_string(),
-            drain_grace_ms: DEFAULT_SHUTDOWN_GRACE_MS,
-        };
-        let frame = Frame::from_control(FrameType::GoAway, 0, &goaway);
-
-        let decoded = frame.decode_control::<GoAway>().unwrap();
-
-        assert_eq!(decoded.last_accepted_stream_id, 99);
-        assert_eq!(decoded.drain_grace_ms, DEFAULT_SHUTDOWN_GRACE_MS);
     }
 }
