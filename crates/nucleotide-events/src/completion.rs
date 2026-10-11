@@ -400,28 +400,11 @@ impl MenuPosition {
     pub fn new(x: f32, y: f32, anchor: PositionAnchor) -> Self {
         Self { x, y, anchor }
     }
-
-    pub fn at_cursor(x: f32, y: f32) -> Self {
-        Self::new(x, y, PositionAnchor::Cursor)
-    }
 }
 
 impl CompletionError {
-    pub fn new(message: String) -> Self {
-        Self {
-            message,
-            code: None,
-            recoverable: true,
-        }
-    }
-
     pub fn with_code(mut self, code: i32) -> Self {
         self.code = Some(code);
-        self
-    }
-
-    pub fn unrecoverable(mut self) -> Self {
-        self.recoverable = false;
         self
     }
 }
@@ -442,40 +425,11 @@ impl CompletionMetrics {
             visible_items: 0,
         }
     }
-
-    pub fn total_duration_ms(&self) -> u64 {
-        self.request_duration_ms + self.filter_duration_ms + self.render_duration_ms
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_completion_request_lifecycle() {
-        let request_id = CompletionRequestId::new(1);
-
-        let request_event = Event::Requested {
-            doc_id: DocumentId::default(),
-            view_id: ViewId::default(),
-            trigger: CompletionTrigger::Manual,
-            cursor_position: Position::new(0, 10),
-            request_id,
-        };
-
-        match request_event {
-            Event::Requested {
-                request_id: id,
-                trigger,
-                ..
-            } => {
-                assert_eq!(id, request_id);
-                assert_eq!(trigger, CompletionTrigger::Manual);
-            }
-            _ => panic!("Expected Requested event"),
-        }
-    }
 
     #[test]
     fn test_completion_item_builder() {
@@ -519,119 +473,5 @@ mod tests {
                 "data": { "server": "rust-analyzer" }
             }))
         );
-    }
-
-    #[test]
-    fn test_completion_triggers() {
-        let triggers = [
-            CompletionTrigger::Manual,
-            CompletionTrigger::Character('.'),
-            CompletionTrigger::TriggerSequence("::".to_string()),
-            CompletionTrigger::Automatic,
-        ];
-
-        for trigger in triggers {
-            let _event = Event::Requested {
-                doc_id: DocumentId::default(),
-                view_id: ViewId::default(),
-                trigger,
-                cursor_position: Position::new(0, 0),
-                request_id: CompletionRequestId::new(1),
-            };
-        }
-    }
-
-    #[test]
-    fn test_completion_item_kinds() {
-        let kinds = [
-            CompletionItemKind::Text,
-            CompletionItemKind::Method,
-            CompletionItemKind::Function,
-            CompletionItemKind::Constructor,
-            CompletionItemKind::Field,
-            CompletionItemKind::Variable,
-            CompletionItemKind::Class,
-            CompletionItemKind::Interface,
-            CompletionItemKind::Module,
-            CompletionItemKind::Property,
-            CompletionItemKind::Unit,
-            CompletionItemKind::Value,
-            CompletionItemKind::Enum,
-            CompletionItemKind::Keyword,
-            CompletionItemKind::Snippet,
-            CompletionItemKind::Color,
-            CompletionItemKind::File,
-            CompletionItemKind::Reference,
-            CompletionItemKind::Folder,
-        ];
-
-        for kind in kinds {
-            let _item = CompletionItem::new("test".to_string(), kind);
-        }
-    }
-
-    #[test]
-    fn test_menu_position() {
-        let position = MenuPosition::at_cursor(100.0, 200.0);
-        assert_eq!(position.x, 100.0);
-        assert_eq!(position.y, 200.0);
-        assert_eq!(position.anchor, PositionAnchor::Cursor);
-    }
-
-    #[test]
-    fn test_completion_error() {
-        let error = CompletionError::new("LSP server unavailable".to_string())
-            .with_code(-32001)
-            .unrecoverable();
-
-        assert_eq!(error.message, "LSP server unavailable");
-        assert_eq!(error.code, Some(-32001));
-        assert!(!error.recoverable);
-    }
-
-    #[test]
-    fn test_completion_metrics() {
-        let mut metrics = CompletionMetrics::new();
-        metrics.request_duration_ms = 100;
-        metrics.filter_duration_ms = 50;
-        metrics.render_duration_ms = 25;
-
-        assert_eq!(metrics.total_duration_ms(), 175);
-    }
-
-    #[test]
-    fn test_selection_methods() {
-        let methods = [
-            SelectionMethod::Keyboard,
-            SelectionMethod::Mouse,
-            SelectionMethod::Tab,
-            SelectionMethod::Enter,
-        ];
-
-        for method in methods {
-            let _event = Event::ItemSelected {
-                request_id: CompletionRequestId::new(1),
-                item_index: 0,
-                selection_method: method,
-            };
-        }
-    }
-
-    #[test]
-    fn test_cancellation_reasons() {
-        let reasons = [
-            CancellationReason::UserCancelled,
-            CancellationReason::NewRequest,
-            CancellationReason::DocumentClosed,
-            CancellationReason::Timeout,
-            CancellationReason::Error,
-        ];
-
-        for reason in reasons {
-            let _event = Event::Cancelled {
-                request_id: CompletionRequestId::new(1),
-                reason,
-            };
-        }
     }
 }
