@@ -178,41 +178,6 @@ pub enum PanelType {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TabId(pub usize);
 
-impl Default for PanelConfiguration {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl PanelConfiguration {
-    pub fn new() -> Self {
-        Self {
-            file_tree_width: None,
-            sidebar_panels: Vec::new(),
-            bottom_panels: Vec::new(),
-        }
-    }
-
-    pub fn with_file_tree_width(mut self, width: f32) -> Self {
-        self.file_tree_width = Some(width);
-        self
-    }
-
-    pub fn with_sidebar_panel(mut self, panel: PanelType) -> Self {
-        self.sidebar_panels.push(panel);
-        self
-    }
-
-    pub fn with_bottom_panel(mut self, panel: PanelType) -> Self {
-        self.bottom_panels.push(panel);
-        self
-    }
-
-    pub fn is_panel_visible(&self, panel_type: PanelType) -> bool {
-        self.sidebar_panels.contains(&panel_type) || self.bottom_panels.contains(&panel_type)
-    }
-}
-
 impl TabId {
     pub fn new(id: usize) -> Self {
         Self(id)
@@ -226,23 +191,5 @@ impl TabId {
 impl From<usize> for TabId {
     fn from(id: usize) -> Self {
         Self(id)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_panel_configuration() {
-        let config = PanelConfiguration::new()
-            .with_file_tree_width(200.0)
-            .with_sidebar_panel(PanelType::FileTree)
-            .with_bottom_panel(PanelType::Problems);
-
-        assert_eq!(config.file_tree_width, Some(200.0));
-        assert!(config.is_panel_visible(PanelType::FileTree));
-        assert!(config.is_panel_visible(PanelType::Problems));
-        assert!(!config.is_panel_visible(PanelType::Terminal));
     }
 }
