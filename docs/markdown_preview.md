@@ -116,6 +116,10 @@ types and diagrams exceeding the preview limits show a diagnostic and retain the
 source instead of displaying an image. Other fenced languages remain ordinary code
 blocks. Embedded images are not supported in Mermaid previews.
 
+Rendered diagrams are images, so their labels are not included in text selection.
+Use **Show Source** to copy Mermaid markup. Fallback source remains selectable and
+copies in document order.
+
 Preview limits are 64 KiB of Mermaid source, 1,000 model items, 2 MiB of generated
 SVG, a five-second cooperative rendering deadline and two concurrent renders.
 Raster images are limited to 4,194,304 pixels and 4,096 pixels per edge, including
