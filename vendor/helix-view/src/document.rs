@@ -16,7 +16,7 @@ use helix_event::TaskController;
 use helix_lsp::util::lsp_pos_to_pos;
 use helix_stdx::faccess::{copy_metadata, readonly};
 use helix_vcs::{DiffHandle, DiffProviderRegistry};
-use once_cell::sync::OnceCell;
+use std::sync::OnceLock;
 use thiserror;
 
 use ::parking_lot::Mutex;
@@ -189,12 +189,12 @@ pub struct Document {
 
     path: Option<PathBuf>,
     lsp_url: Option<helix_lsp::Url>,
-    relative_path: OnceCell<Option<PathBuf>>,
+    relative_path: OnceLock<Option<PathBuf>>,
     /// Lazily-computed workspace root for this document (the ancestor that contains a `.git` /
     /// `.svn` / `.jj` / `.helix`). Avoids per-call `find_workspace_in` ancestor walks for hot
     /// consumers like the statusline trust indicator, LSP launch, and DAP launch. Taken in
     /// `set_path` so save-as recomputes.
-    workspace_root: OnceCell<PathBuf>,
+    workspace_root: OnceLock<PathBuf>,
     encoding: &'static encoding::Encoding,
     has_bom: bool,
 
@@ -920,8 +920,8 @@ impl Document {
             active_snippet: None,
             path: None,
             lsp_url: None,
-            relative_path: OnceCell::new(),
-            workspace_root: OnceCell::new(),
+            relative_path: OnceLock::new(),
+            workspace_root: OnceLock::new(),
             encoding,
             has_bom,
             text,
@@ -3077,9 +3077,7 @@ mod test {
             #[test]
             fn $name() {
                 let encoding = encoding::Encoding::for_label($label_override.as_bytes()).unwrap();
-                let Some((path, ref_path)) = optional_encoding_fixture_paths($label, "in") else {
-                    return;
-                };
+                let (path, ref_path) = encoding_fixture_paths($label, "in");
 
                 let mut file = std::fs::File::open(path).unwrap();
                 let text = from_reader(&mut file, Some(encoding.into()))
@@ -3100,9 +3098,7 @@ mod test {
             #[test]
             fn $name() {
                 let encoding = encoding::Encoding::for_label($label_override.as_bytes()).unwrap();
-                let Some((path, ref_path)) = optional_encoding_fixture_paths($label, "out") else {
-                    return;
-                };
+                let (path, ref_path) = encoding_fixture_paths($label, "out");
 
                 let text = Rope::from_str(&std::fs::read_to_string(path).unwrap());
                 let mut buf: Vec<u8> = Vec::new();
@@ -3117,20 +3113,12 @@ mod test {
         };
     }
 
-    fn optional_encoding_fixture_paths(label: &str, suffix: &str) -> Option<(PathBuf, PathBuf)> {
+    fn encoding_fixture_paths(label: &str, suffix: &str) -> (PathBuf, PathBuf) {
         let base_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/encoding");
         let path = base_path.join(format!("{label}_{suffix}.txt"));
         let ref_path = base_path.join(format!("{label}_{suffix}_ref.txt"));
 
-        if path.exists() && ref_path.exists() {
-            Some((path, ref_path))
-        } else {
-            eprintln!(
-                "skipping encoding fixture test: missing {}",
-                base_path.display()
-            );
-            None
-        }
+        (path, ref_path)
     }
 
     decode!(big5_decode, "big5");

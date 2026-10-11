@@ -46,16 +46,16 @@ gpui_platform = { path = "vendor/zed/crates/gpui_platform", package = "gpui_plat
 
 # Helix dependencies - pinned to the upstream base revision that our vendored
 # Nucleotide-specific patches are replayed against.
-helix-core = { git = "https://github.com/helix-editor/helix", rev = "14d6bc0febed9c692048271a8ae2362ac969c6e0" }
-helix-dap = { git = "https://github.com/helix-editor/helix", rev = "14d6bc0febed9c692048271a8ae2362ac969c6e0" }
-helix-event = { git = "https://github.com/helix-editor/helix", rev = "14d6bc0febed9c692048271a8ae2362ac969c6e0" }
-helix-loader = { git = "https://github.com/helix-editor/helix", rev = "14d6bc0febed9c692048271a8ae2362ac969c6e0" }
-helix-lsp = { git = "https://github.com/helix-editor/helix", rev = "14d6bc0febed9c692048271a8ae2362ac969c6e0" }
-helix-term = { git = "https://github.com/helix-editor/helix", rev = "14d6bc0febed9c692048271a8ae2362ac969c6e0" }
-helix-tui = { git = "https://github.com/helix-editor/helix", rev = "14d6bc0febed9c692048271a8ae2362ac969c6e0" }
-helix-view = { git = "https://github.com/helix-editor/helix", rev = "14d6bc0febed9c692048271a8ae2362ac969c6e0" }
-helix-vcs = { git = "https://github.com/helix-editor/helix", rev = "14d6bc0febed9c692048271a8ae2362ac969c6e0" }
-helix-stdx = { git = "https://github.com/helix-editor/helix", rev = "14d6bc0febed9c692048271a8ae2362ac969c6e0" }
+helix-core = { git = "https://github.com/helix-editor/helix", rev = "ba40e547426b0f9896c8bdc699a4ab11f2b37dbc" }
+helix-dap = { git = "https://github.com/helix-editor/helix", rev = "ba40e547426b0f9896c8bdc699a4ab11f2b37dbc" }
+helix-event = { git = "https://github.com/helix-editor/helix", rev = "ba40e547426b0f9896c8bdc699a4ab11f2b37dbc" }
+helix-loader = { git = "https://github.com/helix-editor/helix", rev = "ba40e547426b0f9896c8bdc699a4ab11f2b37dbc" }
+helix-lsp = { git = "https://github.com/helix-editor/helix", rev = "ba40e547426b0f9896c8bdc699a4ab11f2b37dbc" }
+helix-term = { git = "https://github.com/helix-editor/helix", rev = "ba40e547426b0f9896c8bdc699a4ab11f2b37dbc" }
+helix-tui = { git = "https://github.com/helix-editor/helix", rev = "ba40e547426b0f9896c8bdc699a4ab11f2b37dbc" }
+helix-view = { git = "https://github.com/helix-editor/helix", rev = "ba40e547426b0f9896c8bdc699a4ab11f2b37dbc" }
+helix-vcs = { git = "https://github.com/helix-editor/helix", rev = "ba40e547426b0f9896c8bdc699a4ab11f2b37dbc" }
+helix-stdx = { git = "https://github.com/helix-editor/helix", rev = "ba40e547426b0f9896c8bdc699a4ab11f2b37dbc" }
 
 # Common dependencies
 tokio = { version = "1.32", features = ["full"] }
