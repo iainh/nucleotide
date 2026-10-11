@@ -48,7 +48,7 @@
 //!         um.download_updates(&updates, None).unwrap();
 //!
 //!         // download completed, let's restart and update
-//!         um.apply_updates_and_restart(&updates).unwrap();
+//!         um.apply_updates_and_restart(&*updates).unwrap();
 //!     }
 //! }
 //! ```
@@ -98,7 +98,9 @@ pub mod sources;
 
 #[cfg(target_os = "windows")]
 maybe_pub!(known_path, wide_strings);
-maybe_pub!(download, bundle, constants, lockfile, logging, misc);
+maybe_pub!(download, bundle, constants, lockfile, logging, misc, windows_channel_tag);
+
+pub use download::{HttpHeader, HttpOptions};
 maybe_pub_os!(process, "process_win.rs", "process_unix.rs");
 
 #[macro_use]

@@ -19,7 +19,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  VPK_VERSION: '1.2.0'
+  VPK_VERSION: '1.2.161'
 
 jobs:
   prepare-release:

@@ -13,7 +13,7 @@
 edition = "2021"
 rust-version = "1.75"
 name = "velopack"
-version = "1.2.0"
+version = "1.2.161"
 authors = ["Velopack Ltd, Caelan Sayler <git@caesay.com>"]
 build = false
 autolib = false
@@ -49,11 +49,51 @@ public-utils = []
 name = "velopack"
 path = "src/lib.rs"
 
+[[test]]
+name = "manager_download"
+path = "tests/manager_download.rs"
+
+[[test]]
+name = "manager_flow"
+path = "tests/manager_flow.rs"
+
+[[test]]
+name = "noteshtml_deserialization"
+path = "tests/noteshtml_deserialization.rs"
+
+[[test]]
+name = "source_auto"
+path = "tests/source_auto.rs"
+
+[[test]]
+name = "source_file"
+path = "tests/source_file.rs"
+
+[[test]]
+name = "source_flow"
+path = "tests/source_flow.rs"
+
+[[test]]
+name = "source_gitea"
+path = "tests/source_gitea.rs"
+
+[[test]]
+name = "source_gitlab"
+path = "tests/source_gitlab.rs"
+
+[[test]]
+name = "source_http"
+path = "tests/source_http.rs"
+
+[[test]]
+name = "source_none"
+path = "tests/source_none.rs"
+
 [dependencies.anyhow]
 version = "1.0"
 
 [dependencies.bitflags]
-version = "2.11"
+version = "2.13"
 
 [dependencies.derivative]
 version = "2.2"
@@ -78,7 +118,7 @@ version = "1.5"
 version = "0.10"
 
 [dependencies.regex]
-version = "1.12"
+version = "1.13"
 
 [dependencies.semver]
 version = "1.0"
@@ -108,14 +148,14 @@ version = "0.3"
 optional = true
 
 [dependencies.ureq]
-version = "3.2"
+version = "3.4"
 features = ["platform-verifier"]
 
 [dependencies.url]
 version = "2.5"
 
 [dependencies.uuid]
-version = "1.21"
+version = "1.26"
 features = [
     "v4",
     "fast-rng",
@@ -123,15 +163,15 @@ features = [
 ]
 
 [dependencies.xml]
-version = "1.2"
+version = "1.4"
 
 [dependencies.zip]
-version = "8.0"
+version = "8.6"
 features = ["deflate"]
 default-features = false
 
 [dev-dependencies.tempfile]
-version = "3.25"
+version = "3.27"
 
 [target."cfg(unix)".dependencies.libc]
 version = "0.2"

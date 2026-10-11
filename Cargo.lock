@@ -9572,7 +9572,7 @@ dependencies = [
 
 [[package]]
 name = "velopack"
-version = "1.2.0"
+version = "1.2.161"
 dependencies = [
  "anyhow",
  "bitflags 2.13.2",
