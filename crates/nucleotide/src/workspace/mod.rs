@@ -1592,72 +1592,6 @@ fn tab_bar_height_for_editor(
     }
 }
 
-#[cfg(test)]
-fn move_ordered_item_to_target_index<T: Copy + Eq>(
-    items: &mut Vec<T>,
-    source: T,
-    target: Option<T>,
-) -> bool {
-    if target == Some(source) {
-        return false;
-    }
-
-    let Some(source_index) = items.iter().position(|item| *item == source) else {
-        return false;
-    };
-
-    if target.is_none() && source_index + 1 == items.len() {
-        return false;
-    }
-
-    let Some(target_index) = target
-        .map(|target| items.iter().position(|item| *item == target))
-        .unwrap_or(Some(items.len()))
-    else {
-        return false;
-    };
-
-    if target_index == source_index {
-        return false;
-    }
-
-    let item = items.remove(source_index);
-    let insert_index = target_index.min(items.len());
-    items.insert(insert_index, item);
-    true
-}
-
-#[cfg(test)]
-fn dropped_tab_pin_state<T: Copy + Eq + Hash>(
-    items: &[T],
-    source: T,
-    target: Option<T>,
-    pinned_items: &HashSet<T>,
-) -> Option<bool> {
-    resolved_dropped_tab_pin_state(items, source, target, pinned_items, None)
-}
-
-#[cfg(test)]
-fn resolved_dropped_tab_pin_state<T: Copy + Eq + Hash>(
-    items: &[T],
-    source: T,
-    target: Option<T>,
-    pinned_items: &HashSet<T>,
-    forced_pin_state: Option<bool>,
-) -> Option<bool> {
-    if target == Some(source) || !items.contains(&source) {
-        return None;
-    }
-
-    if let Some(target) = target
-        && !items.contains(&target)
-    {
-        return None;
-    }
-
-    forced_pin_state.or_else(|| Some(target.is_some_and(|target| pinned_items.contains(&target))))
-}
-
 fn active_unpinned_tab_scroll_index<T: Copy + Eq + Hash>(
     ordered_items: &[T],
     pinned_items: &HashSet<T>,
@@ -1691,49 +1625,6 @@ fn zed_style_tab_order<T: Copy + Eq + Hash>(
         .partition(|item| pinned_items.contains(item));
     pinned.extend(unpinned);
     pinned
-}
-
-#[cfg(test)]
-fn change_tab_pin_state<T: Copy + Eq + Hash>(
-    ordered_items: &mut Vec<T>,
-    pinned_items: &mut HashSet<T>,
-    item: T,
-    should_pin: bool,
-) -> bool {
-    if pinned_items.contains(&item) == should_pin {
-        return false;
-    }
-
-    let mut display_order = zed_style_tab_order(ordered_items, pinned_items);
-    let Some(item_index) = display_order
-        .iter()
-        .position(|candidate| *candidate == item)
-    else {
-        return false;
-    };
-
-    let pinned_count = display_order
-        .iter()
-        .filter(|candidate| pinned_items.contains(candidate))
-        .count();
-    let Some(destination_index) = (if should_pin {
-        Some(pinned_count.min(item_index))
-    } else {
-        pinned_count.checked_sub(1)
-    }) else {
-        return false;
-    };
-
-    if should_pin {
-        pinned_items.insert(item);
-    } else {
-        pinned_items.remove(&item);
-    }
-
-    let item = display_order.remove(item_index);
-    display_order.insert(destination_index, item);
-    *ordered_items = display_order;
-    true
 }
 
 fn unpin_all_tabs<T: Eq + Hash>(pinned_items: &mut HashSet<T>) -> bool {
@@ -1786,16 +1677,6 @@ fn reveal_in_file_manager_label(is_remote: bool) -> &'static str {
     } else {
         "Reveal in File Manager"
     }
-}
-
-#[cfg(test)]
-fn tab_bar_end_button_icon_paths() -> [&'static str; 2] {
-    ["icons/plus.svg", "icons/columns-2.svg"]
-}
-
-#[cfg(test)]
-fn tab_bar_end_button_tooltips() -> [&'static str; 2] {
-    ["New File", "Split Pane"]
 }
 
 #[derive(Clone, Copy)]
@@ -4094,43 +3975,6 @@ impl Workspace {
         ProjectTreeContextMenuIntent::common_file_operations()
     }
 
-    #[cfg(test)]
-    fn tab_context_menu_intents(
-        has_file_path: bool,
-        has_project_panel_path: bool,
-        has_terminal_directory: bool,
-    ) -> Vec<TabContextMenuIntent> {
-        let mut intents = vec![
-            TabContextMenuIntent::Close,
-            TabContextMenuIntent::CloseOthers,
-            TabContextMenuIntent::CloseLeft,
-            TabContextMenuIntent::CloseRight,
-            TabContextMenuIntent::CloseClean,
-            TabContextMenuIntent::CloseAll,
-        ];
-
-        if has_file_path {
-            intents.extend([
-                TabContextMenuIntent::ToggleReadOnly,
-                TabContextMenuIntent::CopyPath,
-                TabContextMenuIntent::CopyRelativePath,
-                TabContextMenuIntent::RevealInOs,
-            ]);
-        }
-
-        intents.push(TabContextMenuIntent::TogglePin);
-
-        if has_project_panel_path {
-            intents.push(TabContextMenuIntent::RevealInProjectPanel);
-        }
-
-        if has_terminal_directory {
-            intents.push(TabContextMenuIntent::OpenInTerminal);
-        }
-
-        intents
-    }
-
     fn tab_context_menu_entries(
         has_file_path: bool,
         has_project_panel_path: bool,
@@ -4251,18 +4095,6 @@ impl Workspace {
         }
         let handler = Self::tab_bar_split_menu_handler(intent);
         handler(self, cx);
-    }
-
-    #[cfg(test)]
-    fn tab_bar_new_menu_intents() -> &'static [TabBarNewMenuIntent] {
-        &[
-            TabBarNewMenuIntent::NewFile,
-            TabBarNewMenuIntent::OpenFile,
-            TabBarNewMenuIntent::SearchProject,
-            TabBarNewMenuIntent::SearchSymbols,
-            TabBarNewMenuIntent::NewTerminal,
-            TabBarNewMenuIntent::NewCenterTerminal,
-        ]
     }
 
     fn tab_bar_new_menu_entries() -> &'static [TabBarNewMenuEntry] {
@@ -19163,20 +18995,6 @@ mod tests {
     }
 
     #[test]
-    fn file_tree_context_menu_items_follow_sidebar_intent_order() {
-        let actual: Vec<_> = Workspace::context_menu_intents()
-            .iter()
-            .map(|intent| intent.label())
-            .collect();
-        let expected: Vec<_> = ProjectTreeContextMenuIntent::common_file_operations()
-            .iter()
-            .map(|intent| intent.label())
-            .collect();
-
-        assert_eq!(actual, expected);
-    }
-
-    #[test]
     fn tab_bar_layout_height_matches_rendered_row_count() {
         let row_height = px(32.0);
 
@@ -19227,32 +19045,6 @@ mod tests {
     }
 
     #[test]
-    fn tab_context_menu_items_match_zed_close_actions() {
-        let unpinned_labels = Workspace::tab_context_menu_intents(false, false, false)
-            .iter()
-            .map(|intent| intent.label(false, false))
-            .collect::<Vec<_>>();
-        let pinned_labels = Workspace::tab_context_menu_intents(false, false, false)
-            .iter()
-            .map(|intent| intent.label(true, false))
-            .collect::<Vec<_>>();
-
-        assert_eq!(
-            unpinned_labels,
-            vec![
-                "Close",
-                "Close Others",
-                "Close Left",
-                "Close Right",
-                "Close Clean",
-                "Close All",
-                "Pin Tab"
-            ]
-        );
-        assert_eq!(pinned_labels.last(), Some(&"Unpin Tab"));
-    }
-
-    #[test]
     fn tab_context_menu_entries_match_zed_grouping() {
         let labels = Workspace::tab_context_menu_entries(false, false, false)
             .iter()
@@ -19277,6 +19069,15 @@ mod tests {
                 "Pin Tab"
             ]
         );
+
+        let pinned_label = Workspace::tab_context_menu_entries(false, false, false)
+            .iter()
+            .rev()
+            .find_map(|entry| match entry {
+                TabContextMenuEntry::Action(intent) => Some(intent.label(true, false)),
+                TabContextMenuEntry::Separator => None,
+            });
+        assert_eq!(pinned_label, Some("Unpin Tab"));
     }
 
     #[test]
@@ -19310,31 +19111,6 @@ mod tests {
                 reveal_label,
                 "|",
                 "Pin Tab"
-            ]
-        );
-    }
-
-    #[test]
-    fn tab_context_menu_intents_add_zed_readonly_toggle_for_file_tabs() {
-        let labels = Workspace::tab_context_menu_intents(true, false, false)
-            .iter()
-            .map(|intent| intent.label(false, false))
-            .collect::<Vec<_>>();
-
-        assert_eq!(
-            labels,
-            vec![
-                "Close",
-                "Close Others",
-                "Close Left",
-                "Close Right",
-                "Close Clean",
-                "Close All",
-                "Make File Read-Only",
-                "Copy Path",
-                "Copy Relative Path",
-                reveal_in_file_manager_label(false),
-                "Pin Tab",
             ]
         );
     }
@@ -19658,26 +19434,6 @@ mod tests {
     }
 
     #[test]
-    fn tab_bar_new_menu_items_match_zed_new_actions() {
-        let labels = Workspace::tab_bar_new_menu_intents()
-            .iter()
-            .map(|intent| intent.label())
-            .collect::<Vec<_>>();
-
-        assert_eq!(
-            labels,
-            vec![
-                "New File",
-                "Open File",
-                "Search Project",
-                "Search Symbols",
-                "New Terminal",
-                "New Center Terminal"
-            ]
-        );
-    }
-
-    #[test]
     fn tab_bar_new_menu_entries_match_zed_grouping() {
         let labels = Workspace::tab_bar_new_menu_entries()
             .iter()
@@ -19700,19 +19456,6 @@ mod tests {
                 "New Center Terminal"
             ]
         );
-    }
-
-    #[test]
-    fn tab_bar_end_buttons_follow_zed_new_split_order() {
-        assert_eq!(
-            tab_bar_end_button_icon_paths(),
-            ["icons/plus.svg", "icons/columns-2.svg"]
-        );
-    }
-
-    #[test]
-    fn tab_bar_end_button_tooltips_describe_actions() {
-        assert_eq!(tab_bar_end_button_tooltips(), ["New File", "Split Pane"]);
     }
 
     #[test]
@@ -19787,106 +19530,6 @@ mod tests {
     }
 
     #[test]
-    fn move_ordered_item_to_target_index_moves_items_to_target_positions() {
-        let mut items = vec!['a', 'b', 'c', 'd'];
-
-        assert!(move_ordered_item_to_target_index(
-            &mut items,
-            'c',
-            Some('a')
-        ));
-        assert_eq!(items, vec!['c', 'a', 'b', 'd']);
-
-        assert!(move_ordered_item_to_target_index(
-            &mut items,
-            'a',
-            Some('d')
-        ));
-        assert_eq!(items, vec!['c', 'b', 'd', 'a']);
-    }
-
-    #[test]
-    fn move_ordered_item_to_target_index_moves_items_to_end() {
-        let mut items = vec!['a', 'b', 'c', 'd'];
-
-        assert!(move_ordered_item_to_target_index(&mut items, 'b', None));
-        assert_eq!(items, vec!['a', 'c', 'd', 'b']);
-    }
-
-    #[test]
-    fn move_ordered_item_to_target_index_reports_no_ops() {
-        let mut items = vec!['a', 'b', 'c', 'd'];
-
-        assert!(!move_ordered_item_to_target_index(
-            &mut items,
-            'a',
-            Some('a')
-        ));
-        assert_eq!(items, vec!['a', 'b', 'c', 'd']);
-
-        assert!(!move_ordered_item_to_target_index(&mut items, 'd', None));
-        assert!(!move_ordered_item_to_target_index(
-            &mut items,
-            'x',
-            Some('a')
-        ));
-        assert!(!move_ordered_item_to_target_index(
-            &mut items,
-            'a',
-            Some('x')
-        ));
-        assert_eq!(items, vec!['a', 'b', 'c', 'd']);
-    }
-
-    #[test]
-    fn dropped_tab_pin_state_follows_target_region() {
-        let items = ['a', 'b', 'c', 'd'];
-        let pinned = HashSet::from(['a', 'b']);
-
-        assert_eq!(
-            dropped_tab_pin_state(&items, 'c', Some('a'), &pinned),
-            Some(true)
-        );
-        assert_eq!(
-            dropped_tab_pin_state(&items, 'a', Some('c'), &pinned),
-            Some(false)
-        );
-        assert_eq!(
-            dropped_tab_pin_state(&items, 'a', None, &pinned),
-            Some(false)
-        );
-    }
-
-    #[test]
-    fn dropped_tab_pin_state_reports_invalid_drops() {
-        let items = ['a', 'b', 'c', 'd'];
-        let pinned = HashSet::from(['a', 'b']);
-
-        assert_eq!(dropped_tab_pin_state(&items, 'a', Some('a'), &pinned), None);
-        assert_eq!(dropped_tab_pin_state(&items, 'x', Some('a'), &pinned), None);
-        assert_eq!(dropped_tab_pin_state(&items, 'a', Some('x'), &pinned), None);
-    }
-
-    #[test]
-    fn resolved_dropped_tab_pin_state_honours_forced_row_targets() {
-        let items = ['a', 'b', 'c', 'd'];
-        let pinned = HashSet::from(['a', 'b']);
-
-        assert_eq!(
-            resolved_dropped_tab_pin_state(&items, 'c', None, &pinned, Some(true)),
-            Some(true)
-        );
-        assert_eq!(
-            resolved_dropped_tab_pin_state(&items, 'a', None, &pinned, Some(false)),
-            Some(false)
-        );
-        assert_eq!(
-            resolved_dropped_tab_pin_state(&items, 'a', Some('a'), &pinned, Some(false)),
-            None
-        );
-    }
-
-    #[test]
     fn active_unpinned_tab_scroll_index_ignores_pinned_tabs() {
         let items = ['a', 'b', 'c', 'd', 'e'];
         let pinned = HashSet::from(['b', 'd']);
@@ -19922,74 +19565,6 @@ mod tests {
         assert!(!should_scroll_active_tab(false, Some('a'), Some('a')));
         assert!(!should_scroll_active_tab(false, Some('a'), None));
         assert!(!should_scroll_active_tab(true, Some('a'), Some('b')));
-    }
-
-    #[test]
-    fn change_tab_pin_state_pins_tabs_left_to_right_without_reordering() {
-        let mut items = vec!['a', 'b', 'c'];
-        let mut pinned = HashSet::new();
-
-        assert!(change_tab_pin_state(&mut items, &mut pinned, 'a', true));
-        assert_eq!(items, vec!['a', 'b', 'c']);
-        assert_eq!(zed_style_tab_order(&items, &pinned), vec!['a', 'b', 'c']);
-
-        assert!(change_tab_pin_state(&mut items, &mut pinned, 'b', true));
-        assert_eq!(items, vec!['a', 'b', 'c']);
-        assert_eq!(zed_style_tab_order(&items, &pinned), vec!['a', 'b', 'c']);
-
-        assert!(change_tab_pin_state(&mut items, &mut pinned, 'c', true));
-        assert_eq!(items, vec!['a', 'b', 'c']);
-        assert_eq!(zed_style_tab_order(&items, &pinned), vec!['a', 'b', 'c']);
-    }
-
-    #[test]
-    fn change_tab_pin_state_pins_tabs_right_to_left_at_pinned_boundary() {
-        let mut items = vec!['a', 'b', 'c'];
-        let mut pinned = HashSet::new();
-
-        assert!(change_tab_pin_state(&mut items, &mut pinned, 'c', true));
-        assert_eq!(items, vec!['c', 'a', 'b']);
-        assert_eq!(zed_style_tab_order(&items, &pinned), vec!['c', 'a', 'b']);
-
-        assert!(change_tab_pin_state(&mut items, &mut pinned, 'b', true));
-        assert_eq!(items, vec!['c', 'b', 'a']);
-        assert_eq!(zed_style_tab_order(&items, &pinned), vec!['c', 'b', 'a']);
-
-        assert!(change_tab_pin_state(&mut items, &mut pinned, 'a', true));
-        assert_eq!(items, vec!['c', 'b', 'a']);
-        assert_eq!(zed_style_tab_order(&items, &pinned), vec!['c', 'b', 'a']);
-    }
-
-    #[test]
-    fn change_tab_pin_state_unpins_tabs_to_start_of_unpinned_region() {
-        let mut items = vec!['a', 'b', 'c', 'd'];
-        let mut pinned = HashSet::from(['a', 'b']);
-
-        assert!(change_tab_pin_state(&mut items, &mut pinned, 'a', false));
-        assert_eq!(items, vec!['b', 'a', 'c', 'd']);
-        assert_eq!(
-            zed_style_tab_order(&items, &pinned),
-            vec!['b', 'a', 'c', 'd']
-        );
-
-        assert!(change_tab_pin_state(&mut items, &mut pinned, 'b', false));
-        assert_eq!(items, vec!['b', 'a', 'c', 'd']);
-        assert_eq!(
-            zed_style_tab_order(&items, &pinned),
-            vec!['b', 'a', 'c', 'd']
-        );
-    }
-
-    #[test]
-    fn change_tab_pin_state_reports_no_ops() {
-        let mut items = vec!['a', 'b'];
-        let mut pinned = HashSet::from(['a']);
-
-        assert!(!change_tab_pin_state(&mut items, &mut pinned, 'a', true));
-        assert!(!change_tab_pin_state(&mut items, &mut pinned, 'b', false));
-        assert!(!change_tab_pin_state(&mut items, &mut pinned, 'x', true));
-        assert_eq!(items, vec!['a', 'b']);
-        assert_eq!(pinned, HashSet::from(['a']));
     }
 
     #[test]
@@ -20309,21 +19884,6 @@ mod tests {
     }
 
     #[test]
-    fn max_tabs_close_candidates_close_oldest_clean_unpinned_tabs() {
-        let documents = [
-            max_tab_doc('a', 0, false, false, false),
-            max_tab_doc('b', 1, false, false, false),
-            max_tab_doc('c', 2, false, false, false),
-            max_tab_doc('d', 3, false, false, true),
-        ];
-
-        let close_candidates =
-            max_tabs_close_candidates(&documents, std::num::NonZeroUsize::new(2));
-
-        assert_eq!(close_candidates, vec!['a', 'b']);
-    }
-
-    #[test]
     fn max_tabs_settings_change_target_allows_active_settings_tab_over_cap() {
         let documents = [
             max_tab_doc('a', 0, false, false, false),
@@ -20415,18 +19975,6 @@ mod tests {
             .fragments(text.slice(..))
             .map(|fragment| fragment.into_owned())
             .collect()
-    }
-
-    #[test]
-    fn test_workspace_project_change_detection() {
-        let workspace = TestWorkspace::new();
-
-        // Test that project root change is detected
-        let old_root = Some(PathBuf::from("/old/path"));
-        let new_root = PathBuf::from("/new/path");
-
-        assert!(workspace.is_project_change(&old_root, &new_root));
-        assert!(!workspace.is_project_change(&Some(new_root.clone()), &new_root));
     }
 
     #[test]
@@ -20588,33 +20136,6 @@ mod tests {
     }
 
     #[test]
-    fn global_search_matches_uses_open_document_text() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let path = temp_dir.path().join("buffer.txt");
-        std::fs::write(&path, "saved text\n").unwrap();
-        let open_documents = vec![(path.clone(), Rope::from("unsaved needle\nsaved text\n"))];
-
-        let matches = global_search_matches(
-            temp_dir.path(),
-            "needle",
-            true,
-            &default_file_picker_config(),
-            &open_documents,
-            10,
-        )
-        .unwrap();
-
-        assert_eq!(
-            matches,
-            vec![GlobalSearchMatch {
-                path,
-                line: 0,
-                line_text: "unsaved needle".to_string(),
-            }]
-        );
-    }
-
-    #[test]
     fn global_search_matches_excludes_open_documents_from_disk_search() {
         let temp_dir = tempfile::tempdir().unwrap();
         let path = temp_dir.path().join("buffer.txt");
@@ -20760,23 +20281,6 @@ mod tests {
         assert_eq!(labels, vec![".hidden"]);
     }
 
-    #[test]
-    fn file_picker_preview_from_backend_reads_bounded_text() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let path = temp_dir.path().join("large.txt");
-        std::fs::write(
-            &path,
-            "a".repeat(FILE_PICKER_PREVIEW_MAX_BYTES as usize + 128),
-        )
-        .unwrap();
-
-        let backend = local_workspace_backend();
-        let preview = file_picker_preview_text_from_backend(backend.as_ref(), &path);
-
-        assert!(preview.starts_with(&"a".repeat(FILE_PICKER_PREVIEW_MAX_BYTES as usize)));
-        assert!(preview.contains("[File truncated - showing first 10KB"));
-    }
-
     #[tokio::test]
     async fn file_picker_preview_from_backend_async_reads_bounded_text() {
         let temp_dir = tempfile::tempdir().unwrap();
@@ -20816,22 +20320,5 @@ mod tests {
         assert!(preview.contains("Directory:"));
         assert!(preview.contains("README.md"));
         assert!(preview.contains("src/"));
-    }
-
-    // Helper struct for testing workspace functionality
-    struct TestWorkspace {
-        _current_project_root: Option<PathBuf>,
-    }
-
-    impl TestWorkspace {
-        fn new() -> Self {
-            Self {
-                _current_project_root: None,
-            }
-        }
-
-        fn is_project_change(&self, old_root: &Option<PathBuf>, new_root: &PathBuf) -> bool {
-            old_root.as_ref() != Some(new_root)
-        }
     }
 }

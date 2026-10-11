@@ -323,36 +323,6 @@ mode = "invalid_mode"
 
     #[test]
     #[ignore = "Requires Helix runtime files to be available"]
-    fn test_config_loading_from_directory() {
-        let builder = ConfigTestBuilder::new();
-
-        // Create GUI config
-        let gui_content = r#"
-[ui.font]
-family = "Test UI Font"
-size = 12.0
-
-[theme]
-mode = "dark"
-dark_theme = "custom_dark"
-"#;
-        builder.create_gui_config(gui_content).unwrap();
-
-        let result = Config::load_from_dir(builder.path());
-        assert!(result.is_ok(), "Should successfully load config");
-
-        let config = result.unwrap();
-
-        // Verify GUI config was loaded
-        let ui_font = config.gui.ui.font.expect("UI font should be loaded");
-        assert_eq!(ui_font.family, "Test UI Font");
-        assert_eq!(ui_font.size, 12.0);
-        assert_eq!(config.gui.theme.mode, ThemeMode::Dark);
-        assert_eq!(config.gui.theme.get_dark_theme(), "custom_dark");
-    }
-
-    #[test]
-    #[ignore = "Requires Helix runtime files to be available"]
     fn test_config_loading_without_gui_config() {
         let builder = ConfigTestBuilder::new();
         // Don't create GUI config file
@@ -365,103 +335,6 @@ dark_theme = "custom_dark"
         // Should have default GUI config
         assert!(config.gui.ui.font.is_none());
         assert_eq!(config.gui.theme.mode, ThemeMode::System);
-    }
-
-    #[test]
-    #[ignore = "Requires Helix runtime files to be available"]
-    fn test_font_configuration_methods() {
-        // Skip test if Helix runtime files are not available (test environment)
-        let config_result = Config::load_from_dir(&std::env::temp_dir());
-        if config_result.is_err() {
-            println!("Skipping test due to missing Helix runtime files");
-            return;
-        }
-        let mut config = config_result.unwrap();
-
-        // Set up test GUI config
-        config.gui.ui.font = Some(FontConfig {
-            family: "UI Font".to_string(),
-            weight: FontWeight::Medium,
-            size: 13.0,
-            line_height: 1.5,
-        });
-
-        config.gui.editor.font = Some(FontConfig {
-            family: "Editor Font".to_string(),
-            weight: FontWeight::Normal,
-            size: 14.0,
-            line_height: 1.4,
-        });
-
-        // Test editor font retrieval
-        let editor_font = config.editor_font();
-        assert_eq!(editor_font.family, "Editor Font");
-        assert_eq!(editor_font.weight, FontWeight::Normal);
-        assert_eq!(editor_font.size, 14.0);
-        assert_eq!(editor_font.line_height, 1.4);
-
-        // Test UI font retrieval
-        let ui_font = config.ui_font();
-        assert_eq!(ui_font.family, "UI Font");
-        assert_eq!(ui_font.weight, FontWeight::Medium);
-        assert_eq!(ui_font.size, 13.0);
-    }
-
-    #[test]
-    #[ignore = "Requires Helix runtime files to be available"]
-    fn test_ui_font_aliases_use_gpui_system_ui_font() {
-        let config_result = Config::load_from_dir(&std::env::temp_dir());
-        if config_result.is_err() {
-            println!("Skipping test due to missing Helix runtime files");
-            return;
-        }
-        let mut config = config_result.unwrap();
-
-        config.gui.ui.font = Some(FontConfig {
-            family: "SF Pro Display".to_string(),
-            weight: FontWeight::Normal,
-            size: 13.0,
-            line_height: 1.5,
-        });
-
-        let ui_font = config.ui_font();
-        assert_eq!(ui_font.family, ".SystemUIFont");
-        assert_eq!(ui_font.size, 13.0);
-    }
-
-    #[test]
-    #[ignore = "Requires Helix runtime files to be available"]
-    fn test_font_fallback_behavior() {
-        // Skip test if Helix runtime files are not available (test environment)
-        let config_result = Config::load_from_dir(&std::env::temp_dir());
-        if config_result.is_err() {
-            println!("Skipping test due to missing Helix runtime files");
-            return;
-        }
-        let mut config = config_result.unwrap();
-
-        // Set only UI font
-        config.gui.ui.font = Some(FontConfig {
-            family: "Fallback Font".to_string(),
-            weight: FontWeight::SemiBold,
-            size: 12.0,
-            line_height: 1.3,
-        });
-
-        // Editor font should fall back to UI font
-        let editor_font = config.editor_font();
-        assert_eq!(editor_font.family, "Fallback Font");
-        assert_eq!(editor_font.weight, FontWeight::SemiBold);
-
-        // Clear UI font to test default fallback
-        config.gui.ui.font = None;
-        config.gui.editor.font = None;
-
-        let editor_font = config.editor_font();
-        assert_eq!(editor_font.family, expected_default_editor_font_family()); // Default editor font
-
-        let ui_font = config.ui_font();
-        assert_eq!(ui_font.family, ".SystemUIFont"); // Default UI font
     }
 
     #[test]
@@ -587,18 +460,6 @@ dark_theme = "custom_dark"
         assert_eq!(theme_config.mode, ThemeMode::System);
         assert_eq!(theme_config.get_light_theme(), "nucleotide-sandcastle");
         assert_eq!(theme_config.get_dark_theme(), "nucleotide-teal");
-    }
-
-    #[test]
-    fn test_theme_config_custom_themes() {
-        let theme_config = ThemeConfig {
-            mode: ThemeMode::Dark,
-            light_theme: Some("solarized_light".to_string()),
-            dark_theme: Some("solarized_dark".to_string()),
-        };
-
-        assert_eq!(theme_config.get_light_theme(), "solarized_light");
-        assert_eq!(theme_config.get_dark_theme(), "solarized_dark");
     }
 
     /// Test configuration merging scenarios

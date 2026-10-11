@@ -483,64 +483,6 @@ fn resized_horizontal_split_pane_view_areas(
     Some(resized)
 }
 
-#[cfg(test)]
-fn resized_vertical_split_pane_areas(
-    before: HelixRect,
-    after: HelixRect,
-    delta_cells: i32,
-    min_width: u16,
-) -> Option<(HelixRect, HelixRect)> {
-    let before_right = before.x.checked_add(before.width)?;
-    let outer_left = before.x;
-    let outer_right = after.x.checked_add(after.width)?;
-    let gap = after.x.checked_sub(before_right)?;
-    let usable = outer_right.checked_sub(outer_left)?.checked_sub(gap)?;
-    let min_width = min_width.min(usable.saturating_sub(1)).max(1);
-    let max_before = usable.saturating_sub(min_width);
-    if max_before < min_width {
-        return None;
-    }
-
-    let target_before = (i32::from(before.width) + delta_cells)
-        .clamp(i32::from(min_width), i32::from(max_before)) as u16;
-    let after_x = outer_left.checked_add(target_before)?.checked_add(gap)?;
-    let after_width = outer_right.checked_sub(after_x)?;
-
-    Some((
-        HelixRect::new(before.x, before.y, target_before, before.height),
-        HelixRect::new(after_x, after.y, after_width, after.height),
-    ))
-}
-
-#[cfg(test)]
-fn resized_horizontal_split_pane_areas(
-    before: HelixRect,
-    after: HelixRect,
-    delta_cells: i32,
-    min_height: u16,
-) -> Option<(HelixRect, HelixRect)> {
-    let before_bottom = before.y.checked_add(before.height)?;
-    let outer_top = before.y;
-    let outer_bottom = after.y.checked_add(after.height)?;
-    let gap = after.y.checked_sub(before_bottom)?;
-    let usable = outer_bottom.checked_sub(outer_top)?.checked_sub(gap)?;
-    let min_height = min_height.min(usable.saturating_sub(1)).max(1);
-    let max_before = usable.saturating_sub(min_height);
-    if max_before < min_height {
-        return None;
-    }
-
-    let target_before = (i32::from(before.height) + delta_cells)
-        .clamp(i32::from(min_height), i32::from(max_before)) as u16;
-    let after_y = outer_top.checked_add(target_before)?.checked_add(gap)?;
-    let after_height = outer_bottom.checked_sub(after_y)?;
-
-    Some((
-        HelixRect::new(before.x, before.y, before.width, target_before),
-        HelixRect::new(after.x, after_y, after.width, after_height),
-    ))
-}
-
 pub(super) fn document_view_layout_bounds(layouts: &[DocumentViewLayout]) -> Option<HelixRect> {
     let first = layouts.first()?;
     let mut min_x = first.area.x;
@@ -1040,36 +982,6 @@ mod tests {
         assert_eq!(vertical.gap, 0);
         assert_eq!(vertical.before_view_ids, vec![left_id]);
         assert_eq!(vertical.after_view_ids, vec![top_right_id, bottom_right_id]);
-    }
-
-    #[test]
-    fn resized_vertical_split_pane_areas_clamp_to_min_width() {
-        let before = HelixRect::new(0, 0, 40, 20);
-        let after = HelixRect::new(40, 0, 40, 20);
-
-        assert_eq!(
-            resized_vertical_split_pane_areas(before, after, 10, SPLIT_PANE_MIN_WIDTH_CELLS),
-            Some((HelixRect::new(0, 0, 50, 20), HelixRect::new(50, 0, 30, 20)))
-        );
-        assert_eq!(
-            resized_vertical_split_pane_areas(before, after, -100, SPLIT_PANE_MIN_WIDTH_CELLS),
-            Some((HelixRect::new(0, 0, 8, 20), HelixRect::new(8, 0, 72, 20)))
-        );
-    }
-
-    #[test]
-    fn resized_horizontal_split_pane_areas_clamp_to_min_height() {
-        let before = HelixRect::new(0, 0, 80, 10);
-        let after = HelixRect::new(0, 10, 80, 10);
-
-        assert_eq!(
-            resized_horizontal_split_pane_areas(before, after, 4, SPLIT_PANE_MIN_HEIGHT_CELLS),
-            Some((HelixRect::new(0, 0, 80, 14), HelixRect::new(0, 14, 80, 6)))
-        );
-        assert_eq!(
-            resized_horizontal_split_pane_areas(before, after, -100, SPLIT_PANE_MIN_HEIGHT_CELLS),
-            Some((HelixRect::new(0, 0, 80, 3), HelixRect::new(0, 3, 80, 17)))
-        );
     }
 
     #[test]

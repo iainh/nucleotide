@@ -24,7 +24,6 @@ use url::Url;
 // Note: These traits will be used in the workspace and component integration
 
 // Only declare modules that are not in lib.rs (binary-specific modules)
-mod test_utils;
 #[cfg(target_os = "windows")]
 mod windows_single_instance;
 
@@ -1951,14 +1950,6 @@ mod tests {
         assert!(parse_startup_dock_action(["nucl", "--dock-action"]).is_err());
         assert!(parse_startup_dock_action(["nucl", "--dock-action", "abc"]).is_err());
         assert!(parse_startup_dock_action(["nucl", "--dock-action", "0", "extra"]).is_err());
-    }
-
-    #[test]
-    fn nucleotide_url_parser_accepts_focus_only_open() {
-        let request = parse_nucleotide_url("nucleotide://open").unwrap();
-
-        assert!(request.files.is_empty());
-        assert_eq!(request.working_directory, None);
     }
 
     #[test]

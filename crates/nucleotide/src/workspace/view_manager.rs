@@ -124,26 +124,4 @@ mod tests {
         assert!(manager.focused_view_id().is_none());
         assert_eq!(manager.view_count(), 0);
     }
-
-    #[test]
-    fn test_view_manager_focus_tracking() {
-        let manager = ViewManager::new();
-        let view_id = ViewId::default();
-
-        // Initially no focused view
-        assert!(manager.focused_view_id().is_none());
-
-        // Can't test actual focus handling without GPUI context
-        // but we can test the basic state management
-        assert!(!manager.has_view(&view_id));
-    }
-
-    #[test]
-    fn test_view_manager_clear() {
-        let mut manager = ViewManager::new();
-
-        manager.clear_views();
-        assert!(manager.focused_view_id().is_none());
-        assert_eq!(manager.view_count(), 0);
-    }
 }

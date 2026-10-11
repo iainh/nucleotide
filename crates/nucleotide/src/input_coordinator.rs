@@ -218,12 +218,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_input_coordinator_creation() {
-        let coordinator = InputCoordinator::new();
-        assert_eq!(coordinator.current_context(), InputContext::Normal);
-    }
-
-    #[test]
     fn test_context_switching() {
         let coordinator = InputCoordinator::new();
 

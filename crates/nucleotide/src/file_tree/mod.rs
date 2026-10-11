@@ -3,18 +3,15 @@
 
 pub mod entry;
 pub mod icons;
-// pub mod project_header;
 pub mod sidebar;
 pub mod tree;
 pub mod view;
 pub mod watcher;
 
 pub use entry::{FileKind, FileTreeEntry};
-// pub use project_header::{CompactProjectStatus, ProjectHeader, ProjectHeaderEvent};
 use sidebar::ProjectTreeContextMenuIntent;
 pub use tree::FileTree;
 pub use view::FileTreeView;
-pub use watcher::DebouncedFileTreeWatcher;
 
 use gpui::{App, KeyBinding};
 use serde::{Deserialize, Serialize};

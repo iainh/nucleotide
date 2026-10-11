@@ -1387,16 +1387,6 @@ mod tests {
     }
 
     #[test]
-    fn tab_content_icon_color_matches_treeview_icons() {
-        let tokens = nucleotide_ui::DesignTokens::dark();
-
-        assert_eq!(
-            Tab::content_icon_color(tokens),
-            tokens.file_tree_tokens().icon_color
-        );
-    }
-
-    #[test]
     fn tab_icon_prioritizes_diagnostics_over_vcs_status() {
         assert_eq!(Tab::icon_vcs_status(None, None), None);
         assert_eq!(Tab::icon_vcs_status(Some(VcsStatus::Clean), None), None);

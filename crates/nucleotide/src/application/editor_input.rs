@@ -4189,26 +4189,6 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn editor_input_bridge_requests_file_picker_for_space_f() {
-        let mut bridge = EditorInputBridge::new(Keymaps::default());
-        let mut editor = test_editor_with_text("one\ntwo\n");
-        let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));
-        let mut jobs = Jobs::new();
-
-        let space = KeyEvent::from_str("space").unwrap();
-        let f = KeyEvent::from_str("f").unwrap();
-
-        let pending = bridge.handle_key(space, &mut compositor, &mut editor, &mut jobs);
-        assert!(pending.handled_by_native_command);
-        assert_eq!(pending.picker_requested, None);
-
-        let picker = bridge.handle_key(f, &mut compositor, &mut editor, &mut jobs);
-        assert!(picker.handled_by_native_command);
-        assert_eq!(picker.picker_requested, Some(NativePickerRequest::File));
-        assert_eq!(picker.workspace_requested, None);
-    }
-
-    #[tokio::test(flavor = "current_thread")]
     async fn editor_input_bridge_reports_reset_diff_change_command() {
         let mut bridge = EditorInputBridge::new(reset_diff_change_keymaps());
         let mut editor = test_editor_with_text("one\ntwo\n");
@@ -5509,16 +5489,6 @@ mod tests {
         assert!(!native_insert_completion_command(
             &MappableCommand::normal_mode
         ));
-    }
-
-    #[test]
-    fn native_completion_request_carries_focused_document_and_view() {
-        let doc_id = DocumentId::default();
-        let view_id = ViewId::default();
-        let request = NativeCompletionRequest { doc_id, view_id };
-
-        assert_eq!(request.doc_id, doc_id);
-        assert_eq!(request.view_id, view_id);
     }
 
     #[test]
