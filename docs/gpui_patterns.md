@@ -145,6 +145,15 @@ prepaint. Inactive splits must not overwrite the active split's anchor. Keep
 per-pane native bounds local: Helix's tree remains authoritative for split
 layout.
 
+Text selections use connected, rounded contours across visual rows, following
+Zigonaut's selection geometry. Paint run backgrounds first, then selection
+contours, then glyphs. Keep search and diagnostic backgrounds independent of
+selection geometry. Selected newlines occupy one cell, including on blank lines;
+soft-wrap indicators are not selected document text. Multi-line selections also
+fill the gutter at 40% of the text selection's opacity. Fill each gutter row once,
+even when multiple selections share it, and preserve line-number foregrounds.
+Themes with reversed selections retain their per-cell rectangular backgrounds.
+
 Completion content stays in layout flow so its anchor can measure the list and
 documentation panel together. Use deferred drawing for the popup so window-edge
 snapping does not leave it clipped by its editor container.
