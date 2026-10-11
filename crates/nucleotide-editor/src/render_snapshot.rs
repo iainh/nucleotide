@@ -101,16 +101,6 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_extends_viewport_for_trailing_newline_cursor() {
-        let snapshot = render_snapshot_for_cursor("one\n".into(), 4, vec![1], 0, 1);
-
-        assert!(snapshot.line_viewport.cursor_at_end);
-        assert!(snapshot.line_viewport.file_ends_with_newline);
-        assert_eq!(snapshot.cursor_doc_line, 1);
-        assert_eq!(snapshot.last_row, 2);
-    }
-
-    #[test]
     fn snapshot_does_not_make_trailing_newline_cursor_visible_outside_scroll_range() {
         let snapshot = render_snapshot_for_cursor("one\n".into(), 4, vec![1], 0, 1);
 

@@ -80,7 +80,6 @@ pub use gutter::{
     UnwrappedGutterLinePlanParams, build_gutter_line_plans, build_gutter_lines,
     build_gutter_lines_from_plans, build_soft_wrap_gutter_line_plans,
     build_unwrapped_gutter_line_plans, paint_gutter_lines, soft_wrap_gutter_line_positions,
-    unwrapped_gutter_line_positions,
 };
 pub use highlight::{
     DiagnosticOverlaySpans, EditorLineHighlightContext, HighlightLineParams,
@@ -111,7 +110,7 @@ pub use line_plan::{
 };
 pub use line_text::{
     DisplayLineText, DisplayTextMap, byte_offset_for_char_offset, expand_text_runs_for_display,
-    line_text_without_trailing_newline, shared_line_text_without_trailing_newline,
+    line_text_without_trailing_newline,
 };
 pub use metrics::EditorTextMetrics;
 pub use overlay_state::{EditorOverlayState, GutterLineAnchor};
@@ -137,9 +136,8 @@ pub use selection::{
     EditorSelectionDragState, EditorSelectionUpdate, apply_pointer_selection,
     begin_editor_pointer_selection_at_event, begin_pointer_selection,
     begin_pointer_selection_at_event, log_pointer_selection_outcome, pointer_selection_anchor,
-    primary_selection_anchor, selection_for_range, update_editor_pointer_selection_at_event,
+    primary_selection_anchor, selection_for_range,
     update_editor_pointer_selection_at_event_outcome, update_pointer_selection,
-    update_pointer_selection_at_event,
 };
 pub use soft_wrap::{
     DocumentSoftWrapRenderPlanParams, SoftWrapLinePaintPlan, SoftWrapRenderPlan,

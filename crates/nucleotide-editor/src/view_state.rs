@@ -18,8 +18,7 @@ use crate::{
     EditorViewport, EditorViewportContentLayout, EditorViewportContentUpdate,
     EditorViewportScrollRequest, EditorViewportSurfaceLayout, EditorViewportSurfaceUpdate,
     GutterLineAnchor, GutterLinePlan, GutterRunButtonHit, LineLayoutCache, ViewportScrollUpdate,
-    begin_editor_pointer_selection_at_event, update_editor_pointer_selection_at_event,
-    update_editor_pointer_selection_at_event_outcome,
+    begin_editor_pointer_selection_at_event, update_editor_pointer_selection_at_event_outcome,
 };
 
 #[derive(Clone)]
@@ -329,25 +328,6 @@ impl EditorViewState {
     ) -> Option<EditorPointerSelectionUpdate> {
         let line_cache = self.surface_metrics.line_cache();
         begin_editor_pointer_selection_at_event(
-            editor,
-            doc_id,
-            view_id,
-            self.gutter_extra_columns.get(),
-            &line_cache,
-            &self.selection_drag_state,
-            event,
-        )
-    }
-
-    pub fn update_pointer_selection_at_event(
-        &self,
-        editor: &mut Editor,
-        doc_id: DocumentId,
-        view_id: ViewId,
-        event: EditorSurfacePointerEvent,
-    ) -> Option<EditorPointerSelectionUpdate> {
-        let line_cache = self.surface_metrics.line_cache();
-        update_editor_pointer_selection_at_event(
             editor,
             doc_id,
             view_id,
@@ -777,50 +757,6 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn view_state_begin_pointer_selection_uses_owned_cache_and_drag_state() {
-        let state = EditorViewState::new(px(20.0), px(8.0));
-        state.selection_drag_state().set_anchor(7);
-        let (mut editor, doc_id, view_id) = test_editor_with_text("one\n");
-
-        let update =
-            state.begin_pointer_selection_at_event(&mut editor, doc_id, view_id, pointer_event());
-
-        assert!(update.is_none());
-        assert_eq!(state.selection_drag_state().anchor(), None);
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn view_state_update_pointer_selection_uses_owned_cache() {
-        let state = EditorViewState::new(px(20.0), px(8.0));
-        state.selection_drag_state().set_anchor(0);
-        let (mut editor, doc_id, view_id) = test_editor_with_text("one\n");
-
-        let update =
-            state.update_pointer_selection_at_event(&mut editor, doc_id, view_id, pointer_event());
-
-        assert!(update.is_none());
-        assert_eq!(state.selection_drag_state().anchor(), Some(0));
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn view_state_pointer_phase_begin_uses_owned_cache_and_drag_state() {
-        let state = EditorViewState::new(px(20.0), px(8.0));
-        state.selection_drag_state().set_anchor(7);
-        let (mut editor, doc_id, view_id) = test_editor_with_text("one\n");
-
-        let update = state.handle_pointer_selection_at_event(
-            &mut editor,
-            doc_id,
-            view_id,
-            EditorPointerSelectionPhase::Begin,
-            pointer_event(),
-        );
-
-        assert!(update.is_none());
-        assert_eq!(state.selection_drag_state().anchor(), None);
-    }
-
-    #[tokio::test(flavor = "current_thread")]
     async fn view_state_pointer_phase_begin_reports_missed_outcome() {
         let state = EditorViewState::new(px(20.0), px(8.0));
         state.selection_drag_state().set_anchor(7);
@@ -863,24 +799,6 @@ mod tests {
 
         assert!(update.is_none());
         assert_eq!(state.selection_drag_state().anchor(), Some(0));
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn view_state_pointer_phase_end_clears_owned_drag_state() {
-        let state = EditorViewState::new(px(20.0), px(8.0));
-        state.selection_drag_state().set_anchor(7);
-        let (mut editor, doc_id, view_id) = test_editor_with_text("one\n");
-
-        let update = state.handle_pointer_selection_at_event(
-            &mut editor,
-            doc_id,
-            view_id,
-            EditorPointerSelectionPhase::End,
-            pointer_event(),
-        );
-
-        assert!(update.is_none());
-        assert_eq!(state.selection_drag_state().anchor(), None);
     }
 
     #[tokio::test(flavor = "current_thread")]

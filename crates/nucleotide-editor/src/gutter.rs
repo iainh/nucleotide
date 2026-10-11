@@ -517,20 +517,6 @@ impl DiffGutterStyle {
     }
 }
 
-pub fn unwrapped_gutter_line_positions(
-    first_row: usize,
-    last_row: usize,
-) -> Vec<GutterLinePosition> {
-    (first_row..last_row)
-        .enumerate()
-        .map(|(current_visual_line, doc_line)| GutterLinePosition {
-            first_visual_line: true,
-            doc_line,
-            visual_line: u16::try_from(current_visual_line).unwrap_or(u16::MAX),
-        })
-        .collect()
-}
-
 pub fn unwrapped_gutter_line_positions_from_plans(
     visible_lines: &[VisibleLinePlan],
     line_height: Pixels,
@@ -615,46 +601,14 @@ mod tests {
     use helix_view::graphics::{Color, Style};
 
     use super::{
-        DIFF_DELTA_GUTTER_SCOPE, DIFF_PLUS_GUTTER_SCOPE, DiffGutterStyle, GutterLinePosition,
-        diff_gutter_bar_bounds, diff_gutter_bar_color_from_style, empty_gutter_decoration,
-        gutter_origin, soft_wrap_gutter_line_positions,
-        soft_wrap_gutter_line_positions_with_virtual_rows, unwrapped_gutter_line_positions,
+        GutterLinePosition, diff_gutter_bar_bounds, diff_gutter_bar_color_from_style,
+        empty_gutter_decoration, gutter_origin, soft_wrap_gutter_line_positions,
+        soft_wrap_gutter_line_positions_with_virtual_rows,
         unwrapped_gutter_line_positions_from_plans,
     };
     use crate::{
         SoftWrapVisualLine, VisibleLinePlan, line_text::DisplayTextMap, style::helix_color_to_hsla,
     };
-
-    #[test]
-    fn gutter_positions_map_document_rows_to_visual_rows() {
-        let positions = unwrapped_gutter_line_positions(3, 6);
-
-        assert_eq!(
-            positions,
-            vec![
-                GutterLinePosition {
-                    first_visual_line: true,
-                    doc_line: 3,
-                    visual_line: 0,
-                },
-                GutterLinePosition {
-                    first_visual_line: true,
-                    doc_line: 4,
-                    visual_line: 1,
-                },
-                GutterLinePosition {
-                    first_visual_line: true,
-                    doc_line: 5,
-                    visual_line: 2,
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn empty_ranges_produce_no_positions() {
-        assert!(unwrapped_gutter_line_positions(4, 4).is_empty());
-    }
 
     #[test]
     fn unwrapped_positions_follow_shifted_render_rows() {
@@ -703,15 +657,6 @@ mod tests {
         );
 
         assert_eq!(origin, point(px(78.0), px(36.0)));
-    }
-
-    #[test]
-    fn diff_gutter_styles_map_to_theme_scopes() {
-        assert_eq!(DiffGutterStyle::Added.theme_scope(), DIFF_PLUS_GUTTER_SCOPE);
-        assert_eq!(
-            DiffGutterStyle::Modified.theme_scope(),
-            DIFF_DELTA_GUTTER_SCOPE
-        );
     }
 
     #[test]

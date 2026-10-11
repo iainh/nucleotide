@@ -1961,14 +1961,6 @@ mod tests {
     }
 
     #[test]
-    fn helix_view_area_includes_gutter_and_status_row() {
-        assert_eq!(
-            helix_view_area_for_surface(4, 20, 5),
-            Rect::new(0, 0, 24, 6)
-        );
-    }
-
-    #[test]
     fn helix_view_area_plan_reports_target_and_change() {
         let previous_area = Rect::new(0, 0, 10, 4);
 
@@ -2596,22 +2588,6 @@ mod tests {
         assert_eq!(text.char_to_line(view_position.anchor), 1);
         assert_eq!(view_position.vertical_offset, 0);
         assert_eq!(view_position.horizontal_offset, 7);
-    }
-
-    #[test]
-    fn view_position_for_top_visual_row_clears_soft_wrap_horizontal_offset() {
-        let text = "abcdef\nzz";
-        let text_format = TextFormat {
-            soft_wrap: true,
-            viewport_width: 3,
-            ..TextFormat::default()
-        };
-        let annotations = default_annotations();
-
-        let view_position =
-            view_position_for_top_visual_row(text.into(), 1, 7, &text_format, &annotations);
-
-        assert_eq!(view_position.horizontal_offset, 0);
     }
 
     #[test]

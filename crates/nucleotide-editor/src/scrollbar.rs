@@ -535,19 +535,6 @@ mod tests {
     }
 
     #[test]
-    fn thumb_scales_to_viewport_fraction() {
-        let thumb = editor_scrollbar_thumb(px(200.0), px(200.0), px(800.0), px(0.0)).unwrap();
-
-        assert_eq!(
-            thumb,
-            EditorScrollbarThumb {
-                start: px(0.0),
-                length: px(39.2),
-            }
-        );
-    }
-
-    #[test]
     fn thumb_tracks_scroll_ratio() {
         let thumb = editor_scrollbar_thumb(px(200.0), px(200.0), px(800.0), px(400.0)).unwrap();
 

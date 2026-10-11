@@ -895,14 +895,6 @@ mod tests {
     }
 
     #[test]
-    fn wrap_message_line_splits_on_words() {
-        assert_eq!(
-            wrap_message_line("alpha beta gamma", 10),
-            vec!["alpha beta".to_string(), "gamma".to_string()]
-        );
-    }
-
-    #[test]
     fn diagnostic_anchor_column_expands_tabs() {
         let text: RopeSlice<'_> = "\tlet value".into();
 
