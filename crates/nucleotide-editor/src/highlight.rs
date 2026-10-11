@@ -322,12 +322,16 @@ fn matching_bracket_highlight(
     doc: &Document,
     theme: &Theme,
 ) -> Option<OverlayHighlights> {
-    let syntax = doc.syntax()?;
     let highlight = theme.find_highlight_exact("ui.cursor.match")?;
+    let pos = matching_bracket_position(view, doc)?;
+    Some(OverlayHighlights::single(highlight, pos..pos + 1))
+}
+
+pub(crate) fn matching_bracket_position(view: &View, doc: &Document) -> Option<usize> {
+    let syntax = doc.syntax()?;
     let text = doc.text().slice(..);
     let pos = doc.selection(view.id).primary().cursor(text);
-    let pos = helix_core::match_brackets::find_matching_bracket(syntax, text, pos)?;
-    Some(OverlayHighlights::single(highlight, pos..pos + 1))
+    helix_core::match_brackets::find_matching_bracket(syntax, text, pos)
 }
 
 fn tabstop_highlights(doc: &Document, theme: &Theme) -> Option<OverlayHighlights> {
@@ -764,7 +768,7 @@ fn viewport_byte_range(text: RopeSlice<'_>, row: usize, height: u16) -> Range<us
     }
 }
 
-fn selection_overlay_highlights(
+pub(crate) fn selection_overlay_highlights(
     mode: Mode,
     doc: &Document,
     view: &View,
@@ -861,18 +865,6 @@ fn apply_virtual_text_runs(
         return runs;
     }
 
-    let selection_overlays = selection_overlay_highlights(
-        context.editor_mode,
-        context.doc,
-        context.view,
-        context.theme,
-        context.cursor_shape,
-    );
-    let selection_spans = match &selection_overlays {
-        OverlayHighlights::Heterogenous { highlights } => highlights.as_slice(),
-        _ => &[],
-    };
-
     let mut run_segments = Vec::with_capacity(runs.len());
     let mut offset = 0usize;
     for run in runs {
@@ -923,8 +915,8 @@ fn apply_virtual_text_runs(
                             .min(display_len)
             })
             .map(|range| {
-                let (highlight, char_idx) = range.metadata;
-                let mut run = virtual_text_run(
+                let (highlight, _) = range.metadata;
+                virtual_text_run(
                     end - start,
                     highlight,
                     context.theme,
@@ -932,17 +924,7 @@ fn apply_virtual_text_runs(
                     context.fg_color,
                     context.default_bg,
                     &context.font,
-                );
-                if let Some((selection_highlight, _)) = selection_spans
-                    .iter()
-                    .find(|(_, selection)| selection.contains(&char_idx))
-                    && let Some(background) = safe_highlight(context.theme, *selection_highlight)
-                        .bg
-                        .and_then(helix_color_to_hsla)
-                {
-                    run.background_color = Some(background);
-                }
-                run
+                )
             })
             .unwrap_or_else(|| {
                 run_segments
@@ -1339,7 +1321,16 @@ impl<'t> OverlayHighlighter<'t> {
             };
 
             self.style = collected.into_iter().fold(base, |acc, highlight| {
-                let highlight_style = safe_highlight(self.theme, highlight);
+                let mut highlight_style = safe_highlight(self.theme, highlight);
+                if ["ui.selection", "ui.selection.primary"]
+                    .iter()
+                    .any(|scope| self.theme.find_highlight_exact(scope) == Some(highlight))
+                    && !crate::cursor_has_reversed_modifier(&highlight_style)
+                {
+                    // Selection backgrounds are filled as connected contours by the
+                    // frame painter. Reversed themes retain their per-cell colours.
+                    highlight_style.bg = None;
+                }
                 acc.patch(highlight_style)
             });
             self.update_pos();
@@ -1367,7 +1358,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn selected_inlay_hints_keep_their_foreground_and_gain_selection_background() {
+    fn selected_inlay_hints_keep_foreground_and_join_selection_contours() {
         let loader = Arc::new(ArcSwap::from_pointee(syntax::Loader::default()));
         let config = Arc::new(ArcSwap::from_pointee(Config::default()));
         let mut doc = Document::from(Rope::from("éabcdefghi\n"), None, config, loader.clone());
@@ -1468,32 +1459,64 @@ mod tests {
             for lines in [
                 unwrapped
                     .iter()
-                    .map(|line| (line.line_text.display.as_ref(), &line.line_runs))
+                    .map(|line| {
+                        (
+                            line.line_text.display.as_ref(),
+                            &line.line_runs,
+                            &line.line_text.map,
+                            0,
+                            0,
+                        )
+                    })
                     .collect::<Vec<_>>(),
                 visual_lines
                     .iter()
                     .zip(&wrapped_runs)
-                    .map(|(line, runs)| (line.text.as_ref(), runs))
+                    .map(|(line, runs)| {
+                        (
+                            line.text.as_ref(),
+                            runs,
+                            &line.display_map,
+                            line.line_start_char.unwrap(),
+                            line.text_start_byte_offset,
+                        )
+                    })
                     .collect(),
             ] {
                 for anchor in anchors {
                     let label = format!("H{anchor}");
-                    let (text, runs) = lines
+                    let (text, runs, map, char_start, prefix_len) = lines
                         .iter()
-                        .find(|(text, _)| text.contains(&label))
-                        .unwrap_or_else(|| panic!("missing {label} in {lines:?}"));
+                        .find(|(text, ..)| text.contains(&label))
+                        .unwrap_or_else(|| panic!("missing {label}"));
                     let start = text.find(&label).unwrap();
-                    let selection_bg = selected_ranges
+                    let expected_bg = theme
+                        .get("ui.virtual.inlay-hint.type")
+                        .bg
+                        .and_then(helix_color_to_hsla);
+                    let projected = selected_ranges
                         .iter()
-                        .find(|(range, _)| range.contains(&anchor))
-                        .map(|(_, bg)| *bg)
-                        .flatten();
-                    let expected_bg = selection_bg.or_else(|| {
-                        theme
-                            .get("ui.virtual.inlay-hint.type")
-                            .bg
-                            .and_then(helix_color_to_hsla)
-                    });
+                        .filter_map(|(range, _)| {
+                            crate::selection_painter::selection_display_range(
+                                doc.text().slice(..),
+                                *char_start,
+                                text,
+                                map,
+                                *prefix_len,
+                                range,
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    let is_selected = selected_ranges
+                        .iter()
+                        .any(|(range, _)| range.contains(&anchor));
+                    for byte in start..start + label.len() + 1 {
+                        assert_eq!(
+                            projected.iter().any(|range| range.contains(&byte)),
+                            is_selected,
+                            "hint/padding at anchor {anchor}, byte {byte}"
+                        );
+                    }
                     let mut offset = 0;
                     for run in *runs {
                         if offset < start + label.len() && offset + run.len > start {
@@ -1501,7 +1524,7 @@ mod tests {
                             assert_eq!(run.color, hint_fg, "hint foreground at {anchor}");
                         }
                         if offset <= start + label.len() && offset + run.len > start + label.len() {
-                            assert_eq!(run.background_color, selection_bg, "padding at {anchor}");
+                            assert_eq!(run.background_color, None, "padding at {anchor}");
                         }
                         offset += run.len;
                     }

@@ -31,6 +31,8 @@ pub mod run_gutter;
 pub mod scroll_manager;
 pub mod scrollbar;
 pub mod selection;
+mod selection_painter;
+mod selection_shape;
 pub mod soft_wrap;
 mod style;
 pub mod surface;
@@ -100,7 +102,7 @@ pub use inline_diagnostics::{
 pub use line_cache::{LineLayout, LineLayoutCache};
 pub use line_painter::{
     IndentGuidePaintConfig, SoftWrapEditorLinePaintParams, UnwrappedEditorLinePaintParams,
-    paint_cursorline_background, paint_editor_line, paint_indent_guides, paint_line_backgrounds,
+    paint_cursorline_background, paint_indent_guides, paint_line_backgrounds,
     paint_soft_wrap_editor_line, paint_unwrapped_editor_line,
 };
 pub use line_plan::{

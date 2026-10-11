@@ -907,6 +907,7 @@ pub fn paint_document_frame(
     paint_visible_rulers(window, &params.frame.frameline_paint_plans);
     paint_visible_rulers(window, &params.frame.cursorcolumn_paint_plans);
     paint_visible_rulers(window, &params.frame.ruler_paint_plans);
+    crate::selection_painter::paint_document_selection_backgrounds(window, &params);
 
     if params.frame.soft_wrap_render_plan.is_some() {
         return paint_soft_wrap_document_frame(
@@ -1908,6 +1909,69 @@ mod tests {
         );
         assert_eq!(state.surface_metrics().get().cell_width, px(8.0));
         assert_eq!(state.surface_metrics().get().line_height, px(20.0));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn selection_frames_preserve_direction_and_half_open_gutter_ranges() {
+        for wrapped in [false, true] {
+            let mut config = Config::default();
+            config.soft_wrap.enable = Some(wrapped);
+            let (mut editor, doc_id, view_id) =
+                test_editor_with_config("alpha\n\nbeta\nlast\n", config);
+            let theme = theme::Loader::new(&[]).default_theme(true);
+            let style = TextStyle::default();
+            let mut state = EditorViewState::new(px(20.0), px(8.0));
+            let mut layout = EditorLayout {
+                rows: 8,
+                columns: 40,
+                line_height: px(20.0),
+                font_size: px(16.0),
+                cell_width: px(8.0),
+            };
+            for (anchor, head, expected_text, expected_gutter) in [
+                (2, 10, 2..9, Some(0..3)),
+                (10, 2, 3..10, Some(0..3)),
+                (2, 7, 2..6, Some(0..2)),
+                (2, 5, 2..4, None),
+            ] {
+                editor
+                    .document_mut(doc_id)
+                    .unwrap()
+                    .set_selection(view_id, helix_core::Selection::single(anchor, head));
+                let prepared = prepare_native_editor_frame(NativeEditorFramePrepareParams {
+                    editor: &mut editor,
+                    view_id,
+                    editor_state: &mut state,
+                    theme: &theme,
+                    bounds: Bounds::new(point(px(0.0), px(0.0)), size(px(320.0), px(160.0))),
+                    layout: &mut layout,
+                    text_style: &style,
+                    font_size: px(16.0),
+                    is_focused: true,
+                    soft_wrap_minimum_columns: EDITOR_MINIMUM_VIEWPORT_COLUMNS,
+                    theme_styles: NativeEditorFrameThemeStyles::default(),
+                    palette: paint_palette(),
+                })
+                .unwrap();
+                let frame = &prepared.paint_plan.frame;
+                assert_eq!(
+                    frame
+                        .selection_spans
+                        .iter()
+                        .map(|(range, _)| range.clone())
+                        .collect::<Vec<_>>(),
+                    vec![expected_text]
+                );
+                assert_eq!(
+                    frame
+                        .gutter_selection_spans
+                        .iter()
+                        .map(|(range, _)| range.clone())
+                        .collect::<Vec<_>>(),
+                    expected_gutter.into_iter().collect::<Vec<_>>()
+                );
+            }
+        }
     }
 
     #[gpui::test]

@@ -1,9 +1,10 @@
 // ABOUTME: Per-frame document/view facts for native editor rendering
 // ABOUTME: Builds owned render state from Helix document and view inputs
 
-use std::time::Duration;
+use std::{ops::Range, time::Duration};
 
 use gpui::{Bounds, Font, Hsla, Pixels, TextRun};
+use helix_core::syntax::OverlayHighlights;
 use helix_view::{
     Document, Theme, View, ViewId,
     document::Mode,
@@ -84,6 +85,9 @@ pub struct EditorDocumentFrame {
     pub unwrapped_render_plan: Option<UnwrappedRenderPlan>,
     pub soft_wrap_line_runs: Vec<Vec<TextRun>>,
     pub unwrapped_highlighted_lines: Vec<UnwrappedHighlightedLine>,
+    pub selection_spans: Vec<(Range<usize>, Hsla)>,
+    pub gutter_selection_spans: Vec<(Range<usize>, Hsla)>,
+    pub matching_bracket_background: Option<(Range<usize>, Hsla)>,
     pub cursorcolumn_paint_plans: Vec<RulerPaintPlan>,
     pub frameline_paint_plans: Vec<RulerPaintPlan>,
     pub indent_guide_config: Option<IndentGuidePaintConfig>,
@@ -127,6 +131,68 @@ pub fn editor_document_frame(params: EditorDocumentFrameParams<'_>) -> EditorDoc
     let primary_cursor_col = primary_cursor_idx - line_start;
     let selection = params.document.selection(params.view_id);
     let primary_selection_index = selection.primary_index();
+    let matching_bracket_background = params
+        .is_focused
+        .then(|| {
+            let color = params
+                .theme
+                .get("ui.cursor.match")
+                .bg
+                .and_then(crate::style::helix_color_to_hsla)?;
+            let pos = crate::highlight::matching_bracket_position(params.view, params.document)?;
+            Some((pos..pos + 1, color))
+        })
+        .flatten();
+    let selection_spans = match crate::highlight::selection_overlay_highlights(
+        params.editor_mode,
+        params.document,
+        params.view,
+        params.theme,
+        &params.cursor_shape,
+    ) {
+        OverlayHighlights::Heterogenous { highlights } => highlights
+            .into_iter()
+            .filter_map(|(highlight, range)| {
+                let style = params.theme.highlight(highlight);
+                if crate::cursor_has_reversed_modifier(&style) {
+                    return None;
+                }
+                let color = style.bg?;
+                Some((range, crate::style::helix_color_to_hsla(color)?))
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+    let gutter_selection_spans = selection
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| *index == primary_selection_index)
+        .chain(
+            selection
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| *index != primary_selection_index),
+        )
+        .filter_map(|(index, range)| {
+            let range = range.min_width_1(text.slice(..));
+            let start = text.char_to_line(range.from());
+            let end = text.char_to_line(range.to().saturating_sub(1));
+            if start == end {
+                return None;
+            }
+            let scope = if index == primary_selection_index {
+                "ui.selection.primary"
+            } else {
+                "ui.selection"
+            };
+            let color = params
+                .theme
+                .get(scope)
+                .bg
+                .or(params.theme.get("ui.selection").bg)?;
+            Some((start..end + 1, crate::style::helix_color_to_hsla(color)?))
+        })
+        .collect();
     let mut secondary_cursor_lines = selection
         .iter()
         .enumerate()
@@ -276,6 +342,9 @@ pub fn editor_document_frame(params: EditorDocumentFrameParams<'_>) -> EditorDoc
         unwrapped_render_plan,
         soft_wrap_line_runs,
         unwrapped_highlighted_lines,
+        selection_spans,
+        gutter_selection_spans,
+        matching_bracket_background,
         cursorcolumn_paint_plans: Vec::new(),
         frameline_paint_plans: Vec::new(),
         indent_guide_config: None,

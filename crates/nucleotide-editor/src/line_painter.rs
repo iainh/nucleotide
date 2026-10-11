@@ -104,18 +104,6 @@ fn text_run_background_ranges(runs: &[TextRun]) -> impl Iterator<Item = (Range<u
     })
 }
 
-pub fn paint_editor_line(
-    window: &mut Window,
-    cx: &mut App,
-    shaped_line: &ShapedLine,
-    runs: &[TextRun],
-    origin: Point<Pixels>,
-    line_height: Pixels,
-) -> Result<()> {
-    paint_line_backgrounds(window, shaped_line, runs, origin, line_height);
-    shaped_line.paint(origin, line_height, TextAlign::Left, None, window, cx)
-}
-
 pub struct UnwrappedEditorLinePaintParams<'a, 'b> {
     pub plan: UnwrappedLinePaintPlan<'a>,
     pub line_text: DisplayLineText,
@@ -153,13 +141,15 @@ pub fn paint_unwrapped_editor_line(
             params.viewport_width,
             line_runs,
         );
-        paint_editor_line(
-            window,
-            cx,
-            &shaped_line,
-            line_runs,
+        // The frame paints run backgrounds and connected selection contours
+        // before any glyphs, including curves that cross row boundaries.
+        shaped_line.paint(
             params.plan.text_origin,
             params.line_height,
+            TextAlign::Left,
+            None,
+            window,
+            cx,
         )?;
         shaped_line
     };
@@ -201,13 +191,13 @@ pub fn paint_soft_wrap_editor_line(
         params.viewport_width,
         line_runs,
     );
-    paint_editor_line(
-        window,
-        cx,
-        &shaped_line,
-        line_runs,
+    shaped_line.paint(
         params.plan.text_origin,
         params.line_height,
+        TextAlign::Left,
+        None,
+        window,
+        cx,
     )?;
 
     Ok(soft_wrap_layout_for_painted_line(params.plan, shaped_line))
