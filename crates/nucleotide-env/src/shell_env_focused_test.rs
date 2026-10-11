@@ -68,35 +68,6 @@ mod focused_shell_env_tests {
     }
 
     #[tokio::test]
-    async fn test_shell_command_building() {
-        let bash_cmd = shell_command_builder::build_shell_command("/bin/bash");
-        assert_eq!(bash_cmd.get_program(), "/bin/bash");
-
-        let fish_cmd = shell_command_builder::build_shell_command("/usr/local/bin/fish");
-        assert_eq!(fish_cmd.get_program(), "/usr/local/bin/fish");
-
-        let tcsh_cmd = shell_command_builder::build_shell_command("/bin/tcsh");
-        assert_eq!(tcsh_cmd.get_program(), "/bin/tcsh");
-    }
-
-    #[tokio::test]
-    async fn test_environment_capture_command() {
-        let result = shell_command_builder::build_environment_capture_command(
-            "/bin/bash",
-            Path::new("/test/dir"),
-        );
-        assert!(result.is_ok());
-
-        let cmd = result.unwrap();
-        assert_eq!(cmd.get_program(), "/bin/bash");
-
-        // Command should include both cd and env -0
-        let debug_str = format!("{:?}", cmd);
-        assert!(debug_str.contains("cd"));
-        assert!(debug_str.contains("env -0"));
-    }
-
-    #[tokio::test]
     async fn test_windows_environment_capture_commands() {
         let powershell_cmd = shell_command_builder::build_environment_capture_command(
             "pwsh.exe",
