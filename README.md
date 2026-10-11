@@ -64,7 +64,7 @@ try {
 } finally {
   Remove-Item -LiteralPath helix-temp -Recurse -Force
 }
-dotnet tool update -g vpk --version 1.2.0
+dotnet tool update -g vpk --version 1.2.161
 .\scripts\package-velopack.ps1 -RequireRemoteHelpers
 ```
 
