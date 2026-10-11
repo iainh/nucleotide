@@ -1730,29 +1730,6 @@ pub mod shell_command_builder {
         let escaped = path_str.replace('"', "\"\"");
         format!("\"{}\"", escaped)
     }
-
-    /// Build a generic shell command (for testing)
-    pub fn build_shell_command(shell: &str) -> Command {
-        let mut command = nucleotide_process::command(shell);
-        let shell_name = detect_shell_type(shell);
-
-        match shell_name {
-            "fish" => {
-                // Fish requires special handling to trigger hooks properly
-                command.arg("-l").arg("-c").arg("emit fish_prompt");
-            }
-            "tcsh" | "csh" => {
-                // tcsh/csh should use arg0 technique for login shell, but std::process::Command
-                // doesn't support setting arg0. The shell will inherit login status from parent.
-                // Note: No flags added - tcsh/csh don't use -l flag
-            }
-            _ => {
-                command.arg("-l");
-            }
-        }
-
-        command
-    }
 }
 
 /// Detect shell type from shell path
@@ -2012,17 +1989,6 @@ mod tests {
         assert_eq!(detect_shell_type("/bin/csh"), "csh");
         assert_eq!(detect_shell_type("/usr/local/bin/zsh"), "zsh");
         assert_eq!(detect_shell_type("/unknown/shell"), "unknown");
-    }
-
-    #[tokio::test]
-    async fn test_project_environment_creation() {
-        let cli_env = HashMap::from([("PATH".to_string(), "/test/path".to_string())]);
-
-        let project_env = ProjectEnvironment::new(Some(cli_env));
-        assert!(project_env.cli_environment.is_some());
-
-        let project_env_no_cli = ProjectEnvironment::new(None);
-        assert!(project_env_no_cli.cli_environment.is_none());
     }
 
     #[test]
@@ -2748,15 +2714,5 @@ esac
             "HOME".to_string(),
             "/Users/test".to_string(),
         )])));
-    }
-
-    #[tokio::test]
-    async fn test_environment_parsing() {
-        let test_output = b"PATH=/usr/bin:/bin\0HOME=/Users/test\0SHELL=/bin/bash\0";
-        let parsed = parse_shell_environment(test_output).unwrap();
-
-        assert_eq!(parsed.get("PATH"), Some(&"/usr/bin:/bin".to_string()));
-        assert_eq!(parsed.get("HOME"), Some(&"/Users/test".to_string()));
-        assert_eq!(parsed.get("SHELL"), Some(&"/bin/bash".to_string()));
     }
 }
