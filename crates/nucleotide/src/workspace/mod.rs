@@ -1704,6 +1704,9 @@ enum PendingUnsavedClose<T> {
     Batch {
         doc_ids: Vec<T>,
     },
+    OpenDirectory {
+        path: PathBuf,
+    },
 }
 
 #[derive(Clone)]
@@ -5936,6 +5939,9 @@ impl Workspace {
                 activation_target,
             } => self.force_close_single_tab_document(doc_id, activation_target, cx),
             PendingUnsavedClose::Batch { doc_ids } => self.force_close_tab_documents(doc_ids, cx),
+            PendingUnsavedClose::OpenDirectory { path } => {
+                self.open_directory_after_confirmation(&path, cx)
+            }
         }
     }
 
@@ -9164,6 +9170,49 @@ impl Workspace {
     }
 
     fn handle_open_directory(&mut self, path: &std::path::Path, cx: &mut Context<Self>) {
+        let modified_names = self
+            .core
+            .read(cx)
+            .editor
+            .documents
+            .values()
+            .filter(|doc| doc.path().is_some() && doc.is_modified())
+            .map(|doc| doc.display_name().into_owned())
+            .collect::<Vec<_>>();
+        if !modified_names.is_empty() {
+            self.request_unsaved_close(
+                PendingUnsavedClose::OpenDirectory {
+                    path: path.to_path_buf(),
+                },
+                modified_names,
+                cx,
+            );
+            return;
+        }
+
+        self.open_directory_after_confirmation(path, cx);
+    }
+
+    fn open_directory_after_confirmation(&mut self, path: &Path, cx: &mut Context<Self>) {
+        // Scratch buffers have no path and belong to the editor, not the project.
+        let doc_ids = self
+            .core
+            .read(cx)
+            .editor
+            .documents
+            .values()
+            .filter(|doc| doc.path().is_some())
+            .map(|doc| doc.id())
+            .collect::<Vec<_>>();
+        self.force_close_tab_documents(doc_ids, cx);
+        for tab in &self.image_tabs {
+            self.pinned_documents.remove(&TabId::Image(tab.id));
+        }
+        self.image_tabs.clear();
+        self.active_image_tab_id = None;
+        self.invalidate_tab_bar_documents();
+        self.update_document_views(cx);
+
         // Find the workspace root from this directory and update working directory
         let workspace_backend = self.core.read(cx).workspace_backend.clone();
         let workspace_identity = workspace_backend.identity();

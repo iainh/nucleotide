@@ -11318,6 +11318,126 @@ mod tests {
     }
 
     #[gpui::test]
+    fn opening_directory_closes_file_buffers_but_preserves_scratch(cx: &mut gpui::TestAppContext) {
+        let _runtime = TEST_RUNTIME.enter();
+        let root = tempdir().unwrap();
+        let alpha_path = root.path().join("alpha.txt");
+        let beta_path = root.path().join("beta.txt");
+        let next_directory = root.path().join("next");
+        fs::write(&alpha_path, "alpha\n").unwrap();
+        fs::write(&beta_path, "beta\n").unwrap();
+        fs::create_dir(&next_directory).unwrap();
+        let (core, _workspace, cx) = new_test_workspace(cx, &alpha_path);
+        let scratch = core.update(cx, |core, cx| {
+            // Exercise the common directory-open path without changing the test
+            // process's working directory (which is shared by other tests).
+            core.set_workspace_backend(Arc::new(RemoteIdentityLocalBackend));
+            core.editor.open(&beta_path, Action::VerticalSplit).unwrap();
+            let scratch = core.editor.new_file(Action::VerticalSplit);
+            let view = core.editor.tree.focus;
+            let doc = core.editor.documents.get_mut(&scratch).unwrap();
+            let transaction = Transaction::change(
+                doc.text(),
+                std::iter::once((0, 0, Some("scratch notes".into()))),
+            );
+            doc.apply(&transaction, view);
+            cx.emit(crate::Update::OpenDirectory(next_directory.clone()));
+            scratch
+        });
+        cx.run_until_parked();
+        core.read_with(cx, |core, _| {
+            assert_eq!(core.project_directory.as_ref(), Some(&next_directory));
+            assert_eq!(core.editor.documents.len(), 1);
+            assert_eq!(
+                core.editor.documents[&scratch].text().to_string(),
+                "scratch notes\n"
+            );
+            assert!(core.editor.documents[&scratch].is_modified());
+            assert!(
+                core.editor
+                    .tree
+                    .views()
+                    .all(|(view, _)| view.doc == scratch)
+            );
+        });
+
+        // With no existing scratch, closing the last file must still leave
+        // a usable editor containing a fresh scratch buffer.
+        core.update(cx, |core, cx| {
+            assert!(core.editor.close_document(scratch, true).is_ok());
+            let empty_scratch = core.editor.tree.get(core.editor.tree.focus).doc;
+            core.editor.open(&alpha_path, Action::Replace).unwrap();
+            assert!(!core.editor.documents.contains_key(&empty_scratch));
+            cx.emit(crate::Update::OpenDirectory(next_directory.clone()));
+        });
+        cx.run_until_parked();
+        core.read_with(cx, |core, _| {
+            assert_eq!(core.editor.documents.len(), 1);
+            let doc = core.editor.documents.values().next().unwrap();
+            assert!(doc.path().is_none());
+            assert!(!doc.is_modified());
+            assert!(core.editor.tree.views().next().is_some());
+        });
+    }
+
+    #[gpui::test]
+    fn opening_directory_waits_for_unsaved_buffer_confirmation(cx: &mut gpui::TestAppContext) {
+        let _runtime = TEST_RUNTIME.enter();
+        let root = tempdir().unwrap();
+        let alpha_path = root.path().join("alpha.txt");
+        let beta_path = root.path().join("beta.txt");
+        let next_directory = root.path().join("next");
+        fs::write(&alpha_path, "alpha\n").unwrap();
+        fs::write(&beta_path, "beta\n").unwrap();
+        fs::create_dir(&next_directory).unwrap();
+        let (core, workspace, cx) = new_test_workspace(cx, &alpha_path);
+        let dirty = core.update(cx, |core, _| {
+            core.set_workspace_backend(Arc::new(RemoteIdentityLocalBackend));
+            core.editor.open(&beta_path, Action::Load).unwrap();
+            core.editor.tree.get(core.editor.tree.focus).doc
+        });
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.focus_editor(window, cx)
+        });
+        cx.simulate_keystrokes("i");
+        cx.simulate_input("changed");
+        cx.simulate_keystrokes("escape");
+        core.update(cx, |_, cx| {
+            cx.emit(crate::Update::OpenDirectory(next_directory.clone()))
+        });
+        cx.run_until_parked();
+        core.read_with(cx, |core, _| {
+            assert_eq!(core.project_directory.as_deref(), Some(root.path()));
+            assert_eq!(core.editor.documents.len(), 2);
+            assert!(core.editor.documents[&dirty].is_modified());
+        });
+        cx.simulate_keystrokes("escape");
+        cx.run_until_parked();
+        core.read_with(cx, |core, _| {
+            assert_eq!(core.project_directory.as_deref(), Some(root.path()));
+            assert_eq!(core.editor.documents.len(), 2);
+        });
+
+        core.update(cx, |_, cx| {
+            cx.emit(crate::Update::OpenDirectory(next_directory.clone()))
+        });
+        cx.run_until_parked();
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        core.read_with(cx, |core, _| {
+            assert_eq!(core.project_directory.as_ref(), Some(&next_directory));
+            assert_eq!(core.editor.documents.len(), 1);
+            assert!(
+                core.editor
+                    .documents
+                    .values()
+                    .all(|doc| doc.path().is_none())
+            );
+        });
+        assert_eq!(fs::read_to_string(alpha_path).unwrap(), "alpha\n");
+    }
+
+    #[gpui::test]
     fn split_tabs_transfer_through_drag_and_drop(cx: &mut gpui::TestAppContext) {
         use gpui::{Modifiers, MouseButton, point, px};
         let _runtime = TEST_RUNTIME.enter();
