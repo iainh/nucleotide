@@ -1848,7 +1848,7 @@ auto_download = true
         assert!(config.tab_bar.show);
         assert_eq!(
             config.tabs.show_close_button,
-            TabCloseButtonVisibility::Hover
+            TabCloseButtonVisibility::Always
         );
         assert!(config.preview_tabs.enabled);
         assert_eq!(config.file_tree.density, FileTreeDisplayDensity::Default);
@@ -1867,14 +1867,29 @@ auto_download = true
         assert!(config.lsp.project_lsp_startup);
         assert!(!config.project_markers.enable_project_markers);
 
+        // Theme names are explicit in the example but resolve from None by default.
+        // Every other assignment must preserve the omitted-setting defaults.
+        let mut defaults = GuiConfig::default();
+        defaults.theme.light_theme = Some(DEFAULT_LIGHT_THEME.to_string());
+        defaults.theme.dark_theme = Some(DEFAULT_DARK_THEME.to_string());
+        assert_eq!(
+            toml::Value::try_from(&config).expect("example config should serialize"),
+            toml::Value::try_from(&defaults).expect("default config should serialize"),
+            "copying the example should preserve default GUI settings"
+        );
+
         for setting in [
             "max_tabs",
+            "[updates]",
+            "check_on_startup",
+            "auto_download",
             "[theme]",
             "mode",
             "light_theme",
             "dark_theme",
             "[window]",
             "blur_dark_themes",
+            "chrome_opacity",
             "appearance_follows_theme",
             "[window.directwrite]",
             "gamma",

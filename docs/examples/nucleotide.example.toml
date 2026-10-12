@@ -1,17 +1,29 @@
 # Nucleotide configuration
 # Place this file as nucleotide.toml in your Helix config directory.
 # The usual path is ~/.config/helix/nucleotide.toml.
+# On Windows, use %APPDATA%\helix\nucleotide.toml.
 #
 # This file controls Nucleotide GUI settings. Standard Helix editor settings
-# belong in config.toml in the same directory.
+# and keybindings belong in config.toml in the same directory, and language
+# server definitions belong in languages.toml. They are loaded separately;
+# this file is not a replacement for either Helix configuration file.
 #
-# Values below are the defaults used when the setting is omitted, unless the
-# comment says the default is unset.
+# Every supported nucleotide.toml parameter is shown below. Active assignments
+# use the defaults. Optional overrides and custom marker entries are commented
+# out so copying this file preserves platform defaults and an empty marker map.
+# TOML has no null value: leave an optional setting commented out to keep it unset.
+# Uncomment a table header along with its settings to enable an optional table.
+# Missing fields use defaults; unknown keys are currently ignored.
+# Invalid TOML or field types cause all GUI settings to fall back to defaults.
+# Save this file, then choose Settings > Reload Configuration (under Nucleotide
+# on macOS/Linux or File on Windows), or restart Nucleotide.
 
 # Limit how many editor tabs Nucleotide keeps open.
 # Default: unset, which keeps tabs open until you close them.
-# Set this to a positive integer to close older clean, unpinned tabs over the
-# limit.
+# Set this to a positive integer (0 is invalid) to close the least-recently-focused
+# clean, unpinned tabs over the limit. Preview tabs do not count toward the cap.
+# Protected, pinned or modified tabs can leave the count above this soft limit.
+# Keep this top-level key before any table headers.
 # max_tabs = 10
 
 [updates]
@@ -27,7 +39,7 @@ auto_download = false
 
 [theme]
 # Select how the GUI chooses between light and dark themes.
-# Options: "system", "light", "dark". Default: "system".
+# Options: "system", "light", "dark"; "auto" aliases "system". Default: "system".
 mode = "system"
 
 # Theme used when light appearance is active. Default: "nucleotide-sandcastle".
@@ -55,24 +67,31 @@ appearance_follows_theme = true
 
 # Optional Windows DirectWrite text rendering overrides. By default, Nucleotide
 # follows the active monitor's Windows/DirectWrite font rendering settings.
+# The table and every field default to unset; numbers below are examples, not
+# fixed defaults. These settings have no effect on other platforms.
 # Reload configuration or restart after changing these values.
 # [window.directwrite]
-# Range: 1.0 to 2.2. DirectWrite accepts a wider range, but GPUI's gamma
-# correction table is defined for this range.
+# Gamma correction. Default: unset (monitor setting). Finite range: 1.0 to 2.2.
+# DirectWrite accepts a wider range, but GPUI's gamma table uses this range.
 # gamma = 1.8
 #
-# Range: 0.0 or greater.
+# Enhanced text contrast. Default: unset (monitor setting).
+# Range: finite, 0.0 or greater.
 # enhanced_contrast = 0.75
 #
-# Range: 0.0 to 1.0. A value of 0.0 disables ClearType and uses grayscale text.
+# Subpixel rendering strength. Default: unset (monitor setting).
+# Finite range: 0.0 to 1.0. A value of 0.0 disables ClearType for grayscale text.
 # clear_type_level = 1.0
 #
+# Subpixel order. Default: unset (monitor setting).
 # Options: "flat", "rgb", "bgr". "flat" uses grayscale text.
 # pixel_geometry = "rgb"
 #
+# Glyph rasterization mode. Default: unset (monitor setting).
 # Options: "default", "aliased", "gdi_classic", "gdi_natural", "natural",
 # "natural_symmetric". "aliased" uses grayscale text.
 # rendering_mode = "natural_symmetric"
+# Invalid numeric overrides are individually discarded, retaining monitor defaults.
 
 [ui]
 # Select how Nucleotide styles non-editor UI chrome.
@@ -82,29 +101,38 @@ appearance_follows_theme = true
 look = "theme"
 
 # Font used for menus, prompts, pickers and other UI chrome.
-# Default: unset, which resolves to ".SystemUIFont", "normal", the platform UI
-# font size and 1.5. Platform size is queried dynamically on macOS and Windows,
-# with fallbacks of 13.0 on macOS/Linux and 12.0 on Windows.
+# Table default: unset. Missing fields in an enabled table use the defaults below.
 # [ui.font]
+# Font family. Default: ".SystemUIFont" (GPUI's platform system font).
+# "SF Pro Display", "SF Pro" and "system-ui" also resolve to ".SystemUIFont".
 # family = ".SystemUIFont"
 
+# Font weight.
 # Options: "thin", "extralight", "light", "normal", "medium", "semibold",
 # "bold", "extrabold", "black". Default: "normal".
 # weight = "normal"
 
-# Font size in pixels. Default: platform UI font size.
+# Font size in pixels. Default: platform UI font size on macOS and Windows,
+# with a 13.0 fallback; Windows enforces a 14.0 minimum on this default only.
+# Default on Linux and other platforms: 13.0. The number below is an override
+# example, not a portable default.
 # size = 13.0
 
 # Line-height multiplier. Default: 1.5.
 # line_height = 1.5
 
 # Font used in the editor view.
-# Default family when unset: "SF Mono" on macOS, "Cascadia Mono" on Windows,
-# and "monospace" on other platforms. Weight, size and line height default to
-# "normal", 14.0 and 1.5.
+# Table default: unset. If [ui.font] is configured but [editor.font] is not,
+# the editor inherits that UI font configuration. If neither is configured,
+# it uses the platform monospace family, "normal", 14.0 and 1.5.
+# An enabled [editor.font] table uses the defaults below for missing fields,
+# rather than inheriting individual fields from [ui.font].
 # [editor.font]
+# Font family. Default: "SF Mono" on macOS, "Cascadia Mono" on Windows,
+# "monospace" on other platforms. The value below is the macOS example.
 # family = "SF Mono"
 
+# Font weight.
 # Options: "thin", "extralight", "light", "normal", "medium", "semibold",
 # "bold", "extrabold", "black". Default: "normal".
 # weight = "normal"
@@ -142,12 +170,12 @@ git_status = false
 file_icons = true
 
 # Show diagnostic decorations on tabs.
-# Options: "off", "errors", "all". Default: "off".
+# Options: "off", "errors", "all" (errors and warnings). Default: "off".
 show_diagnostics = "off"
 
 # Show close buttons on unpinned tabs.
-# Options: "always", "hover", "hidden". Default: "hover".
-show_close_button = "hover"
+# Options: "always", "hover", "hidden". Default: "always".
+show_close_button = "always"
 
 # Position the close or pin button on each tab.
 # Options: "left", "right". Default: "right".
@@ -155,6 +183,8 @@ close_position = "right"
 
 # Choose which tab becomes active after closing the active tab.
 # Options: "history", "neighbour", "left_neighbour". Default: "history".
+# "history" returns to the previously active tab. "neighbour" prefers the right
+# neighbour, then the left; "left_neighbour" reverses that preference.
 activate_on_close = "history"
 
 [preview_tabs]
@@ -167,17 +197,20 @@ enable_preview_from_project_panel = true
 # Open file-finder selections as preview tabs. Default: false.
 enable_preview_from_file_finder = false
 
-# Open multibuffer files as preview tabs. Default: true.
+# Intended to open multibuffer files as preview tabs. Default: true.
+# Currently parsed but not wired to runtime behaviour.
 enable_preview_from_multibuffer = true
 
-# Open code-navigation multibuffers as preview tabs. Default: false.
+# Intended to open code-navigation multibuffers as preview tabs. Default: false.
+# Currently parsed but not wired to runtime behaviour.
 enable_preview_multibuffer_from_code_navigation = false
 
-# Open code-navigation files as preview tabs. Default: true.
+# Intended to open code-navigation files as preview tabs. Default: true.
+# Currently parsed but not wired to runtime behaviour.
 enable_preview_file_from_code_navigation = true
 
-# Keep preview tabs in preview mode after code navigation moves away from them.
-# Default: false.
+# Intended to keep preview mode after code navigation moves away from a tab.
+# Default: false. Currently parsed but not wired to runtime behaviour.
 enable_keep_preview_on_code_navigation = false
 
 [file_tree]
@@ -194,8 +227,17 @@ flatten_empty_directories = true
 delete_behavior = "trash"
 
 [remote.ssh]
+# Remote backend environment overrides take precedence over these settings:
+# NUCLEOTIDE_REMOTE_HELPER_INSTALL (SSH and WSL install policy),
+# NUCLEOTIDE_REMOTE_HELPER (SSH and WSL helper path),
+# NUCLEOTIDE_SSH_CONNECT_TIMEOUT_SECS, NUCLEOTIDE_SSH_EXTRA_ARGS,
+# NUCLEOTIDE_SSH_CONTROL_MASTER and NUCLEOTIDE_SSH_CONTROL_PATH.
 # How Nucleotide installs nucleotide-remote on SSH hosts.
 # Options: "auto", "never", "upload", "remote_download". Default: "auto".
+# "auto" reuses a matching helper, otherwise uploads; if the local artifact is
+# unavailable, it tries remote download. With an explicit helper_path, "auto"
+# uses that path without installing a helper.
+# "never" requires an existing helper; "upload" requires a local helper artifact.
 # "remote_download" requires curl or wget plus sha256sum or shasum on the SSH
 # host. Set NUCLEOTIDE_REMOTE_HELPER_DOWNLOAD_BASE_URL to use a release mirror.
 helper_install = "auto"
@@ -204,21 +246,24 @@ helper_install = "auto"
 # under ${XDG_CACHE_HOME:-$HOME/.cache}/nucleotide/remote after auto-install.
 # helper_path = "/home/me/.local/bin/nucleotide-remote"
 
-# SSH connection timeout in seconds. Set to 0 to disable Nucleotide's timeout.
+# SSH connection timeout in seconds. Default: 30.
+# Set to 0 to disable Nucleotide's timeout.
 connect_timeout_secs = 30
 
 # Extra arguments passed to ssh before the target. Prefer ~/.ssh/config for
-# long-lived host settings. Example: ["-J", "bastion"].
+# long-lived host settings. Default: []. Example: ["-J", "bastion"].
 extra_args = []
 
-# Reuse SSH connections with OpenSSH ControlMaster on Unix. Default: platform
-# default, enabled on Unix and disabled elsewhere.
+# Reuse SSH connections with OpenSSH ControlMaster on Unix. Default: unset,
+# which enables reuse on Unix and disables it elsewhere. A true override does
+# not enable ControlMaster on non-Unix platforms.
 # use_control_master = true
 
 [remote.wsl]
 # WSL uses the same bundled Linux helpers, version checks, and install modes as
 # SSH. "remote_download" requires the same download and checksum tools inside
 # the distro. Default: "auto".
+# Options: "auto", "never", "upload", "remote_download" (as described above).
 helper_install = "auto"
 
 # Helper path override inside the distro. Default: unset, which uses the same
@@ -226,20 +271,25 @@ helper_install = "auto"
 # helper_path = "/home/me/.local/bin/nucleotide-remote"
 
 [lsp]
-# Start language servers from detected project roots instead of individual
-# files. Default: true.
+# Proactively start language servers for detected projects. Default: true.
+# Setting false disables proactive startup, not Helix's file-based LSP startup.
 project_lsp_startup = true
 
-# Maximum time to spend starting project LSPs, in milliseconds. Default: 5000.
-# Valid range: 1 to 60000.
+# Timeout for project LSP preparation/startup, in milliseconds. Default: 5000.
+# Valid range: 1 to 60000; server initialization waits use at least 1000 ms.
+# A value of 0 resets to 5000; values above 60000 are capped at 60000.
 startup_timeout_ms = 5000
 
 [project_markers]
-# Use custom project markers for project detection. Default: false.
+# This section is parsed and validated but currently has no runtime consumer.
+# Its intended behaviour is described below; it does not change detection yet.
+
+# Enable custom project markers for project detection. Default: false.
 enable_project_markers = false
 
 # Maximum time to spend detecting a project, in milliseconds. Default: 1000.
-# Valid range: 1 to 30000.
+# Valid range: 1 to 30000. A value of 0 resets to 1000; values above 30000
+# are capped at 30000.
 detection_timeout_ms = 1000
 
 # Fall back to built-in project detection when no custom marker matches.
@@ -249,10 +299,22 @@ enable_builtin_fallback = true
 # Default: no custom marker entries.
 # Add marker entries under [project_markers.markers.<name>] in this file.
 # If project_markers.toml exists in the Helix config directory, it overrides
-# this section.
+# this entire section, not just matching fields. In that separate file, omit the
+# project_markers prefix: use top-level settings and [markers.<name>] tables.
+# If that file cannot be read or parsed, marker settings fall back to defaults.
 #
 # [project_markers.markers.rust]
+# File-name patterns identifying a project. Required for each marker entry;
+# no default. Use at least one non-blank pattern without / or \ separators.
 # markers = ["Cargo.toml"]
+# Language server name. Required for each marker entry; no default.
+# Must not be blank; use a server name defined in Helix's language configuration.
 # language_server = "rust-analyzer"
-# root_strategy = "closest" # Options: "first", "closest", "furthest". Default: "closest".
-# priority = 50             # Higher numbers win when multiple markers match. Default: 50.
+# How to choose a matching ancestor directory. Options: "first" (stop at the
+# first match), "closest" (nearest to the file), "furthest" (outermost match).
+# Default: "closest".
+# root_strategy = "closest"
+# Higher numbers win when multiple markers match. Default: 50.
+# Accepts unsigned 32-bit integers; sanitization caps priorities at 1000 when
+# marker configuration validation fails.
+# priority = 50
