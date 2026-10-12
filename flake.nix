@@ -73,6 +73,9 @@
         zig_0_15_2 =
           assert pkgs.zig_0_15.version == "0.15.2";
           pkgs.zig_0_15;
+        # cargo-zigbuild's wrapper prepends its own Zig to PATH, so pin that
+        # dependency too rather than relying on the shell's compiler ordering.
+        cargoZigbuild = pkgs.cargo-zigbuild.override { zig = zig_0_15_2; };
         ghosttyZigDeps = pkgs.callPackage "${ghostty}/build.zig.zon.nix" {
           zig_0_15 = zig_0_15_2;
           name = "ghostty-cache-libghostty-vt-sys-0.2.1";
@@ -696,7 +699,7 @@
             packages = with pkgs; [
               rustToolchain
               zig_0_15_2
-              cargo-zigbuild
+              cargoZigbuild
               clang
               git
               pkg-config
@@ -732,7 +735,7 @@
                   cargo-deny
                   cargo-flamegraph
                   cargo-machete
-                  cargo-zigbuild
+                  cargoZigbuild
 
                   # Build performance tools
                   sccache
