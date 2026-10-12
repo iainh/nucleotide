@@ -1,14 +1,26 @@
 # Remote connection manager design
 
-Status: draft
+Status: guided dialog implemented; exploratory wireframes retained below
 
-This document defines a UI design for opening remote workspaces through a dedicated connection manager. It is a design-only document. It does not prescribe implementation slices or make code changes.
+This document describes the remote workspace connection manager. The current guided flow is summarized below; the original wireframes describe exploratory states and are not exact screenshots of the implementation.
 
 The manager should preserve the current "just works" behaviour while replacing the command-style `remote:` prompt as the primary guided path. The prompt can remain as a quick entry path for users who already know the exact target.
 
+## Current guided dialog
+
+- **Choose host:** Enter a host or choose a saved, recent or discovered target. Source headings group suggestions, and an empty state explains how to start. `Connect` is the only primary action; it is disabled without a target and while a connection is in progress.
+- **Choose folder:** After connecting, the host input is replaced by the remote directory tree. The connected host and exact remote folder path stay visible. `Open folder` is the only primary action.
+- The shared `nucleotide-ui::Stepper` centres the two stages, fills current and completed indicators, and marks completion with a check and coloured connector. It is informational, not a way to skip connecting.
+- `Back` returns to host selection without discarding the host or selected folder. Editing the host clears that folder selection.
+- Saving is offered in the folder step. An exact target already in the saved list shows `Saved connection` instead of a redundant save checkbox. Selecting another folder on that host can still be saved separately.
+- Windows offers an SSH/WSL selector. Linux and macOS show SSH guidance without a single-option dropdown.
+- Connection progress and errors appear inline, with `Cancel` available in both steps.
+- Connection groups have rounded borders and Phosphor monitor icons; source badges only distinguish SSH config entries from known hosts. The folder tree uses inset rounded selection highlights and subtle row separators.
+- The header close button cancels through the same path as `Cancel` and Escape. In the host step, `Cancel` is on the left and `Connect` is on the right; the folder step keeps `Back` on the left and its other actions on the right.
+
 ## Goals
 
-- Let users choose `SSH` or `WSL` from a protocol dropdown.
+- Let users choose `SSH` or `WSL` from a protocol dropdown on Windows. On Linux and macOS, offer only `SSH`; Tab must not switch to WSL.
 - Autocomplete the server field from the right source for the selected protocol.
 - Connect far enough to discover the remote home directory.
 - Show a directory browser rooted at the remote home directory.
@@ -32,7 +44,7 @@ The manager should preserve the current "just works" behaviour while replacing t
 ## Primary flow
 
 1. The user opens the connection manager.
-2. The user selects `SSH` or `WSL`.
+2. On Windows, the user selects `SSH` or `WSL`. Other platforms use SSH.
 3. The server field autocompletes from known hosts, SSH config aliases, WSL distributions, saved connections and recent connections.
 4. The user selects a server or distro and presses `Connect`.
 5. Nucleotide connects, checks or starts `nucleotide-remote`, resolves the remote home directory and lists its child directories.
@@ -342,11 +354,11 @@ The manager should keep the existing saved and recent model but move it from com
 
 ### Keyboard behaviour
 
-- `Tab` moves through protocol, server, suggestions, directory browser, workspace root and actions.
+- On Windows, `Tab` switches protocols in the host step. On other platforms, it does not switch to WSL.
 - `Up` and `Down` move through suggestions or directory rows.
-- `Enter` accepts a suggestion, connects or enters the selected directory.
-- `Cmd+Enter` on macOS or `Ctrl+Enter` on other platforms opens the selected workspace root.
-- `Esc` cancels the current popup; a second `Esc` closes the manager.
+- `Enter` connects to the selected or typed target in the host step, and opens the selected folder in the folder step.
+- `Left` and `Right` collapse and expand directories.
+- `Esc` closes an open protocol menu, or closes the manager if no menu is open.
 
 ## UI states
 
@@ -380,3 +392,4 @@ The manager should keep the existing saved and recent model but move it from com
 - [Remote workspace feature gaps](remote_workspace_feature_gaps.md)
 - [Remote workspace reference design](research/2026-07-01-remote-workspace-reference-design.md)
 - [SSH deployment strategies for nucleotide-remote](research/2026-07-02-ssh-nucleotide-remote-deployment.md)
+- [GPUI Kit Stepper](https://gpui-kit.com/component/stepper/) — visual reference for the progress header; Nucleotide uses its own token-styled implementation.
