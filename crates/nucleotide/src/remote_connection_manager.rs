@@ -13,7 +13,7 @@ use gpui::{
     Anchor, App, AppContext as _, Context, DismissEvent, Entity, EventEmitter, FocusHandle,
     Focusable, InteractiveElement, IntoElement, KeyBinding, MouseButton, MouseDownEvent,
     ParentElement, Render, ScrollHandle, StatefulInteractiveElement, Styled, Subscription, Window,
-    anchored, deferred, div, point, px,
+    anchored, deferred, div, point, px, svg,
 };
 use nucleotide_core::{EditorStatus, Severity};
 use nucleotide_types::scrollbar::SCROLLBAR_THICKNESS;
@@ -26,7 +26,7 @@ use nucleotide_ui::actions::remote_connection_manager::{
 use nucleotide_ui::scrollbar::{Scrollbar, ScrollbarState};
 use nucleotide_ui::{
     Button, ButtonSize, ButtonVariant, Checkbox, CheckboxSize, FileIcon, IconPosition, ListItem,
-    ListItemSpacing, ListItemVariant, MenuCheckSide, PopupMenu, TextInput, TextInputEvent,
+    ListItemSpacing, ListItemVariant, MenuCheckSide, PopupMenu, Stepper, TextInput, TextInputEvent,
     TextInputFocusStyle, ThemedContext,
 };
 use nucleotide_workspace::{
@@ -53,11 +53,6 @@ pub(crate) fn init(cx: &mut App) {
             Some(REMOTE_CONNECTION_MANAGER_CONTEXT),
         ),
         KeyBinding::new(
-            "tab",
-            ToggleRemoteProtocol,
-            Some(REMOTE_CONNECTION_MANAGER_CONTEXT),
-        ),
-        KeyBinding::new(
             "up",
             SelectPreviousRemoteItem,
             Some(REMOTE_CONNECTION_MANAGER_CONTEXT),
@@ -78,6 +73,13 @@ pub(crate) fn init(cx: &mut App) {
             Some(REMOTE_CONNECTION_MANAGER_CONTEXT),
         ),
     ]);
+
+    #[cfg(windows)]
+    cx.bind_keys([KeyBinding::new(
+        "tab",
+        ToggleRemoteProtocol,
+        Some(REMOTE_CONNECTION_MANAGER_CONTEXT),
+    )]);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -96,7 +98,8 @@ impl RemoteConnectionProtocol {
 
     fn toggled(self) -> Self {
         match self {
-            Self::Ssh => Self::Wsl,
+            Self::Ssh if cfg!(windows) => Self::Wsl,
+            Self::Ssh => Self::Ssh,
             Self::Wsl => Self::Ssh,
         }
     }
@@ -289,7 +292,11 @@ impl RemoteConnectionManagerView {
             TextInput::new("remote-server-input", cx)
                 .size(nucleotide_ui::InputSize::Medium)
                 .focus_style(TextInputFocusStyle::Chrome)
-                .placeholder("Host, distro, alias or saved connection")
+                .placeholder(if cfg!(windows) {
+                    "Host, distro, alias or saved connection"
+                } else {
+                    "Host, alias or saved connection"
+                })
         });
         cx.subscribe(&input, Self::handle_server_input_event)
             .detach();
@@ -303,7 +310,7 @@ impl RemoteConnectionManagerView {
         cx: &mut Context<Self>,
     ) -> Self {
         let server_input_view = Self::new_server_input(cx);
-        let focus_handle = server_input_view.read(cx).focus_handle(cx);
+        let focus_handle = cx.focus_handle();
         let save_connection_focus_handle = cx.focus_handle().tab_index(20).tab_stop(true);
         let suggestions_scroll_handle = ScrollHandle::new();
         let suggestions_scrollbar_state = ScrollbarState::new(suggestions_scroll_handle.clone());
@@ -405,6 +412,10 @@ impl RemoteConnectionManagerView {
     }
 
     fn set_protocol(&mut self, protocol: RemoteConnectionProtocol, cx: &mut Context<Self>) {
+        if protocol == RemoteConnectionProtocol::Wsl && !cfg!(windows) {
+            return;
+        }
+
         if self.protocol != protocol {
             self.invalidate_connection_attempt();
             self.protocol = protocol;
@@ -484,7 +495,8 @@ impl RemoteConnectionManagerView {
         let current_protocol = self.protocol;
         let action_context = self.focus_handle.clone();
         let menu = PopupMenu::build(window, cx, move |menu, _window, _cx| {
-            menu.action_context(action_context)
+            let menu = menu
+                .action_context(action_context)
                 .check_side(MenuCheckSide::Right)
                 .min_w(px(118.0))
                 .menu_with_check_and_disabled(
@@ -494,8 +506,9 @@ impl RemoteConnectionManagerView {
                         protocol: RemoteConnectionProtocol::Ssh,
                     }),
                     false,
-                )
-                .menu_with_check_and_disabled(
+                );
+            if cfg!(windows) {
+                menu.menu_with_check_and_disabled(
                     "WSL",
                     current_protocol == RemoteConnectionProtocol::Wsl,
                     Box::new(SelectRemoteProtocol {
@@ -503,6 +516,9 @@ impl RemoteConnectionManagerView {
                     }),
                     false,
                 )
+            } else {
+                menu
+            }
         });
 
         self.protocol_menu_subscription = Some(cx.subscribe(
@@ -542,14 +558,15 @@ impl RemoteConnectionManagerView {
     fn apply_suggestion(&mut self, suggestion: RemoteServerSuggestion, cx: &mut Context<Self>) {
         self.invalidate_connection_attempt();
         self.protocol = suggestion.protocol;
-        self.set_server_input(suggestion.insert_text, cx);
-        self.suggestion_selection = 0;
+        self.set_server_input(suggestion.insert_text.clone(), cx);
+        self.suggestion_selection = self
+            .filtered_suggestions()
+            .iter()
+            .position(|candidate| candidate == &suggestion)
+            .unwrap_or(0);
         self.accepted_suggestion = true;
         self.close_protocol_menu(cx);
-
-        if let Some(target_path) = suggestion.target_path {
-            self.pending_selected_path = Some(target_path);
-        }
+        self.pending_selected_path = suggestion.target_path;
 
         cx.notify();
     }
@@ -704,10 +721,7 @@ impl RemoteConnectionManagerView {
                                     selected_tree_path,
                                     root,
                                 });
-                                view.status = Some(EditorStatus {
-                                    status: "Loaded remote home directory".to_string(),
-                                    severity: Severity::Info,
-                                });
+                                view.status = None;
                             }
                             Err(error) => {
                                 view.status = Some(EditorStatus {
@@ -743,18 +757,6 @@ impl RemoteConnectionManagerView {
         session.selected_tree_path = Some(path.clone());
         session.selected_path = path;
         cx.notify();
-    }
-
-    fn toggle_selected_directory(&mut self, cx: &mut Context<Self>) {
-        let Some(path) = self
-            .browse_session
-            .as_ref()
-            .and_then(|session| session.selected_tree_path.clone())
-        else {
-            return;
-        };
-
-        self.toggle_tree_directory(path, cx);
     }
 
     fn collapse_selected_directory(&mut self, cx: &mut Context<Self>) {
@@ -906,7 +908,7 @@ impl RemoteConnectionManagerView {
             return;
         };
 
-        if self.save_on_open {
+        if self.save_on_open && !self.is_saved_workspace(&path) {
             self.save_connection(&path);
         }
 
@@ -924,6 +926,13 @@ impl RemoteConnectionManagerView {
         cx.emit(DismissEvent);
     }
 
+    fn is_saved_workspace(&self, path: &Path) -> bool {
+        self.suggestions.iter().any(|suggestion| {
+            suggestion.source == RemoteSuggestionSource::Saved
+                && suggestion.target_path.as_deref() == Some(path)
+        })
+    }
+
     fn save_connection(&mut self, path: &Path) {
         let mut store = RemoteConnectionStore::load_default().unwrap_or_default();
         let name = generated_connection_name(self.protocol, &self.server_input, path);
@@ -939,6 +948,17 @@ impl RemoteConnectionManagerView {
     fn cancel(&mut self, cx: &mut Context<Self>) {
         self.invalidate_connection_attempt();
         cx.emit(DismissEvent);
+    }
+
+    fn back_to_hosts(&mut self, cx: &mut Context<Self>) {
+        self.pending_selected_path = self
+            .browse_session
+            .as_ref()
+            .map(|session| session.selected_path.clone());
+        self.invalidate_connection_attempt();
+        self.browse_session = None;
+        self.status = None;
+        cx.notify();
     }
 
     fn move_selection(&mut self, delta: isize, cx: &mut Context<Self>) {
@@ -961,23 +981,26 @@ impl RemoteConnectionManagerView {
         } else {
             let len = self.filtered_suggestions().len();
             self.suggestion_selection = moved_index(self.suggestion_selection, len, delta);
+            self.accepted_suggestion = false;
         }
         cx.notify();
     }
 
     fn accept_or_connect(&mut self, cx: &mut Context<Self>) {
         if self.browse_session.is_some() {
-            self.toggle_selected_directory(cx);
+            self.open_selected_workspace(cx);
             return;
         }
 
         let suggestions = self.filtered_suggestions();
+        if suggestions.is_empty() && self.server_input.trim().is_empty() {
+            return;
+        }
         if let Some(suggestion) = suggestions.get(self.suggestion_selection).cloned()
             && suggestion.source != RemoteSuggestionSource::Manual
             && !self.accepted_suggestion
         {
             self.apply_suggestion(suggestion, cx);
-            return;
         }
 
         self.connect(cx);
@@ -1013,8 +1036,10 @@ impl RemoteConnectionManagerView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.set_protocol(self.protocol.toggled(), cx);
-        cx.stop_propagation();
+        if self.browse_session.is_none() {
+            self.set_protocol(self.protocol.toggled(), cx);
+            cx.stop_propagation();
+        }
     }
 
     fn select_previous_action(
@@ -1104,26 +1129,55 @@ impl RemoteConnectionManagerView {
             .child(self.server_input_view.clone())
     }
 
-    fn render_suggestions(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let list_border = cx.theme().tokens.picker_tokens().border;
+    fn render_suggestions(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let tokens = &cx.theme().tokens;
+        let secondary_text = tokens.chrome.text_chrome_secondary;
+        let text_color = tokens.chrome.text_on_chrome;
+        let border = tokens.picker_tokens().border;
         let suggestions = self.filtered_suggestions();
-        let rows = suggestions
-            .into_iter()
-            .enumerate()
-            .map(|(index, suggestion)| {
-                let selected = index == self.suggestion_selection;
-                self.render_suggestion_row(index, suggestion, selected, cx)
-                    .into_any_element()
-            })
-            .collect::<Vec<_>>();
+        if suggestions.is_empty() {
+            return div()
+                .py_2()
+                .text_color(secondary_text)
+                .child(match self.protocol {
+                    RemoteConnectionProtocol::Ssh => {
+                        "No saved connections yet. Enter a host above to get started."
+                    }
+                    RemoteConnectionProtocol::Wsl => {
+                        "No WSL distributions found. Enter a distribution name above."
+                    }
+                })
+                .into_any_element();
+        }
+        let mut groups: Vec<(&str, Vec<gpui::AnyElement>)> = Vec::new();
+        for (index, suggestion) in suggestions.into_iter().enumerate() {
+            let group = match suggestion.source {
+                RemoteSuggestionSource::Saved => "Saved connections",
+                RemoteSuggestionSource::Recent => "Recent connections",
+                RemoteSuggestionSource::Manual => "Typed target",
+                _ => match self.protocol {
+                    RemoteConnectionProtocol::Ssh => "SSH hosts",
+                    RemoteConnectionProtocol::Wsl => "WSL distributions",
+                },
+            };
+            if groups.last().is_none_or(|(label, _)| *label != group) {
+                groups.push((group, Vec::new()));
+            }
+            groups.last_mut().unwrap().1.push(
+                self.render_suggestion_row(
+                    index,
+                    suggestion,
+                    index == self.suggestion_selection,
+                    cx,
+                )
+                .into_any_element(),
+            );
+        }
 
         div()
             .relative()
             .flex_1()
             .min_h(px(0.0))
-            .border_1()
-            .border_color(list_border)
-            .rounded_md()
             .overflow_hidden()
             .child(
                 div()
@@ -1132,7 +1186,35 @@ impl RemoteConnectionManagerView {
                     .min_h(px(0.0))
                     .overflow_y_scroll()
                     .track_scroll(&self.suggestions_scroll_handle)
-                    .child(div().flex().flex_col().children(rows)),
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_4()
+                            .children(groups.into_iter().map(|(label, rows)| {
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap_2()
+                                    .child(
+                                        div()
+                                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                                            .text_color(text_color)
+                                            .child(label),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_col()
+                                            .p_1()
+                                            .rounded_md()
+                                            .border_1()
+                                            .border_color(border)
+                                            .overflow_hidden()
+                                            .children(rows),
+                                    )
+                            })),
+                    ),
             )
             .when_some(
                 Scrollbar::vertical(self.suggestions_scrollbar_state.clone()),
@@ -1148,6 +1230,7 @@ impl RemoteConnectionManagerView {
                     )
                 },
             )
+            .into_any_element()
     }
 
     fn render_suggestion_row(
@@ -1177,12 +1260,14 @@ impl RemoteConnectionManagerView {
             picker_tokens.item_text_secondary
         };
         let text_sm = tokens.sizes.text_sm;
+        let icon_size = tokens.sizes.space_7;
+        let source = suggestion.source;
         let suggestion_for_click = suggestion.clone();
         let click_listener = cx.listener(move |this, _event, _window, cx| {
             this.apply_suggestion(suggestion_for_click.clone(), cx);
         });
 
-        ListItem::new(("remote-suggestion", index))
+        let item = ListItem::new(("remote-suggestion", index))
             .variant(ListItemVariant::Ghost)
             .spacing(ListItemSpacing::Default)
             .focusable(false)
@@ -1194,28 +1279,46 @@ impl RemoteConnectionManagerView {
                 hover_background
             })
             .with_listener(move |item| {
-                item.cursor_pointer()
+                item.rounded_md()
+                    .cursor_pointer()
                     .on_mouse_down(MouseButton::Left, click_listener)
             })
+            .start_slot(
+                svg()
+                    .path("icons/monitor.svg")
+                    .size(icon_size)
+                    .text_color(secondary_text),
+            )
             .child(
                 div()
                     .flex()
                     .flex_col()
                     .min_w(px(0.0))
-                    .child(div().child(suggestion.display_text.clone()))
+                    .child(
+                        div()
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .child(suggestion.display_text.clone()),
+                    )
                     .child(
                         div()
                             .text_size(text_sm)
                             .text_color(secondary_text)
                             .child(suggestion.description.clone()),
                     ),
-            )
-            .end_slot(
+            );
+        if matches!(
+            source,
+            RemoteSuggestionSource::SshConfig | RemoteSuggestionSource::KnownHost
+        ) {
+            item.end_slot(
                 div()
                     .text_size(text_sm)
                     .text_color(secondary_text)
-                    .child(suggestion.source.label()),
+                    .child(source.label()),
             )
+        } else {
+            item
+        }
     }
 
     fn render_browse_session(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
@@ -1234,6 +1337,7 @@ impl RemoteConnectionManagerView {
             return div().into_any_element();
         };
         let rows = visible_remote_directory_rows(&session.root);
+        let row_count = rows.len();
 
         div()
             .flex()
@@ -1244,9 +1348,20 @@ impl RemoteConnectionManagerView {
             .gap_3()
             .child(
                 div()
+                    .flex()
+                    .flex_col()
                     .flex_shrink_0()
-                    .text_color(chrome_secondary_text)
-                    .child("Directories"),
+                    .gap_1()
+                    .child(
+                        div()
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .child(format!("Connected to {}", self.server_input)),
+                    )
+                    .child(
+                        div()
+                            .text_color(chrome_secondary_text)
+                            .child(short_display_path(&session.root.path)),
+                    ),
             )
             .child(
                 div()
@@ -1263,6 +1378,7 @@ impl RemoteConnectionManagerView {
                             .id("remote-directory-scroll")
                             .size_full()
                             .min_h(px(0.0))
+                            .p_1()
                             .overflow_y_scroll()
                             .track_scroll(&self.directory_scroll_handle)
                             .child(
@@ -1272,7 +1388,15 @@ impl RemoteConnectionManagerView {
                                         .map(|(index, row)| {
                                             let selected = session.selected_tree_path.as_ref()
                                                 == Some(&row.path);
-                                            self.render_directory_row(index, row, selected, cx)
+                                            div()
+                                                .when(index + 1 < row_count, |this| {
+                                                    this.border_b_1().border_color(list_border)
+                                                })
+                                                .child(
+                                                    self.render_directory_row(
+                                                        index, row, selected, cx,
+                                                    ),
+                                                )
                                                 .into_any_element()
                                         })
                                         .collect::<Vec<_>>(),
@@ -1307,7 +1431,11 @@ impl RemoteConnectionManagerView {
                     .flex()
                     .flex_col()
                     .gap_1()
-                    .child("Workspace root")
+                    .child(
+                        div()
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .child("Folder to open"),
+                    )
                     .child(
                         div()
                             .px_3()
@@ -1342,9 +1470,9 @@ impl RemoteConnectionManagerView {
         let chevron_color = if selected {
             tokens.chrome.text_on_chrome
         } else if row.loading {
-            tokens.chrome.text_chrome_secondary
-        } else {
             tokens.chrome.text_chrome_disabled
+        } else {
+            tokens.chrome.text_chrome_secondary
         };
         let text_color = if selected {
             tokens.chrome.text_on_chrome
@@ -1376,7 +1504,8 @@ impl RemoteConnectionManagerView {
                 hover_background
             })
             .with_listener(move |item| {
-                item.cursor_pointer()
+                item.rounded_md()
+                    .cursor_pointer()
                     .on_mouse_down(MouseButton::Left, click_listener)
             })
             .start_slot(
@@ -1387,15 +1516,15 @@ impl RemoteConnectionManagerView {
                     .child(div().w(px(depth as f32 * 16.0)).flex_shrink_0())
                     .child(
                         div()
-                            .w(px(14.0))
-                            .h(px(14.0))
+                            .w(px(16.0))
+                            .h(px(16.0))
                             .flex_shrink_0()
                             .flex()
                             .items_center()
                             .justify_center()
                             .child(
                                 chevron_icon(if expanded { "down" } else { "right" })
-                                    .size(px(14.0))
+                                    .size(px(16.0))
                                     .text_color(chevron_color),
                             ),
                     )
@@ -1436,9 +1565,9 @@ impl RemoteConnectionManagerView {
         icon: &'static str,
         cx: &mut Context<Self>,
         listener: F,
-    ) -> impl IntoElement
+    ) -> Button
     where
-        F: Fn(&mut Self, &mut Context<Self>) + 'static,
+        F: Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
     {
         let manager = cx.entity().clone();
         Button::new(label, label)
@@ -1446,9 +1575,9 @@ impl RemoteConnectionManagerView {
             .size(ButtonSize::Medium)
             .icon(icon)
             .activate_on_mouse_down()
-            .on_click(move |_event, _window, cx| {
+            .on_click(move |_event, window, cx| {
                 manager.update(cx, |this, cx| {
-                    listener(this, cx);
+                    listener(this, window, cx);
                 });
             })
     }
@@ -1479,8 +1608,12 @@ impl RemoteConnectionManagerView {
 }
 
 impl Focusable for RemoteConnectionManagerView {
-    fn focus_handle(&self, _cx: &App) -> FocusHandle {
-        self.focus_handle.clone()
+    fn focus_handle(&self, cx: &App) -> FocusHandle {
+        if self.browse_session.is_some() {
+            self.focus_handle.clone()
+        } else {
+            self.server_input_view.read(cx).focus_handle(cx)
+        }
     }
 }
 
@@ -1500,7 +1633,7 @@ impl Render for RemoteConnectionManagerView {
             chrome_text,
             chrome_secondary_text,
             text_md,
-            text_lg,
+            text_xl,
             text_sm,
             shadow,
         ) = {
@@ -1512,7 +1645,7 @@ impl Render for RemoteConnectionManagerView {
                 tokens.chrome.text_on_chrome,
                 tokens.chrome.text_chrome_secondary,
                 tokens.sizes.text_md,
-                tokens.sizes.text_lg,
+                tokens.sizes.text_xl,
                 tokens.sizes.text_sm,
                 vec![tokens.chrome.shadow_lg.to_box_shadow(false)],
             )
@@ -1529,9 +1662,34 @@ impl Render for RemoteConnectionManagerView {
             fallbacks: None,
         };
 
-        if !self.focus_handle.is_focused(window) {
-            self.focus_handle.focus(window, cx);
+        let browsing = self.browse_session.is_some();
+        let input_focused = self
+            .server_input_view
+            .read(cx)
+            .focus_handle(cx)
+            .is_focused(window);
+        if !self.protocol_menu_open
+            && (!self.focus_handle.contains_focused(window, cx)
+                || (browsing && input_focused)
+                || (!browsing && self.focus_handle.is_focused(window)))
+        {
+            self.focus_handle(cx).focus(window, cx);
         }
+        let connecting = self.connection_attempt.active;
+        let suggestions = self.filtered_suggestions();
+        let can_connect = !self.server_input.trim().is_empty() || !suggestions.is_empty();
+        let saved = self
+            .browse_session
+            .as_ref()
+            .is_some_and(|session| self.is_saved_workspace(&session.selected_path));
+        let dialog_height = if browsing {
+            560.0
+        } else {
+            (380.0
+                + suggestions.len() as f32 * 70.0
+                + if self.status.is_some() { 80.0 } else { 0.0 })
+            .min(600.0)
+        };
 
         div()
             .key_context(REMOTE_CONNECTION_MANAGER_CONTEXT)
@@ -1547,10 +1705,10 @@ impl Render for RemoteConnectionManagerView {
             .flex()
             .flex_col()
             .gap_4()
-            .w(px(720.0))
-            .h(px(620.0))
-            .max_h(px(620.0))
-            .p_4()
+            .w(px(640.0))
+            .h(px(dialog_height))
+            .max_h(px(600.0))
+            .p_5()
             .rounded_md()
             .border_1()
             .border_color(picker_border)
@@ -1561,37 +1719,33 @@ impl Render for RemoteConnectionManagerView {
             .text_size(text_md)
             .shadow(shadow)
             .child(
-                div().flex().flex_shrink_0().items_center().child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .child(
-                            div()
-                                .text_size(text_lg)
-                                .font_weight(gpui::FontWeight::SEMIBOLD)
-                                .child("Remote Connection"),
-                        )
-                        .child(
-                            div()
-                                .text_size(text_sm)
-                                .text_color(chrome_secondary_text)
-                                .child("Choose a host or distro, then browse for a workspace root"),
-                        ),
-                ),
-            )
-            .child(
                 div()
                     .flex()
                     .flex_shrink_0()
                     .items_center()
-                    .gap_2()
-                    .child(self.render_protocol_dropdown(window, cx))
-                    .child(self.render_input_field())
+                    .justify_between()
                     .child(
-                        self.render_text_button("Connect", "icons/link.svg", cx, |this, cx| {
-                            this.connect(cx);
-                        }),
+                        div()
+                            .text_size(text_xl)
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .child("Open remote workspace"),
+                    )
+                    .child(
+                        Button::icon_only("remote-close", "icons/close.svg")
+                            .aria_label("Close remote workspace dialog")
+                            .activate_on_mouse_down()
+                            .on_click({
+                                let manager = cx.entity().clone();
+                                move |_event, _window, cx| {
+                                    manager.update(cx, |this, cx| this.cancel(cx));
+                                }
+                            }),
                     ),
+            )
+            .child(
+                Stepper::new("remote-connection-steps")
+                    .selected_index(usize::from(browsing))
+                    .items(["Choose host", "Choose folder"]),
             )
             .child(
                 div()
@@ -1599,35 +1753,64 @@ impl Render for RemoteConnectionManagerView {
                     .flex_col()
                     .flex_1()
                     .min_h(px(0.0))
-                    .overflow_hidden()
-                    .when(self.browse_session.is_none(), |this| {
+                    .when(!browsing, |this| {
                         this.child(
                             div()
                                 .flex()
                                 .flex_col()
                                 .flex_1()
                                 .min_h(px(0.0))
-                                .overflow_hidden()
-                                .gap_2()
+                                .gap_3()
+                                .child(
+                                    div()
+                                        .flex_shrink_0()
+                                        .text_color(chrome_secondary_text)
+                                        .child(match self.protocol {
+                                            RemoteConnectionProtocol::Ssh => "Connect to a remote machine via SSH.",
+                                            RemoteConnectionProtocol::Wsl => "Open a workspace in a local WSL distribution.",
+                                        }),
+                                )
+                                .child(
+                                    div()
+                                        .font_weight(gpui::FontWeight::MEDIUM)
+                                        .child(match self.protocol {
+                                            RemoteConnectionProtocol::Ssh => "Host",
+                                            RemoteConnectionProtocol::Wsl => "Distribution",
+                                        }),
+                                )
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_shrink_0()
+                                        .items_center()
+                                        .gap_2()
+                                        .when(cfg!(windows), |this| this.child(self.render_protocol_dropdown(window, cx)))
+                                        .child(self.render_input_field()),
+                                )
                                 .child(
                                     div()
                                         .flex_shrink_0()
                                         .text_size(text_sm)
                                         .text_color(chrome_secondary_text)
                                         .child(match self.protocol {
-                                            RemoteConnectionProtocol::Ssh => "Matching SSH targets",
-                                            RemoteConnectionProtocol::Wsl => {
-                                                "Matching WSL distributions"
-                                            }
+                                            RemoteConnectionProtocol::Ssh => "Enter user@host:port, an SSH config alias, or choose a connection below.",
+                                            RemoteConnectionProtocol::Wsl => "Enter a distribution name, or choose a connection below.",
                                         }),
                                 )
                                 .child(self.render_suggestions(cx)),
                         )
                     })
-                    .when(self.browse_session.is_some(), |this| {
+                    .when(browsing, |this| {
                         this.child(self.render_browse_session(cx))
                     }),
             )
+            .when(browsing, |this| {
+                this.child(
+                    div().flex_shrink_0().when(saved, |this| {
+                        this.text_color(chrome_secondary_text).child("Saved connection")
+                    }).when(!saved, |this| this.child(self.render_save_connection_checkbox(cx))),
+                )
+            })
             .when(self.status.is_some(), |this| {
                 this.child(div().flex_shrink_0().child(self.render_status(cx)))
             })
@@ -1637,28 +1820,42 @@ impl Render for RemoteConnectionManagerView {
                     .flex_shrink_0()
                     .items_center()
                     .justify_between()
-                    .child(self.render_save_connection_checkbox(cx))
+                    .child(
+                        div().when(browsing, |this| {
+                            this.child(self.render_text_button("Back", "icons/arrow-left.svg", cx, |this, window, cx| {
+                                this.back_to_hosts(cx);
+                                this.server_input_view.read(cx).focus_handle(cx).focus(window, cx);
+                            }))
+                        }).when(!browsing, |this| {
+                            this.child(self.render_text_button("Cancel", "icons/circle-x.svg", cx, |this, _window, cx| {
+                                this.cancel(cx);
+                            }))
+                        }),
+                    )
                     .child(
                         div()
                             .flex()
                             .items_center()
                             .gap_2()
-                            .child(self.render_text_button(
-                                "Cancel",
-                                "icons/circle-x.svg",
-                                cx,
-                                |this, cx| {
-                                    this.cancel(cx);
-                                },
-                            ))
-                            .child(self.render_text_button(
-                                "Open",
-                                "icons/folder-open.svg",
-                                cx,
-                                |this, cx| {
-                                    this.open_selected_workspace(cx);
-                                },
-                            )),
+                            .when(browsing, |this| {
+                                this.child(self.render_text_button(
+                                    "Cancel",
+                                    "icons/circle-x.svg",
+                                    cx,
+                                    |this, _window, cx| this.cancel(cx),
+                                ))
+                            })
+                            .child(
+                                self.render_text_button(
+                                    if browsing { "Open folder" } else if connecting { "Connecting…" } else { "Connect" },
+                                    if browsing { "icons/folder-open.svg" } else { "icons/link.svg" },
+                                    cx,
+                                    |this, _window, cx| this.accept_or_connect(cx),
+                                )
+                                .variant(ButtonVariant::Primary)
+                                .disabled(!browsing && (!can_connect || connecting))
+                                .loading(connecting),
+                            ),
                     ),
             )
     }
@@ -2288,7 +2485,13 @@ fn remote_display_parent(path: &Path) -> Option<PathBuf> {
 }
 
 fn short_display_path(path: &Path) -> String {
-    path.to_string_lossy().into_owned()
+    match classify_workspace_location(path) {
+        nucleotide_workspace::WorkspaceLocation::Ssh { path, .. } => path.display().to_string(),
+        nucleotide_workspace::WorkspaceLocation::Wsl { linux_path, .. } => {
+            linux_path.display().to_string()
+        }
+        nucleotide_workspace::WorkspaceLocation::Local { .. } => path.display().to_string(),
+    }
 }
 
 fn moved_index(current: usize, len: usize, delta: isize) -> usize {

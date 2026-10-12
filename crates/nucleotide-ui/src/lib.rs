@@ -41,6 +41,7 @@ pub mod prompt_view;
 pub mod scrollbar;
 pub mod split;
 pub mod state_view;
+pub mod stepper;
 pub mod style_utils;
 pub mod styling;
 pub mod terminal_keys;
@@ -126,6 +127,7 @@ pub use split::{
     two_pane_split,
 };
 pub use state_view::{StateView, StateViewTone};
+pub use stepper::Stepper;
 pub use styling::{
     BoxShadow, ColorTheory, ComputedStyle, ContextualColors, ContrastRatios, StyleContext,
     StyleSize, StyleState, StyleVariant, TimingFunction, Transition, TransitionProperty,
