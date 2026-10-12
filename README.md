@@ -87,13 +87,19 @@ This will set up automatic `cargo fmt` checks before each commit.
 ## Configuration
 
 Nucleotide uses Helix's platform config directory. It looks for
-`nucleotide.toml` there and falls back to Helix's `config.toml` for editor
-settings.
+`nucleotide.toml` there for GUI settings and loads Helix's `config.toml`
+separately for editor settings and keybindings.
 
 - Linux/macOS: commonly `~/.config/helix/nucleotide.toml`
 - Windows: `%APPDATA%\helix\nucleotide.toml`
 
-See `docs/examples/nucleotide.example.toml` for a sample GUI configuration.
+Copy the [complete annotated example](docs/examples/nucleotide.example.toml)
+to that location for all supported GUI parameters, descriptions, accepted
+values and defaults. Optional overrides remain commented out to preserve
+platform defaults. Settings that are parsed but not yet wired to runtime
+behaviour are labelled in the example. Save the file, then choose
+**Settings > Reload Configuration** (under **Nucleotide** on macOS/Linux or
+**File** on Windows), or restart Nucleotide.
 
 ## License
 
