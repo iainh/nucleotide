@@ -125,7 +125,7 @@ impl ProjectTreeContextMenuIntent {
             Self::Duplicate => "Duplicate",
             Self::CopyPath => "Copy Path",
             Self::CopyRelativePath => "Copy Relative Path",
-            Self::RevealInOs => "Reveal in OS",
+            Self::RevealInOs => crate::utils::reveal_in_file_manager_label(false),
         }
     }
 }
@@ -1174,7 +1174,13 @@ mod tests {
                 "Duplicate",
                 "Copy Path",
                 "Copy Relative Path",
-                "Reveal in OS"
+                if cfg!(target_os = "macos") {
+                    "Reveal in Finder"
+                } else if cfg!(target_os = "windows") {
+                    "Reveal in File Explorer"
+                } else {
+                    "Reveal in File Manager"
+                }
             ]
         );
     }
