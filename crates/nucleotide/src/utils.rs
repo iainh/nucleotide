@@ -10,6 +10,16 @@ pub use nucleotide_core::utils::setup_macos_dock_environment;
 pub use nucleotide_core::utils::{detect_bundle_runtime, manifest_dir_for_runtime};
 pub use nucleotide_ui::theme_utils::color_to_hsla;
 
+pub(crate) fn reveal_in_file_manager_label(is_remote: bool) -> &'static str {
+    if cfg!(target_os = "macos") && !is_remote {
+        "Reveal in Finder"
+    } else if cfg!(target_os = "windows") && !is_remote {
+        "Reveal in File Explorer"
+    } else {
+        "Reveal in File Manager"
+    }
+}
+
 /// Load the Helix tutor document
 pub fn load_tutor(editor: &mut helix_view::editor::Editor) -> Result<(), anyhow::Error> {
     use helix_core::{Position, Selection, pos_at_coords};

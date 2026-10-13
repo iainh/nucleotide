@@ -83,6 +83,7 @@ use crate::types::{
 };
 use crate::updates::{UpdateController, UpdateControllerEvent, UpdateDialog};
 use crate::utils;
+use crate::utils::reveal_in_file_manager_label;
 use crate::{Core, Input, InputEvent};
 use nucleotide_env::EnvironmentOrigin;
 use nucleotide_events::run::{ResolvedTask, RunId, RunStatus};
@@ -1667,16 +1668,6 @@ fn should_unpreview_changed_document(is_preview: bool, is_modified: bool) -> boo
 
 fn should_unpreview_retained_tab_after_close_others(is_preview: bool) -> bool {
     is_preview
-}
-
-fn reveal_in_file_manager_label(is_remote: bool) -> &'static str {
-    if cfg!(target_os = "macos") && !is_remote {
-        "Reveal in Finder"
-    } else if cfg!(target_os = "windows") && !is_remote {
-        "Reveal in File Explorer"
-    } else {
-        "Reveal in File Manager"
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -19422,6 +19413,10 @@ mod tests {
             );
         }
         assert_eq!(reveal_in_file_manager_label(true), "Reveal in File Manager");
+        assert_eq!(
+            ProjectTreeContextMenuIntent::RevealInOs.label(),
+            TabContextMenuIntent::RevealInOs.label(false, false)
+        );
     }
 
     #[test]
