@@ -93,15 +93,17 @@ While using traditional cargo for the actual build process.
 
 **Platform-agnostic:**
 - Rust stable toolchain (via rust-overlay)
-- Zig 0.16.0 (via nixpkgs, required by the pinned Ghostty source)
+- Zig 0.16.0 (official binaries via zig-overlay, required by the pinned Ghostty source)
 - cargo-zigbuild
 - OpenSSL, pkg-config, git, curl, sqlite
 
-Ghostty uses Zig 0.16.0. The Nix `cargo-zigbuild` wrapper separately pins Zig
-0.15.2 for Linux musl remote helpers: their `zstd` dependency fails to link with
-0.16.0 in both debug and production helper builds. Use `nix develop -c
-build-remote-helpers` to select the helper compiler without changing the
-compiler used for the integrated terminal.
+Ghostty uses the official Zig 0.16.0 binaries because nixpkgs' source-built
+compiler produces unresolved ELF section symbols in its compiler runtime.
+The Nix `cargo-zigbuild` wrapper separately retains Zig 0.15.2 for Linux musl
+remote helpers: their `zstd` dependency also fails to link with nixpkgs' 0.16.0
+in both debug and production helper builds. Use
+`nix develop -c build-remote-helpers` to select the helper compiler without
+changing the compiler used for the integrated terminal.
 
 **macOS-specific:**
 - Apple frameworks (Foundation, AppKit, Metal, etc.)

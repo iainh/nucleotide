@@ -137,5 +137,6 @@ The Nix development shell includes the required Linux musl Rust targets, Zig,
 and `cargo-zigbuild`.
 
 Use `nix develop -c build-remote-helpers` to select Zig 0.15.2 for helper
-cross-builds. The integrated terminal uses Zig 0.16.0, but the helpers' `zstd`
-dependency currently fails to link with that compiler.
+cross-builds. The integrated terminal uses the official Zig 0.16.0 binaries;
+the helpers retain 0.15.2 after their `zstd` dependency failed to link with
+nixpkgs' source-built 0.16.0.

@@ -9,6 +9,11 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
+    zig-overlay = {
+      url = "github:mitchellh/zig-overlay/f0acd78ef01f2d5e3471cc01b08022ab4e665898";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+
     flake-utils.url = "github:numtide/flake-utils";
 
     crane.url = "github:ipetkov/crane";
@@ -32,6 +37,7 @@
       self,
       nixpkgs,
       rust-overlay,
+      zig-overlay,
       flake-utils,
       helix,
       crane,
@@ -69,12 +75,11 @@
 
         # Dependency management following Helix patterns
         inherit (pkgs) lib stdenv;
-        # The pinned Ghostty source requires Zig 0.16.0. Use nixpkgs'
-        # patched package so Zig can locate Nix-provided libc headers.
-        zig_0_16_0 =
-          assert pkgs.zig_0_16.version == "0.16.0";
-          pkgs.zig_0_16;
-        # Zig 0.16 fails to link zstd in Linux musl remote-helper builds.
+        # Use the official compiler: nixpkgs' source-built 0.16 produces
+        # unresolved ELF section symbols in Ghostty's compiler runtime.
+        # zig-overlay retains the Nix dynamic-linker detection patch.
+        zig_0_16_0 = zig-overlay.packages.${system}."0.16.0";
+        # nixpkgs' Zig 0.16 also fails to link zstd in Linux musl helpers.
         # Keep their cross-compiler separate from Ghostty's native compiler.
         remoteHelperZig =
           assert pkgs.zig_0_15.version == "0.15.2";
