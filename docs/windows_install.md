@@ -73,6 +73,28 @@ for updates. The packaging script rejects any generated `Setup.exe` or MSI.
 build Windows tree-sitter grammar DLLs there, copies Nucleotide themes, and
 removes grammar source checkouts before bundling.
 
+### Windows ARM64 builds
+
+The native ARM64 Windows Zig 0.16.0 compiler crashes during compilation
+([upstream issue](https://codeberg.org/ziglang/zig/issues/31865)). Use the
+installer below to download checksum-verified x64 Zig, correct a missing
+ARM64 alignment cast in its Windows debug support and add it to the current
+session's `PATH`. Use the x64 Rust host toolchain under Windows emulation:
+
+```powershell
+.\scripts\install-windows-arm64-zig.ps1 -Destination target\build-tools\zig-x64
+rustup toolchain install 1.96.0-x86_64-pc-windows-msvc --force-non-host --profile minimal --target aarch64-pc-windows-msvc
+cargo +1.96.0-x86_64-pc-windows-msvc check --workspace --all-targets --locked --target aarch64-pc-windows-msvc
+cargo +1.96.0-x86_64-pc-windows-msvc build --release -p nucleotide --bins --locked --target aarch64-pc-windows-msvc
+```
+
+Install the MSVC ARM64 build tools and Windows SDK for linking. Both host
+toolchains must be x64: with native ARM64 Rust, the Ghostty build script omits
+the Zig target argument, so x64 Zig would build an x64 library instead. The
+explicit Cargo target above produces ARM64 binaries in
+`target\aarch64-pc-windows-msvc\release`. CI uses the same workaround for its
+Windows ARM64 workspace check. Published Windows bundles still target x64.
+
 ## Configuration
 
 Nucleotide uses Helix's Windows config directory:
