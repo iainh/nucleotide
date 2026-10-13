@@ -32,7 +32,15 @@ pub(crate) fn init(cx: &mut App) {
         KeyBinding::new("ctrl-n", SelectNext, Some(PICKER_CONTEXT)),
         KeyBinding::new("enter", ConfirmSelection, Some(PICKER_CONTEXT)),
         KeyBinding::new("escape", DismissPicker, Some(PICKER_CONTEXT)),
-        KeyBinding::new("cmd-p", TogglePreview, Some(PICKER_CONTEXT)),
+        KeyBinding::new(
+            if cfg!(target_os = "macos") {
+                "cmd-p"
+            } else {
+                "ctrl-shift-p"
+            },
+            TogglePreview,
+            Some(PICKER_CONTEXT),
+        ),
         KeyBinding::new("home", SelectFirst, Some(PICKER_CONTEXT)),
         KeyBinding::new("end", SelectLast, Some(PICKER_CONTEXT)),
     ]);
@@ -2571,5 +2579,59 @@ mod tests {
             assert!(picker.show_preview);
             assert!(picker.cached_dimensions.is_none());
         });
+    }
+
+    #[gpui::test]
+    fn preview_shortcut_preserves_ctrl_p_navigation(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            init(cx);
+            crate::text_input::init(cx);
+            cx.set_global(crate::Theme::from_tokens(crate::DesignTokens::dark()));
+            cx.set_global(nucleotide_types::UiFontConfig {
+                family: "Test UI Font".into(),
+                size: 13.0,
+                weight: nucleotide_types::FontWeight::Normal,
+            });
+            let font = nucleotide_types::Font {
+                family: "Test Editor Font".into(),
+                weight: nucleotide_types::FontWeight::Normal,
+                style: nucleotide_types::FontStyle::Normal,
+            };
+            cx.set_global(nucleotide_types::FontSettings {
+                fixed_font: font.clone(),
+                var_font: font,
+            });
+        });
+        let (picker, cx) = cx.add_window_view(|_, cx| {
+            PickerView::new(cx).with_preview(false).with_items(vec![
+                diagnostic_item("src/main.rs", helix_core::diagnostic::Severity::Error),
+                diagnostic_item("src/lib.rs", helix_core::diagnostic::Severity::Warning),
+            ])
+        });
+        cx.update(|window, cx| {
+            picker.update(cx, |picker, cx| {
+                picker
+                    .query_input
+                    .read(cx)
+                    .focus_handle(cx)
+                    .focus(window, cx);
+            });
+        });
+        cx.simulate_keystrokes("ctrl-n");
+        assert_eq!(picker.read_with(cx, |picker, _| picker.selected_index), 1);
+        cx.simulate_keystrokes("ctrl-p");
+        assert_eq!(picker.read_with(cx, |picker, _| picker.selected_index), 0);
+        assert!(!picker.read_with(cx, |picker, _| picker.show_preview));
+
+        let preview = if cfg!(target_os = "macos") {
+            "cmd-p"
+        } else {
+            "ctrl-shift-p"
+        };
+        cx.simulate_keystrokes(preview);
+        assert!(picker.read_with(cx, |picker, _| picker.show_preview));
+        assert_eq!(picker.read_with(cx, |picker, _| picker.selected_index), 0);
+        cx.simulate_keystrokes(preview);
+        assert!(!picker.read_with(cx, |picker, _| picker.show_preview));
     }
 }

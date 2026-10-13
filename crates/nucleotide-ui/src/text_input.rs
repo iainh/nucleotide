@@ -44,6 +44,8 @@ pub(crate) fn init(cx: &mut App) {
         KeyBinding::new("enter", Submit, Some(TEXT_INPUT_CONTEXT)),
         KeyBinding::new("escape", Cancel, Some(TEXT_INPUT_CONTEXT)),
     ]);
+    #[cfg(target_os = "windows")]
+    cx.bind_keys([KeyBinding::new("ctrl-y", Redo, Some(TEXT_INPUT_CONTEXT))]);
     #[cfg(target_os = "macos")]
     cx.bind_keys([
         KeyBinding::new("alt-left", MoveWordLeft, Some(TEXT_INPUT_CONTEXT)),
@@ -1438,6 +1440,28 @@ mod tests {
             assert_eq!(input.value().as_ref(), "one fresh");
             assert!(input.redo_history.is_empty());
         });
+    }
+
+    #[cfg(target_os = "windows")]
+    #[gpui::test]
+    fn windows_redo_shortcuts_restore_undone_text(cx: &mut TestAppContext) {
+        init_theme(cx);
+        let (harness, cx) = cx.add_window_view(|_, cx| TextInputHarness::new(cx));
+        let input = harness.read_with(cx, |harness, _| harness.input.clone());
+        cx.update(|window, cx| {
+            input.update(cx, |input, cx| {
+                input.replace_text_in_range(None, "one", window, cx);
+                input.replace_text_in_range(None, " two", window, cx);
+                input.focus_handle(cx).focus(window, cx);
+            });
+        });
+
+        for redo in ["ctrl-y", "ctrl-shift-z"] {
+            cx.simulate_keystrokes("ctrl-z");
+            assert_eq!(input.read_with(cx, |input, _| input.value()), "one");
+            cx.simulate_keystrokes(redo);
+            assert_eq!(input.read_with(cx, |input, _| input.value()), "one two");
+        }
     }
 
     #[gpui::test]
