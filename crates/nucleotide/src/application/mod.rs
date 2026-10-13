@@ -11378,7 +11378,10 @@ mod tests {
             assert_eq!(core.editor.documents.len(), 1);
             assert_eq!(
                 core.editor.documents[&scratch].text().to_string(),
-                "scratch notes\n"
+                format!(
+                    "scratch notes{}",
+                    helix_core::line_ending::NATIVE_LINE_ENDING.as_str()
+                )
             );
             assert!(core.editor.documents[&scratch].is_modified());
             assert!(
