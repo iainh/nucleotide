@@ -106,6 +106,13 @@ $env:APPDATA\helix\nucleotide.toml
 GUI-specific settings live in `nucleotide.toml`; editor settings continue to use
 Helix's `config.toml` in the same directory.
 
+## Keyboard shortcuts
+
+Non-editor text fields support `Ctrl+Z` to undo and either `Ctrl+Y` or
+`Ctrl+Shift+Z` to redo. In pickers, `Ctrl+Shift+P` toggles the preview;
+`Ctrl+P` and `Ctrl+N` continue to select the previous and next results.
+These shortcuts do not change Helix's modal editor bindings.
+
 ## Logs
 
 Nucleotide writes daily application logs to the local application data
