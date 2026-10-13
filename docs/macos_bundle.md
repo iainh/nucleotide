@@ -14,7 +14,7 @@ Run the script from the repository root:
 ```
 
 When `target/release/nucl` is missing, `bundle-mac.sh` runs a default release
-build. Install Zig 0.15.2 first, or run the script from `nix develop`, so the
+build. Install Zig 0.16.0 first, or run the script from `nix develop`, so the
 Ghostty-backed terminal dependency can build.
 
 The script creates `Nucleotide.app`.
@@ -135,3 +135,7 @@ Build the Linux helper artifacts before bundling:
 
 The Nix development shell includes the required Linux musl Rust targets, Zig,
 and `cargo-zigbuild`.
+
+Use `nix develop -c build-remote-helpers` to select Zig 0.15.2 for helper
+cross-builds. The integrated terminal uses Zig 0.16.0, but the helpers' `zstd`
+dependency currently fails to link with that compiler.
