@@ -16,8 +16,9 @@ build = "build.rs"
 tokio.workspace = true
 anyhow.workspace = true
 portable-pty = "0.9"
-libghostty-vt = { version = "0.2.1", default-features = false, optional = true }
-libghostty-vt-sys = { version = "0.2.1", optional = true }
+# Keep both bindings on the same revision; this pins Ghostty with Zig 0.16 support.
+libghostty-vt = { git = "https://github.com/uzaaft/libghostty-rs", rev = "d2036baeb605d31d09a9e2ba6d0c923e04c34d54", default-features = false, optional = true }
+libghostty-vt-sys = { git = "https://github.com/uzaaft/libghostty-rs", rev = "d2036baeb605d31d09a9e2ba6d0c923e04c34d54", optional = true }
 
 [features]
 default = []

@@ -103,7 +103,7 @@ jobs:
       - name: Install Zig
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
         with:
-          version: 0.15.2
+          version: 0.16.0
           use-cache: false
 
       - name: Cache Rust artifacts
@@ -208,7 +208,7 @@ jobs:
       - name: Install Zig
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
         with:
-          version: 0.15.2
+          version: 0.16.0
           use-cache: false
 
       - name: Cache Rust artifacts
@@ -543,7 +543,7 @@ jobs:
       - name: Install Zig
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
         with:
-          version: 0.15.2
+          version: 0.16.0
           use-cache: false
 
       - name: Install .NET SDK

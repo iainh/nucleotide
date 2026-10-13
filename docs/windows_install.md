@@ -32,7 +32,7 @@ tasks when the app starts.
 
 ## Build Locally
 
-Install Rust stable, Zig 0.15.2, the .NET 8 SDK, and the Velopack CLI, then
+Install Rust stable, Zig 0.16.0, the .NET 8 SDK, and the Velopack CLI, then
 prepare the runtime resources that the package will embed:
 
 ```powershell
