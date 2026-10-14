@@ -12,3 +12,15 @@ and all buffers open. Unsaved scratch contents do not require confirmation
 because scratch buffers are preserved.
 
 Opening an individual file does not close existing buffers.
+
+## Dragging files into the window
+
+Drag one or more files from your file manager into the Nucleotide window to
+open them. This works on Windows, macOS and Linux (Wayland). Existing buffers
+stay open, and the last dropped file becomes active with editor focus. Dropping
+an already open file selects its existing buffer instead of creating a duplicate.
+
+Files open only when you release the drag inside the window. Cancelling the drag
+doesn't open anything. Directories and paths that no longer exist are ignored;
+use **Open Directory** to switch projects. Local file drops are not supported in
+remote workspaces, where Nucleotide shows a warning instead.
