@@ -9701,6 +9701,19 @@ impl Workspace {
         );
     }
 
+    /// Open the active local Helix config, including a custom --config path.
+    pub fn open_helix_settings_file(&mut self, cx: &mut Context<Self>) {
+        self.finish_open_file_internal(
+            &helix_loader::config_file(),
+            true,
+            false,
+            None,
+            None,
+            settings_file_open_backend(),
+            cx,
+        );
+    }
+
     fn apply_workspace_config(&mut self, config: &crate::config::Config, cx: &mut Context<Self>) {
         let preview_tabs_enabled = config.gui.preview_tabs.enabled;
         let file_tree_config = file_tree_config_from_gui(&config.gui);
@@ -15046,6 +15059,12 @@ impl Render for Workspace {
         workspace_div = workspace_div.on_action(cx.listener(
             move |workspace, _: &crate::actions::editor::OpenSettings, _window, cx| {
                 workspace.open_settings_file(cx)
+            },
+        ));
+
+        workspace_div = workspace_div.on_action(cx.listener(
+            move |workspace, _: &crate::actions::editor::OpenHelixSettings, _window, cx| {
+                workspace.open_helix_settings_file(cx)
             },
         ));
 

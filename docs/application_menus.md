@@ -25,9 +25,11 @@ in-window Linux and Windows menu bars.
 The developer-only Debug menu appears in builds with debug assertions, not in
 normal release builds.
 
-Settings opens the local `nucleotide.toml`, including from remote workspaces.
-Reload Configuration applies changes without restarting. It is not a graphical
-settings editor.
+Settings offers separate entries to open the local `nucleotide.toml` and Helix
+`config.toml`, including from remote workspaces. The Helix entry opens the file
+selected by `--config` when supplied. If it doesn't exist, it opens a new buffer
+that you can save to create the file. Reload Configuration applies changes
+without restarting. It is not a graphical settings editor.
 
 Menu activation restores the focus that existed before the menu opened. Shared
 clipboard and Select All actions can therefore operate on focused text inputs;
