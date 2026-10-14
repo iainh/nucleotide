@@ -113,6 +113,12 @@ Non-editor text fields support `Ctrl+Z` to undo and either `Ctrl+Y` or
 `Ctrl+P` and `Ctrl+N` continue to select the previous and next results.
 These shortcuts do not change Helix's modal editor bindings.
 
+## Clipboard
+
+Path-copy commands in the file tree and tab menus, and the LSP log-directory
+button, use the native clipboard. Non-ASCII paths are preserved without relying
+on command-line clipboard tools or their code-page settings.
+
 ## Logs
 
 Nucleotide writes daily application logs to the local application data

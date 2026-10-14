@@ -11318,6 +11318,52 @@ mod tests {
     }
 
     #[gpui::test]
+    fn tab_copy_actions_preserve_unicode_paths(cx: &mut gpui::TestAppContext) {
+        use crate::workspace::TabContextMenuIntent;
+        use gpui::{Modifiers, MouseButton};
+
+        let _runtime = TEST_RUNTIME.enter();
+        let root = tempdir().unwrap();
+        let file_name = "\u{e9}cole \u{6771}\u{4eac}.txt";
+        let path = root.path().join(file_name);
+        fs::write(&path, "clipboard fixture\n").unwrap();
+        let (core, _workspace, cx) = new_test_workspace(cx, &path);
+        let (pane, doc) = core.update(cx, |core, cx| {
+            let mut config = (**core.helix_config_arc.load()).clone();
+            config.editor.bufferline = helix_view::editor::BufferLine::Always;
+            core.helix_config_arc.store(Arc::new(config));
+            let view = core.editor.tree.get(core.editor.tree.focus);
+            let result = (view.id, view.doc);
+            cx.emit(crate::Update::Redraw);
+            result
+        });
+        let tab = Box::leak(format!("pane-tab-{pane:?}-{doc}").into_boxed_str());
+
+        for (intent, expected) in [
+            (TabContextMenuIntent::CopyPath, path.display().to_string()),
+            (
+                TabContextMenuIntent::CopyRelativePath,
+                file_name.to_string(),
+            ),
+        ] {
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string("unchanged".into()));
+            cx.update(|window, cx| {
+                window.draw(cx).clear();
+            });
+            let position = cx.debug_bounds(tab).unwrap().center();
+            cx.simulate_mouse_down(position, MouseButton::Right, Modifiers::none());
+            cx.simulate_mouse_up(position, MouseButton::Right, Modifiers::none());
+            cx.run_until_parked();
+            cx.dispatch_action(crate::actions::tab_menus::ContextOperation { intent });
+            cx.run_until_parked();
+            assert_eq!(
+                cx.read_from_clipboard().and_then(|item| item.text()),
+                Some(expected)
+            );
+        }
+    }
+
+    #[gpui::test]
     fn command_prompt_action_accepts_and_executes_native_commands(cx: &mut gpui::TestAppContext) {
         let _runtime = TEST_RUNTIME.enter();
         let root = tempdir().unwrap();
