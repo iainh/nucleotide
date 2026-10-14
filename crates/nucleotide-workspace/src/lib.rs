@@ -3791,7 +3791,7 @@ fn local_run_process(spec: ProcessSpec) -> Result<ProcessOutput> {
         spec.env.clone()
     };
 
-    let mut command = Command::new(&spec.program);
+    let mut command = nucleotide_process::command(&spec.program);
     command
         .args(&spec.args)
         .current_dir(&cwd)
@@ -4000,7 +4000,7 @@ fn join_io_thread<T>(
 }
 
 fn local_git_head(root: &Path) -> Result<GitHeadResult> {
-    let output = Command::new("git")
+    let output = nucleotide_process::command("git")
         .args(["rev-parse", "--verify", "HEAD"])
         .current_dir(root)
         .output()
@@ -4023,7 +4023,7 @@ fn local_git_head(root: &Path) -> Result<GitHeadResult> {
         .map(str::trim)
         .filter(|head| !head.is_empty())
         .map(ToOwned::to_owned);
-    let display_ref = Command::new("git")
+    let display_ref = nucleotide_process::command("git")
         .args(["symbolic-ref", "--quiet", "--short", "HEAD"])
         .current_dir(root)
         .output()
@@ -4041,7 +4041,7 @@ fn local_git_head(root: &Path) -> Result<GitHeadResult> {
 }
 
 fn local_git_status(root: &Path, options: GitStatusOptions) -> Result<GitStatusResult> {
-    let mut command = Command::new("git");
+    let mut command = nucleotide_process::command("git");
     command
         .args(["status", "--porcelain=v1", "-z"])
         .current_dir(root);
@@ -4368,6 +4368,111 @@ mod tests {
             )
         );
         assert_eq!(output.stderr, Vec::<u8>::new());
+        assert!(!output.stdout_truncated);
+        assert!(!output.stderr_truncated);
+        assert!(!output.timed_out);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_process_probe() {
+        let Ok(value) = std::env::var("NUCLEOTIDE_WORKSPACE_PROCESS_PROBE") else {
+            return;
+        };
+        let mut input = String::new();
+        std::io::stdin().read_to_string(&mut input).unwrap();
+        // SAFETY: GetConsoleWindow takes no arguments and returns a borrowed HWND.
+        let has_console =
+            !unsafe { windows_sys::Win32::System::Console::GetConsoleWindow() }.is_null();
+        println!("console={has_console}");
+        println!("env={value}");
+        println!("stdin={input}");
+        println!(
+            "cwd={}",
+            std::env::current_dir()
+                .unwrap()
+                .canonicalize()
+                .unwrap()
+                .display()
+        );
+        eprintln!("probe stderr");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn local_backend_run_process_has_no_console_and_preserves_io() {
+        use std::os::windows::process::CommandExt;
+
+        // Give the isolated test process a console so a raw spawn cannot pass
+        // simply because the test runner itself has no console to inherit.
+        if std::env::var_os("NUCLEOTIDE_WORKSPACE_CONSOLE_TEST").is_none() {
+            let output = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "tests::local_backend_run_process_has_no_console_and_preserves_io",
+                    "--nocapture",
+                ])
+                .env("NUCLEOTIDE_WORKSPACE_CONSOLE_TEST", "1")
+                .creation_flags(windows_sys::Win32::System::Threading::CREATE_NEW_CONSOLE)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+
+        // SAFETY: GetConsoleWindow takes no arguments and returns a borrowed HWND.
+        assert!(
+            !unsafe { windows_sys::Win32::System::Console::GetConsoleWindow() }.is_null(),
+            "the isolated test process must have a console to inherit"
+        );
+        let temp = tempfile::tempdir().unwrap();
+        let output = block_on(
+            LocalWorkspaceBackend.run_process(ProcessSpec {
+                program: std::env::current_exe()
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .to_string(),
+                args: vec![
+                    "--exact".to_string(),
+                    "tests::windows_process_probe".to_string(),
+                    "--nocapture".to_string(),
+                    "--quiet".to_string(),
+                ],
+                cwd: temp.path().to_path_buf(),
+                env: BTreeMap::from([(
+                    "NUCLEOTIDE_WORKSPACE_PROCESS_PROBE".to_string(),
+                    "environment value".to_string(),
+                )]),
+                clear_env: false,
+                inherit_project_environment: false,
+                stdin: b"input value".to_vec(),
+                max_output_bytes: None,
+                timeout_ms: Some(10_000),
+            }),
+        )
+        .unwrap();
+
+        assert!(output.success, "{:?}", output);
+        assert_eq!(output.status_code, Some(0));
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        for expected in [
+            "console=false".to_string(),
+            "env=environment value".to_string(),
+            "stdin=input value".to_string(),
+            format!("cwd={}", temp.path().canonicalize().unwrap().display()),
+        ] {
+            assert!(stdout.lines().any(|line| line == expected), "{stdout}");
+        }
+        assert_eq!(
+            String::from_utf8(output.stderr).unwrap().trim(),
+            "probe stderr"
+        );
         assert!(!output.stdout_truncated);
         assert!(!output.stderr_truncated);
         assert!(!output.timed_out);

@@ -5855,6 +5855,7 @@ dependencies = [
  "futures",
  "ignore",
  "libc",
+ "nucleotide-process",
  "regex",
  "sha2 0.10.9",
  "tempfile",

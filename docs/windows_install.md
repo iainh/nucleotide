@@ -119,6 +119,12 @@ Path-copy commands in the file tree and tab menus, and the LSP log-directory
 button, use the native clipboard. Non-ASCII paths are preserved without relying
 on command-line clipboard tools or their code-page settings.
 
+## Background tools
+
+Local workspace commands and Git queries run without attaching a console
+window. Commands launched intentionally in the terminal panel still use that
+terminal.
+
 ## Logs
 
 Nucleotide writes daily application logs to the local application data
