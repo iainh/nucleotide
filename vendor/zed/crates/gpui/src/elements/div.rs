@@ -525,6 +525,23 @@ impl Interactivity {
     pub fn on_drop<T: 'static>(&mut self, listener: impl Fn(&T, &mut Window, &mut App) + 'static) {
         self.drop_listeners.push((
             TypeId::of::<T>(),
+            DispatchPhase::Bubble,
+            Box::new(move |dragged_value, window, cx| {
+                listener(dragged_value.downcast_ref().unwrap(), window, cx);
+            }),
+        ));
+    }
+
+    /// Bind a typed drop callback during capture, before descendant drop handlers.
+    /// Unlike [`Self::on_drop`], this uses containment rather than hover hit testing,
+    /// so descendants that occlude pointer events do not block the drop.
+    pub fn capture_drop<T: 'static>(
+        &mut self,
+        listener: impl Fn(&T, &mut Window, &mut App) + 'static,
+    ) {
+        self.drop_listeners.push((
+            TypeId::of::<T>(),
+            DispatchPhase::Capture,
             Box::new(move |dragged_value, window, cx| {
                 listener(dragged_value.downcast_ref().unwrap(), window, cx);
             }),
@@ -1110,6 +1127,16 @@ pub trait InteractiveElement: Sized {
         listener: impl Fn(&T, &mut Window, &mut App) + 'static,
     ) -> Self {
         self.interactivity().on_drop(listener);
+        self
+    }
+
+    /// Bind a typed drop callback during capture, including over occluding descendants.
+    /// The fluent API equivalent to [`Interactivity::capture_drop`].
+    fn capture_drop<T: 'static>(
+        mut self,
+        listener: impl Fn(&T, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.interactivity().capture_drop(listener);
         self
     }
 
@@ -1913,7 +1940,7 @@ pub struct Interactivity {
     pub(crate) key_up_listeners: Vec<KeyUpListener>,
     pub(crate) modifiers_changed_listeners: Vec<ModifiersChangedListener>,
     pub(crate) action_listeners: Vec<(TypeId, ActionListener)>,
-    pub(crate) drop_listeners: Vec<(TypeId, DropListener)>,
+    pub(crate) drop_listeners: Vec<(TypeId, DispatchPhase, DropListener)>,
     pub(crate) can_drop_predicate: Option<CanDropPredicate>,
     pub(crate) click_listeners: Vec<ClickListener>,
     pub(crate) aux_click_listeners: Vec<ClickListener>,
@@ -2606,14 +2633,16 @@ impl Interactivity {
         if !drop_listeners.is_empty() {
             let hitbox = hitbox.clone();
             window.on_mouse_event({
-                move |_: &MouseUpEvent, phase, window, cx| {
-                    if let Some(drag) = &cx.active_drag
-                        && phase == DispatchPhase::Bubble
-                        && hitbox.is_hovered(window)
-                    {
+                move |event: &MouseUpEvent, phase, window, cx| {
+                    if let Some(drag) = &cx.active_drag {
                         let drag_state_type = drag.value.as_ref().type_id();
-                        for (drop_state_type, listener) in &drop_listeners {
-                            if *drop_state_type == drag_state_type {
+                        let inside = match phase {
+                            DispatchPhase::Capture => hitbox.bounds.contains(&event.position),
+                            DispatchPhase::Bubble => hitbox.is_hovered(window),
+                        };
+                        for (drop_state_type, drop_phase, listener) in &drop_listeners {
+                            if *drop_state_type == drag_state_type && *drop_phase == phase && inside
+                            {
                                 let drag = cx
                                     .active_drag
                                     .take()

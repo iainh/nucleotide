@@ -11318,6 +11318,108 @@ mod tests {
     }
 
     #[gpui::test]
+    fn external_file_drop_opens_files_only_on_submit(cx: &mut gpui::TestAppContext) {
+        use gpui::{ExternalPaths, FileDropEvent};
+
+        let _runtime = TEST_RUNTIME.enter();
+        let root = tempdir().unwrap();
+        let original = root.path().join("original.txt");
+        let first = root.path().join("\u{e9}cole \u{6771}\u{4eac}.txt");
+        let last = root.path().join("second file.txt");
+        let missing = root.path().join("missing.txt");
+        fs::write(&original, "original\n").unwrap();
+        fs::write(&first, "first dropped document\n").unwrap();
+        fs::write(&last, "second dropped document\n").unwrap();
+        let (core, _workspace, cx) = new_test_workspace(cx, &original);
+        let position = cx.update(|window, cx| {
+            window.draw(cx).clear();
+            let size = window.viewport_size();
+            gpui::point(size.width / 2.0, size.height / 2.0)
+        });
+        let paths = ExternalPaths(
+            [
+                first.clone(),
+                root.path().to_path_buf(),
+                missing.clone(),
+                last.clone(),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let initial_count = core.read_with(cx, |core, _| core.editor.documents.len());
+
+        // Entering, moving, and leaving must not open files or leave a stale drag.
+        cx.simulate_event(FileDropEvent::Entered {
+            position,
+            paths: paths.clone(),
+        });
+        cx.simulate_event(FileDropEvent::Pending { position });
+        cx.simulate_event(FileDropEvent::Exited);
+        core.read_with(cx, |core, _| {
+            assert_eq!(core.editor.documents.len(), initial_count);
+            let active = core.editor.tree.get(core.editor.tree.focus).doc;
+            assert_eq!(
+                core.editor.documents[&active].path(),
+                Some(original.as_path())
+            );
+        });
+
+        // Drop over the default sidebar's occluding resize handle first, then
+        // repeat over the editor to verify existing buffers are reused.
+        for position in [gpui::point(gpui::px(240.0), position.y), position] {
+            cx.simulate_event(FileDropEvent::Entered {
+                position,
+                paths: paths.clone(),
+            });
+            cx.update(|window, cx| {
+                window.draw(cx).clear();
+            });
+            cx.simulate_event(FileDropEvent::Submit { position });
+            cx.run_until_parked();
+            core.read_with(cx, |core, _| {
+                assert_eq!(core.editor.documents.len(), initial_count + 2);
+                assert_eq!(core.project_directory.as_deref(), Some(root.path()));
+                for (path, expected) in [
+                    (&original, "original\n"),
+                    (&first, "first dropped document\n"),
+                    (&last, "second dropped document\n"),
+                ] {
+                    let doc = core
+                        .editor
+                        .documents
+                        .values()
+                        .find(|doc| doc.path() == Some(path))
+                        .unwrap();
+                    assert_eq!(doc.text().to_string(), expected);
+                }
+                let active = core.editor.tree.get(core.editor.tree.focus).doc;
+                assert_eq!(core.editor.documents[&active].path(), Some(last.as_path()));
+            });
+        }
+
+        // A local OS path must never be sent to the remote workspace backend.
+        let local_only = root.path().join("local only.txt");
+        fs::write(&local_only, "local contents\n").unwrap();
+        core.update(cx, |core, _| {
+            core.set_workspace_backend(Arc::new(RemoteIdentityLocalBackend));
+        });
+        cx.simulate_event(FileDropEvent::Entered {
+            position,
+            paths: ExternalPaths([local_only].into_iter().collect()),
+        });
+        cx.update(|window, cx| {
+            window.draw(cx).clear();
+        });
+        cx.simulate_event(FileDropEvent::Submit { position });
+        cx.run_until_parked();
+        core.read_with(cx, |core, _| {
+            assert_eq!(core.editor.documents.len(), initial_count + 2);
+            let active = core.editor.tree.get(core.editor.tree.focus).doc;
+            assert_eq!(core.editor.documents[&active].path(), Some(last.as_path()));
+        });
+    }
+
+    #[gpui::test]
     fn tab_copy_actions_preserve_unicode_paths(cx: &mut gpui::TestAppContext) {
         use crate::workspace::TabContextMenuIntent;
         use gpui::{Modifiers, MouseButton};

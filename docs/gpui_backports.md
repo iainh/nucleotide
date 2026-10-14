@@ -40,6 +40,10 @@ The application still builds with Rust 1.96.0.
 - The shader build script already resolves sources from `CARGO_MANIFEST_DIR`.
 - Application caption handlers remain necessary. The reverted native-titlebar
   experiment is not reinstated without Windows runtime testing.
+- `InteractiveElement::capture_drop` adds typed capture-phase drops using bounds
+  containment, so occluding descendants such as resize handles cannot block a
+  window-wide external file drop. Existing `on_drop` handlers retain their
+  bubble-phase hover checks and `can_drop` predicates.
 
 ## Deferred migration
 

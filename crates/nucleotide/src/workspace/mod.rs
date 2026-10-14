@@ -14822,7 +14822,32 @@ impl Render for Workspace {
             .h_full()
             .relative() // Anchor for absolute-positioned resize hitboxes
             .when(!native_sidebar_enabled, |root| root.bg(bg_color))
-            .focusable();
+            .focusable()
+            .capture_drop(
+                cx.listener(|workspace, paths: &gpui::ExternalPaths, window, cx| {
+                    // OS drops contain local paths, never paths on a remote host.
+                    if !matches!(
+                        workspace.core.read(cx).workspace_backend.identity(),
+                        WorkspaceIdentity::Local
+                    ) {
+                        workspace.set_run_status(
+                            "Local file drops are not supported in remote workspaces",
+                            Severity::Warning,
+                            cx,
+                        );
+                        return;
+                    }
+                    let mut opened = false;
+                    for path in paths.paths().iter().filter(|path| path.is_file()) {
+                        workspace.handle_open_file(path, cx);
+                        opened = true;
+                    }
+                    if opened {
+                        workspace.focus_editor(window, cx);
+                    }
+                    cx.stop_propagation();
+                }),
+            );
 
         // Always add global key handling - the workspace should always capture key events
         // regardless of focus state or overlay presence for global shortcuts to work
