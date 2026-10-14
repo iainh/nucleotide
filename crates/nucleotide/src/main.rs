@@ -875,9 +875,9 @@ use nucleotide::actions::{
     editor::{
         CancelRemoteConnection, CloseFile, DecreaseFontSize, ExpandSelection, Find, FindInProject,
         FindNext, FindPrevious, IncreaseFontSize, MergeSelections, NextDiagnostic, OpenDirectory,
-        OpenFile, OpenRemote, OpenSettings, PreviousDiagnostic, Quit, ReconnectRemote,
-        ReloadConfiguration, ResetFontSize, RevertCurrentChange, Save, SelectNextOccurrence,
-        SelectPreviousOccurrence, ShrinkSelection, SplitSelectionOnNewline,
+        OpenFile, OpenHelixSettings, OpenRemote, OpenSettings, PreviousDiagnostic, Quit,
+        ReconnectRemote, ReloadConfiguration, ResetFontSize, RevertCurrentChange, Save,
+        SelectNextOccurrence, SelectPreviousOccurrence, ShrinkSelection, SplitSelectionOnNewline,
     },
     help::{About, Documentation, OpenTutorial},
     window::{Minimize, Zoom},
@@ -1038,6 +1038,7 @@ fn app_menus() -> Vec<Menu> {
 fn settings_menu() -> MenuItem {
     MenuItem::submenu(Menu::new("Settings").items([
         MenuItem::action("Open Nucleotide Settings File…", OpenSettings),
+        MenuItem::action("Open Helix Settings File…", OpenHelixSettings),
         MenuItem::action("Reload Configuration", ReloadConfiguration),
     ]))
 }
@@ -1948,9 +1949,21 @@ mod tests {
                     }
             })
             .unwrap();
-        assert!(settings_owner.items.iter().any(
-            |item| matches!(item, MenuItem::Submenu(menu) if menu.name.as_ref() == "Settings")
-        ));
+        let settings = settings_owner
+            .items
+            .iter()
+            .find_map(|item| match item {
+                MenuItem::Submenu(menu) if menu.name.as_ref() == "Settings" => Some(menu),
+                _ => None,
+            })
+            .unwrap();
+        for expected in [
+            Box::new(OpenSettings) as Box<dyn gpui::Action>,
+            Box::new(OpenHelixSettings),
+            Box::new(ReloadConfiguration),
+        ] {
+            assert!(settings.items.iter().any(|item| matches!(item, MenuItem::Action { action, .. } if action.partial_eq(expected.as_ref()))), "missing {} in Settings", expected.name());
+        }
         assert_eq!(
             menus.iter().any(|menu| menu.name.as_ref() == "Debug"),
             cfg!(debug_assertions)
