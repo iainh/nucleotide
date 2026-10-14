@@ -98,6 +98,7 @@ pub mod editor {
             ReconnectRemote,
             CancelRemoteConnection,
             OpenSettings,
+            OpenHelixSettings,
             ReloadConfiguration,
             Save,
             SaveAs,
