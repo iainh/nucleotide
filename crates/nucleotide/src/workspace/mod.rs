@@ -5143,9 +5143,7 @@ impl Workspace {
     fn tab_cm_action_copy_path(&mut self, tab_id: TabId, cx: &mut Context<Self>) {
         if let Some(path) = self.tab_document_path(tab_id, cx) {
             let text = path.display().to_string();
-            if !Self::copy_to_clipboard_impl(&text) {
-                nucleotide_logging::warn!(path=%text, "Failed to copy tab path to clipboard");
-            }
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
             let event = nucleotide_events::workspace::Event::FileOpRequested {
                 intent: nucleotide_events::workspace::FileOpIntent::CopyPath {
                     path,
@@ -5159,12 +5157,7 @@ impl Workspace {
     fn tab_cm_action_copy_relative_path(&mut self, tab_id: TabId, cx: &mut Context<Self>) {
         if let Some(path) = self.tab_document_path(tab_id, cx) {
             let text = self.relative_tab_path_text(&path);
-            if !Self::copy_to_clipboard_impl(&text) {
-                nucleotide_logging::warn!(
-                    path=%text,
-                    "Failed to copy tab relative path to clipboard"
-                );
-            }
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
             let event = nucleotide_events::workspace::Event::FileOpRequested {
                 intent: nucleotide_events::workspace::FileOpIntent::CopyPath {
                     path,
@@ -6825,9 +6818,7 @@ impl Workspace {
             }
             ProjectTreeContextMenuIntent::CopyPath => {
                 let text = path.display().to_string();
-                if !Self::copy_to_clipboard_impl(&text) {
-                    nucleotide_logging::warn!(path=%text, "Failed to copy path to clipboard");
-                }
+                cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
                 let event = nucleotide_events::workspace::Event::FileOpRequested {
                     intent: nucleotide_events::workspace::FileOpIntent::CopyPath {
                         path,
@@ -6845,9 +6836,7 @@ impl Workspace {
                 } else {
                     path.display().to_string()
                 };
-                if !Self::copy_to_clipboard_impl(&text) {
-                    nucleotide_logging::warn!(path=%text, "Failed to copy relative path to clipboard");
-                }
+                cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
                 let event = nucleotide_events::workspace::Event::FileOpRequested {
                     intent: nucleotide_events::workspace::FileOpIntent::CopyPath {
                         path,
@@ -6865,82 +6854,6 @@ impl Workspace {
                 };
                 self.core.read(cx).dispatch_workspace_event(event);
             }
-        }
-    }
-
-    /// Best-effort clipboard copy using platform tools
-    fn copy_to_clipboard_impl(text: &str) -> bool {
-        #[cfg(target_os = "macos")]
-        {
-            use std::io::Write;
-            let mut child = match std::process::Command::new("pbcopy")
-                .stdin(std::process::Stdio::piped())
-                .spawn()
-            {
-                Ok(c) => c,
-                Err(_) => return false,
-            };
-            if let Some(stdin) = &mut child.stdin
-                && stdin.write_all(text.as_bytes()).is_err()
-            {
-                return false;
-            }
-            let _ = child.wait();
-            return true;
-        }
-        #[cfg(target_os = "windows")]
-        {
-            use std::io::Write;
-            let mut child = match nucleotide_process::command("cmd")
-                .args(["/C", "clip"])
-                .stdin(std::process::Stdio::piped())
-                .spawn()
-            {
-                Ok(c) => c,
-                Err(_) => return false,
-            };
-            if let Some(stdin) = &mut child.stdin {
-                if stdin.write_all(text.as_bytes()).is_err() {
-                    return false;
-                }
-            }
-            let _ = child.wait();
-            return true;
-        }
-        #[cfg(target_os = "linux")]
-        {
-            use std::io::Write;
-            // Try wl-copy (Wayland)
-            if let Ok(mut child) = std::process::Command::new("wl-copy")
-                .stdin(std::process::Stdio::piped())
-                .spawn()
-            {
-                if let Some(stdin) = &mut child.stdin {
-                    if stdin.write_all(text.as_bytes()).is_ok() {
-                        let _ = child.wait();
-                        return true;
-                    }
-                }
-            }
-            // Fallback to xclip
-            if let Ok(mut child) = std::process::Command::new("xclip")
-                .args(["-selection", "clipboard"])
-                .stdin(std::process::Stdio::piped())
-                .spawn()
-            {
-                if let Some(stdin) = &mut child.stdin {
-                    if stdin.write_all(text.as_bytes()).is_ok() {
-                        let _ = child.wait();
-                        return true;
-                    }
-                }
-            }
-            return false;
-        }
-        #[allow(unreachable_code)]
-        {
-            // Other platforms: not implemented
-            false
         }
     }
 
@@ -16438,15 +16351,16 @@ impl Render for Workspace {
                     .focus_handle(self.statusbar_lsp_logs_focus.clone())
                     .disabled(!logs_enabled)
                     .on_click(cx.listener(move |this, _event, _window, cx| {
-                        if Self::copy_to_clipboard_impl(&log_path_for_click) {
-                            this.push_editor_status_notification(
-                                EditorStatus {
-                                    status: "Copied LSP traffic log directory".to_string(),
-                                    severity: Severity::Info,
-                                },
-                                cx,
-                            );
-                        }
+                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+                            log_path_for_click.clone(),
+                        ));
+                        this.push_editor_status_notification(
+                            EditorStatus {
+                                status: "Copied LSP traffic log directory".to_string(),
+                                severity: Severity::Info,
+                            },
+                            cx,
+                        );
                     }));
 
                 let footer = div()
