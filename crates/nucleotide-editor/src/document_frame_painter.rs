@@ -4,8 +4,8 @@
 use std::time::Duration;
 
 use gpui::{
-    App, Bounds, CursorStyle, Hsla, Pixels, SharedString, TextStyle, TransformationMatrix, Window,
-    WindowTextSystem,
+    App, Bounds, ContentMask, CursorStyle, Hsla, Pixels, SharedString, TextStyle,
+    TransformationMatrix, Window, WindowTextSystem,
 };
 use helix_core::{Rope, RopeSlice, visual_offset_from_block};
 use helix_view::{
@@ -465,9 +465,6 @@ struct UnwrappedDocumentFramePaintParams<'a> {
     pub default_bg: Hsla,
     pub is_focused: bool,
     pub element_focused: bool,
-    pub diagnostic_theme: &'a Theme,
-    pub diagnostic_icon_colors: DiagnosticSeverityIconColors,
-    pub gutter_bg: Option<Hsla>,
     pub scroll_line_offset: Pixels,
 }
 
@@ -482,9 +479,6 @@ struct SoftWrapDocumentFramePaintParams<'a> {
     pub fg_color: Hsla,
     pub default_bg: Hsla,
     pub is_focused: bool,
-    pub diagnostic_theme: &'a Theme,
-    pub diagnostic_icon_colors: DiagnosticSeverityIconColors,
-    pub gutter_bg: Option<Hsla>,
     pub scroll_line_offset: Pixels,
 }
 
@@ -601,15 +595,7 @@ pub fn native_editor_frame_paint_plan(
         cursorline_enabled: params.cursorline_enabled,
         is_focused: params.is_focused,
     });
-    frame.gutter_line_plans = native_editor_frame_gutter_line_plans(
-        &params,
-        &frame,
-        params
-            .frame_state
-            .viewport_update
-            .view_position_plan
-            .view_position,
-    );
+    frame.gutter_line_plans = native_editor_frame_gutter_line_plans(&params, &frame);
     if params.editor.config().cursorcolumn && params.is_focused {
         frame.cursorcolumn_paint_plans = native_editor_frame_cursorcolumn_paint_plans(
             &params,
@@ -788,7 +774,6 @@ fn native_editor_frame_cursorcolumn_paint_plans(
 fn native_editor_frame_gutter_line_plans(
     params: &NativeEditorFramePlanParams<'_>,
     frame: &EditorDocumentFrame,
-    view_position: helix_view::view::ViewPosition,
 ) -> Vec<GutterLinePlan> {
     if let Some(soft_wrap_plan) = frame.soft_wrap_render_plan.as_ref() {
         return build_soft_wrap_gutter_line_plans(SoftWrapGutterLinePlanParams {
@@ -811,7 +796,6 @@ fn native_editor_frame_gutter_line_plans(
             layout: params.layout,
             bounds: params.bounds,
             scroll_line_offset: params.frame_state.scroll_line_offset,
-            horizontal_offset: view_position.horizontal_offset,
             visible_lines: &unwrapped_plan.visible_lines,
             editor: params.editor,
             document: params.document,
@@ -937,15 +921,45 @@ pub fn paint_document_frame(
 ) -> Option<CursorOverlayPlan> {
     paint_document_cursorlines(window, &params);
     paint_visible_rulers(window, &params.frame.frameline_paint_plans);
-    paint_visible_rulers(window, &params.frame.cursorcolumn_paint_plans);
-    paint_visible_rulers(window, &params.frame.ruler_paint_plans);
+    let text_mask = ContentMask {
+        bounds: EditorSurfaceGeometry::new(
+            params.bounds,
+            params.frame.gutter_width,
+            params.layout.cell_width,
+        )
+        .text_bounds(),
+    };
+    window.with_content_mask(Some(text_mask), |window| {
+        paint_visible_rulers(window, &params.frame.cursorcolumn_paint_plans);
+        paint_visible_rulers(window, &params.frame.ruler_paint_plans);
+    });
     crate::selection_painter::paint_document_selection_backgrounds(window, &params);
 
-    if params.frame.soft_wrap_render_plan.is_some() {
-        return paint_soft_wrap_document_frame(
+    let cursor_overlay = window.with_content_mask(Some(text_mask), |window| {
+        if params.frame.soft_wrap_render_plan.is_some() {
+            return paint_soft_wrap_document_frame(
+                window,
+                cx,
+                SoftWrapDocumentFramePaintParams {
+                    frame: params.frame,
+                    text: params.text,
+                    bounds: params.bounds,
+                    layout: params.layout,
+                    text_style: params.text_style,
+                    line_cache: params.line_cache,
+                    font_size: params.font_size,
+                    fg_color: params.fg_color,
+                    default_bg: params.default_bg,
+                    is_focused: params.is_focused,
+                    scroll_line_offset: params.scroll_line_offset,
+                },
+            );
+        }
+
+        paint_unwrapped_document_frame(
             window,
             cx,
-            SoftWrapDocumentFramePaintParams {
+            UnwrappedDocumentFramePaintParams {
                 frame: params.frame,
                 text: params.text,
                 bounds: params.bounds,
@@ -956,35 +970,28 @@ pub fn paint_document_frame(
                 fg_color: params.fg_color,
                 default_bg: params.default_bg,
                 is_focused: params.is_focused,
-                diagnostic_theme: params.diagnostic_theme,
-                diagnostic_icon_colors: params.diagnostic_icon_colors,
-                gutter_bg: params.gutter_bg,
+                element_focused: params.element_focused,
                 scroll_line_offset: params.scroll_line_offset,
             },
-        );
-    }
+        )
+    });
 
-    paint_unwrapped_document_frame(
+    paint_frame_gutter(
         window,
         cx,
-        UnwrappedDocumentFramePaintParams {
+        DocumentFrameGutterPaintParams {
             frame: params.frame,
-            text: params.text,
             bounds: params.bounds,
             layout: params.layout,
             text_style: params.text_style,
-            line_cache: params.line_cache,
             font_size: params.font_size,
-            fg_color: params.fg_color,
-            default_bg: params.default_bg,
-            is_focused: params.is_focused,
-            element_focused: params.element_focused,
             diagnostic_theme: params.diagnostic_theme,
             diagnostic_icon_colors: params.diagnostic_icon_colors,
             gutter_bg: params.gutter_bg,
             scroll_line_offset: params.scroll_line_offset,
         },
-    )
+    );
+    cursor_overlay
 }
 
 fn paint_document_cursorlines(window: &mut Window, params: &DocumentFramePaintParams<'_>) {
@@ -1139,21 +1146,6 @@ fn paint_soft_wrap_document_frame(
         }
     }
 
-    paint_frame_gutter(
-        window,
-        cx,
-        DocumentFrameGutterPaintParams {
-            frame,
-            bounds: params.bounds,
-            layout: params.layout,
-            text_style: params.text_style,
-            font_size: params.font_size,
-            diagnostic_theme: params.diagnostic_theme,
-            diagnostic_icon_colors: params.diagnostic_icon_colors,
-            gutter_bg: params.gutter_bg,
-            scroll_line_offset: params.scroll_line_offset,
-        },
-    );
     paint_fallback_diagnostic_plan(
         window,
         cx,
@@ -1252,21 +1244,6 @@ fn paint_unwrapped_document_frame(
     }
 
     let cursor_overlay = paint_unwrapped_cursor(window, cx, &params);
-    paint_frame_gutter(
-        window,
-        cx,
-        DocumentFrameGutterPaintParams {
-            frame,
-            bounds: params.bounds,
-            layout: params.layout,
-            text_style: params.text_style,
-            font_size: params.font_size,
-            diagnostic_theme: params.diagnostic_theme,
-            diagnostic_icon_colors: params.diagnostic_icon_colors,
-            gutter_bg: params.gutter_bg,
-            scroll_line_offset: params.scroll_line_offset,
-        },
-    );
     paint_fallback_diagnostic_plan(
         window,
         cx,
@@ -1310,12 +1287,7 @@ fn paint_frame_gutter(
         },
     );
 
-    let marker_origin = frame_gutter_origin(
-        params.frame,
-        params.bounds,
-        params.layout,
-        params.scroll_line_offset,
-    );
+    let marker_origin = gutter_origin(params.bounds, params.scroll_line_offset);
     paint_diagnostic_gutter_markers(
         window,
         cx,
@@ -1330,25 +1302,6 @@ fn paint_frame_gutter(
     );
 
     gutter_lines
-}
-
-fn frame_gutter_origin(
-    frame: &EditorDocumentFrame,
-    bounds: Bounds<Pixels>,
-    layout: &EditorLayout,
-    scroll_line_offset: Pixels,
-) -> gpui::Point<Pixels> {
-    let horizontal_offset = frame
-        .unwrapped_render_plan
-        .as_ref()
-        .map_or(0, |plan| plan.horizontal_offset);
-
-    gutter_origin(
-        bounds,
-        scroll_line_offset,
-        layout.cell_width,
-        horizontal_offset,
-    )
 }
 
 fn paint_soft_wrap_cursor(

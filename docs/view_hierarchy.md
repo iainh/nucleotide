@@ -100,6 +100,20 @@ The workspace reconciles tab membership after both GUI actions and Helix command
 - Syntax highlighting
 - Diagnostics display
 
+#### Native editor scrolling
+
+`EditorViewport` in `crates/nucleotide-editor/src/viewport.rs` synchronizes native
+pixel scrolling with each Helix view's document offset. Cursor reveal uses the
+pane's text width, visual columns (including tabs and wide graphemes) and Helix's
+horizontal `scrolloff` calculation. Native visual-row scrolling still owns
+vertical alignment. Soft wrapping clears the horizontal offset.
+
+Layout retains enough horizontal space for an end-of-line caret and its reveal
+margin across preparation and repainting. Only text and its decorations scroll
+horizontally: they are clipped to the text area, while line numbers and other
+gutter decorations stay fixed. Wheel and scrollbar scrolling remain independent
+of cursor reveal; the next cursor movement brings it back into view.
+
 #### **FileTreeView** (`src/file_tree/view.rs`)
 - File system navigation
 - VCS status integration
