@@ -2274,6 +2274,11 @@ impl Application {
                         );
 
                         state.register_server(*server_id, server_name, workspace_path);
+                        if let Some(server) = state.servers.get_mut(server_id) {
+                            server.is_remote = self
+                                .helix_lsp_bridge_handle()
+                                .is_some_and(|bridge| bridge.is_remote_server(*server_id));
+                        }
                         state.update_server_status(
                             *server_id,
                             nucleotide_lsp::ServerStatus::Running,
@@ -4193,6 +4198,11 @@ impl Application {
                         );
                     } else if let Some(server) = state.servers.get_mut(id) {
                         server.root_uri = active_server_roots.get(id).cloned().flatten();
+                    }
+                    if let Some(server) = state.servers.get_mut(id) {
+                        server.is_remote = self
+                            .helix_lsp_bridge_handle()
+                            .is_some_and(|bridge| bridge.is_remote_server(*id));
                     }
                     state.update_server_status(
                         *id,
