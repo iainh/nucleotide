@@ -11333,10 +11333,12 @@ mod tests {
 
         let _runtime = TEST_RUNTIME.enter();
         let root = tempdir().unwrap();
-        let original = root.path().join("original.txt");
-        let first = root.path().join("\u{e9}cole \u{6771}\u{4eac}.txt");
-        let last = root.path().join("second file.txt");
-        let missing = root.path().join("missing.txt");
+        // Windows temp paths can contain 8.3 aliases; Helix expands them.
+        let root_path = helix_stdx::path::canonicalize(root.path());
+        let original = root_path.join("original.txt");
+        let first = root_path.join("\u{e9}cole \u{6771}\u{4eac}.txt");
+        let last = root_path.join("second file.txt");
+        let missing = root_path.join("missing.txt");
         fs::write(&original, "original\n").unwrap();
         fs::write(&first, "first dropped document\n").unwrap();
         fs::write(&last, "second dropped document\n").unwrap();
@@ -11349,7 +11351,7 @@ mod tests {
         let paths = ExternalPaths(
             [
                 first.clone(),
-                root.path().to_path_buf(),
+                root_path.clone(),
                 missing.clone(),
                 last.clone(),
             ]
@@ -11388,7 +11390,7 @@ mod tests {
             cx.run_until_parked();
             core.read_with(cx, |core, _| {
                 assert_eq!(core.editor.documents.len(), initial_count + 2);
-                assert_eq!(core.project_directory.as_deref(), Some(root.path()));
+                assert_eq!(core.project_directory.as_deref(), Some(root_path.as_path()));
                 for (path, expected) in [
                     (&original, "original\n"),
                     (&first, "first dropped document\n"),
@@ -11408,7 +11410,7 @@ mod tests {
         }
 
         // A local OS path must never be sent to the remote workspace backend.
-        let local_only = root.path().join("local only.txt");
+        let local_only = root_path.join("local only.txt");
         fs::write(&local_only, "local contents\n").unwrap();
         core.update(cx, |core, _| {
             core.set_workspace_backend(Arc::new(RemoteIdentityLocalBackend));
@@ -11437,7 +11439,7 @@ mod tests {
         let _runtime = TEST_RUNTIME.enter();
         let root = tempdir().unwrap();
         let file_name = "\u{e9}cole \u{6771}\u{4eac}.txt";
-        let path = root.path().join(file_name);
+        let path = helix_stdx::path::canonicalize(root.path()).join(file_name);
         fs::write(&path, "clipboard fixture\n").unwrap();
         let (core, _workspace, cx) = new_test_workspace(cx, &path);
         let (pane, doc) = core.update(cx, |core, cx| {
