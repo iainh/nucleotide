@@ -149,8 +149,9 @@ pub struct HelixLspBridge {
     launch_proxy_provider: Option<Arc<dyn LspLaunchProxyProvider>>,
     /// Optional protocol-independent native remote session launcher.
     remote_session_provider: Arc<std::sync::RwLock<Option<Arc<dyn RemoteLspSessionProvider>>>>,
-    /// Map of (workspace_root, server_name) -> LanguageServerId to scope reuse by workspace
-    workspace_server_map: Arc<std::sync::Mutex<HashMap<(PathBuf, String), LanguageServerId>>>,
+    /// Workspace-scoped server IDs and whether their launch used a remote transport.
+    workspace_server_map:
+        Arc<std::sync::Mutex<HashMap<(PathBuf, String), (LanguageServerId, bool)>>>,
     /// Temporary proxy shims must outlive server startup because POSIX shebang
     /// scripts are reopened by /bin/sh after exec.
     launch_proxy_cleanup_registry: Arc<LaunchProxyCleanupRegistry>,
@@ -351,7 +352,7 @@ impl HelixLspBridge {
             return Ok(existing_server);
         }
 
-        let server_id = self.start_server_via_registry(
+        let (server_id, is_remote) = self.start_server_via_registry(
             editor,
             language_id,
             workspace_root,
@@ -364,12 +365,21 @@ impl HelixLspBridge {
             let mut map = self.workspace_server_map.lock().unwrap();
             map.insert(
                 (workspace_root.to_path_buf(), server_name.to_string()),
-                server_id,
+                (server_id, is_remote),
             );
         }
 
         info!(server_id = ?server_id, "Server process started; awaiting initialization");
         Ok(server_id)
+    }
+
+    /// Execution location recorded at launch, independent of the current workspace.
+    pub fn is_remote_server(&self, server_id: LanguageServerId) -> bool {
+        self.workspace_server_map
+            .lock()
+            .unwrap()
+            .values()
+            .any(|&(id, is_remote)| id == server_id && is_remote)
     }
 
     /// Stop a language server through Helix's registry
@@ -392,7 +402,7 @@ impl HelixLspBridge {
         // Remove any mapping entries referencing this server_id
         {
             let mut map = self.workspace_server_map.lock().unwrap();
-            map.retain(|_, &mut v| v != server_id);
+            map.retain(|_, &mut (id, _)| id != server_id);
         }
 
         info!("Server stopped successfully");
@@ -412,7 +422,7 @@ impl HelixLspBridge {
         let server_ids = {
             let map = self.workspace_server_map.lock().unwrap();
             map.iter()
-                .filter_map(|((root, _), server_id)| (root == workspace_root).then_some(*server_id))
+                .filter_map(|((root, _), (id, _))| (root == workspace_root).then_some(*id))
                 .collect::<Vec<_>>()
         };
 
@@ -444,7 +454,7 @@ impl HelixLspBridge {
         workspace_root: &std::path::Path,
     ) -> Option<LanguageServerId> {
         // First, consult our scoped map to ensure reuse only within the same workspace
-        if let Some(&id) = self
+        if let Some(&(id, _)) = self
             .workspace_server_map
             .lock()
             .unwrap()
@@ -493,7 +503,7 @@ impl HelixLspBridge {
         workspace_root: &std::path::Path,
         server_name: &str,
         environment: Result<Option<HashMap<String, String>>, String>,
-    ) -> Result<LanguageServerId, ProjectLspError> {
+    ) -> Result<(LanguageServerId, bool), ProjectLspError> {
         // Get the language configuration for this language
         let syntax_loader = editor.syn_loader.load();
         let language_config = syntax_loader
@@ -804,7 +814,7 @@ impl HelixLspBridge {
                     server_name = %server_name,
                     "Server started successfully via registry"
                 );
-                Ok(client.id())
+                Ok((client.id(), native_remote_execution || launch_proxy_enabled))
             }
             Some(Err(e)) => {
                 cleanup_launch_proxy_paths(std::mem::take(&mut launch_proxy_cleanup_paths));

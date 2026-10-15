@@ -3659,6 +3659,7 @@ impl Workspace {
         let unavailable = LspStatusSummary {
             server_id: None,
             server_name: "LSP:".to_string(),
+            is_remote: false,
             kind: LspStatusKind::Unavailable,
             title: "No servers".to_string(),
             message: None,
@@ -3725,6 +3726,16 @@ impl Workspace {
                     .justify_center()
                     .child(state_icon),
             );
+
+        if summary.is_remote && density != StatusBarDensity::Compact {
+            content = content.child(
+                svg()
+                    .path("icons/monitor.svg")
+                    .size(px(13.0))
+                    .text_color(status_bar_tokens.text_secondary)
+                    .flex_shrink_0(),
+            );
+        }
 
         if density != StatusBarDensity::Compact {
             let percentage = summary
@@ -16135,12 +16146,29 @@ impl Render for Workspace {
                                     .text_color(dd_tokens.item_text)
                                     .child(
                                         div()
+                                            .flex_1()
                                             .min_w_0()
-                                            .overflow_hidden()
-                                            .whitespace_nowrap()
-                                            .text_ellipsis()
-                                            .font_weight(FontWeight::MEDIUM)
-                                            .child(server.name.clone()),
+                                            .flex()
+                                            .items_center()
+                                            .gap_2()
+                                            .child(
+                                                div()
+                                                    .min_w_0()
+                                                    .overflow_hidden()
+                                                    .whitespace_nowrap()
+                                                    .text_ellipsis()
+                                                    .font_weight(FontWeight::MEDIUM)
+                                                    .child(server.name.clone()),
+                                            )
+                                            .when(server.is_remote, |name| {
+                                                name.child(
+                                                    div()
+                                                        .flex_none()
+                                                        .text_size(ui_theme.tokens.sizes.text_xs)
+                                                        .text_color(dd_tokens.item_text_secondary)
+                                                        .child("Remote"),
+                                                )
+                                            }),
                                     )
                                     .child(
                                         div()

@@ -37,6 +37,7 @@ pub enum LspStatusKind {
 pub struct LspStatusSummary {
     pub server_id: Option<LanguageServerId>,
     pub server_name: String,
+    pub is_remote: bool,
     pub kind: LspStatusKind,
     pub title: String,
     pub message: Option<String>,
@@ -46,7 +47,8 @@ pub struct LspStatusSummary {
 
 impl LspStatusSummary {
     pub fn full_text(&self) -> String {
-        let mut text = format!("{}: {}", self.server_name, self.title);
+        let location = if self.is_remote { " (Remote)" } else { "" };
+        let mut text = format!("{}{location}: {}", self.server_name, self.title);
         if let Some(percentage) = self.percentage {
             text.push_str(&format!(" ({percentage}%)"));
         }
@@ -119,6 +121,7 @@ pub struct ProjectLspSessionStatus {
 pub struct ServerInfo {
     pub id: LanguageServerId,
     pub name: String,
+    pub is_remote: bool,
     pub status: ServerStatus,
     pub root_uri: Option<String>,
     pub capabilities: Option<serde_json::Value>,
@@ -277,6 +280,7 @@ impl LspState {
             ServerInfo {
                 id,
                 name,
+                is_remote: false,
                 status: ServerStatus::Starting,
                 root_uri,
                 capabilities: None,
@@ -480,6 +484,10 @@ impl LspState {
             return LspStatusSummary {
                 server_id: Some(progress.server_id),
                 server_name,
+                is_remote: self
+                    .servers
+                    .get(&progress.server_id)
+                    .is_some_and(|server| server.is_remote),
                 kind: LspStatusKind::Working,
                 title: progress.title.clone(),
                 message: progress.message.clone(),
@@ -503,6 +511,7 @@ impl LspState {
             return LspStatusSummary {
                 server_id: Some(server.id),
                 server_name: server.name.clone(),
+                is_remote: server.is_remote,
                 kind: LspStatusKind::Failed,
                 title: "Failed".to_string(),
                 message,
@@ -517,6 +526,7 @@ impl LspState {
             return LspStatusSummary {
                 server_id: None,
                 server_name: "LSP".to_string(),
+                is_remote: false,
                 kind: LspStatusKind::Unavailable,
                 title: "No servers".to_string(),
                 message: None,
@@ -536,6 +546,7 @@ impl LspState {
         LspStatusSummary {
             server_id: Some(server.id),
             server_name: server.name.clone(),
+            is_remote: server.is_remote,
             kind,
             title: title.to_string(),
             message,
@@ -869,5 +880,44 @@ mod tests {
         assert_eq!(failed.kind, LspStatusKind::Failed);
         assert_eq!(failed.server_name, "taplo");
         assert_eq!(failed.message.as_deref(), Some("exited"));
+    }
+
+    #[test]
+    fn structured_status_tracks_the_selected_servers_execution_location() {
+        let local_id = slotmap::KeyData::from_ffi(6).into();
+        let remote_id = slotmap::KeyData::from_ffi(7).into();
+        let mut state = LspState::new();
+        for id in [local_id, remote_id] {
+            state.register_server(
+                id,
+                "rust-analyzer".to_string(),
+                Some("file:///workspace".to_string()),
+            );
+            state.update_server_status(id, ServerStatus::Running);
+        }
+        state.servers.get_mut(&remote_id).unwrap().is_remote = true;
+
+        assert!(!state.status_summary(Some(local_id)).is_remote);
+        assert_eq!(
+            state.status_summary(Some(local_id)).full_text(),
+            "rust-analyzer: Ready"
+        );
+        assert_eq!(
+            state.status_summary(Some(remote_id)).full_text(),
+            "rust-analyzer (Remote): Ready"
+        );
+
+        state.start_progress(remote_id, "index".to_string(), "Indexing".to_string());
+        let working = state.status_summary(Some(local_id));
+        assert!(working.is_remote);
+        assert_eq!(working.full_text(), "rust-analyzer (Remote): Indexing");
+        state.end_progress(remote_id, "index".to_string());
+
+        state.update_server_status(remote_id, ServerStatus::Failed("disconnected".to_string()));
+        assert!(state.status_summary(Some(local_id)).is_remote);
+        state.remove_server(remote_id);
+        assert!(!state.status_summary(Some(local_id)).is_remote);
+        state.remove_server(local_id);
+        assert!(!state.status_summary(None).is_remote);
     }
 }
