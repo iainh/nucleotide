@@ -79,7 +79,6 @@ pub struct UnwrappedGutterLinePlanParams<'a> {
     pub layout: &'a EditorLayout,
     pub bounds: Bounds<Pixels>,
     pub scroll_line_offset: Pixels,
-    pub horizontal_offset: usize,
     pub visible_lines: &'a [VisibleLinePlan],
     pub editor: &'a Editor,
     pub document: &'a Document,
@@ -156,12 +155,7 @@ pub fn build_gutter_line_plans(params: GutterLinePlanParams<'_>) -> Vec<GutterLi
 pub fn build_unwrapped_gutter_line_plans(
     params: UnwrappedGutterLinePlanParams<'_>,
 ) -> Vec<GutterLinePlan> {
-    let origin = gutter_origin(
-        params.bounds,
-        params.scroll_line_offset,
-        params.layout.cell_width,
-        params.horizontal_offset,
-    );
+    let origin = gutter_origin(params.bounds, params.scroll_line_offset);
     let positions = unwrapped_gutter_line_positions_from_plans(
         params.visible_lines,
         params.layout.line_height,
@@ -183,12 +177,7 @@ pub fn build_unwrapped_gutter_line_plans(
 pub fn build_soft_wrap_gutter_line_plans(
     params: SoftWrapGutterLinePlanParams<'_>,
 ) -> Vec<GutterLinePlan> {
-    let origin = gutter_origin(
-        params.bounds,
-        params.scroll_line_offset,
-        params.layout.cell_width,
-        0,
-    );
+    let origin = gutter_origin(params.bounds, params.scroll_line_offset);
     let positions = soft_wrap_gutter_line_positions_with_virtual_rows(
         params.visual_lines,
         params.vertical_offset,
@@ -207,14 +196,9 @@ pub fn build_soft_wrap_gutter_line_plans(
     })
 }
 
-pub(crate) fn gutter_origin(
-    bounds: Bounds<Pixels>,
-    scroll_line_offset: Pixels,
-    cell_width: Pixels,
-    horizontal_offset: usize,
-) -> Point<Pixels> {
+pub(crate) fn gutter_origin(bounds: Bounds<Pixels>, scroll_line_offset: Pixels) -> Point<Pixels> {
     let mut origin = bounds.origin;
-    origin.x += px(2.) - cell_width * horizontal_offset as f32;
+    origin.x += px(2.);
     origin.y += px(1.) - scroll_line_offset;
     origin
 }
@@ -648,15 +632,13 @@ mod tests {
     }
 
     #[test]
-    fn gutter_origin_accounts_for_scroll_and_horizontal_offset() {
+    fn gutter_origin_accounts_for_vertical_scroll() {
         let origin = gutter_origin(
             Bounds::new(point(px(100.0), px(40.0)), size(px(500.0), px(300.0))),
             px(5.0),
-            px(8.0),
-            3,
         );
 
-        assert_eq!(origin, point(px(78.0), px(36.0)));
+        assert_eq!(origin, point(px(102.0), px(36.0)));
     }
 
     #[test]

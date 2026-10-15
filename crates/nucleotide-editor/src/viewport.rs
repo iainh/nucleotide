@@ -472,6 +472,25 @@ impl EditorViewport {
         self.scroll.set_content_width(width);
     }
 
+    fn set_text_layout(
+        &mut self,
+        viewport_size: Size<Pixels>,
+        content_width: Pixels,
+        horizontal_offset: usize,
+    ) {
+        // Helix can scroll past the last glyph for scrolloff and an EOL caret.
+        // Retain that space across content preparation and surface layout, and
+        // resize the extent before the viewport so it cannot clamp the offset.
+        let minimum_width = if horizontal_offset == 0 {
+            viewport_size.width
+        } else {
+            viewport_size.width.max(self.scroll.viewport_size().width)
+                + self.cell_width.get() * horizontal_offset as f32
+        };
+        self.set_content_width(content_width.max(minimum_width));
+        self.set_viewport_size(viewport_size);
+    }
+
     pub fn content_visual_rows(&self) -> usize {
         self.scroll.total_lines()
     }
@@ -775,8 +794,14 @@ impl EditorViewport {
         view_id: ViewId,
         text_format: &TextFormat,
     ) -> bool {
-        self.sync_view_position_with_plan(document, view, view_id, text_format, true)
-            .0
+        self.sync_view_position_with_plan(
+            document,
+            view,
+            view_id,
+            text_format,
+            self.horizontal_offset_columns(text_format),
+        )
+        .0
     }
 
     fn sync_view_position_with_plan(
@@ -785,19 +810,15 @@ impl EditorViewport {
         view: &helix_view::View,
         view_id: ViewId,
         text_format: &TextFormat,
-        use_native_horizontal_offset: bool,
+        horizontal_offset: usize,
     ) -> (bool, EditorViewportViewPositionPlan) {
-        let plan = if use_native_horizontal_offset {
-            self.plan_view_position_with_horizontal_offset(
-                document,
-                view,
-                view_id,
-                text_format,
-                self.horizontal_offset_columns(text_format),
-            )
-        } else {
-            self.plan_view_position(document, view, view_id, text_format)
-        };
+        let plan = self.plan_view_position_with_horizontal_offset(
+            document,
+            view,
+            view_id,
+            text_format,
+            horizontal_offset,
+        );
         if !plan.changed {
             return (false, plan);
         }
@@ -838,12 +859,16 @@ impl EditorViewport {
         };
         self.set_cell_width(layout.cell_width);
         self.set_content_visual_rows(metrics.visual_rows);
-        self.set_viewport_size(editor_text_viewport_size_for_bounds(
-            layout.bounds,
-            gutter_columns,
-            layout.cell_width,
-        ));
-        self.set_content_width(metrics.content_columns as f32 * layout.cell_width);
+        let horizontal_offset = if metrics.soft_wrap {
+            0
+        } else {
+            document.view_offset(view.id).horizontal_offset
+        };
+        self.set_text_layout(
+            editor_text_viewport_size_for_bounds(layout.bounds, gutter_columns, layout.cell_width),
+            metrics.content_columns as f32 * layout.cell_width,
+            horizontal_offset,
+        );
 
         EditorViewportContentUpdate {
             gutter_columns,
@@ -882,7 +907,10 @@ impl EditorViewport {
             .with_warn_threshold(Duration::from_millis(8));
         self.set_line_height(layout.line_height);
         self.set_cell_width(layout.cell_width);
-        self.set_viewport_size(editor_viewport_size_for_bounds(layout.bounds));
+        self.set_viewport_size(size(
+            self.scroll.viewport_size().width,
+            editor_viewport_size_for_bounds(layout.bounds).height,
+        ));
 
         let content_layout = EditorViewportContentLayout {
             theme: layout.theme,
@@ -904,8 +932,16 @@ impl EditorViewport {
         self.set_content_visual_rows(metrics.visual_rows);
         let viewport_size =
             editor_text_viewport_size_for_bounds(layout.bounds, gutter_columns, layout.cell_width);
-        self.set_viewport_size(viewport_size);
-        self.set_content_width(metrics.content_columns as f32 * layout.cell_width);
+        let horizontal_offset = if metrics.soft_wrap {
+            0
+        } else {
+            document.view_offset(view_id).horizontal_offset
+        };
+        self.set_text_layout(
+            viewport_size,
+            metrics.content_columns as f32 * layout.cell_width,
+            horizontal_offset,
+        );
         let view_area_plan = helix_view_area_plan_for_surface(
             view.area,
             gutter_columns,
@@ -921,7 +957,7 @@ impl EditorViewport {
                 view,
                 view_id,
                 &metrics.text_format,
-                true,
+                self.horizontal_offset_columns(&metrics.text_format),
             );
             self.clear_pending_view_sync();
             if synced {
@@ -933,24 +969,36 @@ impl EditorViewport {
         };
 
         let cursor_revealed = if let Some(cursor_reveal) = layout.cursor_reveal {
+            let old_position = self.scroll_position();
             let cursor_visual_row =
                 self.document_cursor_visual_row(document, view, view_id, &metrics.text_format);
-            let scroll_update =
-                self.reveal_visual_row(cursor_visual_row, cursor_reveal, layout.scrolloff);
+            self.reveal_visual_row(cursor_visual_row, cursor_reveal, layout.scrolloff);
+            // Use Helix's grapheme/tab-aware horizontal reveal with this pane's
+            // actual dimensions, without replacing native vertical alignment.
+            let horizontal_offset = view
+                .offset_coords_to_in_view(document, layout.scrolloff)
+                .unwrap_or_else(|| document.view_offset(view_id))
+                .horizontal_offset;
+            self.set_text_layout(
+                viewport_size,
+                metrics.content_columns as f32 * layout.cell_width,
+                horizontal_offset,
+            );
+            self.sync_from_helix_horizontal_offset(horizontal_offset, &metrics.text_format);
 
             let (synced, plan) = self.sync_view_position_with_plan(
                 document,
                 view,
                 view_id,
                 &metrics.text_format,
-                false,
+                horizontal_offset,
             );
             helix_view_synced |= synced;
             if synced {
                 synced_view_position_plan = Some(plan);
             }
 
-            scroll_update.changed
+            self.scroll_position() != old_position
         } else {
             false
         };
@@ -2747,6 +2795,71 @@ mod tests {
 
         assert_eq!(update.view_position.horizontal_offset, 3);
         assert_eq!(doc.view_offset(view_id).horizontal_offset, 3);
+    }
+
+    #[test]
+    fn surface_layout_reveals_horizontal_cursor_and_keeps_it_stable_between_frames() {
+        let text = format!("\té中{}\n", "x".repeat(90));
+        let (mut document, mut view) = test_document_and_view(&text);
+        let view_id = view.id;
+        let mut viewport = EditorViewport::new(px(20.0));
+        let layout = EditorViewportSurfaceLayout {
+            theme: None,
+            bounds: Bounds::new(point(px(0.0), px(0.0)), size(px(245.0), px(101.0))),
+            cell_width: px(10.0),
+            line_height: px(20.0),
+            minimum_columns: 1,
+            extra_gutter_columns: 0,
+            scrolloff: 2,
+            cursor_reveal: Some(EditorCursorReveal::Scrolloff),
+        };
+
+        // A tab takes four columns, é one and 中 two. Include the last glyph,
+        // the insertion position after it, and a return to the start of the line.
+        for (cursor, visual_column) in [(23, 27_usize), (92, 96), (93, 97), (0, 0)] {
+            document.set_selection(view_id, Selection::point(cursor));
+            let update =
+                viewport.sync_surface_layout_for_view(&mut document, &mut view, view_id, layout);
+            let columns = 24 - usize::from(update.gutter_columns);
+            let expected_offset = visual_column.saturating_sub(columns - 1 - layout.scrolloff);
+            assert_eq!(update.view_position.horizontal_offset, expected_offset);
+            assert_eq!(
+                document.view_offset(view_id).horizontal_offset,
+                expected_offset
+            );
+            assert_eq!(
+                viewport.scroll_position().x,
+                px(expected_offset as f32 * 10.0)
+            );
+            assert!(update.cursor_revealed);
+
+            viewport.sync_content_layout(
+                &document,
+                &view,
+                EditorViewportContentLayout {
+                    theme: None,
+                    bounds: viewport.viewport_bounds(),
+                    cell_width: layout.cell_width,
+                    minimum_columns: 1,
+                    extra_gutter_columns: 0,
+                },
+            );
+            let repaint = viewport.sync_surface_layout_for_view(
+                &mut document,
+                &mut view,
+                view_id,
+                EditorViewportSurfaceLayout {
+                    cursor_reveal: None,
+                    ..layout
+                },
+            );
+            assert_eq!(repaint.view_position.horizontal_offset, expected_offset);
+            assert_eq!(
+                viewport.scroll_position().x,
+                px(expected_offset as f32 * 10.0)
+            );
+            assert!(!repaint.cursor_revealed);
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]
