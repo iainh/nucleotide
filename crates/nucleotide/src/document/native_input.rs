@@ -10,6 +10,7 @@ use helix_view::{
     DocumentId, Editor, ViewId,
     document::{Mode, SavePoint},
 };
+use nucleotide_editor::line_cache::grapheme_x_for_index;
 use nucleotide_editor::{EditorSurfacePointerEvent, EditorViewState, hit_test_document_position};
 use nucleotide_ui::ThemedContext;
 
@@ -532,11 +533,11 @@ fn range_bounds(
     };
     let metrics = state.layout_snapshot();
     let origin = bounds.origin + point(metrics.gutter_width, px(1.0)) + layout.origin;
-    let x = layout.shaped_line.x_for_index(start);
+    let x = grapheme_x_for_index(&layout.shaped_line, start);
     let rect = Bounds::new(
         origin + point(x, px(0.0)),
         size(
-            (layout.shaped_line.x_for_index(end) - x).max(px(1.0)),
+            (grapheme_x_for_index(&layout.shaped_line, end) - x).max(px(1.0)),
             metrics.line_height,
         ),
     );

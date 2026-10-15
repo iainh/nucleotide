@@ -16,6 +16,41 @@ pub fn line_text_without_trailing_newline(line: RopeSlice<'_>) -> String {
     line_text
 }
 
+/// The block cursor paints its grapheme independently, so do not leave a contextual
+/// ligature spanning that grapheme in the underlying line. Preserve all paint styles.
+pub(crate) fn break_ligatures_in_range(runs: &mut Vec<TextRun>, range: std::ops::Range<usize>) {
+    let disabled = nucleotide_types::font_config::ligature_features(false);
+    let mut offset = 0;
+    let mut split = Vec::with_capacity(runs.len() + 2);
+    for run in runs.drain(..) {
+        let end = offset + run.len;
+        let start = range.start.max(offset);
+        let stop = range.end.min(end);
+        if start >= stop || run.font.features == disabled {
+            split.push(run);
+        } else {
+            if start > offset {
+                split.push(TextRun {
+                    len: start - offset,
+                    ..run.clone()
+                });
+            }
+            let mut cursor_run = run.clone();
+            cursor_run.len = stop - start;
+            cursor_run.font.features = disabled.clone();
+            split.push(cursor_run);
+            if stop < end {
+                split.push(TextRun {
+                    len: end - stop,
+                    ..run
+                });
+            }
+        }
+        offset = end;
+    }
+    *runs = split;
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DisplayTextMap {
     source_to_display: Vec<usize>,

@@ -51,6 +51,9 @@ pub struct FontConfig {
     /// Line height multiplier (e.g., 1.5 for 150% line height)
     #[serde(default = "default_line_height")]
     pub line_height: f32,
+    /// Editor ligatures: unset preserves the font and platform defaults.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ligatures: Option<bool>,
 }
 
 impl Default for FontConfig {
@@ -60,6 +63,7 @@ impl Default for FontConfig {
             weight: FontWeight::default(),
             size: default_font_size(),
             line_height: default_line_height(),
+            ligatures: None,
         }
     }
 }

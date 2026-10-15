@@ -10,6 +10,7 @@ use helix_core::RopeSlice;
 
 use crate::{
     DocumentFramePaintParams, EditorSurfaceGeometry,
+    line_cache::grapheme_x_for_index,
     line_painter::paint_line_backgrounds,
     line_text::{DisplayTextMap, normalize_text_runs_for_display_text},
     selection_shape::selection_paths,
@@ -75,8 +76,8 @@ pub(crate) fn paint_document_selection_backgrounds(
                 range,
             )
         {
-            let start = shaped.x_for_index(bytes.start);
-            let end = shaped.x_for_index(bytes.end);
+            let start = grapheme_x_for_index(&shaped, bytes.start);
+            let end = grapheme_x_for_index(&shaped, bytes.end);
             matching_bracket_rows.push(Bounds::new(
                 point(origin.x + start, origin.y),
                 size(end - start, params.layout.line_height),
@@ -100,13 +101,13 @@ pub(crate) fn paint_document_selection_backgrounds(
             if bytes.is_none() && !newline_selected {
                 continue;
             }
-            let start = bytes
-                .as_ref()
-                .map_or(shaped.width, |range| shaped.x_for_index(range.start));
+            let start = bytes.as_ref().map_or(shaped.width, |range| {
+                grapheme_x_for_index(&shaped, range.start)
+            });
             let end = if newline_selected {
                 shaped.width + params.layout.cell_width
             } else {
-                shaped.x_for_index(bytes.as_ref().unwrap().end)
+                grapheme_x_for_index(&shaped, bytes.as_ref().unwrap().end)
             };
             if end > start {
                 rows.push(Bounds::new(

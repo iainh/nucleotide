@@ -1175,6 +1175,7 @@ fn gui_main(
                 size: editor_font_config.size,
                 weight: editor_font_config.weight,
                 line_height: editor_font_config.line_height,
+                ligatures: editor_font_config.ligatures,
             });
 
             // Store UI font config for UI components

@@ -24,7 +24,7 @@ use crate::{
     cursor_has_reversed_modifier,
     geometry::EditorSurfaceGeometry,
     highlight::text_style_at_position,
-    line_cache::LineLayout,
+    line_cache::{LineLayout, grapheme_x_for_index},
     line_text::{
         byte_offset_for_char_offset, line_text_without_trailing_newline, visual_columns_for_text,
     },
@@ -570,9 +570,7 @@ pub fn unwrapped_cursor_paint_position(
 ) -> CursorPaintPosition {
     let text_bounds = geometry.text_bounds();
     let cursor_display_byte_offset = line_layout.display_byte_for_source_byte(cursor_byte_offset);
-    let cursor_x = line_layout
-        .shaped_line
-        .x_for_index(cursor_display_byte_offset);
+    let cursor_x = grapheme_x_for_index(&line_layout.shaped_line, cursor_display_byte_offset);
 
     CursorPaintPosition {
         paint_origin: text_bounds.origin + line_layout.origin,
@@ -692,7 +690,7 @@ pub fn soft_wrap_cursor_paint_plan(
         let display_byte = line_layout.display_byte_for_source_byte(byte_offset);
         paint_position.paint_origin.x = params.geometry.text_bounds().origin.x
             + line_layout.origin.x
-            + line_layout.shaped_line.x_for_index(display_byte);
+            + grapheme_x_for_index(&line_layout.shaped_line, display_byte);
     }
 
     Some(SoftWrapCursorPaintPlan {

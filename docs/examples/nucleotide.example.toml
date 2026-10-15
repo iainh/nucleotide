@@ -143,6 +143,13 @@ look = "theme"
 # Line-height multiplier. Default: 1.5.
 # line_height = 1.5
 
+# Optional editor ligatures. Unset preserves font/platform defaults.
+# Set true to enable or false to disable liga, clig and calt substitutions.
+# Requires a font with ligatures, such as Fira Code or JetBrains Mono.
+# Ligatures break around the focused block cursor so its character stays clear.
+# Reload Configuration applies changes without restarting. UI/terminal text is unchanged.
+# ligatures = true
+
 [tab_bar]
 # Show the tab bar. Default: true.
 show = true

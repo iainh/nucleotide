@@ -4,6 +4,7 @@
 use gpui::{Pixels, px};
 use helix_view::Document;
 
+use crate::line_cache::grapheme_index_for_x;
 use crate::{EditorSurfaceGeometry, EditorSurfacePointerEvent, LineLayout, LineLayoutCache};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,7 +56,7 @@ fn byte_index_for_relative_x(line_layout: &LineLayout, relative_x: Pixels) -> us
     } else if relative_x > line_layout.shaped_line.width {
         line_layout.shaped_line.len()
     } else {
-        line_layout.shaped_line.index_for_x(relative_x).unwrap_or(0)
+        grapheme_index_for_x(&line_layout.shaped_line, relative_x)
     }
 }
 
