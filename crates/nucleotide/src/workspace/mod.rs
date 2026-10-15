@@ -9739,6 +9739,7 @@ impl Workspace {
         editor_font_config.size = editor_font.size;
         editor_font_config.weight = editor_font.weight;
         editor_font_config.line_height = editor_font.line_height;
+        editor_font_config.ligatures = editor_font.ligatures;
 
         let ui_font_config = cx.global_mut::<crate::types::UiFontConfig>();
         ui_font_config.family = ui_font.family.clone();
@@ -14140,7 +14141,10 @@ impl Workspace {
                     .family
                     .clone()
                     .into(),
-                font_features: FontFeatures::default(),
+                font_features: editor_font.ligatures.map_or_else(
+                    FontFeatures::default,
+                    nucleotide_types::font_config::ligature_features,
+                ),
                 font_fallbacks: None,
                 font_size: px(editor_font.size).into(),
                 line_height: gpui::phi(), // Use golden ratio for optimal line height

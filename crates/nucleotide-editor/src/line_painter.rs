@@ -8,7 +8,7 @@ use gpui::{
 use std::ops::Range;
 
 use crate::{
-    line_cache::{LineLayout, LineLayoutCache},
+    line_cache::{LineLayout, LineLayoutCache, grapheme_x_for_index},
     line_plan::UnwrappedLinePaintPlan,
     line_text::{DisplayLineText, normalize_text_runs_for_display_text},
     soft_wrap::SoftWrapLinePaintPlan,
@@ -83,8 +83,8 @@ pub fn paint_line_backgrounds(
     line_height: Pixels,
 ) {
     for (range, bg_color) in text_run_background_ranges(runs) {
-        let start_x = shaped_line.x_for_index(range.start);
-        let end_x = shaped_line.x_for_index(range.end);
+        let start_x = grapheme_x_for_index(shaped_line, range.start);
+        let end_x = grapheme_x_for_index(shaped_line, range.end);
 
         let bg_bounds = Bounds {
             origin: point(origin.x + start_x, origin.y),

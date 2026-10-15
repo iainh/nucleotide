@@ -51,10 +51,23 @@ pub struct EditorFontConfig {
     pub size: f32,
     pub weight: FontWeight,
     pub line_height: f32,
+    #[serde(default)]
+    pub ligatures: Option<bool>,
 }
 
 #[cfg(feature = "gpui-bridge")]
 impl gpui::Global for EditorFontConfig {}
+
+/// Control optional Latin ligatures without disabling required script shaping.
+#[cfg(feature = "gpui-bridge")]
+pub fn ligature_features(enabled: bool) -> FontFeatures {
+    FontFeatures(std::sync::Arc::new(
+        ["liga", "clig", "calt"]
+            .into_iter()
+            .map(|tag| (tag.to_owned(), u32::from(enabled)))
+            .collect(),
+    ))
+}
 
 #[cfg(feature = "gpui-bridge")]
 impl From<Font> for gpui::Font {

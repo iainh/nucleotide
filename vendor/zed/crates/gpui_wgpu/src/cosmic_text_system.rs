@@ -455,6 +455,49 @@ impl CosmicTextSystemState {
 
     #[profiling::function]
     fn layout_line(&mut self, text: &str, font_size: Pixels, font_runs: &[FontRun]) -> LineLayout {
+        // Cosmic Text 0.19 considers attributes with different OpenType features
+        // compatible and shapes them with the first span's features. Shape each
+        // feature-homogeneous section separately so local overrides take effect.
+        if font_runs.windows(2).any(|pair| {
+            self.loaded_font(pair[0].font_id).features != self.loaded_font(pair[1].font_id).features
+        }) {
+            let mut layout = LineLayout {
+                font_size,
+                len: text.len(),
+                ..Default::default()
+            };
+            let mut first_run = 0;
+            let mut byte_start = 0;
+            let mut byte_end = 0;
+            for end in 1..=font_runs.len() {
+                byte_end += font_runs[end - 1].len;
+                if end < font_runs.len()
+                    && self.loaded_font(font_runs[end - 1].font_id).features
+                        == self.loaded_font(font_runs[end].font_id).features
+                {
+                    continue;
+                }
+                let mut section = self.layout_line(
+                    &text[byte_start..byte_end],
+                    font_size,
+                    &font_runs[first_run..end],
+                );
+                for run in &mut section.runs {
+                    for glyph in &mut run.glyphs {
+                        glyph.index += byte_start;
+                        glyph.position.x += layout.width;
+                    }
+                }
+                layout.width += section.width;
+                layout.ascent = layout.ascent.max(section.ascent);
+                layout.descent = layout.descent.max(section.descent);
+                layout.runs.extend(section.runs);
+                first_run = end;
+                byte_start = byte_end;
+            }
+            return layout;
+        }
+
         let mut attrs_list = AttrsList::new(&Attrs::new());
         let mut offs = 0;
         for run in font_runs {
@@ -866,6 +909,78 @@ fn check_is_known_emoji_font(postscript_name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_ligature_features_preserve_glyphs_positions_and_utf8_indices() {
+        // Original synthetic font: é=500, f=600, i=300, fi=850 units; UPEM=1000.
+        // No dependency on installed fonts. The fi substitution uses `liga`.
+        let system = CosmicTextSystem::new_without_system_fonts("Ligature Test");
+        system
+            .add_fonts(vec![Cow::Borrowed(include_bytes!(
+                "../test_data/ligature.ttf"
+            ))])
+            .unwrap();
+        let enabled = system.font_id(&gpui::font("Ligature Test")).unwrap();
+        let mut font = gpui::font("Ligature Test");
+        font.features = FontFeatures(Arc::new(vec![("liga".into(), 0)]));
+        let disabled = system.font_id(&font).unwrap();
+        for (ids, expected_indices, expected_positions, expected_width) in [
+            (
+                [enabled, disabled, enabled],
+                vec![0, 2, 4, 5, 6],
+                vec![0.0, 10.0, 27.0, 39.0, 45.0],
+                62.0,
+            ),
+            (
+                [disabled, enabled, disabled],
+                vec![0, 2, 3, 4, 6, 7],
+                vec![0.0, 10.0, 22.0, 28.0, 45.0, 57.0],
+                63.0,
+            ),
+            (
+                [enabled; 3],
+                vec![0, 2, 4, 6],
+                vec![0.0, 10.0, 27.0, 44.0],
+                61.0,
+            ),
+            (
+                [disabled; 3],
+                vec![0, 2, 3, 4, 5, 6, 7],
+                vec![0.0, 10.0, 22.0, 28.0, 40.0, 46.0, 58.0],
+                64.0,
+            ),
+        ] {
+            let runs = [
+                FontRun {
+                    len: 4,
+                    font_id: ids[0],
+                },
+                FontRun {
+                    len: 2,
+                    font_id: ids[1],
+                },
+                FontRun {
+                    len: 2,
+                    font_id: ids[2],
+                },
+            ];
+            let layout = system.layout_line("éfififi", gpui::px(20.0), &runs);
+            let glyphs = layout
+                .runs
+                .iter()
+                .flat_map(|run| &run.glyphs)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                glyphs.iter().map(|glyph| glyph.index).collect::<Vec<_>>(),
+                expected_indices
+            );
+            for (glyph, expected) in glyphs.iter().zip(expected_positions) {
+                assert!((f32::from(glyph.position.x) - expected).abs() < 0.001);
+            }
+            assert!((f32::from(layout.width) - expected_width).abs() < 0.001);
+            assert_eq!(layout.len, 8);
+        }
+    }
 
     fn fid(i: usize) -> FontId {
         FontId(i)

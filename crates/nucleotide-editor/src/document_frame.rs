@@ -290,7 +290,7 @@ pub fn editor_document_frame(params: EditorDocumentFrameParams<'_>) -> EditorDoc
         whitespace_style: params.theme.get("ui.virtual.whitespace"),
     };
 
-    let soft_wrap_line_runs = {
+    let mut soft_wrap_line_runs = {
         let _timer = PerfTimer::new("editor_document_frame.soft_wrap_highlights")
             .with_warn_threshold(Duration::from_millis(6));
         soft_wrap_render_plan
@@ -305,7 +305,7 @@ pub fn editor_document_frame(params: EditorDocumentFrameParams<'_>) -> EditorDoc
             .unwrap_or_default()
     };
 
-    let unwrapped_highlighted_lines = {
+    let mut unwrapped_highlighted_lines = {
         let _timer = PerfTimer::new("editor_document_frame.unwrapped_highlights")
             .with_warn_threshold(Duration::from_millis(6));
         unwrapped_render_plan
@@ -319,6 +319,47 @@ pub fn editor_document_frame(params: EditorDocumentFrameParams<'_>) -> EditorDoc
             })
             .unwrap_or_default()
     };
+
+    if cursor_presentation.block_text.is_some() {
+        let cursor_range = primary_cursor_idx
+            ..helix_core::graphemes::next_grapheme_boundary(text.slice(..), primary_cursor_idx);
+        if let Some(plan) = &soft_wrap_render_plan {
+            for (visual, runs) in plan.visual_lines.iter().zip(&mut soft_wrap_line_runs) {
+                if visual.doc_line == primary_cursor_line
+                    && let Some(start) = visual.line_start_char
+                    && let Some(range) = crate::selection_painter::selection_display_range(
+                        text.slice(..),
+                        start,
+                        visual.text.as_ref(),
+                        &visual.display_map,
+                        visual.text_start_byte_offset,
+                        &cursor_range,
+                    )
+                {
+                    crate::line_text::break_ligatures_in_range(runs, range);
+                }
+            }
+        } else if let Some(plan) = &unwrapped_render_plan {
+            for (line, highlighted) in plan
+                .visible_lines
+                .iter()
+                .zip(&mut unwrapped_highlighted_lines)
+            {
+                if line.line_idx == primary_cursor_line
+                    && let Some(range) = crate::selection_painter::selection_display_range(
+                        text.slice(..),
+                        line.line_start,
+                        highlighted.line_text.display.as_ref(),
+                        &highlighted.line_text.map,
+                        0,
+                        &cursor_range,
+                    )
+                {
+                    crate::line_text::break_ligatures_in_range(&mut highlighted.line_runs, range);
+                }
+            }
+        }
+    }
 
     EditorDocumentFrame {
         gutter_width,

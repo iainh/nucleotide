@@ -49,6 +49,7 @@ fn default_ui_font() -> FontConfig {
         weight: FontWeight::Normal,
         size: default_ui_font_size(),
         line_height: DEFAULT_UI_FONT_LINE_HEIGHT,
+        ligatures: None,
     }
 }
 
@@ -82,6 +83,7 @@ struct PartialFontConfig {
     weight: Option<FontWeight>,
     size: Option<f32>,
     line_height: Option<f32>,
+    ligatures: Option<bool>,
 }
 
 fn merge_font_config(mut base: FontConfig, partial: PartialFontConfig) -> FontConfig {
@@ -96,6 +98,9 @@ fn merge_font_config(mut base: FontConfig, partial: PartialFontConfig) -> FontCo
     }
     if let Some(line_height) = partial.line_height {
         base.line_height = line_height;
+    }
+    if let Some(ligatures) = partial.ligatures {
+        base.ligatures = Some(ligatures);
     }
     base
 }
@@ -2786,6 +2791,7 @@ priority = 70
             weight: FontWeight::Normal,
             size: 13.0,
             line_height: 1.5,
+            ligatures: None,
         });
 
         let config = Config {
@@ -2823,6 +2829,7 @@ priority = 70
             weight: FontWeight::Normal,
             size: 16.0,
             line_height: 1.4,
+            ligatures: None,
         });
         let config = Config {
             helix: HelixConfig::default(),
@@ -2888,6 +2895,38 @@ size = 18.0
         assert_eq!(editor_font.weight, default_editor_font.weight);
         assert_eq!(editor_font.size, 18.0);
         assert_eq!(editor_font.line_height, default_editor_font.line_height);
+    }
+
+    #[test]
+    fn editor_ligatures_preserve_unset_and_explicit_overrides() {
+        for (setting, expected) in [
+            ("", None),
+            ("ligatures = true", Some(true)),
+            ("ligatures = false", Some(false)),
+        ] {
+            let gui: GuiConfig = toml::from_str(&format!(
+                "[ui.font]\nfamily = 'UI Font'\nligatures = true\n[editor.font]\n{setting}"
+            ))
+            .unwrap();
+            let config = Config {
+                helix: HelixConfig::default(),
+                gui,
+            };
+            let font = config.editor_font();
+            assert_eq!(font.ligatures, expected);
+            assert_eq!(font.family, FontConfig::default().family);
+            let roundtrip: GuiConfig =
+                toml::from_str(&toml::to_string(&config.gui).unwrap()).unwrap();
+            assert_eq!(roundtrip.editor.font.unwrap().ligatures, expected);
+        }
+        let gui: GuiConfig = toml::from_str("[ui.font]\nligatures = false").unwrap();
+        let config = Config {
+            helix: HelixConfig::default(),
+            gui,
+        };
+        assert_eq!(config.editor_font().ligatures, Some(false));
+        assert_eq!(FontConfig::default().ligatures, None);
+        assert!(toml::from_str::<GuiConfig>("[editor.font]\nligatures = 'yes'").is_err());
     }
 
     #[test]

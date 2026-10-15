@@ -11263,6 +11263,7 @@ mod tests {
                 size: editor_font.size,
                 weight: editor_font.weight,
                 line_height: editor_font.line_height,
+                ligatures: editor_font.ligatures,
             });
             cx.set_global(crate::types::UiFontConfig {
                 family: ui_font.family,

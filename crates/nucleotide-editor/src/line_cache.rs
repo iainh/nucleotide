@@ -6,7 +6,70 @@ use std::collections::{HashMap, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
 
+use helix_core::unicode::segmentation::UnicodeSegmentation;
+
 use crate::{line_plan::VisibleLinePlan, line_text::DisplayTextMap, soft_wrap::SoftWrapVisualLine};
+
+/// Preserve a caret stop for every grapheme when a font merges several into one glyph.
+/// GPUI exposes glyph origins, but not OpenType ligature caret positions, so distribute
+/// missing stops evenly across the cluster's advance. Existing glyph stops stay exact.
+pub fn grapheme_x_for_index(line: &ShapedLine, index: usize) -> Pixels {
+    let mut start_index = 0;
+    let mut start_x = px(0.0);
+    let mut end_index = line.len();
+    let mut end_x = line.width;
+    for glyph in line.runs.iter().flat_map(|run| &run.glyphs) {
+        if glyph.index == index {
+            return glyph.position.x;
+        }
+        if glyph.index > index {
+            end_index = glyph.index;
+            end_x = glyph.position.x;
+            break;
+        }
+        start_index = glyph.index;
+        start_x = glyph.position.x;
+    }
+    if index >= end_index {
+        return end_x;
+    }
+    let cluster = &line.text[start_index..end_index];
+    let count = cluster.graphemes(true).count();
+    let before = cluster
+        .grapheme_indices(true)
+        .take_while(|(offset, _)| start_index + offset < index)
+        .count();
+    start_x + (end_x - start_x) * (before as f32 / count.max(1) as f32)
+}
+
+/// Hit-test the same grapheme stops used by carets, selections and native input.
+pub fn grapheme_index_for_x(line: &ShapedLine, x: Pixels) -> usize {
+    if x >= line.width {
+        return line.len();
+    }
+    let start = line.index_for_x(x).unwrap_or(0);
+    let end = line
+        .runs
+        .iter()
+        .flat_map(|run| &run.glyphs)
+        .find(|glyph| glyph.index > start)
+        .map_or(line.len(), |glyph| glyph.index);
+    let start_x = line.x_for_index(start);
+    let end_x = line.x_for_index(end);
+    let cluster = &line.text[start..end];
+    let count = cluster.graphemes(true).count();
+    if count <= 1 || end_x <= start_x {
+        return start;
+    }
+    let slot =
+        (f32::from(x - start_x) / f32::from(end_x - start_x) * count as f32).max(0.0) as usize;
+    start
+        + cluster
+            .grapheme_indices(true)
+            .nth(slot.min(count - 1))
+            .unwrap()
+            .0
+}
 
 /// Layout information for a single line in the document
 ///
@@ -428,6 +491,55 @@ mod tests {
         // Create a mock shaped line - in real usage this would be from the font system
         // Use the default implementation since the struct has private fields
         <ShapedLine as std::default::Default>::default()
+    }
+
+    #[test]
+    fn merged_ligatures_keep_individual_grapheme_carets_and_hit_targets() {
+        for prefix in ["é", "e\u{301}"] {
+            for suffix in ["Z", ""] {
+                let text = format!("{prefix}ffi{suffix}");
+                let start = prefix.len();
+                let mut glyphs = vec![(0, 0.0), (start, 9.0)];
+                if !suffix.is_empty() {
+                    glyphs.push((start + 3, 39.0));
+                }
+                let mut shaped = ShapedLine::default();
+                *shaped = Arc::new(gpui::LineLayout {
+                    len: text.len(),
+                    width: px(if suffix.is_empty() { 39.0 } else { 51.0 }),
+                    runs: vec![gpui::ShapedRun {
+                        font_id: gpui::FontId(0),
+                        glyphs: glyphs
+                            .into_iter()
+                            .map(|(index, x)| gpui::ShapedGlyph {
+                                id: gpui::GlyphId(0),
+                                index,
+                                position: point(px(x), px(0.0)),
+                                is_emoji: false,
+                            })
+                            .collect(),
+                    }],
+                    ..Default::default()
+                });
+                shaped.text = text.into();
+                assert_eq!(grapheme_x_for_index(&shaped, start), px(9.0));
+                assert_eq!(grapheme_x_for_index(&shaped, start + 1), px(19.0));
+                assert_eq!(grapheme_x_for_index(&shaped, start + 2), px(29.0));
+                assert_eq!(grapheme_x_for_index(&shaped, start + 3), px(39.0));
+                for (x, expected) in [
+                    (8.9, 0),
+                    (9.1, start),
+                    (18.9, start),
+                    (19.1, start + 1),
+                    (28.9, start + 1),
+                    (29.1, start + 2),
+                    (38.9, start + 2),
+                ] {
+                    assert_eq!(grapheme_index_for_x(&shaped, px(x)), expected);
+                }
+                assert_eq!(grapheme_index_for_x(&shaped, shaped.width), shaped.len());
+            }
+        }
     }
 
     fn create_test_text_run() -> TextRun {

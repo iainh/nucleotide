@@ -374,6 +374,7 @@ mode = "invalid_mode"
                     weight: FontWeight::Bold,
                     size: 15.0,
                     line_height: 1.6,
+                    ligatures: None,
                 }),
             },
             editor: EditorGuiConfig {
@@ -382,6 +383,7 @@ mode = "invalid_mode"
                     weight: FontWeight::SemiBold,
                     size: 16.0,
                     line_height: 1.5,
+                    ligatures: Some(true),
                 }),
             },
             theme: ThemeConfig {
@@ -523,6 +525,7 @@ family = "Editor Font"
                 weight: FontWeight::Bold,
                 size: 16.0,
                 line_height: 1.4,
+                ligatures: None,
             });
 
             config.gui.ui.font = Some(FontConfig {
@@ -530,6 +533,7 @@ family = "Editor Font"
                 weight: FontWeight::Medium,
                 size: 12.0,
                 line_height: 1.5,
+                ligatures: None,
             });
 
             let editor_font = config.editor_font();
@@ -558,6 +562,7 @@ family = "Editor Font"
                 weight: FontWeight::SemiBold,
                 size: 14.0,
                 line_height: 1.3,
+                ligatures: None,
             });
             config.gui.editor.font = None;
 
