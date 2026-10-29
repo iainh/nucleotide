@@ -625,6 +625,8 @@ pub(crate) fn v5_kill_timed_out_process(
 pub(crate) fn v5_kill_process_group(process_id: u32) -> io::Result<()> {
     let status = Command::new("kill")
         .arg("-KILL")
+        // A negative PID targets a process group, so terminate option parsing first.
+        .arg("--")
         .arg(format!("-{process_id}"))
         .status()?;
 
