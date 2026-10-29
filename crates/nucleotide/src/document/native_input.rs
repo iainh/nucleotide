@@ -661,8 +661,12 @@ mod tests {
         let doc_id = editor.new_file(Action::VerticalSplit);
         let view_id = editor.tree.focus;
         let doc = editor.documents.get_mut(&doc_id).unwrap();
+        let initial_len = doc.text().len_chars();
         doc.apply(
-            &Transaction::change(doc.text(), [(0, 0, Some("a😀bcd".into()))].into_iter()),
+            &Transaction::change(
+                doc.text(),
+                [(0, initial_len, Some("a😀bcd\n".into()))].into_iter(),
+            ),
             view_id,
         );
 
@@ -704,7 +708,10 @@ mod tests {
             input.mark(&mut editor, view_id, range, "日", None);
             assert!(input.marked_ranges().is_empty());
             assert_eq!(editor.documents[&doc_id].text().to_string(), "a😀bcd\n");
-            assert_eq!(editor.documents[&replacement].text().to_string(), "\n");
+            assert_eq!(
+                editor.documents[&replacement].text().to_string(),
+                helix_core::NATIVE_LINE_ENDING.as_str()
+            );
             editor.switch(doc_id, Action::Replace);
         }
     }
