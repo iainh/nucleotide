@@ -11012,6 +11012,121 @@ mod tests {
     }
 
     #[gpui::test]
+    fn completion_overlay_passes_outside_mouse_input_to_editor(cx: &mut gpui::TestAppContext) {
+        use crate::overlay::{OverlayView, WorkspaceLayoutInfo};
+        use gpui::{
+            Context, FocusHandle, InteractiveElement, IntoElement, Modifiers, MouseButton,
+            ParentElement, Render, ScrollDelta, ScrollHandle, ScrollWheelEvent,
+            StatefulInteractiveElement, Styled, Window, div, point, px, size,
+        };
+
+        struct Harness {
+            overlay: Entity<OverlayView>,
+            focus: FocusHandle,
+            scroll: ScrollHandle,
+            clicks: usize,
+        }
+        impl Render for Harness {
+            fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                div()
+                    .relative()
+                    .size_full()
+                    .child(
+                        div()
+                            .id("editor")
+                            .size_full()
+                            .overflow_y_scroll()
+                            .track_scroll(&self.scroll)
+                            .track_focus(&self.focus)
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _, window, cx| {
+                                    this.clicks += 1;
+                                    window.focus(&this.focus, cx);
+                                }),
+                            )
+                            .children(
+                                (0..100).map(|i| div().h(px(24.0)).child(format!("line {i}"))),
+                            ),
+                    )
+                    .child(self.overlay.clone())
+            }
+        }
+
+        let _runtime = TEST_RUNTIME.enter();
+        let core = new_test_application(cx);
+        cx.update(|cx| {
+            cx.set_global(nucleotide_ui::Theme::default());
+            cx.set_global(WorkspaceLayoutInfo {
+                cursor_position: Some(point(px(60.0), px(40.0))),
+                cursor_size: Some(size(px(10.0), px(20.0))),
+                line_height: px(20.0),
+                ..Default::default()
+            });
+        });
+        let (harness, cx) = cx.add_window_view(|window, cx| {
+            let focus = cx.focus_handle();
+            window.focus(&focus, cx);
+            let overlay =
+                cx.new(|_| OverlayView::new(&focus, &core, TEST_RUNTIME.handle().clone()));
+            let completion = cx.new(|cx| {
+                let mut view = nucleotide_ui::CompletionView::new(cx);
+                view.set_items(
+                    (0..12)
+                        .map(|i| nucleotide_ui::CompletionItem::new(format!("item-{i}")))
+                        .collect(),
+                    cx,
+                );
+                view
+            });
+            overlay.update(cx, |overlay, cx| {
+                overlay.handle_event(&crate::Update::Completion(completion), cx)
+            });
+            Harness {
+                overlay,
+                focus,
+                scroll: ScrollHandle::new(),
+                clicks: 0,
+            }
+        });
+        cx.refresh().unwrap();
+
+        // Popup wheel events must not scroll the editor underneath it.
+        cx.simulate_event(ScrollWheelEvent {
+            position: point(px(90.0), px(90.0)),
+            delta: ScrollDelta::Pixels(point(px(0.0), px(-48.0))),
+            ..Default::default()
+        });
+        harness.read_with(cx, |harness, _| {
+            assert_eq!(harness.scroll.offset().y, px(0.0))
+        });
+        // Clicking popup chrome must not dismiss it or place the editor cursor.
+        cx.simulate_click(point(px(90.0), px(270.0)), Modifiers::none());
+        harness.read_with(cx, |harness, cx| {
+            assert_eq!(harness.clicks, 0);
+            assert!(!harness.overlay.read(cx).is_empty());
+        });
+
+        let outside = point(px(90.0), px(400.0));
+        cx.simulate_event(ScrollWheelEvent {
+            position: outside,
+            delta: ScrollDelta::Pixels(point(px(0.0), px(-48.0))),
+            ..Default::default()
+        });
+        harness.read_with(cx, |harness, cx| {
+            assert!(harness.scroll.offset().y < px(0.0));
+            assert!(!harness.overlay.read(cx).is_empty());
+        });
+        cx.simulate_click(outside, Modifiers::none());
+        cx.update(|window, cx| {
+            let harness = harness.read(cx);
+            assert_eq!(harness.clicks, 1);
+            assert!(harness.overlay.read(cx).is_empty());
+            assert!(harness.focus.is_focused(window));
+        });
+    }
+
+    #[gpui::test]
     fn editor_native_composition_preserves_unicode_multicursors_and_undo(
         cx: &mut gpui::TestAppContext,
     ) {

@@ -3,8 +3,9 @@
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    AnyElement, Context, Hsla, InteractiveElement, IntoElement, ParentElement,
-    StatefulInteractiveElement, Styled, Svg, UniformListScrollHandle, div, px, relative,
+    AnyElement, Context, HighlightStyle, Hsla, InteractiveElement, IntoElement, ParentElement,
+    SharedString, StatefulInteractiveElement, Styled, StyledText, Svg, UniformListScrollHandle,
+    div, px, relative,
 };
 
 use crate::completion_icons::{create_themed_completion_icon, get_completion_icon_color};
@@ -168,67 +169,50 @@ impl CompletionItemElement {
         )
     }
 
-    /// Render highlighted text with match positions
-    fn render_highlighted_text(
-        &self,
-        text: &str,
-        positions: &[usize],
-        base_color: Hsla,
-    ) -> impl IntoElement {
-        if positions.is_empty() {
-            // No highlighting needed
-            return div().child(text.to_string());
-        }
+    /// Keep the label in one text layout so shaping and ellipsis work together.
+    fn render_highlighted_text(&self, text: &SharedString) -> StyledText {
+        let mut highlights: Vec<(std::ops::Range<usize>, HighlightStyle)> = Vec::new();
 
-        let chars: Vec<char> = text.chars().collect();
-        let mut elements = Vec::new();
-        let mut last_pos = 0;
+        // Filter positions cannot be applied to an unrelated display label.
+        if self
+            .item
+            .filter_text
+            .as_ref()
+            .is_none_or(|filter| filter == text)
+        {
+            let mut normalized_start = 0;
+            for (byte_start, ch) in text.char_indices() {
+                // The matcher indexes lowercased characters; some Unicode
+                // characters expand when lowercased. GPUI ranges use UTF-8 bytes.
+                let normalized_end = normalized_start + ch.to_lowercase().count();
+                let matched = self
+                    .string_match
+                    .positions
+                    .iter()
+                    .any(|position| (normalized_start..normalized_end).contains(position));
+                normalized_start = normalized_end;
+                if !matched {
+                    continue;
+                }
 
-        for &pos in positions {
-            if pos >= chars.len() {
-                continue;
-            }
-
-            // Add non-highlighted text before this position
-            if pos > last_pos {
-                let before: String = chars[last_pos..pos].iter().collect();
-                if !before.is_empty() {
-                    elements.push(
-                        div()
-                            .text_color(base_color)
-                            .child(before)
-                            .into_any_element(),
-                    );
+                let byte_end = byte_start + ch.len_utf8();
+                if let Some((range, _)) = highlights.last_mut()
+                    && range.end == byte_start
+                {
+                    range.end = byte_end;
+                } else {
+                    highlights.push((
+                        byte_start..byte_end,
+                        HighlightStyle {
+                            font_weight: Some(gpui::FontWeight::SEMIBOLD),
+                            ..Default::default()
+                        },
+                    ));
                 }
             }
-
-            // Add highlighted character - VS Code style subtle highlighting
-            let highlighted_char = chars[pos];
-            elements.push(
-                div()
-                    .text_color(base_color)
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .child(highlighted_char.to_string())
-                    .into_any_element(),
-            );
-
-            last_pos = pos + 1;
         }
 
-        // Add remaining text
-        if last_pos < chars.len() {
-            let remaining: String = chars[last_pos..].iter().collect();
-            if !remaining.is_empty() {
-                elements.push(
-                    div()
-                        .text_color(base_color)
-                        .child(remaining)
-                        .into_any_element(),
-                );
-            }
-        }
-
-        div().flex().flex_row().children(elements)
+        StyledText::new(text.clone()).with_highlights(highlights)
     }
 
     /// Build the element using the provided theme instead of a default.
@@ -303,11 +287,7 @@ impl CompletionItemElement {
                                 .overflow_hidden()
                                 .whitespace_nowrap()
                                 .text_ellipsis()
-                                .child(self.render_highlighted_text(
-                                    display_text,
-                                    &self.string_match.positions,
-                                    label_color,
-                                )),
+                                .child(self.render_highlighted_text(display_text)),
                         )
                         .when_some(signature_text, |row, signature| {
                             row.child(
@@ -384,11 +364,10 @@ impl CompletionItemElement {
                                 .text_sm()
                                 .font_weight(gpui::FontWeight::NORMAL)
                                 .text_color(item_text)
-                                .child(self.render_highlighted_text(
-                                    display_text,
-                                    &self.string_match.positions,
-                                    item_text,
-                                )),
+                                .min_w_0()
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .child(self.render_highlighted_text(display_text)),
                         )
                         // Show signature info (parameters) directly after function name
                         .when_some(signature_text, |div_el, signature| {
