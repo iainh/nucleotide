@@ -2,7 +2,6 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 use std::panic;
-use std::time::Duration;
 
 use anyhow::{Context, Result};
 use helix_term::args::Args;
@@ -1211,48 +1210,6 @@ fn gui_main(
                 let handle_1 = handle.clone();
                 // Create LSP state entity
                 let lsp_state = cx.new(|_| nucleotide_lsp::LspState::new());
-
-                // Create a separate timer for LSP spinner updates
-                struct SpinnerTimer;
-                impl gpui::EventEmitter<()> for SpinnerTimer {}
-
-                let lsp_state_clone = lsp_state.clone();
-                let _spinner_timer = cx.new(|mc| {
-                    mc.spawn(async move |_timer, cx| {
-                        loop {
-                            cx.background_executor()
-                                .timer(Duration::from_millis(80)) // Match helix spinner interval
-                                .await;
-
-                            cx.update(|cx| {
-                                lsp_state_clone.update(cx, |state, cx| {
-                                    // Update LSP indicator - shows static when idle, animated when busy
-                                    let old_message = state.status_message.clone();
-                                    state.status_message = state.get_lsp_indicator();
-
-                                    // Update project status service with current LSP state
-                                    if let Some(project_status) =
-                                        cx.try_global::<nucleotide_project::ProjectStatusHandle>()
-                                    {
-                                        let project_status = project_status.clone();
-                                        project_status.update_lsp_status(
-                                            nucleotide::workspace::project_lsp_status_from_state(
-                                                state,
-                                            ),
-                                        );
-                                    }
-
-                                    // Only notify if there's actually a change
-                                    if state.status_message != old_message {
-                                        cx.notify();
-                                    }
-                                });
-                            });
-                        }
-                    })
-                    .detach();
-                    SpinnerTimer
-                });
 
                 let app = cx.new(move |mc| {
                     let handle_1 = handle_1.clone();

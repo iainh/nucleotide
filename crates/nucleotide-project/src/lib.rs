@@ -1,33 +1,34 @@
 // ABOUTME: Project detection and manifest provider system for Nucleotide
 // ABOUTME: Provides language-specific project root detection with efficient ancestor traversal
 
+#[cfg(feature = "manifest-providers")]
 use std::path::Path;
 
 pub mod classification;
+#[cfg(feature = "manifest-providers")]
 pub mod error;
+#[cfg(feature = "manifest-providers")]
 pub mod manifest;
-pub mod project_indicator;
-pub mod project_status_service;
+#[cfg(feature = "manifest-providers")]
 pub mod providers;
+#[cfg(feature = "manifest-providers")]
 pub mod registry;
+#[cfg(feature = "manifest-providers")]
 pub mod utils;
 
 pub use classification::{ProjectType, classify_project_markers, project_language_ids};
+#[cfg(feature = "manifest-providers")]
 pub use error::{ProjectError, Result};
+#[cfg(feature = "manifest-providers")]
 pub use manifest::{ManifestDelegate, ManifestName, ManifestProvider, ManifestQuery};
-pub use project_indicator::{
-    ProjectInfo, ProjectLspStatus, ProjectLspStatusIndicator, ProjectTypeBadge,
-};
-pub use project_status_service::{
-    ProjectStatusHandle, ProjectStatusService, initialize_project_status_service,
-    project_status_service,
-};
+#[cfg(feature = "manifest-providers")]
 pub use registry::ManifestProviders;
 
 /// Main entry point for project detection
 ///
 /// This function attempts to detect the project root for a given file path
 /// by querying all registered manifest providers.
+#[cfg(feature = "manifest-providers")]
 pub async fn detect_project_root(
     file_path: &Path,
     max_depth: Option<usize>,
@@ -40,6 +41,7 @@ pub async fn detect_project_root(
 ///
 /// This function should be called during application initialization
 /// to register all the standard language providers.
+#[cfg(feature = "manifest-providers")]
 pub fn register_builtin_providers() {
     let providers = ManifestProviders::global();
 
@@ -54,7 +56,7 @@ pub fn register_builtin_providers() {
     nucleotide_logging::info!("Registered built-in manifest providers");
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "manifest-providers"))]
 mod tests {
     use super::*;
     use tempfile::TempDir;

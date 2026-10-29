@@ -31,6 +31,26 @@ Use `nucleotide-ui` wrappers for common application UI. Reach for raw GPUI
 keyboard, mouse, focus, or layout APIs only when building a low-level custom
 surface such as the editor, terminal, or a new reusable wrapper.
 
+## Domain crates stay independent of GPUI
+
+`nucleotide-lsp` exposes `LspState` and structured status summaries. The
+workspace observes state changes and renders the status bar; its
+`IndeterminateProgressIndicator` owns animation. Do not add a polling timer
+or a second project-status snapshot to animate LSP activity.
+
+`nucleotide-project` classifies marker names supplied by the workspace backend.
+Its standalone local-filesystem manifest providers, registry, and root-detection
+API require the non-default `manifest-providers` Cargo feature. The application
+does not use that subsystem. To exercise it, run
+`cargo test -p nucleotide-project --features manifest-providers`.
+
+Run `./scripts/check-layering.sh` with Cargo and Python 3 available. It checks
+every workspace member, rejects unassigned crates, and follows normal
+dependencies without a depth limit, including optional and target-specific
+edges. It also prevents GPUI/UI dependencies in domain crates and checks
+`nucleotide-types` separately without its optional bridges. Build and test
+dependencies are outside the layering policy.
+
 ## Keyboard Input
 
 Prefer GPUI actions over raw key matching:

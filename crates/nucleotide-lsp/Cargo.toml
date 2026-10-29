@@ -21,9 +21,6 @@ helix-core.workspace = true
 helix-lsp.workspace = true
 helix-view.workspace = true
 
-# GPUI
-gpui.workspace = true
-
 # Common dependencies
 tokio.workspace = true
 futures.workspace = true

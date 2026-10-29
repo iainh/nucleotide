@@ -6,7 +6,6 @@ pub mod error;
 pub mod helix_lsp_bridge;
 pub mod lsp_completion_trigger;
 pub mod lsp_state;
-pub mod lsp_status;
 
 pub use document_manager::{DocumentManager, DocumentManagerMut};
 pub use error::ProjectLspError;
@@ -19,4 +18,3 @@ pub use lsp_state::{
     LspProgress, LspState, LspStatusKind, LspStatusSummary, PlannedServerStatus,
     ProjectEnvironmentSource, ProjectLspSessionStatus, ProjectServerLifecycle, ServerStatus,
 };
-pub use lsp_status::LspStatus;

@@ -179,7 +179,6 @@ pub enum Update {
     RunTask(nucleotide_events::run::ResolvedTask),
     ToggleFileTree,
     SemanticShortcut(SemanticShortcutIntent),
-    TerminalPanel(gpui::Entity<nucleotide_terminal_panel::TerminalPanel>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -269,7 +268,6 @@ impl std::fmt::Debug for Update {
             Update::SemanticShortcut(intent) => {
                 write!(f, "SemanticShortcut({intent:?})")
             }
-            Update::TerminalPanel(_) => write!(f, "TerminalPanel(...)"),
         }
     }
 }

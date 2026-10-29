@@ -5681,7 +5681,6 @@ dependencies = [
  "anyhow",
  "chrono",
  "futures",
- "gpui",
  "helix-core",
  "helix-lsp",
  "helix-view",
@@ -5723,11 +5722,8 @@ name = "nucleotide-project"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "gpui",
  "nucleotide-events",
  "nucleotide-logging",
- "nucleotide-ui",
- "parking_lot",
  "regex",
  "serde",
  "serde_json",

@@ -158,41 +158,6 @@ where
         .unwrap_or(RemoteDocumentReloadDecision::Hidden { doc_id })
 }
 
-pub fn project_lsp_status_from_state(
-    lsp_state: &nucleotide_lsp::LspState,
-) -> nucleotide_project::ProjectLspStatus {
-    let running_servers = lsp_state
-        .servers
-        .values()
-        .filter(|server| server.status == nucleotide_lsp::ServerStatus::Running)
-        .count();
-    let failed_servers = lsp_state
-        .servers
-        .values()
-        .filter(|server| matches!(server.status, nucleotide_lsp::ServerStatus::Failed(_)))
-        .count();
-    let initializing_servers = lsp_state
-        .servers
-        .values()
-        .filter(|server| {
-            matches!(
-                server.status,
-                nucleotide_lsp::ServerStatus::Initializing | nucleotide_lsp::ServerStatus::Starting
-            )
-        })
-        .count();
-    let diagnostic_count = lsp_state.diagnostics.values().map(Vec::len).sum::<usize>();
-
-    nucleotide_project::ProjectLspStatus {
-        total_servers: lsp_state.servers.len(),
-        running_servers,
-        failed_servers,
-        initializing_servers,
-        has_diagnostics: diagnostic_count > 0,
-        diagnostic_count,
-    }
-}
-
 fn document_lsp_identifier(
     doc: &helix_view::Document,
 ) -> Option<helix_lsp::lsp::TextDocumentIdentifier> {
@@ -5400,9 +5365,6 @@ impl Workspace {
 
         let key_hints = cx.new(|_cx| KeyHintView::new());
 
-        // Initialize project status service
-        let _project_status_handle = nucleotide_project::initialize_project_status_service(cx);
-
         // Initialize file tree only if project directory is explicitly set
         let (root_path, vcs_workspace_backend) = {
             let core = core.read(cx);
@@ -6999,15 +6961,6 @@ impl Workspace {
         }
     }
 
-    pub fn new(
-        _core: Entity<Core>,
-        _input: Entity<Input>,
-        _handle: tokio::runtime::Handle,
-        _cx: &mut Context<Self>,
-    ) -> Self {
-        panic!("Use Workspace::with_views instead - views must be created in window context");
-    }
-
     pub fn set_titlebar(&mut self, titlebar: Entity<nucleotide_ui::titlebar::TitleBar>) {
         self.titlebar = Some(titlebar);
     }
@@ -7157,10 +7110,6 @@ impl Workspace {
 
         let workspace_backend = self.core.read(cx).workspace_backend.clone();
 
-        // Classification runs through the active workspace backend later.
-        let project_status = nucleotide_project::project_status_service(cx);
-        project_status.set_project_root(Some(dir.clone()));
-
         // Start VCS monitoring for the new directory
         let vcs_handle = cx.global::<VcsServiceHandle>().service().clone();
         vcs_handle.update(cx, |service, cx| {
@@ -7194,11 +7143,8 @@ impl Workspace {
             // plans the new one and starts its configured servers.
             self.trigger_project_detection_and_lsp_startup(dir, cx);
 
-            // Note: File tree header update will be handled via project status service update
-            // which triggers UI refresh through the project status service
-
             // Refresh UI indicators
-            self.refresh_project_indicators(cx);
+            cx.notify();
         }
     }
 
@@ -7210,12 +7156,6 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         info!(project_root = %project_root.display(), "Starting project detection and LSP coordination");
-
-        // The application session classifies both local and remote roots through
-        // the same marker-name classifier.
-        info!(project_root = %project_root.display(), "Updating project status service with project root");
-        let project_status = nucleotide_project::project_status_service(cx);
-        project_status.set_project_root(Some(project_root.clone()));
 
         let sender = self.core.read(cx).get_project_lsp_command_sender();
         let span = tracing::info_span!(
@@ -7237,13 +7177,10 @@ impl Workspace {
             );
         } else {
             let project_root_display = project_root.display().to_string();
-            let project_status = project_status.clone();
             cx.spawn(async move |this, cx| {
                 let timeout = tokio::time::Duration::from_secs(30);
                 match tokio::time::timeout(timeout, response_rx).await {
                     Ok(Ok(Ok(result))) => {
-                        project_status.set_project_type(result.plan.project_type.clone());
-
                         info!(
                             project_root = %project_root_display,
                             generation = result.generation,
@@ -7254,8 +7191,8 @@ impl Workspace {
                         );
 
                         if let Some(this) = this.upgrade() {
-                            this.update(cx, |workspace, cx| {
-                                workspace.refresh_project_indicators(cx);
+                            this.update(cx, |_, cx| {
+                                cx.notify();
                             });
                         }
                     }
@@ -7285,7 +7222,7 @@ impl Workspace {
         }
 
         // Update UI indicators and refresh project status display
-        self.refresh_project_indicators(cx);
+        cx.notify();
 
         // Process any events that may have been sent during project detection.
         self.core
@@ -7321,43 +7258,10 @@ impl Workspace {
         };
 
         info!("Subscribing workspace to LSP state updates");
-        cx.observe(&lsp_state_entity, |workspace, _lsp_state, cx| {
-            workspace.update_project_status_from_lsp_state(cx);
+        cx.observe(&lsp_state_entity, |_, _lsp_state, cx| {
             cx.notify();
         })
         .detach();
-
-        self.update_project_status_from_lsp_state(cx);
-    }
-
-    /// Update project status indicators based on current LSP state
-    #[instrument(skip(self, cx))]
-    fn update_project_status_from_lsp_state(&mut self, cx: &mut Context<Self>) {
-        if let Some(lsp_state_entity) = self.core.read(cx).lsp_state.clone() {
-            // Get project status service first
-            let project_status = nucleotide_project::project_status_service(cx);
-
-            let lsp_status = project_lsp_status_from_state(lsp_state_entity.read(cx));
-            project_status.update_lsp_status(lsp_status);
-
-            debug!("Updated project status from LSP state");
-        }
-    }
-
-    /// Refresh project indicators and trigger UI updates
-    #[instrument(skip(self, cx))]
-    fn refresh_project_indicators(&mut self, cx: &mut Context<Self>) {
-        debug!("Refreshing project indicators");
-
-        // Update project status from current LSP state if available
-        self.update_project_status_from_lsp_state(cx);
-
-        // Notify UI components to re-render with updated project information
-        cx.notify();
-
-        // Project detection complete - UI will be refreshed via cx.notify()
-
-        info!("Project indicators refreshed");
     }
 
     // Removed - views are created in main.rs and passed in
@@ -7522,374 +7426,6 @@ impl Workspace {
         );
         self.needs_window_appearance_update = true;
         cx.notify(); // Trigger re-render
-    }
-
-    // removed unused update_titlebar_appearance
-
-    // removed unused set_macos_window_appearance (macOS)
-
-    #[cfg(any())]
-    unsafe fn update_titlebar_appearance_native(
-        system_appearance: nucleotide_appearance::SystemAppearance,
-    ) {
-        use nucleotide_appearance::SystemAppearance;
-        use objc2::runtime::AnyObject;
-        use objc2::{class, msg_send};
-        use objc2_app_kit::{NSApplication, NSWindow};
-        use objc2_foundation::{MainThreadMarker, NSArray, NSString};
-
-        // Get all windows from NSApplication instead of just the main window
-
-        let mtm = unsafe { MainThreadMarker::new_unchecked() };
-        let app = NSApplication::sharedApplication(mtm);
-        let windows: &NSArray<NSWindow> = unsafe { msg_send![&**app, windows] };
-        let window_count = windows.count();
-
-        nucleotide_logging::debug!(
-            window_count = window_count,
-            "Found {} windows in NSApplication",
-            window_count
-        );
-
-        // Log details about all windows to make sure we're targeting the right one
-        for i in 0..window_count {
-            let window: *mut AnyObject = msg_send![windows, objectAtIndex: i];
-            let window_title: *mut AnyObject = msg_send![window, title];
-            let title_str = if !window_title.is_null() {
-                let cstr: *const i8 = msg_send![window_title, UTF8String];
-                unsafe { std::ffi::CStr::from_ptr(cstr) }
-                    .to_str()
-                    .unwrap_or("unknown")
-            } else {
-                "nil"
-            };
-            let window_level: i64 = msg_send![window, level];
-            let is_visible: bool = msg_send![window, isVisible];
-            let is_main: bool = msg_send![window, isMainWindow];
-            let is_key: bool = msg_send![window, isKeyWindow];
-
-            nucleotide_logging::debug!(
-                window_index = i,
-                window_title = title_str,
-                window_level = window_level,
-                is_visible = is_visible,
-                is_main = is_main,
-                is_key = is_key,
-                "Window details"
-            );
-        }
-
-        if window_count > 0 {
-            // Find the actual main/key window instead of just taking the first one
-            let mut target_window: *mut AnyObject = std::ptr::null_mut();
-
-            // First try to find the main window
-            for i in 0..window_count {
-                let window: *mut AnyObject = msg_send![windows, objectAtIndex: i];
-                let is_main: bool = msg_send![window, isMainWindow];
-                if is_main {
-                    target_window = window;
-                    nucleotide_logging::debug!(window_index = i, "Found main window");
-                    break;
-                }
-            }
-
-            // If no main window, try to find the key window
-            if target_window.is_null() {
-                for i in 0..window_count {
-                    let window: *mut AnyObject = msg_send![windows, objectAtIndex: i];
-                    let is_key: bool = msg_send![window, isKeyWindow];
-                    if is_key {
-                        target_window = window;
-                        nucleotide_logging::debug!(window_index = i, "Found key window");
-                        break;
-                    }
-                }
-            }
-
-            // If still no target, find the first visible window with a titlebar
-            if target_window.is_null() {
-                for i in 0..window_count {
-                    let window: *mut AnyObject = msg_send![windows, objectAtIndex: i];
-                    let is_visible: bool = msg_send![window, isVisible];
-                    let has_titlebar: bool = msg_send![window, hasTitleBar];
-                    if is_visible && has_titlebar {
-                        target_window = window;
-                        nucleotide_logging::debug!(
-                            window_index = i,
-                            "Found visible window with titlebar"
-                        );
-                        break;
-                    }
-                }
-            }
-
-            // Fall back to first window if all else fails
-            if target_window.is_null() {
-                target_window = msg_send![windows, objectAtIndex: 0];
-                nucleotide_logging::warn!("Falling back to first window");
-            }
-
-            let window = target_window;
-
-            nucleotide_logging::debug!("Found application window, setting appearance");
-
-            // Check window properties that might affect titlebar appearance
-            let style_mask: u64 = msg_send![window, styleMask];
-            let is_titled: bool = (style_mask & 1) != 0; // NSTitledWindowMask
-            let has_titlebar: bool = msg_send![window, hasTitleBar];
-            let titlebar_appears_transparent: bool = msg_send![window, titlebarAppearsTransparent];
-
-            nucleotide_logging::debug!(
-                style_mask = style_mask,
-                is_titled = is_titled,
-                has_titlebar = has_titlebar,
-                titlebar_appears_transparent = titlebar_appears_transparent,
-                "Window titlebar properties"
-            );
-
-            // Check current appearance before setting
-            let current_appearance: *mut AnyObject = msg_send![window, appearance];
-            nucleotide_logging::debug!(
-                current_appearance_is_nil = (current_appearance.is_null()),
-                "Window appearance before setting"
-            );
-
-            // Set the window appearance to match the detected system appearance
-            match system_appearance {
-                SystemAppearance::Dark => {
-                    // Set to dark appearance explicitly
-                    let dark_appearance_name = NSString::from_str("NSAppearanceNameDarkAqua");
-                    let dark_appearance: *mut AnyObject =
-                        msg_send![class!(NSAppearance), appearanceNamed: &*dark_appearance_name];
-                    let _: () = msg_send![window, setAppearance: dark_appearance];
-                    nucleotide_logging::debug!("Set window to dark appearance explicitly");
-                }
-                SystemAppearance::Light => {
-                    // Set to light appearance explicitly
-                    let light_appearance_name = NSString::from_str("NSAppearanceNameAqua");
-                    let light_appearance: *mut AnyObject =
-                        msg_send![class!(NSAppearance), appearanceNamed: &*light_appearance_name];
-                    let _: () = msg_send![window, setAppearance: light_appearance];
-                    nucleotide_logging::debug!("Set window to light appearance explicitly");
-                }
-            }
-
-            // Check appearance after setting and verify it took effect
-            let new_appearance: *mut AnyObject = msg_send![window, appearance];
-            let new_appearance_name: *mut AnyObject = if !new_appearance.is_null() {
-                msg_send![new_appearance, name]
-            } else {
-                std::ptr::null_mut()
-            };
-
-            let appearance_name_str = if !new_appearance_name.is_null() {
-                let cstr: *const i8 = msg_send![new_appearance_name, UTF8String];
-                unsafe { std::ffi::CStr::from_ptr(cstr) }
-                    .to_str()
-                    .unwrap_or("unknown")
-            } else {
-                "nil"
-            };
-
-            nucleotide_logging::info!(
-                system_appearance = ?system_appearance,
-                new_appearance_is_nil = (new_appearance.is_null()),
-                new_appearance_name = appearance_name_str,
-                "Successfully set NSWindow appearance"
-            );
-
-            // Also check the actual effective appearance to see what macOS thinks
-            let effective_appearance: *mut AnyObject = msg_send![window, effectiveAppearance];
-            let effective_appearance_name: *mut AnyObject = if !effective_appearance.is_null() {
-                msg_send![effective_appearance, name]
-            } else {
-                std::ptr::null_mut()
-            };
-
-            let effective_name_str = if !effective_appearance_name.is_null() {
-                let cstr: *const i8 = msg_send![effective_appearance_name, UTF8String];
-                unsafe { std::ffi::CStr::from_ptr(cstr) }
-                    .to_str()
-                    .unwrap_or("unknown")
-            } else {
-                "nil"
-            };
-
-            nucleotide_logging::info!(
-                effective_appearance_name = effective_name_str,
-                "Window effective appearance after setting"
-            );
-
-            // Check if the appearance gets reset by something else shortly after
-            // Schedule a delayed check to see if our setting persists
-
-            std::thread::spawn(move || {
-                std::thread::sleep(std::time::Duration::from_millis(100));
-                unsafe {
-                    let mtm = MainThreadMarker::new_unchecked();
-                    let app = NSApplication::sharedApplication(mtm);
-                    let windows: *mut AnyObject = msg_send![&**app, windows];
-                    let window_count: usize = msg_send![windows, count];
-
-                    if window_count > 0 {
-                        let window: *mut AnyObject = msg_send![windows, objectAtIndex: 0];
-                        let current_appearance: *mut AnyObject = msg_send![window, appearance];
-                        let effective_appearance: *mut AnyObject =
-                            msg_send![window, effectiveAppearance];
-
-                        let current_name = if !current_appearance.is_null() {
-                            let name: *mut AnyObject = msg_send![current_appearance, name];
-                            if !name.is_null() {
-                                let cstr: *const i8 = msg_send![name, UTF8String];
-                                std::ffi::CStr::from_ptr(cstr).to_str().unwrap_or("unknown")
-                            } else {
-                                "nil"
-                            }
-                        } else {
-                            "nil"
-                        };
-
-                        let effective_name = if !effective_appearance.is_null() {
-                            let name: *mut AnyObject = msg_send![effective_appearance, name];
-                            if !name.is_null() {
-                                let cstr: *const i8 = msg_send![name, UTF8String];
-                                std::ffi::CStr::from_ptr(cstr).to_str().unwrap_or("unknown")
-                            } else {
-                                "nil"
-                            }
-                        } else {
-                            "nil"
-                        };
-
-                        nucleotide_logging::warn!(
-                            current_appearance_name = current_name,
-                            effective_appearance_name = effective_name,
-                            "Appearance check 100ms later - did something reset it?"
-                        );
-                    }
-                }
-            });
-        } else {
-            nucleotide_logging::warn!("No windows found in NSApplication, cannot set appearance");
-        }
-    }
-
-    #[cfg(any())]
-    unsafe fn update_titlebar_appearance_native_with_retry(
-        system_appearance: nucleotide_appearance::SystemAppearance,
-        attempt: u32,
-    ) -> bool {
-        use nucleotide_appearance::SystemAppearance;
-        use objc2::runtime::AnyObject;
-        use objc2::{class, msg_send};
-        use objc2_app_kit::{NSApplication, NSWindow};
-        use objc2_foundation::{MainThreadMarker, NSArray, NSString};
-
-        let mtm = unsafe { MainThreadMarker::new_unchecked() };
-        let app = NSApplication::sharedApplication(mtm);
-        let windows: &NSArray<NSWindow> = unsafe { msg_send![&**app, windows] };
-        let window_count = windows.count();
-
-        nucleotide_logging::debug!(
-            attempt = attempt,
-            window_count = window_count,
-            "Retry attempt {} - found {} windows",
-            attempt,
-            window_count
-        );
-
-        if window_count == 0 {
-            return false;
-        }
-
-        // Look for the proper main window - one with a title and main/key status
-        let mut target_window: *mut AnyObject = std::ptr::null_mut();
-
-        for i in 0..window_count {
-            let window: *mut AnyObject = msg_send![windows, objectAtIndex: i];
-            let window_title: *mut AnyObject = msg_send![window, title];
-            let title_str = if !window_title.is_null() {
-                let cstr: *const i8 = msg_send![window_title, UTF8String];
-                unsafe { std::ffi::CStr::from_ptr(cstr) }
-                    .to_str()
-                    .unwrap_or("unknown")
-            } else {
-                "nil"
-            };
-            let is_main: bool = msg_send![window, isMainWindow];
-            let is_key: bool = msg_send![window, isKeyWindow];
-            let has_titlebar: bool = msg_send![window, hasTitleBar];
-
-            nucleotide_logging::debug!(
-                attempt = attempt,
-                window_index = i,
-                window_title = title_str,
-                is_main = is_main,
-                is_key = is_key,
-                has_titlebar = has_titlebar,
-                "Retry window details"
-            );
-
-            // Only target windows that are actually main/key windows with titles and titlebars
-            if (is_main || is_key) && has_titlebar && !title_str.is_empty() && title_str != "nil" {
-                target_window = window;
-                nucleotide_logging::info!(
-                    attempt = attempt,
-                    window_index = i,
-                    window_title = title_str,
-                    "Found proper main window for titlebar appearance"
-                );
-                break;
-            }
-        }
-
-        if target_window.is_null() {
-            nucleotide_logging::debug!(
-                attempt = attempt,
-                "No proper main window found yet, will retry"
-            );
-            return false;
-        }
-
-        // Set the appearance on the proper window
-        let window = target_window;
-        match system_appearance {
-            SystemAppearance::Dark => {
-                let dark_appearance_name = NSString::from_str("NSAppearanceNameDarkAqua");
-                let dark_appearance: *mut AnyObject =
-                    msg_send![class!(NSAppearance), appearanceNamed: &*dark_appearance_name];
-                let _: () = msg_send![window, setAppearance: dark_appearance];
-                nucleotide_logging::info!(
-                    attempt = attempt,
-                    "Set window to dark appearance on proper main window"
-                );
-            }
-            SystemAppearance::Light => {
-                let light_appearance_name = NSString::from_str("NSAppearanceNameAqua");
-                let light_appearance: *mut AnyObject =
-                    msg_send![class!(NSAppearance), appearanceNamed: &*light_appearance_name];
-                let _: () = msg_send![window, setAppearance: light_appearance];
-                nucleotide_logging::info!(
-                    attempt = attempt,
-                    "Set window to light appearance on proper main window"
-                );
-            }
-        }
-
-        true
-    }
-
-    // removed unused ensure_window_follows_system_appearance
-
-    #[cfg(any())]
-    fn ensure_nswindow_follows_system(&self) {
-        // For now, log that we would set the NSWindow appearance to nil
-        nucleotide_logging::info!("Would set NSWindow appearance to nil to follow system");
-
-        // TODO: Implement the actual NSWindow appearance setting
-        // This requires accessing the native window handle through GPUI
-        // and calling [window setAppearance:nil]
     }
 
     fn clear_shaped_lines_cache(&self, cx: &mut Context<Self>) {
@@ -10294,8 +9830,7 @@ impl Workspace {
             | crate::Update::FileNamePrompt(_)
             | crate::Update::Picker(_)
             | crate::Update::DirectoryPicker(_)
-            | crate::Update::RemoteConnectionManager
-            | crate::Update::TerminalPanel(_) => {
+            | crate::Update::RemoteConnectionManager => {
                 self.handle_overlay_update(cx);
             }
             crate::Update::HoverDocs(entries) => {
@@ -15363,34 +14898,6 @@ impl Render for Workspace {
 
         // New default layout
         let content_area = {
-            // Basic layout mode: render simple colored, resizable panes
-            let _ui_theme = cx.global::<nucleotide_ui::Theme>();
-
-            // Left placeholder: File tree (yellow)
-            let _left = div()
-                .relative()
-                .size_full()
-                .min_h(px(0.0))
-                // Ensure solid fill regardless of nested sizing by using an absolute overlay
-                .child(
-                    div().absolute().top_0().left_0().size_full().bg(cx
-                        .theme()
-                        .tokens
-                        .chrome
-                        .surface),
-                )
-                .child(
-                    div()
-                        .absolute()
-                        .top_0()
-                        .left_0()
-                        .px(px(6.0))
-                        .py(px(2.0))
-                        .bg(cx.theme().tokens.chrome.surface_active)
-                        .text_color(cx.theme().tokens.chrome.text_on_chrome)
-                        .child("FILE TREE"),
-                );
-
             // Right: actual editor views + bottom terminal panel using shared split
             let right = {
                 let panel_max = (available_h * 0.85).max(120.0).min(max_term);
@@ -17684,28 +17191,6 @@ mod tests {
             .await,
             Some(WorkspaceSelectionTarget::Directory)
         );
-    }
-
-    #[test]
-    fn project_lsp_status_snapshot_maps_application_state() {
-        let running_id: helix_lsp::LanguageServerId = KeyData::from_ffi(71).into();
-        let failed_id: helix_lsp::LanguageServerId = KeyData::from_ffi(72).into();
-        let mut state = nucleotide_lsp::LspState::new();
-        state.register_server(running_id, "rust-analyzer".to_string(), None);
-        state.update_server_status(running_id, nucleotide_lsp::ServerStatus::Running);
-        state.register_server(failed_id, "pylsp".to_string(), None);
-        state.update_server_status(
-            failed_id,
-            nucleotide_lsp::ServerStatus::Failed("exited".to_string()),
-        );
-
-        let status = project_lsp_status_from_state(&state);
-
-        assert_eq!(status.total_servers, 2);
-        assert_eq!(status.running_servers, 1);
-        assert_eq!(status.failed_servers, 1);
-        assert_eq!(status.initializing_servers, 0);
-        assert!(!status.has_diagnostics);
     }
 
     #[test]
