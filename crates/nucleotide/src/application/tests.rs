@@ -1760,9 +1760,8 @@ fn new_test_workspace_with_runtime<'a>(
             local_workspace_backend(),
             handle.clone(),
         );
-        let path = helix_stdx::path::canonicalize(path);
         core.project_directory = Some(path.parent().unwrap().to_path_buf());
-        core.editor.open(&path, Action::VerticalSplit).unwrap();
+        core.editor.open(path, Action::VerticalSplit).unwrap();
     });
     cx.update(|cx| {
         nucleotide_appearance::SystemAppearance::init(cx);
