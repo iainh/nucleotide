@@ -1491,8 +1491,12 @@ mod tests {
         temp
     }
 
+    fn test_diff_path(index: usize) -> PathBuf {
+        std::env::temp_dir().join(format!("repo/file-{index}.rs"))
+    }
+
     fn insert_test_diff(service: &mut VcsService, index: usize) -> PathBuf {
-        let path = PathBuf::from(format!("/repo/file-{index}.rs"));
+        let path = test_diff_path(index);
         service.insert_file_diff(path.clone(), Vec::new());
         path
     }
@@ -1867,17 +1871,10 @@ mod tests {
         }
 
         assert_eq!(service.diff_hunks_cache.len(), DIFF_CACHE_CAPACITY);
+        assert!(service.get_diff_hunks(&test_diff_path(0)).is_none());
         assert!(
             service
-                .get_diff_hunks(Path::new("/repo/file-0.rs"))
-                .is_none()
-        );
-        assert!(
-            service
-                .get_diff_hunks(Path::new(&format!(
-                    "/repo/file-{}.rs",
-                    DIFF_CACHE_CAPACITY + 9
-                )))
+                .get_diff_hunks(&test_diff_path(DIFF_CACHE_CAPACITY + 9))
                 .is_some()
         );
     }
@@ -1892,16 +1889,8 @@ mod tests {
         insert_test_diff(&mut service, 0);
         insert_test_diff(&mut service, DIFF_CACHE_CAPACITY);
 
-        assert!(
-            service
-                .get_diff_hunks(Path::new("/repo/file-0.rs"))
-                .is_some()
-        );
-        assert!(
-            service
-                .get_diff_hunks(Path::new("/repo/file-1.rs"))
-                .is_none()
-        );
+        assert!(service.get_diff_hunks(&test_diff_path(0)).is_some());
+        assert!(service.get_diff_hunks(&test_diff_path(1)).is_none());
         assert_eq!(service.diff_hunks_cache.len(), DIFF_CACHE_CAPACITY);
     }
 }
