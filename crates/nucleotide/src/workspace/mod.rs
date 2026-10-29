@@ -1054,9 +1054,9 @@ pub struct Workspace {
     environment_badge: Option<EnvironmentBadge>,
     _pending_lsp_startup: Option<std::path::PathBuf>, // Track pending server startup requests
     prefix_extractor: PrefixExtractor,                // Language-aware completion prefix extraction
-    about_window: Entity<AboutWindow>,                // About dialog window
-    theme_debug: Entity<nucleotide_ui::ThemeDebugView>, // Theme debug overlay
-    component_gallery: Entity<nucleotide_ui::ComponentGallery>, // Interactive component gallery
+    about_window: Option<Entity<AboutWindow>>,        // Created on first use
+    theme_debug: Option<Entity<nucleotide_ui::ThemeDebugView>>,
+    component_gallery: Option<Entity<nucleotide_ui::ComponentGallery>>,
     update_controller: Entity<UpdateController>,
     update_dialog: Entity<UpdateDialog>,
     notified_update_version: Option<String>,
@@ -1372,26 +1372,6 @@ enum WorkspaceSelectionTarget {
     Directory,
 }
 
-#[cfg(test)]
-fn file_operation_notification_succeeded(notification: &LspFileOperationNotification) -> bool {
-    let backend = local_workspace_backend();
-    futures_executor::block_on(file_operation_notification_succeeded_with_backend_async(
-        &backend,
-        notification,
-    ))
-}
-
-fn file_kind_matches_dir(kind: FileKind, is_dir: bool) -> bool {
-    (kind == FileKind::Directory) == is_dir
-}
-
-async fn file_kind_for_path_async(
-    backend: &WorkspaceBackendHandle,
-    path: &Path,
-) -> Option<FileKind> {
-    backend.stat(path).await.ok().map(|stat| stat.kind)
-}
-
 fn workspace_selection_target_from_file_kind(kind: FileKind) -> Option<WorkspaceSelectionTarget> {
     match kind {
         FileKind::File | FileKind::Symlink => Some(WorkspaceSelectionTarget::File),
@@ -1450,47 +1430,6 @@ fn context_menu_target_parent_path(clicked: &Path, is_directory: bool) -> PathBu
             .unwrap_or_else(|| std::path::Path::new("."))
             .to_path_buf()
     }
-}
-
-async fn file_operation_notification_succeeded_with_backend_async(
-    backend: &WorkspaceBackendHandle,
-    notification: &LspFileOperationNotification,
-) -> bool {
-    match notification {
-        LspFileOperationNotification::Created { path, is_dir } => {
-            file_kind_for_path_async(backend, path)
-                .await
-                .is_some_and(|kind| file_kind_matches_dir(kind, *is_dir))
-        }
-        LspFileOperationNotification::Deleted { path, .. } => {
-            file_kind_for_path_async(backend, path).await.is_none()
-        }
-        LspFileOperationNotification::Renamed {
-            old_path,
-            new_path,
-            was_dir,
-        } => {
-            old_path != new_path
-                && file_kind_for_path_async(backend, old_path).await.is_none()
-                && file_kind_for_path_async(backend, new_path)
-                    .await
-                    .is_some_and(|kind| file_kind_matches_dir(kind, *was_dir))
-        }
-    }
-}
-
-async fn wait_for_file_operation_notification(
-    backend: WorkspaceBackendHandle,
-    notification: LspFileOperationNotification,
-) -> bool {
-    for _ in 0..50 {
-        if file_operation_notification_succeeded_with_backend_async(&backend, &notification).await {
-            return true;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
-
-    false
 }
 
 const GLOBAL_SEARCH_RESULT_LIMIT: usize = 5000;
@@ -5600,10 +5539,6 @@ impl Workspace {
             info!("Workspace: No file tree to subscribe to");
         }
 
-        // Create debug and informational modal views
-        let about_window = cx.new(AboutWindow::new);
-        let theme_debug = cx.new(nucleotide_ui::ThemeDebugView::new);
-        let component_gallery = cx.new(nucleotide_ui::ComponentGallery::new);
         let update_dialog = cx.new(|cx| UpdateDialog::new(update_controller.clone(), cx));
 
         let doc_sidebar_scroll_handle = ScrollHandle::new();
@@ -5679,9 +5614,9 @@ impl Workspace {
             environment_badge: None,
             _pending_lsp_startup: None,
             prefix_extractor: PrefixExtractor::new(),
-            about_window,
-            theme_debug,
-            component_gallery,
+            about_window: None,
+            theme_debug: None,
+            component_gallery: None,
             update_controller,
             update_dialog,
             notified_update_version: None,
@@ -6200,12 +6135,12 @@ impl Workspace {
                     mode,
                 },
             };
-            self.dispatch_workspace_file_op_and_process(event, cx);
             let notification = LspFileOperationNotification::Deleted {
                 path: path.clone(),
                 was_dir,
             };
-            self.observe_file_operation_completion(
+            self.dispatch_workspace_file_op_and_process(
+                event,
                 notification,
                 path.parent().map(|parent| parent.to_path_buf()),
                 cx,
@@ -8861,10 +8796,8 @@ impl Workspace {
         // Clear the overlay and dispatch the event
         self.overlay
             .update(cx, |overlay, cx| overlay.dismiss_all(cx));
-        self.dispatch_workspace_file_op_and_process(event, cx);
-
         if let Some(notification) = lsp_file_operation {
-            self.observe_file_operation_completion(notification, refresh_dir, cx);
+            self.dispatch_workspace_file_op_and_process(event, notification, refresh_dir, cx);
         }
     }
 
@@ -11887,44 +11820,31 @@ impl Workspace {
         });
     }
 
-    fn observe_file_operation_completion(
+    fn dispatch_workspace_file_op_and_process(
         &mut self,
+        event: nucleotide_events::workspace::Event,
         notification: LspFileOperationNotification,
         refresh_dir: Option<PathBuf>,
         cx: &mut Context<Self>,
     ) {
-        let workspace_backend = self.core.read(cx).workspace_backend.clone();
-        let runtime_handle = self.handle.clone();
+        let Some(operation) = self.core.read(cx).workspace_file_ops.dispatch(&event) else {
+            return;
+        };
 
         cx.spawn(async move |this, cx| {
-            let notification_for_task = notification.clone();
-            let observed = match runtime_handle
-                .spawn(wait_for_file_operation_notification(
-                    workspace_backend,
-                    notification_for_task,
-                ))
-                .await
-            {
-                Ok(observed) => observed,
-                Err(error) => {
-                    warn!(
-                        error = %error,
-                        ?notification,
-                        "File operation completion observer failed"
-                    );
-                    false
-                }
+            let result = match operation.await {
+                Ok(result) => result.map_err(|error| error.to_string()),
+                Err(error) => Err(format!("File operation task failed: {error}")),
             };
 
             if let Some(this) = this.upgrade() {
                 this.update(cx, |workspace, cx| {
-                    if observed {
-                        workspace.notify_lsp_file_operation(notification.clone(), cx);
-                    } else {
-                        warn!(
-                            ?notification,
-                            "File operation was not observed in workspace backend before timeout"
-                        );
+                    match result {
+                        Ok(()) => workspace.notify_lsp_file_operation(notification, cx),
+                        Err(error) => workspace.core.update(cx, |core, cx| {
+                            core.editor.set_error(error);
+                            cx.notify();
+                        }),
                     }
 
                     if let Some(refresh_dir) = refresh_dir.as_ref() {
@@ -11934,14 +11854,6 @@ impl Workspace {
             }
         })
         .detach();
-    }
-
-    fn dispatch_workspace_file_op_and_process(
-        &mut self,
-        event: nucleotide_events::workspace::Event,
-        cx: &mut Context<Self>,
-    ) {
-        self.core.read(cx).workspace_file_ops.dispatch(&event);
     }
 
     fn handle_vcs_service_event(&mut self, event: &VcsEvent, cx: &mut Context<Self>) {
@@ -14878,7 +14790,12 @@ impl Render for Workspace {
 
         workspace_div = workspace_div.on_action(cx.listener(
             move |workspace, _: &crate::actions::help::About, window, cx| {
-                let about_window = workspace.about_window.clone();
+                let about_window = workspace
+                    .about_window
+                    .get_or_insert_with(|| {
+                        cx.new(|cx| AboutWindow::new(Some(env!("NUCLEOTIDE_GIT_COMMIT")), cx))
+                    })
+                    .clone();
                 workspace.modal_layer.update(cx, |layer, cx| {
                     layer.show_modal(about_window, window, cx);
                 });
@@ -14927,7 +14844,10 @@ impl Render for Workspace {
         // Theme Debug action opens the overlay
         workspace_div = workspace_div.on_action(cx.listener(
             move |workspace, _: &crate::actions::help::ThemeDebug, window, cx| {
-                let theme_debug = workspace.theme_debug.clone();
+                let theme_debug = workspace
+                    .theme_debug
+                    .get_or_insert_with(|| cx.new(nucleotide_ui::ThemeDebugView::new))
+                    .clone();
                 workspace.modal_layer.update(cx, |layer, cx| {
                     layer.show_modal(theme_debug, window, cx);
                 });
@@ -14936,7 +14856,10 @@ impl Render for Workspace {
 
         workspace_div = workspace_div.on_action(cx.listener(
             move |workspace, _: &crate::actions::help::ComponentGallery, window, cx| {
-                let component_gallery = workspace.component_gallery.clone();
+                let component_gallery = workspace
+                    .component_gallery
+                    .get_or_insert_with(|| cx.new(nucleotide_ui::ComponentGallery::new))
+                    .clone();
                 workspace.modal_layer.update(cx, |layer, cx| {
                     layer.show_modal(component_gallery, window, cx);
                 });
@@ -18554,39 +18477,6 @@ mod tests {
             recent.back(),
             Some(&PathBuf::from(r"C:\Users\Example\project-2"))
         );
-    }
-
-    #[test]
-    fn file_operation_notification_success_tracks_disk_state() {
-        let dir = tempfile::tempdir().unwrap();
-        let created_file = dir.path().join("created.rs");
-        std::fs::write(&created_file, "").unwrap();
-        assert!(file_operation_notification_succeeded(
-            &LspFileOperationNotification::Created {
-                path: created_file,
-                is_dir: false,
-            }
-        ));
-
-        let deleted_file = dir.path().join("deleted.rs");
-        assert!(!deleted_file.exists());
-        assert!(file_operation_notification_succeeded(
-            &LspFileOperationNotification::Deleted {
-                path: deleted_file,
-                was_dir: false,
-            }
-        ));
-
-        let old_path = dir.path().join("old.rs");
-        let new_path = dir.path().join("new.rs");
-        std::fs::write(&new_path, "").unwrap();
-        assert!(file_operation_notification_succeeded(
-            &LspFileOperationNotification::Renamed {
-                old_path,
-                new_path,
-                was_dir: false,
-            }
-        ));
     }
 
     #[test]

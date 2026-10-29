@@ -2,11 +2,10 @@
 // ABOUTME: Routes file tree mutations through WorkspaceBackend instead of host filesystem calls
 
 use std::{
-    future::Future,
     io,
     path::{Path, PathBuf},
-    process::Command,
 };
+use tokio::{process::Command, task::JoinHandle};
 
 use nucleotide_events::workspace::{
     DeleteMode, Event as WorkspaceEvent, FileOpIntent, PathCopyKind,
@@ -14,6 +13,7 @@ use nucleotide_events::workspace::{
 use nucleotide_logging::{error, info, warn};
 use nucleotide_workspace::{WorkspaceBackendHandle, WorkspaceError, WorkspaceIdentity};
 
+#[derive(Clone)]
 pub struct WorkspaceFileOpHandler {
     backend: WorkspaceBackendHandle,
     runtime: tokio::runtime::Handle,
@@ -37,72 +37,30 @@ impl WorkspaceFileOpHandler {
         Ok(parent.join(name))
     }
 
-    fn spawn_file_op<F>(&self, intent: FileOpIntent, future: F)
-    where
-        F: Future<Output = Result<(), WorkspaceError>> + Send + 'static,
-    {
-        self.runtime.spawn(async move {
-            if let Err(err) = future.await {
-                error!(error = %err, intent = ?intent, "Failed to perform workspace file operation");
-            }
-        });
-    }
-
-    fn handle_new_file(&self, parent: &Path, name: &str) -> Result<(), WorkspaceError> {
+    async fn handle_new_file(&self, parent: &Path, name: &str) -> Result<(), WorkspaceError> {
         let path = Self::create_child_path(parent, name, "create file")?;
-        let backend = self.backend.clone();
-        self.spawn_file_op(
-            FileOpIntent::NewFile {
-                parent: parent.to_path_buf(),
-                name: name.to_string(),
-            },
-            async move {
-                backend.create_file(&path).await?;
-                Ok(())
-            },
-        );
+        self.backend.create_file(&path).await?;
         Ok(())
     }
 
-    fn handle_new_folder(&self, parent: &Path, name: &str) -> Result<(), WorkspaceError> {
+    async fn handle_new_folder(&self, parent: &Path, name: &str) -> Result<(), WorkspaceError> {
         let path = Self::create_child_path(parent, name, "create directory")?;
-        let backend = self.backend.clone();
-        self.spawn_file_op(
-            FileOpIntent::NewFolder {
-                parent: parent.to_path_buf(),
-                name: name.to_string(),
-            },
-            async move {
-                backend.create_dir(&path).await?;
-                Ok(())
-            },
-        );
+        self.backend.create_dir(&path).await?;
         Ok(())
     }
 
-    fn handle_rename(&self, path: &Path, new_name: &str) -> Result<(), WorkspaceError> {
+    async fn handle_rename(&self, path: &Path, new_name: &str) -> Result<(), WorkspaceError> {
         let parent = path.parent().ok_or_else(|| WorkspaceError::CommandFailed {
             operation: "rename path",
             path: path.to_path_buf(),
             message: "path has no parent".to_string(),
         })?;
         let new_path = Self::create_child_path(parent, new_name, "rename path")?;
-        let old_path = path.to_path_buf();
-        let backend = self.backend.clone();
-        self.spawn_file_op(
-            FileOpIntent::Rename {
-                path: old_path.clone(),
-                new_name: new_name.to_string(),
-            },
-            async move {
-                backend.rename_path(&old_path, &new_path).await?;
-                Ok(())
-            },
-        );
+        self.backend.rename_path(path, &new_path).await?;
         Ok(())
     }
 
-    fn handle_delete(&self, path: &Path, mode: DeleteMode) -> Result<(), WorkspaceError> {
+    async fn handle_delete(&self, path: &Path, mode: DeleteMode) -> Result<(), WorkspaceError> {
         if mode == DeleteMode::Trash {
             return Err(WorkspaceError::CommandFailed {
                 operation: "move path to trash",
@@ -110,61 +68,39 @@ impl WorkspaceFileOpHandler {
                 message: "trash delete is not supported by workspace backends".to_string(),
             });
         }
-        let path = path.to_path_buf();
-        let backend = self.backend.clone();
-        self.spawn_file_op(
-            FileOpIntent::Delete {
-                path: path.clone(),
-                mode,
-            },
-            async move {
-                backend.delete_path(&path).await?;
-                Ok(())
-            },
-        );
+        self.backend.delete_path(path).await?;
         Ok(())
     }
 
-    fn handle_duplicate(&self, path: &Path, target_name: &str) -> Result<(), WorkspaceError> {
+    async fn handle_duplicate(&self, path: &Path, target_name: &str) -> Result<(), WorkspaceError> {
         let parent = path.parent().ok_or_else(|| WorkspaceError::CommandFailed {
             operation: "copy path",
             path: path.to_path_buf(),
             message: "path has no parent".to_string(),
         })?;
         let target_path = Self::create_child_path(parent, target_name, "copy path")?;
-        let source_path = path.to_path_buf();
-        let backend = self.backend.clone();
-        self.spawn_file_op(
-            FileOpIntent::Duplicate {
-                path: source_path.clone(),
-                target_name: target_name.to_string(),
-            },
-            async move {
-                backend.copy_path(&source_path, &target_path).await?;
-                Ok(())
-            },
-        );
+        self.backend.copy_path(path, &target_path).await?;
         Ok(())
     }
 
-    fn handle_file_op(&self, intent: &FileOpIntent) -> Result<(), WorkspaceError> {
+    async fn handle_file_op(&self, intent: &FileOpIntent) -> Result<(), WorkspaceError> {
         match intent {
-            FileOpIntent::NewFile { parent, name } => self.handle_new_file(parent, name),
-            FileOpIntent::NewFolder { parent, name } => self.handle_new_folder(parent, name),
-            FileOpIntent::Rename { path, new_name } => self.handle_rename(path, new_name),
-            FileOpIntent::Delete { path, mode } => self.handle_delete(path, *mode),
+            FileOpIntent::NewFile { parent, name } => self.handle_new_file(parent, name).await,
+            FileOpIntent::NewFolder { parent, name } => self.handle_new_folder(parent, name).await,
+            FileOpIntent::Rename { path, new_name } => self.handle_rename(path, new_name).await,
+            FileOpIntent::Delete { path, mode } => self.handle_delete(path, *mode).await,
             FileOpIntent::Duplicate { path, target_name } => {
-                self.handle_duplicate(path, target_name)
+                self.handle_duplicate(path, target_name).await
             }
             FileOpIntent::CopyPath { path, kind } => {
                 log_path_intent("CopyPath", path, *kind);
                 Ok(())
             }
-            FileOpIntent::RevealInOs { path } => self.handle_reveal_in_os(path),
+            FileOpIntent::RevealInOs { path } => self.handle_reveal_in_os(path).await,
         }
     }
 
-    fn handle_reveal_in_os(&self, path: &Path) -> Result<(), WorkspaceError> {
+    async fn handle_reveal_in_os(&self, path: &Path) -> Result<(), WorkspaceError> {
         if !should_reveal_in_os(&self.backend.identity()) {
             warn!(
                 path = %path.display(),
@@ -174,21 +110,34 @@ impl WorkspaceFileOpHandler {
             return Ok(());
         }
 
-        reveal_path_in_os(path).map_err(|source| WorkspaceError::Io {
-            operation: "reveal path in OS",
-            path: path.to_path_buf(),
-            source,
-        })
+        reveal_path_in_os(path)
+            .await
+            .map_err(|source| WorkspaceError::Io {
+                operation: "reveal path in OS",
+                path: path.to_path_buf(),
+                source,
+            })
     }
 
-    pub fn dispatch(&self, event: &WorkspaceEvent) {
+    /// Start an operation and return its actual result, including validation and backend errors.
+    /// Dropping the handle leaves the operation running; unobserved errors are still logged.
+    pub fn dispatch(
+        &self,
+        event: &WorkspaceEvent,
+    ) -> Option<JoinHandle<Result<(), WorkspaceError>>> {
         let WorkspaceEvent::FileOpRequested { intent } = event else {
-            return;
+            return None;
         };
 
-        if let Err(err) = self.handle_file_op(intent) {
-            error!(error = %err, intent = ?intent, "Failed to perform workspace file operation");
-        }
+        let handler = self.clone();
+        let intent = intent.clone();
+        Some(self.runtime.spawn(async move {
+            let result = handler.handle_file_op(&intent).await;
+            if let Err(err) = &result {
+                error!(error = %err, intent = ?intent, "Failed to perform workspace file operation");
+            }
+            result
+        }))
     }
 }
 
@@ -264,10 +213,13 @@ fn reveal_command_for_path(path: &Path) -> Option<RevealCommand> {
     None
 }
 
-fn reveal_path_in_os(path: &Path) -> io::Result<()> {
+async fn reveal_path_in_os(path: &Path) -> io::Result<()> {
     let command = reveal_command_for_path(path)
         .ok_or_else(|| io::Error::other("Reveal in OS is unsupported on this platform"))?;
-    let status = Command::new(command.program).args(command.args).status()?;
+    let status = Command::new(command.program)
+        .args(command.args)
+        .status()
+        .await?;
     if status.success() {
         Ok(())
     } else {
@@ -342,15 +294,23 @@ mod tests {
         assert_eq!(command.args, vec![format!("/select,{}", path.display())]);
     }
 
-    #[test]
-    fn trash_delete_is_rejected_by_backend_handler() {
-        let runtime = tokio::runtime::Runtime::new().unwrap();
+    #[tokio::test]
+    async fn trash_delete_is_rejected_by_backend_handler() {
         let handler = WorkspaceFileOpHandler::new(
             nucleotide_workspace::local_workspace_backend(),
-            runtime.handle().clone(),
+            tokio::runtime::Handle::current(),
         );
 
-        let result = handler.handle_delete(Path::new("/tmp/delete-me"), DeleteMode::Trash);
+        let result = handler
+            .dispatch(&WorkspaceEvent::FileOpRequested {
+                intent: FileOpIntent::Delete {
+                    path: PathBuf::from("/tmp/delete-me"),
+                    mode: DeleteMode::Trash,
+                },
+            })
+            .unwrap()
+            .await
+            .unwrap();
 
         assert!(matches!(
             result,
@@ -362,7 +322,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn file_op_handler_creates_file_with_backend() {
+    async fn file_op_handler_completes_backend_mutations() {
         let temp_dir = tempfile::tempdir().unwrap();
         let created_path = temp_dir.path().join("new.rs");
         let handler = WorkspaceFileOpHandler::new(
@@ -370,20 +330,93 @@ mod tests {
             tokio::runtime::Handle::current(),
         );
 
-        handler.dispatch(&WorkspaceEvent::FileOpRequested {
-            intent: FileOpIntent::NewFile {
-                parent: temp_dir.path().to_path_buf(),
-                name: "new.rs".to_string(),
-            },
-        });
+        handler
+            .dispatch(&WorkspaceEvent::FileOpRequested {
+                intent: FileOpIntent::NewFile {
+                    parent: temp_dir.path().to_path_buf(),
+                    name: "new.rs".to_string(),
+                },
+            })
+            .unwrap()
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(created_path.is_file());
+        std::fs::write(&created_path, "original contents").unwrap();
 
-        for _ in 0..50 {
-            if created_path.exists() {
-                return;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        for intent in [
+            FileOpIntent::Duplicate {
+                path: created_path.clone(),
+                target_name: "copy.rs".into(),
+            },
+            FileOpIntent::Rename {
+                path: created_path.clone(),
+                new_name: "renamed.rs".into(),
+            },
+            FileOpIntent::Delete {
+                path: temp_dir.path().join("renamed.rs"),
+                mode: DeleteMode::Permanent,
+            },
+            FileOpIntent::NewFolder {
+                parent: temp_dir.path().to_path_buf(),
+                name: "folder".into(),
+            },
+        ] {
+            handler
+                .dispatch(&WorkspaceEvent::FileOpRequested { intent })
+                .unwrap()
+                .await
+                .unwrap()
+                .unwrap();
         }
 
-        panic!("timed out waiting for async file creation");
+        assert_eq!(
+            std::fs::read_to_string(temp_dir.path().join("copy.rs")).unwrap(),
+            "original contents"
+        );
+        assert!(!created_path.exists());
+        assert!(!temp_dir.path().join("renamed.rs").exists());
+        assert!(temp_dir.path().join("folder").is_dir());
+    }
+
+    #[tokio::test]
+    async fn file_op_completion_reports_validation_and_backend_errors() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let handler = WorkspaceFileOpHandler::new(
+            nucleotide_workspace::local_workspace_backend(),
+            tokio::runtime::Handle::current(),
+        );
+
+        let error = handler
+            .dispatch(&WorkspaceEvent::FileOpRequested {
+                intent: FileOpIntent::NewFile {
+                    parent: temp_dir.path().to_path_buf(),
+                    name: "../escape.rs".into(),
+                },
+            })
+            .unwrap()
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert!(matches!(error, WorkspaceError::CommandFailed { .. }));
+
+        // The destination already exists, but a failed copy must still report failure.
+        // Polling its metadata would incorrectly report this operation as successful.
+        let destination = temp_dir.path().join("existing.rs");
+        std::fs::write(&destination, "unchanged").unwrap();
+        let error = handler
+            .dispatch(&WorkspaceEvent::FileOpRequested {
+                intent: FileOpIntent::Duplicate {
+                    path: temp_dir.path().join("missing.rs"),
+                    target_name: "existing.rs".into(),
+                },
+            })
+            .unwrap()
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert!(matches!(error, WorkspaceError::Io { source, .. }
+            if source.kind() == io::ErrorKind::AlreadyExists));
+        assert_eq!(std::fs::read_to_string(destination).unwrap(), "unchanged");
     }
 }

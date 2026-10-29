@@ -5820,7 +5820,6 @@ dependencies = [
  "nucleotide-core",
  "nucleotide-events",
  "nucleotide-logging",
- "nucleotide-process",
  "nucleotide-types",
  "pulldown-cmark",
  "raw-window-handle",

@@ -13,6 +13,12 @@ because scratch buffers are preserved.
 
 Opening an individual file does not close existing buffers.
 
+When detecting a project from a file or the startup directory, Nucleotide checks
+ancestor `Cargo.toml` files for a workspace table. The nearest Cargo workspace
+takes precedence over a member crate's manifest or other project markers. Without
+a Cargo workspace, file-based detection uses the nearest project marker; startup
+directory detection uses the nearest VCS marker or the startup directory itself.
+
 ## Dragging files into the window
 
 Drag one or more files from your file manager into the Nucleotide window to
