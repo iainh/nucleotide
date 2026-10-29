@@ -23,6 +23,7 @@ use nucleotide_types::VcsStatus;
 use std::{collections::HashMap, ops::Range, path::PathBuf, sync::Arc};
 
 pub(crate) const PICKER_CONTEXT: &str = "Picker";
+pub const PICKER_PREVIEW_MAX_BYTES: usize = 10 * 1024;
 
 pub(crate) fn init(cx: &mut App) {
     cx.bind_keys([
@@ -526,6 +527,8 @@ impl PickerView {
         self.preview_view_id = None;
         self.preview_content = None;
         self.preview_content_path = None;
+        self.preview_task = None;
+        self.preview_loading = false;
         // VCS status will be fetched from global service as needed
         self.rebuild_diagnostic_display_rows();
         self
@@ -945,18 +948,15 @@ impl PickerView {
 
         let candidate = candidate.to_lowercase();
         if let Some(position) = candidate.find(&query) {
-            return Some(10_000usize.saturating_sub(position));
+            return Some(10_000usize.saturating_sub(candidate[..position].chars().count()));
         }
 
         let mut score = 0usize;
-        let mut search_start = 0usize;
+        let mut candidate_chars = candidate.chars().enumerate();
         let mut last_match = None;
 
         for query_char in query.chars().filter(|ch| !ch.is_whitespace()) {
-            let relative_match = candidate[search_start..]
-                .char_indices()
-                .find_map(|(idx, candidate_char)| (candidate_char == query_char).then_some(idx))?;
-            let match_idx = search_start + relative_match;
+            let (match_idx, _) = candidate_chars.find(|(_, ch)| *ch == query_char)?;
 
             score += 100;
             if let Some(previous_idx) = last_match {
@@ -969,7 +969,6 @@ impl PickerView {
                 score = score.saturating_sub(match_idx.min(50));
             }
 
-            search_start = match_idx + query_char.len_utf8();
             last_match = Some(match_idx);
         }
 
@@ -1101,6 +1100,10 @@ impl PickerView {
     }
 
     fn load_preview_for_selected_item(&mut self, cx: &mut Context<Self>) {
+        // A selection change owns a new preview, including when it has no result.
+        // Dropping the old task cancels its foreground completion.
+        self.cleanup_preview_document(cx);
+        self.preview_content = None;
         if !self.show_preview {
             return;
         }
@@ -1218,11 +1221,12 @@ impl PickerView {
                     })
                     .unwrap_or(false);
 
+                this.preview_loading = false;
                 if !selected_item_still_current {
+                    cx.notify();
                     return;
                 }
 
-                this.preview_loading = false;
                 match result {
                     Some((text, path)) => {
                         this.preview_content = Some(text);
@@ -1241,10 +1245,6 @@ impl PickerView {
     }
 
     fn load_file_preview(&mut self, path: std::path::PathBuf, cx: &mut Context<Self>) {
-        if self.preview_loading {
-            return;
-        }
-
         // Clean up previous preview document if any
         self.cleanup_preview_document(cx);
 
@@ -1256,8 +1256,11 @@ impl PickerView {
         // Capability-driven open is not used in this minimal integration; rely on callbacks
         // When spawning from Context<T>, the closure gets WeakEntity<T> as first param
         let preview_path = path.clone();
-        self.preview_task = Some(cx.spawn(async move |view_weak, cx| {
-            let content = if path.is_dir() {
+        let read = cx.background_executor().spawn(async move {
+            use std::io::Read;
+
+            let is_dir = path.is_dir();
+            let content = if is_dir {
                 // Load directory listing
                 match std::fs::read_dir(&path) {
                     Ok(entries) => {
@@ -1292,14 +1295,30 @@ impl PickerView {
                     Err(e) => format!("Error reading directory: {e}"),
                 }
             } else {
-                // Load file content
-                match std::fs::read_to_string(&path) {
-                    Ok(content) => {
-                        if content.len() > 10000 {
+                // Read only a bounded prefix, with one lookahead byte for truncation.
+                let read = std::fs::File::open(&path).and_then(|file| {
+                    let size = file.metadata()?.len();
+                    let mut bytes = Vec::new();
+                    file.take(PICKER_PREVIEW_MAX_BYTES as u64 + 1)
+                        .read_to_end(&mut bytes)?;
+                    let truncated = bytes.len() > PICKER_PREVIEW_MAX_BYTES;
+                    bytes.truncate(PICKER_PREVIEW_MAX_BYTES);
+                    let text = match std::str::from_utf8(&bytes) {
+                        Ok(text) => text,
+                        Err(err) if truncated && err.error_len().is_none() => {
+                            std::str::from_utf8(&bytes[..err.valid_up_to()]).unwrap()
+                        }
+                        Err(err) => return Err(std::io::Error::other(err)),
+                    };
+                    Ok((text.to_owned(), truncated, size))
+                });
+                match read {
+                    Ok((content, truncated, size)) => {
+                        if truncated {
                             format!(
                                 "{}\n\n[File truncated - showing first 10KB of {}KB total]",
-                                str_prefix_at_byte_limit(&content, 10000),
-                                content.len() / 1024
+                                content,
+                                size / 1024
                             )
                         } else {
                             content
@@ -1319,10 +1338,14 @@ impl PickerView {
                     }
                 }
             };
+            (content, is_dir)
+        });
+        self.preview_task = Some(cx.spawn(async move |view_weak, cx| {
+            let (content, is_dir) = read.await;
 
             _ = view_weak.update(cx, |this, cx| {
                 // For directories, just show the content as before
-                if path.is_dir() {
+                if is_dir {
                     this.preview_loading = false;
                     this.preview_content = Some(content);
                     this.preview_content_path = Some(preview_path.clone());
@@ -1331,9 +1354,10 @@ impl PickerView {
                 }
 
                 // If we didn't manage to open via capability earlier, try legacy callback
-                if (this.preview_doc_id.is_none() || this.preview_view_id.is_none())
+                if this.preview_text_renderer_cb.is_none()
+                    && (this.preview_doc_id.is_none() || this.preview_view_id.is_none())
                     && let Some(open_preview) = &this.open_preview_cb
-                    && let Some((doc_id, view_id)) = open_preview(&path, cx)
+                    && let Some((doc_id, view_id)) = open_preview(&preview_path, cx)
                 {
                     this.preview_doc_id = Some(doc_id);
                     this.preview_view_id = Some(view_id);
@@ -1361,6 +1385,7 @@ impl PickerView {
     fn cleanup_preview_document(&mut self, cx: &mut Context<Self>) {
         // Cancel any pending preview task
         self.preview_task = None;
+        self.preview_loading = false;
         self.preview_content_path = None;
 
         // Only clean up if we have both doc_id and view_id
@@ -2155,12 +2180,13 @@ impl PickerView {
                                                         .child("Preview available (no renderer)")
                                                         .into_any_element()
                                                 }
-                                            } else if let (Some(text), Some(renderer)) = (
+                                            } else if !self.preview_loading && let (Some(text), Some(renderer)) = (
                                                 self.preview_content.as_deref(),
                                                 self.preview_text_renderer_cb.as_ref(),
                                             ) {
                                                 (renderer)(
-                                                    text,
+                                                    // Leave room for the file/buffer truncation notice.
+                                                    str_prefix_at_byte_limit(text, PICKER_PREVIEW_MAX_BYTES + 128),
                                                     self.preview_content_path.as_deref(),
                                                     cx,
                                                 )
@@ -2329,6 +2355,9 @@ mod tests {
         assert!(exact > fuzzy);
         assert!(PickerView::fuzzy_score("swf", "Save workspace file").is_some());
         assert!(PickerView::fuzzy_score("fwz", "Save workspace file").is_none());
+        assert_eq!(PickerView::fuzzy_score("éaz", "éabz"), Some(348));
+        assert_eq!(PickerView::fuzzy_score("éaz", "ébaz"), Some(348));
+        assert_eq!(PickerView::fuzzy_score("foo", "éxfoo"), Some(9_998));
     }
 
     #[gpui::test]
@@ -2547,6 +2576,58 @@ mod tests {
             assert_eq!(picker.query.as_ref(), "");
             assert_eq!(picker.query_input.read(cx).value().as_ref(), "");
         });
+    }
+
+    #[gpui::test]
+    fn selection_change_replaces_pending_preview_with_bounded_file_text(cx: &mut TestAppContext) {
+        let path = std::env::temp_dir().join(format!(
+            "nucleotide-picker-{}-{}.txt",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        // The prefix ends inside a multibyte character, not at an ASCII boundary.
+        let prefix = "x".repeat(PICKER_PREVIEW_MAX_BYTES - 1);
+        std::fs::write(&path, format!("{prefix}é{}", "tail".repeat(10_000))).unwrap();
+        let picker = cx.new(|cx| {
+            PickerView::new(cx)
+                .with_items(vec![
+                    PickerItem::from_file_path("delayed", "delayed.txt".into(), Arc::new(())),
+                    PickerItem::from_file_path("file", path.clone(), Arc::new(path.clone())),
+                ])
+                .with_preview_text_task_provider_fn(|item, cx| {
+                    (item.label.as_ref() == "delayed")
+                        .then(|| cx.spawn(async move |_, _| std::future::pending().await))
+                })
+                .with_preview_text_renderer_fn(|_, _, _| div().into_any_element())
+                .with_preview_open_fn(|_, _| panic!("text previews must not open a full document"))
+        });
+
+        picker.update(cx, |picker, cx| picker.set_query("delayed", cx));
+        assert!(picker.read_with(cx, |picker, _| picker.preview_loading));
+        picker.update(cx, |picker, cx| picker.set_query("file", cx));
+        cx.run_until_parked();
+        picker.read_with(cx, |picker, _| {
+            assert!(!picker.preview_loading);
+            let content = picker.preview_content.as_deref().unwrap();
+            assert!(content.starts_with(&prefix));
+            assert!(content[prefix.len()..].starts_with("\n\n[File truncated"));
+            assert!(!content.contains("tail"));
+            assert_eq!(picker.preview_content_path.as_ref(), Some(&path));
+        });
+
+        picker.update(cx, |picker, cx| {
+            picker.set_query("delayed", cx);
+            picker.set_query("no matches", cx);
+        });
+        cx.run_until_parked();
+        picker.read_with(cx, |picker, _| {
+            assert!(!picker.preview_loading);
+            assert!(picker.preview_content.is_none());
+        });
+        std::fs::remove_file(path).unwrap();
     }
 
     #[gpui::test]

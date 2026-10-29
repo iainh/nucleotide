@@ -125,6 +125,10 @@ of cursor reveal; the next cursor movement brings it back into view.
 - Modal overlay management
 - Command palette (PromptView)
 - File/buffer picker (PickerView)
+- File candidates load off the UI thread without a 1,000-file cutoff, then filter locally.
+- File and buffer text previews use a UTF-8-safe 10 KB prefix. File reads and
+  syntax preparation run off-thread; redraws reuse cached syntax ranges.
+- Global search scans disk and open-document snapshots off the UI thread.
 - Completion popups (CompletionView)
 - Focus trapping when active
 

@@ -3640,7 +3640,6 @@ fn local_file_search(query: FileSearchQuery) -> Result<FileSearchResult> {
     }
 
     let mut files = Vec::new();
-    let mut truncated = false;
     for entry in walker.build() {
         let entry = entry.map_err(|source| WorkspaceError::Io {
             operation: "walk directory",
@@ -3666,13 +3665,11 @@ fn local_file_search(query: FileSearchQuery) -> Result<FileSearchResult> {
         {
             continue;
         }
-        if files.len() >= query.limit {
-            truncated = true;
-            break;
-        }
         files.push(relative_path);
     }
     files.sort();
+    let truncated = files.len() > query.limit;
+    files.truncate(query.limit);
 
     Ok(FileSearchResult {
         root: query.root,
@@ -5708,9 +5705,17 @@ mod tests {
         }))
         .unwrap();
 
-        assert_eq!(result.files.len(), 1);
+        assert_eq!(result.files, vec![PathBuf::from("src/lib.rs")]);
         assert!(result.truncated);
-        assert!(result.files[0].to_string_lossy().ends_with(".rs"));
+
+        let empty = block_on(backend.file_search(FileSearchQuery {
+            root: temp.path().to_path_buf(),
+            limit: 0,
+            ..FileSearchQuery::default()
+        }))
+        .unwrap();
+        assert!(empty.files.is_empty());
+        assert!(empty.truncated);
     }
 
     #[test]
