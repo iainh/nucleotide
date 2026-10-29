@@ -2448,6 +2448,7 @@ impl Workspace {
                 signal: None,
             });
         });
+        nucleotide_terminal_view::unregister_view_model(id);
     }
 
     fn close_terminal_panel_session(&mut self, id: TerminalId, cx: &mut Context<Self>) {
