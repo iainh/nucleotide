@@ -9,13 +9,15 @@ repository = "https://github.com/iainh/nucleotide"
 
 [dependencies]
 nucleotide-logging.workspace = true
-nucleotide-process.workspace = true
 nucleotide-types.workspace = true
 nucleotide-workspace.workspace = true
-helix-vcs.workspace = true
+helix-vcs = { workspace = true, features = ["git"] }
 helix-core.workspace = true
 gpui.workspace = true
+imara-diff = "0.2"
 
 [dev-dependencies]
+async-trait.workspace = true
+nucleotide-process.workspace = true
 tempfile.workspace = true
 tokio.workspace = true
