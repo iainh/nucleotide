@@ -2075,7 +2075,7 @@ fn global_search_matches(
     limit: usize,
 ) -> Result<Vec<GlobalSearchMatch>, String> {
     let backend = local_workspace_backend();
-    global_search_matches_with_backend(
+    futures_executor::block_on(global_search_matches_with_backend_async(
         backend.as_ref(),
         root,
         query,
@@ -2083,10 +2083,10 @@ fn global_search_matches(
         file_picker_config,
         open_documents,
         limit,
-    )
+    ))
 }
 
-fn global_search_matches_with_backend(
+async fn global_search_matches_with_backend_async(
     backend: &(impl WorkspaceBackend + ?Sized),
     root: &Path,
     query: &str,
@@ -2103,7 +2103,9 @@ fn global_search_matches_with_backend(
         .map_err(|err| format!("Failed to compile regex: {err}"))?;
     let mut matches = Vec::new();
 
-    let root_stat = futures_executor::block_on(backend.stat(root))
+    let root_stat = backend
+        .stat(root)
+        .await
         .map_err(|_| "Current working directory does not exist".to_string())?;
     if root_stat.kind == FileKind::File {
         return Err("Current working directory is not a directory".to_string());
@@ -2117,24 +2119,24 @@ fn global_search_matches_with_backend(
         return Ok(matches);
     }
 
-    let disk_matches = futures_executor::block_on(backend.text_search(global_search_text_query(
-        root,
-        query,
+    let disk_matches = global_search_disk_matches_with_backend_async(
+        backend,
+        root.to_path_buf(),
+        query.to_string(),
         smart_case,
-        file_picker_config,
+        file_picker_config.clone(),
         excluded_relative_paths,
         disk_limit,
-        backend.identity(),
-    )))
-    .map_err(|err| err.to_string())?;
+    )
+    .await?;
 
-    append_global_search_text_matches(&mut matches, root, disk_matches, limit);
+    matches.extend(disk_matches);
 
     Ok(matches)
 }
 
 async fn global_search_disk_matches_with_backend_async(
-    backend: WorkspaceBackendHandle,
+    backend: &(impl WorkspaceBackend + ?Sized),
     root: PathBuf,
     query: String,
     smart_case: bool,
@@ -2184,10 +2186,6 @@ async fn global_search_disk_matches_with_backend_async(
         }
     }
     Ok(matches)
-}
-
-fn should_run_global_search_async(workspace_identity: &WorkspaceIdentity) -> bool {
-    !matches!(workspace_identity, WorkspaceIdentity::Local)
 }
 
 fn global_search_open_document_matches(
@@ -8698,98 +8696,46 @@ impl Workspace {
             let _ = core.editor.registers.push('/', query.to_string());
         });
 
-        if should_run_global_search_async(&workspace_backend.identity()) {
-            let regex = match compile_global_search_regex(query, smart_case) {
-                Ok(regex) => regex,
-                Err(err) => {
-                    self.core.update(cx, |core, _cx| {
-                        core.editor
-                            .set_error(format!("Failed to compile regex: {err}"));
-                    });
-                    return;
-                }
-            };
+        self.core.update(cx, |core, _cx| {
+            core.editor
+                .set_status(format!("Searching workspace for: {query}"));
+        });
 
-            let mut matches = Vec::new();
-            let excluded_relative_paths = global_search_open_document_matches(
-                &mut matches,
-                &search_root,
-                &open_documents,
-                &regex,
-                GLOBAL_SEARCH_RESULT_LIMIT,
-            );
-
-            let disk_limit = GLOBAL_SEARCH_RESULT_LIMIT.saturating_sub(matches.len());
-            if disk_limit == 0 {
-                self.finish_global_search_submitted(&search_root, query, Ok(matches), cx);
-                return;
-            }
-
-            self.core.update(cx, |core, _cx| {
-                core.editor
-                    .set_status(format!("Searching remote workspace for: {query}"));
-            });
-
-            let runtime_handle = self.handle.clone();
-            let root_for_task = search_root.clone();
-            let root_for_result = search_root.clone();
-            let query_for_task = query.to_string();
-            let query_for_result = query.to_string();
-            cx.spawn(async move |this, cx| {
-                let disk_result = match runtime_handle
-                    .spawn(global_search_disk_matches_with_backend_async(
-                        workspace_backend,
-                        root_for_task,
-                        query_for_task,
+        let runtime_handle = self.handle.clone();
+        let root_for_task = search_root.clone();
+        let query_for_task = query.to_string();
+        let query_for_result = query.to_string();
+        cx.spawn(async move |this, cx| {
+            // Both local backends and open-document regex scans do synchronous work.
+            // Poll the entire search off the GPUI foreground executor.
+            let result = match runtime_handle
+                .spawn(async move {
+                    global_search_matches_with_backend_async(
+                        workspace_backend.as_ref(),
+                        &root_for_task,
+                        &query_for_task,
                         smart_case,
-                        file_picker_config,
-                        excluded_relative_paths,
-                        disk_limit,
-                    ))
+                        &file_picker_config,
+                        &open_documents,
+                        GLOBAL_SEARCH_RESULT_LIMIT,
+                    )
                     .await
-                {
-                    Ok(result) => result,
-                    Err(err) => Err(err.to_string()),
-                };
-
-                if let Some(this) = this.upgrade() {
-                    this.update(cx, |workspace, cx| {
-                        let result = disk_result.map(|disk_matches| {
-                            matches.extend(disk_matches);
-                            matches
-                        });
-                        workspace.finish_global_search_submitted(
-                            &root_for_result,
-                            &query_for_result,
-                            result,
-                            cx,
-                        );
-                    });
-                }
-            })
-            .detach();
-            return;
-        }
-
-        let matches = match global_search_matches_with_backend(
-            workspace_backend.as_ref(),
-            &search_root,
-            query,
-            smart_case,
-            &file_picker_config,
-            &open_documents,
-            GLOBAL_SEARCH_RESULT_LIMIT,
-        ) {
-            Ok(matches) => matches,
-            Err(err) => {
-                self.core.update(cx, |core, _cx| {
-                    core.editor.set_error(err);
-                });
-                return;
-            }
-        };
-
-        self.finish_global_search_submitted(&search_root, query, Ok(matches), cx);
+                })
+                .await
+            {
+                Ok(result) => result,
+                Err(err) => Err(err.to_string()),
+            };
+            _ = this.update(cx, |workspace, cx| {
+                workspace.finish_global_search_submitted(
+                    &search_root,
+                    &query_for_result,
+                    result,
+                    cx,
+                );
+            });
+        })
+        .detach();
     }
 
     fn finish_global_search_submitted(
@@ -16505,7 +16451,6 @@ fn open(
 
 const FILE_PICKER_PREVIEW_MAX_BYTES: u64 = 10 * 1024;
 const FILE_PICKER_PREVIEW_MAX_DIR_ENTRIES: usize = 100;
-const FILE_PICKER_RESULT_LIMIT: usize = 1000;
 
 fn open_at(
     _core: Entity<Core>,
@@ -16521,71 +16466,48 @@ fn open_at(
     debug!("Base directory for file picker: {:?}", base_dir);
 
     let workspace_identity = workspace_backend.identity();
-    if should_load_file_picker_items_async(&workspace_identity) {
-        info!(
-            workspace_root = %base_dir.display(),
-            backend = ?workspace_identity,
-            "Loading file picker items through workspace backend"
-        );
+    info!(
+        workspace_root = %base_dir.display(),
+        backend = ?workspace_identity,
+        "Loading file picker items through workspace backend"
+    );
 
-        let overlay = overlay.clone();
-        let search_base_dir = base_dir.clone();
-        let item_base_dir = base_dir.clone();
-        let picker_backend = workspace_backend.clone();
-        let picker_handle = handle.clone();
-        cx.spawn(async move |this, cx| {
-            let search_result = match handle
-                .spawn(file_picker_search_result_from_backend(
-                    workspace_backend,
-                    search_base_dir,
-                    FILE_PICKER_RESULT_LIMIT,
-                    file_picker_config,
-                ))
-                .await
-            {
-                Ok(result) => result,
-                Err(err) => Err(err.to_string()),
-            };
+    let overlay = overlay.clone();
+    let search_base_dir = base_dir.clone();
+    let item_base_dir = base_dir.clone();
+    let picker_backend = workspace_backend.clone();
+    let picker_handle = handle.clone();
+    cx.spawn(async move |this, cx| {
+        let search_result = match handle
+            .spawn(file_picker_search_result_from_backend(
+                workspace_backend,
+                search_base_dir,
+                file_picker_config,
+            ))
+            .await
+        {
+            Ok(result) => result,
+            Err(err) => Err(err.to_string()),
+        };
 
-            if let Some(this) = this.upgrade() {
-                this.update(cx, |_workspace, cx| {
-                    let items = match search_result {
-                        Ok(result) => file_picker_items_from_search_result(&item_base_dir, result),
-                        Err(err) => {
-                            warn!(
-                                workspace_root = %item_base_dir.display(),
-                                error = %err,
-                                "Failed to build file picker items"
-                            );
-                            Vec::new()
-                        }
-                    };
-                    emit_file_picker_from_items(items, picker_backend, picker_handle, overlay, cx);
-                });
-            }
-        })
-        .detach();
-        return;
-    }
-
-    let items = match file_picker_items_from_backend(
-        workspace_backend.as_ref(),
-        &base_dir,
-        FILE_PICKER_RESULT_LIMIT,
-        &file_picker_config,
-    ) {
-        Ok(items) => items,
-        Err(err) => {
-            warn!(error = %err, "Failed to build file picker items");
-            Vec::new()
+        if let Some(this) = this.upgrade() {
+            this.update(cx, |_workspace, cx| {
+                let items = match search_result {
+                    Ok(result) => file_picker_items_from_search_result(&item_base_dir, result),
+                    Err(err) => {
+                        warn!(
+                            workspace_root = %item_base_dir.display(),
+                            error = %err,
+                            "Failed to build file picker items"
+                        );
+                        Vec::new()
+                    }
+                };
+                emit_file_picker_from_items(items, picker_backend, picker_handle, overlay, cx);
+            });
         }
-    };
-
-    emit_file_picker_from_items(items, workspace_backend, handle, overlay, cx);
-}
-
-fn should_load_file_picker_items_async(workspace_identity: &WorkspaceIdentity) -> bool {
-    !matches!(workspace_identity, WorkspaceIdentity::Local)
+    })
+    .detach();
 }
 
 fn emit_file_picker_from_items(
@@ -16820,17 +16742,15 @@ fn file_picker_binary_preview(path: &Path, stat: &FileStat) -> String {
     )
 }
 
+#[cfg(test)]
 fn file_picker_items_from_backend(
     backend: &(impl WorkspaceBackend + ?Sized),
     base_dir: &Path,
-    limit: usize,
     file_picker_config: &helix_view::editor::FilePickerConfig,
 ) -> Result<Vec<crate::picker_view::PickerItem>, String> {
-    let result = futures_executor::block_on(backend.file_search(file_picker_search_query(
-        base_dir,
-        limit,
-        file_picker_config,
-    )))
+    let result = futures_executor::block_on(
+        backend.file_search(file_picker_search_query(base_dir, file_picker_config)),
+    )
     .map_err(|err| err.to_string())?;
 
     Ok(file_picker_items_from_search_result(base_dir, result))
@@ -16839,15 +16759,10 @@ fn file_picker_items_from_backend(
 async fn file_picker_search_result_from_backend(
     backend: WorkspaceBackendHandle,
     base_dir: PathBuf,
-    limit: usize,
     file_picker_config: helix_view::editor::FilePickerConfig,
 ) -> Result<FileSearchResult, String> {
     let stream = backend
-        .file_search_stream(file_picker_search_query(
-            &base_dir,
-            limit,
-            &file_picker_config,
-        ))
+        .file_search_stream(file_picker_search_query(&base_dir, &file_picker_config))
         .await
         .map_err(|err| err.to_string())?;
     stream
@@ -16858,13 +16773,13 @@ async fn file_picker_search_result_from_backend(
 
 fn file_picker_search_query(
     base_dir: &Path,
-    limit: usize,
     file_picker_config: &helix_view::editor::FilePickerConfig,
 ) -> FileSearchQuery {
     FileSearchQuery {
         root: base_dir.to_path_buf(),
         pattern: None,
-        limit,
+        // Filtering happens in PickerView; every candidate must be searchable.
+        limit: usize::MAX,
         hidden: !file_picker_config.hidden,
         parents: file_picker_config.parents,
         ignore: file_picker_config.ignore,
@@ -20252,22 +20167,6 @@ mod tests {
     }
 
     #[test]
-    fn file_picker_item_loading_is_async_for_remote_only() {
-        let remote_identity =
-            WorkspaceIdentity::Remote(nucleotide_workspace::RemoteWorkspaceIdentity {
-                kind: nucleotide_workspace::RemoteWorkspaceKind::Ssh,
-                name: "example.test".to_string(),
-            });
-
-        assert!(!should_load_file_picker_items_async(
-            &WorkspaceIdentity::Local
-        ));
-        assert!(should_load_file_picker_items_async(&remote_identity));
-        assert!(!should_run_global_search_async(&WorkspaceIdentity::Local));
-        assert!(should_run_global_search_async(&remote_identity));
-    }
-
-    #[test]
     fn global_search_matches_finds_line_matches() {
         let temp_dir = tempfile::tempdir().unwrap();
         let nested_dir = temp_dir.path().join("nested");
@@ -20355,7 +20254,7 @@ mod tests {
         std::fs::write(temp_dir.path().join("file.txt"), "needle\n").unwrap();
 
         let matches = global_search_disk_matches_with_backend_async(
-            local_workspace_backend(),
+            local_workspace_backend().as_ref(),
             temp_dir.path().to_path_buf(),
             "needle".to_string(),
             true,
@@ -20412,7 +20311,6 @@ mod tests {
         let items = file_picker_items_from_backend(
             backend.as_ref(),
             temp_dir.path(),
-            100,
             &default_file_picker_config(),
         )
         .unwrap();
@@ -20436,14 +20334,34 @@ mod tests {
         let backend = local_workspace_backend();
         let mut config = default_file_picker_config();
         config.hidden = false;
-        let items = file_picker_items_from_backend(backend.as_ref(), temp_dir.path(), 100, &config)
-            .unwrap();
+        let items =
+            file_picker_items_from_backend(backend.as_ref(), temp_dir.path(), &config).unwrap();
         let labels = items
             .iter()
             .map(|item| item.label.to_string())
             .collect::<Vec<_>>();
 
         assert_eq!(labels, vec![".hidden"]);
+    }
+
+    #[tokio::test]
+    async fn file_picker_search_keeps_candidates_beyond_one_thousand() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let expected = (0..1_105)
+            .map(|index| PathBuf::from(format!("file_{index:04}.rs")))
+            .collect::<Vec<_>>();
+        for path in expected.iter().rev() {
+            std::fs::write(temp_dir.path().join(path), "").unwrap();
+        }
+        let result = file_picker_search_result_from_backend(
+            local_workspace_backend(),
+            temp_dir.path().to_path_buf(),
+            default_file_picker_config(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.files, expected);
+        assert!(!result.truncated);
     }
 
     #[tokio::test]

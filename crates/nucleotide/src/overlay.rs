@@ -4,7 +4,6 @@ use gpui::{
     Focusable, InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels, Render, Styled,
     Window, div, px,
 };
-use helix_stdx::rope::RopeSliceExt;
 use nucleotide_terminal::TerminalBounds;
 use nucleotide_ui::ThemedContext as UIThemedContext;
 use nucleotide_ui::completion_v2::CompletionView;
@@ -88,6 +87,66 @@ const REMOTE_PATH_COMPLETION_WAIT_TIMEOUT: std::time::Duration =
     std::time::Duration::from_millis(500);
 const REMOTE_PATH_COMPLETION_POLL_INTERVAL: std::time::Duration =
     std::time::Duration::from_millis(25);
+
+type PickerPreviewHighlights = Vec<(std::ops::Range<usize>, Vec<helix_core::syntax::Highlight>)>;
+
+#[derive(Default)]
+struct PickerPreviewCache {
+    text: gpui::SharedString,
+    path: Option<std::path::PathBuf>,
+    loader: Option<Arc<helix_core::syntax::Loader>>,
+    scopes: Option<Arc<Vec<String>>>,
+    highlights: Option<PickerPreviewHighlights>,
+    task: Option<gpui::Task<()>>,
+}
+
+fn picker_preview_highlights(
+    text: &str,
+    path: Option<&std::path::Path>,
+    loader: &helix_core::syntax::Loader,
+) -> Option<PickerPreviewHighlights> {
+    nucleotide_logging::trace!(
+        preview_bytes = text.len(),
+        "Preparing picker preview syntax"
+    );
+    let rope = helix_core::Rope::from(text);
+    let slice = rope.slice(..);
+    let language = path
+        .and_then(|path| loader.language_for_filename(path))
+        .or_else(|| loader.language_for_shebang(slice))
+        .or_else(|| loader.language_for_match(slice))?;
+    let syntax = helix_core::syntax::Syntax::new(slice, language, loader).ok()?;
+    let mut highlighter = syntax.highlighter(slice, loader, 0..text.len() as u32);
+    let mut spans = Vec::new();
+    let mut start = 0;
+    let mut stack = Vec::new();
+    while highlighter.next_event_offset() != u32::MAX {
+        let end = highlighter.next_event_offset() as usize;
+        if end > start && !stack.is_empty() {
+            spans.push((start..end, stack.clone()));
+        }
+        let (event, highlights) = highlighter.advance();
+        if matches!(event, helix_core::syntax::HighlightEvent::Refresh) {
+            stack.clear();
+        }
+        stack.extend(highlights);
+        start = end;
+    }
+    if start < text.len() && !stack.is_empty() {
+        spans.push((start..text.len(), stack));
+    }
+    Some(spans)
+}
+
+fn picker_buffer_preview_text(text: &helix_core::Rope) -> String {
+    let limit = nucleotide_ui::picker_view::PICKER_PREVIEW_MAX_BYTES.min(text.len_bytes());
+    let end = text.byte_to_char(limit);
+    let mut preview = text.slice(..end).to_string();
+    if limit < text.len_bytes() {
+        preview.push_str("\n\n[Buffer truncated - showing first 10KB]");
+    }
+    preview
+}
 
 fn document_revisions(editor: &mut helix_view::Editor) -> Vec<(helix_view::DocumentId, usize)> {
     editor
@@ -1203,25 +1262,27 @@ impl OverlayView {
                             // Wire minimal preview open/close hooks
                             let open_core = core_weak.clone();
                             // Use a preview executor (event-based sketch). Currently no-op to avoid layout changes.
-                            let preview_exec = crate::picker_capability::PickerPreviewExecutor::new_from_weak(open_core.clone());
+                            let preview_exec =
+                                crate::picker_capability::PickerPreviewExecutor::new_from_weak(
+                                    open_core.clone(),
+                                );
                             // Keep a handle to the concrete capability to register DocumentView entities
                             let cap_for_open = core_weak.clone();
                             let cap_for_picker: Option<
                                 std::sync::Arc<
-                                    std::sync::RwLock<crate::picker_capability::HelixPickerCapability>,
+                                    std::sync::RwLock<
+                                        crate::picker_capability::HelixPickerCapability,
+                                    >,
                                 >,
                             > = if let Some(core) = core_weak.upgrade() {
-                                let cap_arc = crate::picker_capability::HelixPickerCapability::new(&core);
-                                view = view.with_capability(
-                                    cap_arc.clone()
-                                        as std::sync::Arc<
-                                            std::sync::RwLock<
-                                                dyn nucleotide_core::PickerCapability
-                                                    + Send
-                                                    + Sync,
-                                            >,
+                                let cap_arc =
+                                    crate::picker_capability::HelixPickerCapability::new(&core);
+                                view = view.with_capability(cap_arc.clone()
+                                    as std::sync::Arc<
+                                        std::sync::RwLock<
+                                            dyn nucleotide_core::PickerCapability + Send + Sync,
                                         >,
-                                );
+                                    >);
                                 Some(cap_arc)
                             } else {
                                 None
@@ -1252,7 +1313,8 @@ impl OverlayView {
                                     if let Some(core) = cap_for_open.upgrade() {
                                         let entity = picker_cx.new(|cx| {
                                             // Build theme-aware TextStyle similar to editor views
-                                            let editor_font = cx.global::<crate::types::EditorFontConfig>();
+                                            let editor_font =
+                                                cx.global::<crate::types::EditorFontConfig>();
                                             let theme = cx.theme();
                                             let tokens = &theme.tokens;
                                             let default_style = gpui::TextStyle {
@@ -1265,7 +1327,10 @@ impl OverlayView {
                                                     .into(),
                                                 font_features: gpui::FontFeatures::default(),
                                                 font_fallbacks: None,
-                                                font_size: gpui::px((editor_font.size * 0.9).max(8.0)).into(),
+                                                font_size: gpui::px(
+                                                    (editor_font.size * 0.9).max(8.0),
+                                                )
+                                                .into(),
                                                 line_height: gpui::phi(),
                                                 font_weight: editor_font.weight.into(),
                                                 font_style: gpui::FontStyle::Normal,
@@ -1278,33 +1343,93 @@ impl OverlayView {
                                                 line_clamp: None,
                                             };
                                             let focus = cx.focus_handle();
-                                            crate::document::DocumentView::new(core.clone(), None, view_id, default_style, &focus, false)
+                                            crate::document::DocumentView::new(
+                                                core.clone(),
+                                                None,
+                                                view_id,
+                                                default_style,
+                                                &focus,
+                                                false,
+                                            )
                                         });
                                         if let Some(cap_arc) = &cap_for_open_reg
-                                            && let Ok(mut cap) = cap_arc.write() {
-                                                cap.register_preview_entity(doc_id, view_id, entity);
-                                            }
+                                            && let Ok(mut cap) = cap_arc.write()
+                                        {
+                                            cap.register_preview_entity(doc_id, view_id, entity);
+                                        }
                                     }
                                 }
                                 result
                             });
 
                             let close_core = core_weak.clone();
-                            let preview_exec_close = crate::picker_capability::PickerPreviewExecutor::new_from_weak(close_core.clone());
+                            let preview_exec_close =
+                                crate::picker_capability::PickerPreviewExecutor::new_from_weak(
+                                    close_core.clone(),
+                                );
                             view = view.with_preview_close_fn(move |doc_id, view_id, picker_cx| {
                                 // Unregister entity before closing
                                 if let Some(cap_arc) = &cap_for_close
-                                    && let Ok(mut cap) = cap_arc.write() {
-                                        cap.unregister_preview_entity(doc_id, view_id);
-                                    }
+                                    && let Ok(mut cap) = cap_arc.write()
+                                {
+                                    cap.unregister_preview_entity(doc_id, view_id);
+                                }
                                 preview_exec_close.close(doc_id, view_id, picker_cx);
                             });
 
                             // Render the preview using current document content with simple styling
                             // Provide a lightweight syntax renderer: non-destructive, no Helix view needed.
                             let render_core = core_weak.clone();
+                            let preview_cache = std::rc::Rc::new(std::cell::RefCell::new(
+                                PickerPreviewCache::default(),
+                            ));
                             view = view.with_preview_text_renderer_fn(move |text, path, cx| {
-                                use gpui::{div, px, IntoElement, Styled};
+                                use gpui::{IntoElement, Styled, div, px};
+
+                                // Only prepare syntax when text, path, loader or scope mapping changes.
+                                // Render frames reuse byte ranges; theme colours are resolved below.
+                                if let Some(core) = render_core.upgrade() {
+                                    let loader = core.read(cx).editor.syn_loader.load_full();
+                                    let scopes = Arc::clone(&loader.scopes());
+                                    let mut cache = preview_cache.borrow_mut();
+                                    if cache.text.as_ref() != text
+                                        || cache.path.as_deref() != path
+                                        || !cache
+                                            .loader
+                                            .as_ref()
+                                            .is_some_and(|cached| Arc::ptr_eq(cached, &loader))
+                                        || !cache
+                                            .scopes
+                                            .as_ref()
+                                            .is_some_and(|cached| Arc::ptr_eq(cached, &scopes))
+                                    {
+                                        cache.task = None;
+                                        cache.text = text.to_owned().into();
+                                        cache.path = path.map(std::path::Path::to_path_buf);
+                                        cache.loader = Some(loader.clone());
+                                        cache.scopes = Some(scopes);
+                                        cache.highlights = None;
+                                        let text = cache.text.clone();
+                                        let path = cache.path.clone();
+                                        let prepare = cx.background_executor().spawn(async move {
+                                            picker_preview_highlights(
+                                                &text,
+                                                path.as_deref(),
+                                                &loader,
+                                            )
+                                        });
+                                        let cache_weak = std::rc::Rc::downgrade(&preview_cache);
+                                        cache.task = Some(cx.spawn(async move |view, cx| {
+                                            let highlights = prepare.await;
+                                            _ = view.update(cx, |_, cx| {
+                                                if let Some(cache) = cache_weak.upgrade() {
+                                                    cache.borrow_mut().highlights = highlights;
+                                                    cx.notify();
+                                                }
+                                            });
+                                        }));
+                                    }
+                                }
 
                                 // Resolve simple scope colors from the theme
                                 let theme = cx.helix_theme();
@@ -1317,25 +1442,52 @@ impl OverlayView {
                                 let kw_color = color_for("keyword");
                                 let str_color = color_for("string");
                                 let com_color = color_for("comment");
-                                let num_color = color_for("constant.numeric").or_else(|| color_for("number"));
+                                let num_color =
+                                    color_for("constant.numeric").or_else(|| color_for("number"));
 
                                 // Pick a basic keyword set by extension (fallback to Rust-like)
-                                let ext = path.and_then(|p| p.extension().and_then(|e| e.to_str())).unwrap_or("");
-                                let rust_like = matches!(ext, "rs"|"js"|"ts"|"jsx"|"tsx"|"c"|"cpp"|"cc"|"h"|"hpp"|"java"|"kt"|"swift");
+                                let ext = path
+                                    .and_then(|p| p.extension().and_then(|e| e.to_str()))
+                                    .unwrap_or("");
+                                let rust_like = matches!(
+                                    ext,
+                                    "rs" | "js"
+                                        | "ts"
+                                        | "jsx"
+                                        | "tsx"
+                                        | "c"
+                                        | "cpp"
+                                        | "cc"
+                                        | "h"
+                                        | "hpp"
+                                        | "java"
+                                        | "kt"
+                                        | "swift"
+                                );
                                 let py_like = matches!(ext, "py");
-                                let toml_like = matches!(ext, "toml"|"ini"|"cfg");
+                                let toml_like = matches!(ext, "toml" | "ini" | "cfg");
 
                                 // Very lightweight tokenization: comments, strings, numbers, keywords
                                 let keywords: &[&str] = if py_like {
                                     &[
-                                        "def","class","return","if","elif","else","for","while","try","except","with","as","import","from","pass","break","continue","in","not","and","or","lambda","yield","global","nonlocal","assert","raise","del","is",
+                                        "def", "class", "return", "if", "elif", "else", "for",
+                                        "while", "try", "except", "with", "as", "import", "from",
+                                        "pass", "break", "continue", "in", "not", "and", "or",
+                                        "lambda", "yield", "global", "nonlocal", "assert", "raise",
+                                        "del", "is",
                                     ]
                                 } else if toml_like {
-                                    &["true","false"]
+                                    &["true", "false"]
                                 } else {
                                     // Rust/JS-like
                                     &[
-                                        "fn","let","mut","const","pub","struct","enum","impl","trait","use","mod","crate","super","self","Self","match","if","else","for","while","loop","break","continue","return","async","await","move","ref","type","where","as","in","from","import","export","class","extends","new","this","static","final","const",
+                                        "fn", "let", "mut", "const", "pub", "struct", "enum",
+                                        "impl", "trait", "use", "mod", "crate", "super", "self",
+                                        "Self", "match", "if", "else", "for", "while", "loop",
+                                        "break", "continue", "return", "async", "await", "move",
+                                        "ref", "type", "where", "as", "in", "from", "import",
+                                        "export", "class", "extends", "new", "this", "static",
+                                        "final", "const",
                                     ]
                                 };
 
@@ -1348,7 +1500,8 @@ impl OverlayView {
                                     .unwrap_or(cx.theme().tokens.chrome.text_on_chrome);
 
                                 // Use the editor fixed font and editor font size for code preview
-                                let editor_cfg = cx.global::<nucleotide_types::EditorFontConfig>().clone();
+                                let editor_cfg =
+                                    cx.global::<nucleotide_types::EditorFontConfig>().clone();
                                 let editor_font: gpui::Font = nucleotide_types::Font {
                                     family: editor_cfg.family.clone(),
                                     weight: editor_cfg.weight,
@@ -1366,193 +1519,156 @@ impl OverlayView {
                                     .overflow_y_hidden()
                                     .size_full();
 
-                                // Try Helix loader-based highlighter for accurate colors
+                                // Apply cached syntax ranges without rebuilding a Rope or parser.
                                 let mut used_loader = false;
-                                if let Some(core) = render_core.upgrade() {
-                                    let core_read = core.read(cx);
-                                    let loader_arc = core_read.editor.syn_loader.load();
-                                    let loader: &helix_core::syntax::Loader = &loader_arc;
-                                    // Prepare rope
-                                    let rope = helix_core::Rope::from(text);
-                                    let slice = rope.slice(..);
-                                    // Detect language by filename, shebang, or match
-                                    let lang_opt = path
-                                        .and_then(|p| loader.language_for_filename(p))
-                                        .or_else(|| loader.language_for_shebang(slice))
-                                        .or_else(|| loader.language_for_match(slice));
-
-                                    if let Some(lang) = lang_opt
-                                        && let Ok(syntax) = helix_core::syntax::Syntax::new(slice, lang, loader) {
-                                            // Build highlighter for full range
-                                            let mut hl = syntax.highlighter(
-                                                slice,
-                                                loader,
-                                                0u32..(slice.len_bytes() as u32),
-                                            );
-
-                                            // Base colors
-                                            let default_text = theme
-                                                .get("ui.text")
-                                                .fg
-                                                .and_then(nucleotide_ui::theme_utils::color_to_hsla)
-                                                .unwrap_or(cx.theme().tokens.chrome.text_on_chrome);
-
-                                            // Build a single StyledText with highlight ranges
-                                            use nucleotide_ui::text_utils::TextWithStyle;
-                                            use gpui::{HighlightStyle, TextStyle};
-
-                                            let full = String::from(slice);
-                                            let mut highlights: Vec<(std::ops::Range<usize>, HighlightStyle)> = Vec::new();
-
-                                            let mut current_char = 0usize;
-                                            let mut current_color = default_text;
-
-                                            while hl.next_event_offset() != u32::MAX {
-                                                let next_byte: u32 = hl.next_event_offset();
-                                                let next_char = slice.byte_to_char(slice.ceil_char_boundary(next_byte as usize));
-
-                                                if next_char > current_char && current_color != default_text {
-                                                    highlights.push((current_char..next_char, HighlightStyle::color(current_color)));
-                                                }
-
-                                                // Advance style stack
-                                                let (event, iter) = hl.advance();
-                                                match event {
-                                                    helix_core::syntax::HighlightEvent::Refresh => {
-                                                        current_color = default_text;
-                                                    }
-                                                    helix_core::syntax::HighlightEvent::Push => {
-                                                        for h in iter {
-                                                            let style = theme.highlight(h);
-                                                            if let Some(fg) = style.fg.and_then(nucleotide_ui::theme_utils::color_to_hsla) {
-                                                                current_color = fg;
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                                current_char = next_char;
-                                            }
-
-                                            // Tail
-                                            if current_char < slice.len_chars() && current_color != default_text {
-                                                highlights.push((current_char..slice.len_chars(), HighlightStyle::color(current_color)));
-                                            }
-
-                                            let default_style = TextStyle {
-                                                font_family: cx
-                                                    .global::<crate::types::FontSettings>()
-                                                    .fixed_font
-                                                    .family
-                                                    .clone()
-                                                    .into(),
-                                                font_size: px(cx.global::<nucleotide_types::UiFontConfig>().size).into(),
-                                                ..Default::default()
-                                            };
-
-                                            let styled = TextWithStyle::new(full).with_highlights(highlights).into_styled_text(&default_style);
-                                            container = container.child(styled);
-                                            used_loader = true;
-                                        }
+                                if let Some(spans) = &preview_cache.borrow().highlights {
+                                    let highlights = spans
+                                        .iter()
+                                        .filter_map(|(range, stack)| {
+                                            let color = stack
+                                                .iter()
+                                                .filter_map(|highlight| {
+                                                    theme.highlight(*highlight).fg.and_then(
+                                                        nucleotide_ui::theme_utils::color_to_hsla,
+                                                    )
+                                                })
+                                                .last()?;
+                                            Some((
+                                                range.clone(),
+                                                gpui::HighlightStyle::color(color),
+                                            ))
+                                        })
+                                        .collect::<Vec<_>>();
+                                    container = container.child(
+                                        gpui::StyledText::new(preview_cache.borrow().text.clone())
+                                            .with_highlights(highlights),
+                                    );
+                                    used_loader = true;
                                 }
 
                                 if !used_loader {
                                     for line in text.lines() {
                                         // Handle line comments (// or # for py/toml)
-                                    // Handle line comments (// or # for py/toml)
-                                    let (code_part, comment_part): (&str, Option<&str>) = if rust_like {
-                                        if let Some(idx) = line.find("//") { (&line[..idx], Some(&line[idx..])) } else { (line, None) }
-                                    } else if py_like || toml_like {
-                                        if let Some(idx) = line.find('#') { (&line[..idx], Some(&line[idx..])) } else { (line, None) }
-                                    } else {
-                                        (line, None)
-                                    };
-
-                                    // Tokenize strings in code_part (simple double-quoted)
-                                    let mut row = div();
-                                    let mut rest = code_part;
-                                    while let Some(start) = rest.find('"') {
-                                        let (before, after_start) = rest.split_at(start);
-                                        // Find closing quote
-                                        if let Some(end_rel) = after_start[1..].find('"') {
-                                            let end = 1 + end_rel; // position of closing quote relative to after_start
-                                            // before
-                                            if !before.is_empty() {
-                                                row = row.child(before.to_string());
-                                            }
-                                            // string token
-                                            let tok = &after_start[..=end];
-                                            let mut s = div().child(tok.to_string());
-                                            if let Some(c) = str_color { s = s.text_color(c); }
-                                            row = row.child(s);
-                                            // advance
-                                            rest = &after_start[end+1..];
-                                        } else {
-                                            // no closing quote; push remainder and break
-                                            row = row.child(rest.to_string());
-                                            rest = "";
-                                            break;
-                                        }
-                                    }
-                                    if !rest.is_empty() {
-                                        row = row.child(rest.to_string());
-                                    }
-
-                                    // Apply simple keyword and number coloring on the assembled row children if plain text
-                                    // For simplicity, re-render a plain span with coarse keyword/number highlighting when no strings were found
-                                    if !code_part.contains('"') {
-                                        // Split by whitespace and punctuation
-                                        let mut buf = String::new();
-                                        let mut styled_row = div();
-                                        for ch in code_part.chars() {
-                                            if ch.is_alphanumeric() || ch == '_' {
-                                                buf.push(ch);
-                                            } else {
-                                                // flush word with style if keyword/number
-                                                if !buf.is_empty() {
-                                                    let word = buf.clone();
-                                                    if keywords.contains(&word.as_str()) {
-                                                        let mut span = div().child(word);
-                                                        if let Some(c) = kw_color { span = span.text_color(c); }
-                                                        styled_row = styled_row.child(span);
-                                                        buf.clear();
-                                                    } else if word.chars().all(|c| c.is_ascii_digit()) {
-                                                        let mut span = div().child(word);
-                                                        if let Some(c) = num_color { span = span.text_color(c); }
-                                                        styled_row = styled_row.child(span);
-                                                        buf.clear();
-                                                    } else {
-                                                        styled_row = styled_row.child(std::mem::take(&mut buf));
-                                                    }
+                                        // Handle line comments (// or # for py/toml)
+                                        let (code_part, comment_part): (&str, Option<&str>) =
+                                            if rust_like {
+                                                if let Some(idx) = line.find("//") {
+                                                    (&line[..idx], Some(&line[idx..]))
+                                                } else {
+                                                    (line, None)
                                                 }
-                                                // punctuation
-                                                styled_row = styled_row.child(ch.to_string());
-                                            }
-                                        }
-                                        if !buf.is_empty() {
-                                            let word = std::mem::take(&mut buf);
-                                            if keywords.contains(&word.as_str()) {
-                                                let mut span = div().child(word);
-                                                if let Some(c) = kw_color { span = span.text_color(c); }
-                                                styled_row = styled_row.child(span);
-                                            } else if word.chars().all(|c| c.is_ascii_digit()) {
-                                                let mut span = div().child(word);
-                                                if let Some(c) = num_color { span = span.text_color(c); }
-                                                styled_row = styled_row.child(span);
+                                            } else if py_like || toml_like {
+                                                if let Some(idx) = line.find('#') {
+                                                    (&line[..idx], Some(&line[idx..]))
+                                                } else {
+                                                    (line, None)
+                                                }
                                             } else {
-                                                styled_row = styled_row.child(word);
+                                                (line, None)
+                                            };
+
+                                        // Tokenize strings in code_part (simple double-quoted)
+                                        let mut row = div();
+                                        let mut rest = code_part;
+                                        while let Some(start) = rest.find('"') {
+                                            let (before, after_start) = rest.split_at(start);
+                                            // Find closing quote
+                                            if let Some(end_rel) = after_start[1..].find('"') {
+                                                let end = 1 + end_rel; // position of closing quote relative to after_start
+                                                // before
+                                                if !before.is_empty() {
+                                                    row = row.child(before.to_string());
+                                                }
+                                                // string token
+                                                let tok = &after_start[..=end];
+                                                let mut s = div().child(tok.to_string());
+                                                if let Some(c) = str_color {
+                                                    s = s.text_color(c);
+                                                }
+                                                row = row.child(s);
+                                                // advance
+                                                rest = &after_start[end + 1..];
+                                            } else {
+                                                // no closing quote; push remainder and break
+                                                row = row.child(rest.to_string());
+                                                rest = "";
+                                                break;
                                             }
                                         }
-                                        row = styled_row;
-                                    }
+                                        if !rest.is_empty() {
+                                            row = row.child(rest.to_string());
+                                        }
 
-                                    // Append comment part with comment color
-                                    if let Some(cmt) = comment_part {
-                                        let mut cspan = div().child(cmt.to_string());
-                                        if let Some(c) = com_color { cspan = cspan.text_color(c); }
-                                        row = row.child(cspan);
-                                    }
+                                        // Apply simple keyword and number coloring on the assembled row children if plain text
+                                        // For simplicity, re-render a plain span with coarse keyword/number highlighting when no strings were found
+                                        if !code_part.contains('"') {
+                                            // Split by whitespace and punctuation
+                                            let mut buf = String::new();
+                                            let mut styled_row = div();
+                                            for ch in code_part.chars() {
+                                                if ch.is_alphanumeric() || ch == '_' {
+                                                    buf.push(ch);
+                                                } else {
+                                                    // flush word with style if keyword/number
+                                                    if !buf.is_empty() {
+                                                        let word = buf.clone();
+                                                        if keywords.contains(&word.as_str()) {
+                                                            let mut span = div().child(word);
+                                                            if let Some(c) = kw_color {
+                                                                span = span.text_color(c);
+                                                            }
+                                                            styled_row = styled_row.child(span);
+                                                            buf.clear();
+                                                        } else if word
+                                                            .chars()
+                                                            .all(|c| c.is_ascii_digit())
+                                                        {
+                                                            let mut span = div().child(word);
+                                                            if let Some(c) = num_color {
+                                                                span = span.text_color(c);
+                                                            }
+                                                            styled_row = styled_row.child(span);
+                                                            buf.clear();
+                                                        } else {
+                                                            styled_row = styled_row
+                                                                .child(std::mem::take(&mut buf));
+                                                        }
+                                                    }
+                                                    // punctuation
+                                                    styled_row = styled_row.child(ch.to_string());
+                                                }
+                                            }
+                                            if !buf.is_empty() {
+                                                let word = std::mem::take(&mut buf);
+                                                if keywords.contains(&word.as_str()) {
+                                                    let mut span = div().child(word);
+                                                    if let Some(c) = kw_color {
+                                                        span = span.text_color(c);
+                                                    }
+                                                    styled_row = styled_row.child(span);
+                                                } else if word.chars().all(|c| c.is_ascii_digit()) {
+                                                    let mut span = div().child(word);
+                                                    if let Some(c) = num_color {
+                                                        span = span.text_color(c);
+                                                    }
+                                                    styled_row = styled_row.child(span);
+                                                } else {
+                                                    styled_row = styled_row.child(word);
+                                                }
+                                            }
+                                            row = styled_row;
+                                        }
 
-                                    container = container.child(row);
+                                        // Append comment part with comment color
+                                        if let Some(cmt) = comment_part {
+                                            let mut cspan = div().child(cmt.to_string());
+                                            if let Some(c) = com_color {
+                                                cspan = cspan.text_color(c);
+                                            }
+                                            row = row.child(cspan);
+                                        }
+
+                                        container = container.child(row);
                                     }
                                 }
 
@@ -1562,14 +1678,15 @@ impl OverlayView {
                             let text_core = core_weak.clone();
                             let picker_preview_text_provider = preview_text_provider.clone();
                             view = view.with_preview_text_provider_fn(move |item, cx| {
-                                if let Some((doc_id, path_opt)) = item
-                                    .data
-                                    .downcast_ref::<(helix_view::DocumentId, Option<std::path::PathBuf>)>()
-                                {
+                                if let Some((doc_id, path_opt)) = item.data.downcast_ref::<(
+                                    helix_view::DocumentId,
+                                    Option<std::path::PathBuf>,
+                                )>(
+                                ) {
                                     if let Some(core) = text_core.upgrade() {
                                         let core_read = core.read(cx);
                                         if let Some(doc) = core_read.editor.documents.get(doc_id) {
-                                            let content = String::from(doc.text().slice(..));
+                                            let content = picker_buffer_preview_text(doc.text());
                                             return Some((content, path_opt.clone()));
                                         }
                                     }
@@ -1579,13 +1696,13 @@ impl OverlayView {
                                 {
                                     let core_read = core.read(cx);
                                     if let Some(doc) = core_read.editor.documents.get(doc_id) {
-                                        let content = String::from(doc.text().slice(..));
+                                        let content = picker_buffer_preview_text(doc.text());
                                         let path_opt = doc.path().map(std::path::Path::to_path_buf);
                                         return Some((content, path_opt));
                                     }
-                                } else if let Some(task) = item
-                                    .data
-                                    .downcast_ref::<nucleotide_events::run::ResolvedTask>()
+                                } else if let Some(task) =
+                                    item.data
+                                        .downcast_ref::<nucleotide_events::run::ResolvedTask>()
                                 {
                                     return Some((
                                         crate::runnables::task_preview_text(task),
@@ -1623,185 +1740,192 @@ impl OverlayView {
                                 picker_cx.emit(gpui::DismissEvent);
 
                                 // Handle LSP code action items (action, server id, offset)
-                                if let Some((action, ls_id, _offset)) = selected_item
-                                    .data
-                                    .downcast_ref::<(
+                                if let Some((action, ls_id, _offset)) =
+                                    selected_item.data.downcast_ref::<(
                                         helix_lsp::lsp::CodeActionOrCommand,
                                         helix_core::diagnostic::LanguageServerId,
                                         helix_lsp::OffsetEncoding,
                                     )>()
-                                    && let Some(core) = core_for_on_select.upgrade() {
-                                        core.update(picker_cx, |core, core_cx| {
-                                            let changed_documents = apply_code_action_or_command(
-                                                core,
-                                                action,
-                                                *ls_id,
-                                            );
-                                            if !changed_documents.is_empty() {
-                                                // Document::apply dispatches the precise content
-                                                // change through the Helix event bridge.
-                                                core_cx.notify();
-                                            }
-                                        });
-                                    }
-                                // Check if it's a buffer picker item (DocumentId, Option<PathBuf>)
-                                if let Some(location) =
-                                    selected_item.data.downcast_ref::<crate::types::LspLocation>()
+                                    && let Some(core) = core_for_on_select.upgrade()
                                 {
-                                    if let Some(core) = core_for_on_select.upgrade() {
-                                        core.update(picker_cx, |core, core_cx| {
-                                            match core.jump_to_lsp_location(location) {
-                                                Ok((doc_id, view_id)) => {
-                                                    core_cx.emit(
-                                                        crate::Update::SelectionChanged {
-                                                            doc_id,
-                                                            view_id,
-                                                        },
-                                                    );
-                                                    core_cx.emit(crate::Update::Redraw);
-                                                }
-                                                Err(err) => core.editor.set_error(err.to_string()),
-                                            }
-                                        });
-                                    }
-                                }
-                                else if let Some(location) = selected_item
-                                    .data
-                                    .downcast_ref::<crate::types::JumpLocation>()
-                                {
-                                    if let Some(core) = core_for_on_select.upgrade() {
-                                        core.update(picker_cx, |core, core_cx| {
-                                            match core.jump_to_jumplist_location(location) {
-                                                Ok((doc_id, view_id)) => {
-                                                    core_cx.emit(
-                                                        crate::Update::SelectionChanged {
-                                                            doc_id,
-                                                            view_id,
-                                                        },
-                                                    );
-                                                    core_cx.emit(crate::Update::Redraw);
-                                                }
-                                                Err(err) => core.editor.set_error(err.to_string()),
-                                            }
-                                        });
-                                    }
-                                }
-                                else if let Some(location) = selected_item
-                                    .data
-                                    .downcast_ref::<crate::types::DiagnosticLocation>()
-                                {
-                                    if let Some(core) = core_for_on_select.upgrade() {
-                                        core.update(picker_cx, |core, core_cx| {
-                                            match core.jump_to_diagnostic_location(location) {
-                                                Ok((doc_id, view_id)) => {
-                                                    core_cx.emit(
-                                                        crate::Update::SelectionChanged {
-                                                            doc_id,
-                                                            view_id,
-                                                        },
-                                                    );
-                                                    core_cx.emit(crate::Update::Redraw);
-                                                }
-                                                Err(err) => core.editor.set_error(err.to_string()),
-                                            }
-                                        });
-                                    }
-                                }
-                                else if let Some(location) = selected_item
-                                    .data
-                                    .downcast_ref::<crate::types::SyntaxFileLocation>()
-                                {
-                                    if let Some(core) = core_for_on_select.upgrade() {
-                                        core.update(picker_cx, |core, core_cx| {
-                                            match core.jump_to_syntax_file_location(location) {
-                                                Ok((doc_id, view_id)) => {
-                                                    core_cx.emit(
-                                                        crate::Update::SelectionChanged {
-                                                            doc_id,
-                                                            view_id,
-                                                        },
-                                                    );
-                                                    core_cx.emit(crate::Update::Redraw);
-                                                }
-                                                Err(err) => core.editor.set_error(err.to_string()),
-                                            }
-                                        });
-                                    }
-                                }
-                                else if let Some(location) = selected_item
-                                    .data
-                                    .downcast_ref::<crate::types::GlobalSearchLocation>()
-                                {
-                                    if let Some(core) = core_for_on_select.upgrade() {
-                                        core.update(picker_cx, |core, core_cx| {
-                                            match core.jump_to_global_search_location(location) {
-                                                Ok((doc_id, view_id)) => {
-                                                    core_cx.emit(
-                                                        crate::Update::SelectionChanged {
-                                                            doc_id,
-                                                            view_id,
-                                                        },
-                                                    );
-                                                    core_cx.emit(crate::Update::Redraw);
-                                                }
-                                                Err(err) => core.editor.set_error(err.to_string()),
-                                            }
-                                        });
-                                    }
+                                    core.update(picker_cx, |core, core_cx| {
+                                        let changed_documents =
+                                            apply_code_action_or_command(core, action, *ls_id);
+                                        if !changed_documents.is_empty() {
+                                            // Document::apply dispatches the precise content
+                                            // change through the Helix event bridge.
+                                            core_cx.notify();
+                                        }
+                                    });
                                 }
                                 // Check if it's a buffer picker item (DocumentId, Option<PathBuf>)
-                                else if let Some((doc_id, _path)) = selected_item.data.downcast_ref::<(
-                                    helix_view::DocumentId,
-                                    Option<std::path::PathBuf>,
-                                )>(
-                                ) {
-                                    // Switch to the selected buffer
-                                    if let Some(core) = core_for_on_select.upgrade() {
-                                        core.update(picker_cx, |core, _cx| {
-                                            core.editor.switch(
-                                                *doc_id,
-                                                helix_view::editor::Action::Replace,
-                                            );
-                                        });
+                                if let Some(location) = selected_item
+                                        .data
+                                        .downcast_ref::<crate::types::LspLocation>(
+                                    ) {
+                                        if let Some(core) = core_for_on_select.upgrade() {
+                                            core.update(picker_cx, |core, core_cx| {
+                                                match core.jump_to_lsp_location(location) {
+                                                    Ok((doc_id, view_id)) => {
+                                                        core_cx.emit(
+                                                            crate::Update::SelectionChanged {
+                                                                doc_id,
+                                                                view_id,
+                                                            },
+                                                        );
+                                                        core_cx.emit(crate::Update::Redraw);
+                                                    }
+                                                    Err(err) => {
+                                                        core.editor.set_error(err.to_string())
+                                                    }
+                                                }
+                                            });
+                                        }
+                                    } else if let Some(location) = selected_item
+                                        .data
+                                        .downcast_ref::<crate::types::JumpLocation>(
+                                    ) {
+                                        if let Some(core) = core_for_on_select.upgrade() {
+                                            core.update(picker_cx, |core, core_cx| {
+                                                match core.jump_to_jumplist_location(location) {
+                                                    Ok((doc_id, view_id)) => {
+                                                        core_cx.emit(
+                                                            crate::Update::SelectionChanged {
+                                                                doc_id,
+                                                                view_id,
+                                                            },
+                                                        );
+                                                        core_cx.emit(crate::Update::Redraw);
+                                                    }
+                                                    Err(err) => {
+                                                        core.editor.set_error(err.to_string())
+                                                    }
+                                                }
+                                            });
+                                        }
+                                    } else if let Some(location) = selected_item
+                                        .data
+                                        .downcast_ref::<crate::types::DiagnosticLocation>(
+                                    ) {
+                                        if let Some(core) = core_for_on_select.upgrade() {
+                                            core.update(picker_cx, |core, core_cx| {
+                                                match core.jump_to_diagnostic_location(location) {
+                                                    Ok((doc_id, view_id)) => {
+                                                        core_cx.emit(
+                                                            crate::Update::SelectionChanged {
+                                                                doc_id,
+                                                                view_id,
+                                                            },
+                                                        );
+                                                        core_cx.emit(crate::Update::Redraw);
+                                                    }
+                                                    Err(err) => {
+                                                        core.editor.set_error(err.to_string())
+                                                    }
+                                                }
+                                            });
+                                        }
+                                    } else if let Some(location) = selected_item
+                                        .data
+                                        .downcast_ref::<crate::types::SyntaxFileLocation>(
+                                    ) {
+                                        if let Some(core) = core_for_on_select.upgrade() {
+                                            core.update(picker_cx, |core, core_cx| {
+                                                match core.jump_to_syntax_file_location(location) {
+                                                    Ok((doc_id, view_id)) => {
+                                                        core_cx.emit(
+                                                            crate::Update::SelectionChanged {
+                                                                doc_id,
+                                                                view_id,
+                                                            },
+                                                        );
+                                                        core_cx.emit(crate::Update::Redraw);
+                                                    }
+                                                    Err(err) => {
+                                                        core.editor.set_error(err.to_string())
+                                                    }
+                                                }
+                                            });
+                                        }
+                                    } else if let Some(location) =
+                                        selected_item
+                                            .data
+                                            .downcast_ref::<crate::types::GlobalSearchLocation>()
+                                    {
+                                        if let Some(core) = core_for_on_select.upgrade() {
+                                            core.update(picker_cx, |core, core_cx| {
+                                                match core.jump_to_global_search_location(location)
+                                                {
+                                                    Ok((doc_id, view_id)) => {
+                                                        core_cx.emit(
+                                                            crate::Update::SelectionChanged {
+                                                                doc_id,
+                                                                view_id,
+                                                            },
+                                                        );
+                                                        core_cx.emit(crate::Update::Redraw);
+                                                    }
+                                                    Err(err) => {
+                                                        core.editor.set_error(err.to_string())
+                                                    }
+                                                }
+                                            });
+                                        }
                                     }
-                                }
-                                else if let Some(task) = selected_item
-                                    .data
-                                    .downcast_ref::<nucleotide_events::run::ResolvedTask>()
-                                {
-                                    if let Some(core) = core_for_on_select.upgrade() {
-                                        let task = task.clone();
-                                        core.update(picker_cx, |_core, core_cx| {
-                                            core_cx.emit(crate::Update::RunTask(task));
-                                        });
+                                    // Check if it's a buffer picker item (DocumentId, Option<PathBuf>)
+                                    else if let Some((doc_id, _path)) =
+                                        selected_item.data.downcast_ref::<(
+                                            helix_view::DocumentId,
+                                            Option<std::path::PathBuf>,
+                                        )>(
+                                        )
+                                    {
+                                        // Switch to the selected buffer
+                                        if let Some(core) = core_for_on_select.upgrade() {
+                                            core.update(picker_cx, |core, _cx| {
+                                                core.editor.switch(
+                                                    *doc_id,
+                                                    helix_view::editor::Action::Replace,
+                                                );
+                                            });
+                                        }
+                                    } else if let Some(task) = selected_item
+                                        .data
+                                        .downcast_ref::<nucleotide_events::run::ResolvedTask>(
+                                    ) {
+                                        if let Some(core) = core_for_on_select.upgrade() {
+                                            let task = task.clone();
+                                            core.update(picker_cx, |_core, core_cx| {
+                                                core_cx.emit(crate::Update::RunTask(task));
+                                            });
+                                        }
                                     }
-                                }
-                                // Extract the file path from the selected item for opening
-                                else if let Some(path) =
-                                    selected_item.data.downcast_ref::<std::path::PathBuf>()
-                                {
-                                    // Emit OpenFile event to actually open the file
-                                    if let Some(core) = core_for_on_select.upgrade() {
-                                        core.update(picker_cx, |_core, core_cx| {
-                                            core_cx.emit(crate::Update::OpenFile(path.clone()));
-                                        });
+                                    // Extract the file path from the selected item for opening
+                                    else if let Some(path) =
+                                        selected_item.data.downcast_ref::<std::path::PathBuf>()
+                                    {
+                                        // Emit OpenFile event to actually open the file
+                                        if let Some(core) = core_for_on_select.upgrade() {
+                                            core.update(picker_cx, |_core, core_cx| {
+                                                core_cx.emit(crate::Update::OpenFile(path.clone()));
+                                            });
+                                        }
                                     }
-                                }
-                                // Check if it's a document ID for buffer switching (legacy)
-                                else if let Some(doc_id) =
-                                    selected_item.data.downcast_ref::<helix_view::DocumentId>()
-                                {
-                                    // Switch to the selected buffer
-                                    if let Some(core) = core_for_on_select.upgrade() {
-                                        core.update(picker_cx, |core, _cx| {
-                                            // Switch to the selected document
-                                            core.editor.switch(
-                                                *doc_id,
-                                                helix_view::editor::Action::Replace,
-                                            );
-                                        });
+                                    // Check if it's a document ID for buffer switching (legacy)
+                                    else if let Some(doc_id) =
+                                        selected_item.data.downcast_ref::<helix_view::DocumentId>()
+                                    {
+                                        // Switch to the selected buffer
+                                        if let Some(core) = core_for_on_select.upgrade() {
+                                            core.update(picker_cx, |core, _cx| {
+                                                // Switch to the selected document
+                                                core.editor.switch(
+                                                    *doc_id,
+                                                    helix_view::editor::Action::Replace,
+                                                );
+                                            });
+                                        }
                                     }
-                                }
                                 // (Picker was already dismissed above)
                             });
 
