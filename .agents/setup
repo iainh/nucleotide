@@ -70,7 +70,7 @@ for proxy in "${HOME}"/.cargo/bin/*; do
   ln -sfn "${proxy}" "${HOME}/.local/bin/$(basename "${proxy}")"
 done
 
-zig_version=0.16.0
+zig_version=0.17.0
 if ! command -v zig >/dev/null 2>&1 || [[ "$(zig version)" != "${zig_version}" ]]; then
   echo "Installing Zig ${zig_version}..."
   tmp_dir="$(mktemp -d)"

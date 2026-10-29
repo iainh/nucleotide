@@ -32,7 +32,7 @@ tasks when the app starts.
 
 ## Build Locally
 
-Install Rust stable, Zig 0.16.0, the .NET 8 SDK, and the Velopack CLI, then
+Install Rust stable, Zig 0.17.0, the .NET 8 SDK, and the Velopack CLI, then
 prepare the runtime resources that the package will embed:
 
 ```powershell
@@ -75,11 +75,12 @@ removes grammar source checkouts before bundling.
 
 ### Windows ARM64 builds
 
-The native ARM64 Windows Zig 0.16.0 compiler crashes during compilation
-([upstream issue](https://codeberg.org/ziglang/zig/issues/31865)). Use the
-installer below to download checksum-verified x64 Zig, correct a missing
-ARM64 alignment cast in its Windows debug support and add it to the current
-session's `PATH`. Use the x64 Rust host toolchain under Windows emulation:
+These builds retain x64 compiler emulation after native ARM64 Windows Zig
+0.16.0 crashed during compilation
+([upstream issue](https://codeberg.org/ziglang/zig/issues/31865)). The installer
+below downloads checksum-verified x64 Zig 0.17.0, corrects a missing ARM64
+alignment cast that remains in its Windows debug support and adds it to the
+current session's `PATH`. Use the x64 Rust host toolchain under Windows emulation:
 
 ```powershell
 .\scripts\install-windows-arm64-zig.ps1 -Destination target\build-tools\zig-x64

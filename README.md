@@ -27,10 +27,10 @@ Currently, Nucleotide provides a native GUI wrapper around Helix with:
 
 ### From Source
 
-Install Rust stable and Zig 0.16.0 first. Zig is required to build the
+Install Rust stable and Zig 0.17.0 first. Zig is required to build the
 Ghostty-backed integrated terminal.
 
-The Rust bindings are pinned to an upstream Git revision with Zig 0.16 support
+The Rust bindings are pinned to an upstream Git revision with Zig 0.17 support
 until that update is released on crates.io. The Nix Ghostty source pin matches
 the bindings' native library revision; update them together.
 
@@ -57,7 +57,7 @@ the only install artifact is a portable `*-Portable.zip` bundle; extract the
 entire bundle to a writable directory and launch `Nucleotide.exe`. The release
 also includes the feed and packages used by the in-app updater.
 
-Install Rust stable, Zig 0.16.0, the .NET 8 SDK, and the Velopack CLI before
+Install Rust stable, Zig 0.17.0, the .NET 8 SDK, and the Velopack CLI before
 building a Windows portable package locally.
 
 ```powershell
