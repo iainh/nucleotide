@@ -379,9 +379,13 @@ impl TerminalViewModel {
         if self.grid.is_empty() || self.cols == 0 || self.rows == 0 {
             return;
         }
-        // Update cursor position first
+        let old_cursor = (self.cursor_row, self.cursor_col);
         self.cursor_row = diff.cursor_row.min(self.rows.saturating_sub(1));
         self.cursor_col = diff.cursor_col.min(self.cols.saturating_sub(1));
+        if old_cursor != (self.cursor_row, self.cursor_col) {
+            self.dirty.mark(old_cursor.0 as usize);
+            self.dirty.mark(self.cursor_row as usize);
+        }
         if let Some(delta) = diff.scrolled {
             let visible_rows = self.grid.len();
             if delta > 0 {
@@ -725,26 +729,38 @@ impl TerminalView {
         // Poll for background frame and failure updates. Runtime workers update
         // the view model on background threads with no access to GPUI.
         {
-            let poll_model = model.clone();
             cx.spawn(async move |this, cx| {
+                let mut last_terminal_state = (false, false);
                 loop {
                     cx.background_executor()
                         .timer(std::time::Duration::from_millis(32))
                         .await;
-                    let has_updates = {
-                        let guard = lock_or_recover(poll_model.as_ref());
-                        let has_terminal_state_change =
-                            guard.has_exited() || guard.has_spawn_failure();
-                        #[cfg(feature = "emulator")]
-                        {
-                            has_terminal_state_change || guard.has_dirty_rows()
-                        }
-                        #[cfg(not(feature = "emulator"))]
-                        {
-                            has_terminal_state_change
-                        }
-                    };
-                    if has_updates && this.update(cx, |_, cx| cx.notify()).is_err() {
+                    // Check the weak view on every tick, even while idle, so
+                    // dropping the view also stops its polling task.
+                    if this
+                        .update(cx, |view, cx| {
+                            let has_updates = {
+                                let guard = lock_or_recover(view.model.as_ref());
+                                let terminal_state =
+                                    (guard.has_exited(), guard.has_spawn_failure());
+                                let state_changed = terminal_state != last_terminal_state;
+                                last_terminal_state = terminal_state;
+                                #[cfg(feature = "emulator")]
+                                {
+                                    // Failure rendering doesn't consume grid dirtiness.
+                                    state_changed || (!terminal_state.1 && guard.has_dirty_rows())
+                                }
+                                #[cfg(not(feature = "emulator"))]
+                                {
+                                    state_changed
+                                }
+                            };
+                            if has_updates {
+                                cx.notify();
+                            }
+                        })
+                        .is_err()
+                    {
                         break;
                     }
                 }
@@ -889,7 +905,7 @@ impl Render for TerminalView {
             let focus = self.focus.clone();
             let interactive_content = interactive_content.on_mouse_down(
                 MouseButton::Left,
-                move |event: &MouseDownEvent, window, cx| {
+                _cx.listener(move |_, event: &MouseDownEvent, window, cx| {
                     let Some(bounds) = mouse_down_bounds.get() else {
                         return;
                     };
@@ -898,15 +914,16 @@ impl Render for TerminalView {
                     if let Some(position) = model.cell_position_for_pointer(bounds, event.position)
                     {
                         model.start_mouse_selection(position);
+                        cx.notify();
                         cx.stop_propagation();
                     }
-                },
+                }),
             );
 
             let selection_model = self.model.clone();
             let mouse_move_bounds = Rc::clone(&content_bounds);
-            let interactive_content =
-                interactive_content.on_mouse_move(move |event: &MouseMoveEvent, _window, cx| {
+            let interactive_content = interactive_content.on_mouse_move(_cx.listener(
+                move |_, event: &MouseMoveEvent, _window, cx| {
                     if !event.dragging() {
                         return;
                     }
@@ -917,9 +934,11 @@ impl Render for TerminalView {
                     if let Some(position) = model.cell_position_for_pointer(bounds, event.position)
                         && model.extend_mouse_selection(position)
                     {
+                        cx.notify();
                         cx.stop_propagation();
                     }
-                });
+                },
+            ));
 
             let selection_model = self.model.clone();
             let interactive_content = interactive_content.on_mouse_up(
@@ -1127,16 +1146,13 @@ mod tests {
 
         let mut model = TerminalViewModel::new(TerminalId(1));
         model.set_snapshot(GridSnapshot {
-            rows: vec![vec![Cell {
-                ch: 'a',
-                fg: DEFAULT_FOREGROUND,
-                bg: DEFAULT_BACKGROUND,
-                bold: false,
-                italic: false,
-                underline: false,
-                inverse: false,
-            }]],
-            cols: 1,
+            rows: vec![
+                "abc"
+                    .chars()
+                    .map(|ch| Cell { ch, ..blank_cell() })
+                    .collect(),
+            ],
+            cols: 3,
             rows_len: 1,
             cursor_row: 0,
             cursor_col: 0,
@@ -1158,6 +1174,14 @@ mod tests {
             assert!(!view.read(cx).focus.is_focused(window));
         });
 
+        let notifications = Rc::new(LayoutCell::new(0));
+        let _subscription = cx.update(|_, cx| {
+            cx.observe(&view, {
+                let notifications = notifications.clone();
+                move |_, _| notifications.set(notifications.get() + 1)
+            })
+        });
+
         cx.simulate_mouse_down(
             point(px(4.0), px(10.0)),
             MouseButton::Left,
@@ -1168,6 +1192,54 @@ mod tests {
             assert!(view.read(cx).focus.is_focused(window));
             assert!(lock_or_recover(model.as_ref()).mouse_selecting);
         });
+        assert_eq!(
+            notifications.get(),
+            1,
+            "selection start must repaint immediately"
+        );
+
+        cx.simulate_mouse_move(
+            point(px(20.0), px(10.0)),
+            MouseButton::Left,
+            gpui::Modifiers::none(),
+        );
+        assert_eq!(
+            lock_or_recover(model.as_ref()).selected_text().as_deref(),
+            Some("abc")
+        );
+        assert_eq!(
+            notifications.get(),
+            2,
+            "selection drag must repaint without a timer tick"
+        );
+
+        cx.simulate_mouse_move(
+            point(px(21.0), px(10.0)),
+            MouseButton::Left,
+            gpui::Modifiers::none(),
+        );
+        assert_eq!(
+            notifications.get(),
+            2,
+            "moving within the same cell is unchanged"
+        );
+
+        cx.simulate_mouse_up(
+            point(px(21.0), px(10.0)),
+            MouseButton::Left,
+            gpui::Modifiers::none(),
+        );
+        cx.simulate_mouse_down(
+            point(px(12.0), px(10.0)),
+            MouseButton::Left,
+            gpui::Modifiers::none(),
+        );
+        assert!(lock_or_recover(model.as_ref()).selected_text().is_none());
+        assert_eq!(
+            notifications.get(),
+            3,
+            "clearing the selection must repaint immediately"
+        );
     }
 
     fn scroll_model(history_size: usize, display_offset: usize) -> Arc<Mutex<TerminalViewModel>> {
@@ -1308,6 +1380,34 @@ mod tests {
         }));
 
         assert_eq!(model.take_dirty_rows(), vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn terminal_cursor_only_diffs_dirty_old_and_new_rows() {
+        let mut model = TerminalViewModel::new(TerminalId(1));
+        model.resize_grid(5, 4, Some((8.0, 16.0)));
+        model.take_dirty_rows();
+
+        for (row, col, expected_rows) in [
+            (2, 3, vec![0, 2]),
+            (2, 1, vec![2]),
+            (2, 1, vec![]),
+            (u16::MAX, u16::MAX, vec![2, 3]),
+            (u16::MAX, u16::MAX, vec![]),
+            (1, 0, vec![1, 3]),
+        ] {
+            model.apply_frame(FramePayload::Diff(GridDiff {
+                lines: Vec::new(),
+                scrolled: None,
+                cursor_row: row,
+                cursor_col: col,
+            }));
+            assert_eq!(
+                model.take_dirty_rows(),
+                expected_rows,
+                "cursor to ({row}, {col})"
+            );
+        }
     }
 
     #[test]
@@ -1651,6 +1751,86 @@ pub fn unregister_view_model(id: TerminalId) {
 #[cfg(test)]
 mod registry_tests {
     use super::*;
+    use gpui::{AppContext, TestAppContext};
+
+    #[gpui::test]
+    fn terminal_state_changes_notify_once(cx: &mut TestAppContext) {
+        for failed in [false, true] {
+            let model = Arc::new(Mutex::new(TerminalViewModel::new(TerminalId(9))));
+            let view = cx.new(|cx| TerminalView::new(model.clone(), cx.focus_handle(), cx));
+            let notifications = std::rc::Rc::new(std::cell::Cell::new(0));
+            let _subscription = cx.update(|cx| {
+                cx.observe(&view, {
+                    let notifications = notifications.clone();
+                    move |_, _| notifications.set(notifications.get() + 1)
+                })
+            });
+            cx.run_until_parked();
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(32));
+            cx.run_until_parked();
+            assert_eq!(notifications.get(), 0, "idle terminals must not notify");
+
+            {
+                let mut guard = lock_or_recover(model.as_ref());
+                if failed {
+                    // A failed view never consumes these dirty rows.
+                    #[cfg(feature = "emulator")]
+                    guard.resize_grid(5, 3, None);
+                    guard.set_spawn_failure("failed", Vec::new());
+                } else {
+                    guard.set_exited();
+                }
+            }
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(32));
+            cx.run_until_parked();
+            assert_eq!(notifications.get(), 1, "the state transition must notify");
+
+            for _ in 0..5 {
+                cx.executor()
+                    .advance_clock(std::time::Duration::from_millis(32));
+                cx.run_until_parked();
+            }
+            assert_eq!(
+                notifications.get(),
+                1,
+                "persistent terminal state must not notify again"
+            );
+
+            #[cfg(feature = "emulator")]
+            if !failed {
+                // An exit can precede the last output frame; keep polling it.
+                lock_or_recover(model.as_ref()).resize_grid(5, 3, None);
+                cx.executor()
+                    .advance_clock(std::time::Duration::from_millis(32));
+                cx.run_until_parked();
+                assert_eq!(notifications.get(), 2, "final output must still notify");
+                lock_or_recover(model.as_ref()).take_dirty_rows();
+                cx.executor()
+                    .advance_clock(std::time::Duration::from_millis(32));
+                cx.run_until_parked();
+                assert_eq!(notifications.get(), 2, "consumed output must stay idle");
+            }
+        }
+    }
+
+    #[gpui::test]
+    fn dropping_idle_terminal_view_releases_model(cx: &mut TestAppContext) {
+        let model = Arc::new(Mutex::new(TerminalViewModel::new(TerminalId(9))));
+        let weak_model = Arc::downgrade(&model);
+        let view = cx.new(|cx| TerminalView::new(model.clone(), cx.focus_handle(), cx));
+        cx.run_until_parked();
+
+        drop(view);
+        drop(model);
+        cx.update(|_| {});
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(32));
+        cx.run_until_parked();
+
+        assert!(weak_model.upgrade().is_none());
+    }
 
     #[test]
     fn unregister_view_model_removes_global_entry() {
