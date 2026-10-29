@@ -4,20 +4,8 @@ use helix_loader::VERSION_AND_GIT_HASH;
 use helix_term::args::Args;
 use std::path::PathBuf;
 
-fn get_git_commit_hash() -> Option<String> {
-    // Try to get git commit hash at runtime
-    if let Ok(output) = nucleotide_process::command("git")
-        .args(["rev-parse", "--short", "HEAD"])
-        .output()
-        && output.status.success()
-    {
-        let commit_hash = String::from_utf8_lossy(&output.stdout).to_string();
-        let commit_hash = commit_hash.trim().to_string();
-        if !commit_hash.is_empty() {
-            return Some(commit_hash);
-        }
-    }
-    None
+fn get_git_commit_hash() -> Option<&'static str> {
+    option_env!("NUCLEOTIDE_GIT_COMMIT").filter(|commit| !commit.is_empty())
 }
 
 pub fn parse_args() -> Result<Args> {
@@ -66,7 +54,7 @@ FLAGS:
     }
 
     if args.display_version {
-        let commit_hash = get_git_commit_hash().unwrap_or_else(|| "unknown".to_string());
+        let commit_hash = get_git_commit_hash().unwrap_or("unknown");
         eprintln!("Nucleotide {}", env!("CARGO_PKG_VERSION"));
         eprintln!("Commit {}", commit_hash);
         eprintln!("The Nucleotide Contributors");
