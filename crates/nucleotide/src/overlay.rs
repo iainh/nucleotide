@@ -176,6 +176,7 @@ fn apply_code_action_or_command(
 
 #[derive(Clone, Copy)]
 enum PromptSubmitAction {
+    Callback,
     Command,
     Search,
     GlobalSearch,
@@ -186,6 +187,7 @@ enum PromptSubmitAction {
 
 fn prompt_submit_action(prompt_text: &str) -> PromptSubmitAction {
     match prompt_text {
+        ":" => PromptSubmitAction::Command,
         "search:" | "rsearch:" => PromptSubmitAction::Search,
         "global-search:" => PromptSubmitAction::GlobalSearch,
         "file-tree-search:" => PromptSubmitAction::FileTreeSearch,
@@ -194,7 +196,7 @@ fn prompt_submit_action(prompt_text: &str) -> PromptSubmitAction {
         "split:" => PromptSubmitAction::RegexSelection(RegexSelectionAction::Split),
         "keep:" => PromptSubmitAction::RegexSelection(RegexSelectionAction::Keep),
         "remove:" => PromptSubmitAction::RegexSelection(RegexSelectionAction::Remove),
-        _ => PromptSubmitAction::Command,
+        _ => PromptSubmitAction::Callback,
     }
 }
 
@@ -690,20 +692,23 @@ impl OverlayView {
 
     pub fn handle_event(&mut self, ev: &crate::Update, cx: &mut Context<Self>) {
         match ev {
-            crate::Update::Prompt(prompt) => {
+            crate::Update::Prompt(_) | crate::Update::FileNamePrompt(_) => {
                 nucleotide_logging::trace!("DIAG: Overlay Update::Prompt received");
                 self.replace_prompt(cx);
                 self.replace_remote_connection_manager(cx);
+                let (prompt, file_operation) = match ev {
+                    crate::Update::Prompt(prompt) => (prompt.clone(), None),
+                    crate::Update::FileNamePrompt(operation) => {
+                        (operation.prompt(), Some(operation.clone()))
+                    }
+                    _ => unreachable!(),
+                };
                 let Prompt {
                     prompt: prompt_text,
                     initial_input,
                     on_submit,
                     on_cancel,
                 } = prompt;
-                let prompt_text = prompt_text.clone();
-                let initial_input = initial_input.clone();
-                let on_submit = on_submit.clone();
-                let on_cancel = on_cancel.clone();
                 let submit_action = prompt_submit_action(&prompt_text);
                 let regex_selection_preview = match submit_action {
                     PromptSubmitAction::RegexSelection(_) => self.core.upgrade().and_then(|core| {
@@ -930,6 +935,14 @@ impl OverlayView {
                         if let Some(core) = core_weak_submit.upgrade() {
                             core.update(cx, |_core, cx| {
                                 match submit_action {
+                                    PromptSubmitAction::Callback => {
+                                        if let Some(operation) = &file_operation {
+                                            cx.emit(crate::Update::FileNameSubmitted {
+                                                operation: operation.clone(),
+                                                name: input.to_string(),
+                                            });
+                                        }
+                                    }
                                     PromptSubmitAction::Search => {
                                         cx.emit(crate::Update::SearchSubmitted(input.to_string()));
                                     }

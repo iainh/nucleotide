@@ -69,6 +69,49 @@ pub struct DiagnosticLocation {
     pub offset: usize,
 }
 
+/// A file operation owned by its name prompt, rather than the workspace.
+#[derive(Debug, Clone)]
+pub enum FileNamePrompt {
+    NewFile {
+        parent: std::path::PathBuf,
+    },
+    NewFolder {
+        parent: std::path::PathBuf,
+    },
+    Rename {
+        path: std::path::PathBuf,
+        was_dir: bool,
+    },
+    Duplicate {
+        path: std::path::PathBuf,
+        is_dir: bool,
+    },
+}
+
+impl FileNamePrompt {
+    pub fn prompt(&self) -> crate::prompt::Prompt {
+        let (label, initial_input) = match self {
+            Self::NewFile { .. } => ("New file name", String::new()),
+            Self::NewFolder { .. } => ("New folder name", String::new()),
+            Self::Rename { path, .. } => (
+                "Rename to",
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("")
+                    .to_string(),
+            ),
+            Self::Duplicate { path, .. } => (
+                "Duplicate as",
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .map(|name| format!("{name} copy"))
+                    .unwrap_or_else(|| "copy".to_string()),
+            ),
+        };
+        crate::prompt::Prompt::native(label, initial_input, |_| {})
+    }
+}
+
 /// The single application-level event model emitted by `Application` and its UI components.
 pub enum Update {
     // Domain events
@@ -79,6 +122,7 @@ pub enum Update {
 
     // Complex UI components with behavior (closures/callbacks)
     Prompt(crate::prompt::Prompt),
+    FileNamePrompt(FileNamePrompt),
     Picker(crate::picker::Picker),
     DirectoryPicker(crate::picker::Picker),
     RemoteConnectionManager,
@@ -93,6 +137,10 @@ pub enum Update {
     Redraw,
     ShouldQuit,
     CommandSubmitted(String),
+    FileNameSubmitted {
+        operation: FileNamePrompt,
+        name: String,
+    },
     SearchSubmitted(String),
     GlobalSearchSubmitted(String),
     FileTreeSearchSubmitted(String),
@@ -166,6 +214,7 @@ impl std::fmt::Debug for Update {
             Update::Ui(event) => write!(f, "Ui({event:?})"),
             Update::Workspace(event) => write!(f, "Workspace({event:?})"),
             Update::Prompt(_) => write!(f, "Prompt(...)"),
+            Update::FileNamePrompt(operation) => write!(f, "FileNamePrompt({operation:?})"),
             Update::Picker(_) => write!(f, "Picker(...)"),
             Update::DirectoryPicker(_) => write!(f, "DirectoryPicker(...)"),
             Update::RemoteConnectionManager => write!(f, "RemoteConnectionManager"),
@@ -179,6 +228,9 @@ impl std::fmt::Debug for Update {
             Update::OpenDirectory(path) => write!(f, "OpenDirectory({path:?})"),
             Update::ShouldQuit => write!(f, "ShouldQuit"),
             Update::CommandSubmitted(cmd) => write!(f, "CommandSubmitted({cmd:?})"),
+            Update::FileNameSubmitted { operation, name } => {
+                write!(f, "FileNameSubmitted({operation:?}, {name:?})")
+            }
             Update::SearchSubmitted(query) => write!(f, "SearchSubmitted({query:?})"),
             Update::GlobalSearchSubmitted(query) => {
                 write!(f, "GlobalSearchSubmitted({query:?})")
