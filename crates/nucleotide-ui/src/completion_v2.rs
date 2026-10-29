@@ -4,8 +4,8 @@
 use gpui::prelude::FluentBuilder;
 use gpui::{
     App, Context, DismissEvent, EventEmitter, FocusHandle, Focusable, InteractiveElement,
-    IntoElement, KeyBinding, ParentElement, Render, SharedString, StatefulInteractiveElement,
-    Styled, Task, Window, div, px, relative,
+    IntoElement, KeyBinding, MouseButton, ParentElement, Render, SharedString,
+    StatefulInteractiveElement, Styled, Task, Window, div, px, relative, uniform_list,
 };
 use std::cmp::Ordering as CmpOrdering;
 use std::sync::Arc;
@@ -1172,6 +1172,8 @@ impl CompletionView {
         matches.truncate(self.max_items);
         self.selected_index = self.initial_selection_index(&matches);
         self.filtered_entries = matches;
+        self.update_list_state();
+        self.scroll_to_selection();
     }
 
     fn sort_matches(&self, matches: &mut [StringMatch]) {
@@ -1445,46 +1447,6 @@ impl CompletionView {
     /// Scroll to make the currently selected item visible
     fn scroll_to_selection(&mut self) {
         if self.selected_index < self.filtered_entries.len() {
-            nucleotide_logging::debug!(
-                selected_index = self.selected_index,
-                total_items = self.filtered_entries.len(),
-                "Scrolling to selected completion item"
-            );
-
-            // Calculate scroll position for manual scrolling
-            let item_height = self.list_state.item_height;
-            let container_height = self.list_state.max_height;
-            let selected_position = (self.selected_index as f32) * item_height;
-
-            // Calculate if item is outside visible area
-            let visible_items = (container_height / item_height).floor() as usize;
-            let scroll_position = if self.selected_index < visible_items / 2 {
-                // Near top - scroll to top
-                0.0
-            } else if self.selected_index
-                >= self
-                    .filtered_entries
-                    .len()
-                    .saturating_sub(visible_items / 2)
-            {
-                // Near bottom - scroll to bottom
-                (self.filtered_entries.len().saturating_sub(visible_items) as f32 * item_height)
-                    .max(0.0)
-            } else {
-                // Center the selected item
-                selected_position - (container_height / 2.0)
-            };
-
-            nucleotide_logging::debug!(
-                selected_position = selected_position,
-                scroll_position = scroll_position,
-                item_height = item_height,
-                container_height = container_height,
-                "Calculated scroll position for selection"
-            );
-
-            // Note: For now, we rely on GPUI's built-in scroll behavior
-            // A future enhancement could implement programmatic scrolling
             self.list_state.scroll_to_item(self.selected_index);
         }
     }
@@ -2171,157 +2133,46 @@ impl Render for CompletionView {
                                     .min_h(px(28.0)) // Allow single-item height without excessive padding
                                     .bg(tokens.chrome.popup_background) // Ensure background is visible
                                     .child(
-                                        // Scrollable container with working completion items
-                                        div()
-                                            .id("completion-scrollable-container")
-                                            .flex()
-                                            .flex_col()
-                                            .w_full()
-                                            // Let height be content-driven; don't force full container height
-                                            .max_h(max_container_height)
-                                            .overflow_y_scroll() // Enable scrolling
-                                            .children({
-                                                // Implement a sliding window of visible items centered around selection
-                                                let total_items = self.filtered_entries.len();
-                                                let max_visible = max_visible_items;
-
-                                                let (start_index, end_index) =
-                                                    if total_items <= max_visible {
-                                                        // Show all items if we have few enough
-                                                        nucleotide_logging::debug!(
-                                                            "Using full list - items fit in window"
-                                                        );
-                                                        (0, total_items)
-                                                    } else {
-                                                        // Need a sliding window
-                                                        let selected = self.selected_index;
-
-                                                        nucleotide_logging::debug!(
-                                                            selected = selected,
-                                                            total_items = total_items,
-                                                            max_visible = max_visible,
-                                                            "Calculating sliding window"
-                                                        );
-
-                                                        // Simple logic: ensure selected item is always visible
-                                                        let start = if selected
-                                                            < max_visible.saturating_sub(1)
-                                                        {
-                                                            // Selected is near beginning, show from start
-                                                            0
-                                                        } else if selected
-                                                            >= total_items.saturating_sub(1)
-                                                        {
-                                                            // Selected is last item, show last window
-                                                            total_items.saturating_sub(max_visible)
-                                                        } else {
-                                                            // Selected is in middle, center it
-                                                            let half = max_visible / 2;
-                                                            selected.saturating_sub(half)
-                                                        };
-
-                                                        // Ensure we don't go past the end
-                                                        let start = start.min(
-                                                            total_items.saturating_sub(max_visible),
-                                                        );
-                                                        let end =
-                                                            (start + max_visible).min(total_items);
-
-                                                        nucleotide_logging::debug!(
-                                                            calculated_start = start,
-                                                            calculated_end = end,
-                                                            "Calculated window bounds"
-                                                        );
-
-                                                        (start, end)
-                                                    };
-
-                                                // Verify the selected item is actually in the window
-                                                let selected_visible = self.selected_index
-                                                    >= start_index
-                                                    && self.selected_index < end_index;
-
-                                                nucleotide_logging::debug!(
-                                                    total_items = total_items,
-                                                    selected_index = self.selected_index,
-                                                    start_index = start_index,
-                                                    end_index = end_index,
-                                                    window_size = end_index - start_index,
-                                                    selected_visible = selected_visible,
-                                                    "Rendering completion window"
-                                                );
-
-                                                if !selected_visible {
-                                                    nucleotide_logging::error!(
-                                                        selected_index = self.selected_index,
-                                                        start_index = start_index,
-                                                        end_index = end_index,
-                                                        total_items = total_items,
-                                                        max_visible = max_visible,
-                                                        "SELECTED ITEM NOT IN VISIBLE WINDOW!"
-                                                    );
-                                                }
-
-                                                // Special debugging for last few items
-                                                if self.selected_index
-                                                    >= total_items.saturating_sub(3)
-                                                {
-                                                    nucleotide_logging::debug!(
-                                                        selected_index = self.selected_index,
-                                                        total_items = total_items,
-                                                        start_index = start_index,
-                                                        end_index = end_index,
-                                                        is_last_item = self.selected_index
-                                                            == total_items.saturating_sub(1),
-                                                        is_second_last = self.selected_index
-                                                            == total_items.saturating_sub(2),
-                                                        "Debugging last few items"
-                                                    );
-                                                }
-
-                                                let items_to_render_count =
-                                                    end_index.saturating_sub(start_index);
-
-                                                nucleotide_logging::debug!(
-                                                    items_to_render_count = items_to_render_count,
-                                                    expected_count = end_index - start_index,
-                                                    first_index = (items_to_render_count > 0)
-                                                        .then_some(start_index),
-                                                    last_index = (items_to_render_count > 0)
-                                                        .then_some(end_index - 1),
-                                                    "Items actually being rendered"
-                                                );
-
-                                                (start_index..end_index)
-                                                    .filter_map(|index| {
-                                                        let string_match =
-                                                            self.filtered_entries.get(index)?;
-                                                        let item =
-                                                            self.item_for_match(string_match)?;
-                                                        let is_selected =
-                                                            index == self.selected_index;
-
-                                                        // Wrap in div with ID for scroll targeting
-                                                        Some(
-                                                            div()
-                                                                .id((
-                                                                    "completion-item-wrapper",
-                                                                    index,
-                                                                ))
-                                                                .w_full()
-                                                                .child(
-                                                                    CompletionItemElement::new(
-                                                                        item.clone(),
-                                                                        string_match.clone(),
-                                                                        is_selected,
-                                                                    )
-                                                                    .compact()
-                                                                    .into_element_with_theme(theme),
-                                                                ),
-                                                        )
-                                                    })
-                                                    .collect::<Vec<_>>()
+                                        uniform_list(
+                                            "completion-scrollable-container",
+                                            self.filtered_entries.len(),
+                                            cx.processor(|view, range: std::ops::Range<usize>, _, cx| {
+                                                let theme = cx.global::<crate::Theme>();
+                                                range.filter_map(|index| {
+                                                    let string_match = view.filtered_entries.get(index)?;
+                                                    let item = view.item_for_match(string_match)?;
+                                                    Some(
+                                                        div()
+                                                            .id(("completion-item-wrapper", index))
+                                                            .w_full()
+                                                            .h(px(COMPLETION_ROW_HEIGHT_PX))
+                                                            .flex()
+                                                            .items_center()
+                                                            .cursor_pointer()
+                                                            .on_mouse_down(MouseButton::Left, cx.listener(move |view, _, _, cx| {
+                                                                // Accept the clicked filtered index through the same
+                                                                // Helix transaction path as keyboard confirmation.
+                                                                cx.stop_propagation();
+                                                                view.selected_index = index;
+                                                                view.confirm_selected_completion(cx);
+                                                            }))
+                                                            .child(
+                                                                CompletionItemElement::new(
+                                                                    item.clone(),
+                                                                    string_match.clone(),
+                                                                    index == view.selected_index,
+                                                                )
+                                                                .compact()
+                                                                .into_element_with_theme(theme),
+                                                            ),
+                                                    )
+                                                }).collect()
                                             }),
+                                        )
+                                        .track_scroll(&self.list_state.scroll_handle)
+                                        .w_full()
+                                        .h(px(self.filtered_entries.len().min(max_visible_items) as f32
+                                            * COMPLETION_ROW_HEIGHT_PX)),
                                     ),
                             )
                             .child(
@@ -2529,7 +2380,92 @@ mod tests {
 
     mod filter_tests {
         use super::*;
-        use gpui::TestAppContext;
+        use gpui::{AppContext as _, Entity, TestAppContext};
+
+        struct CompletionMouseHarness {
+            completion: Entity<CompletionView>,
+            confirmed: Vec<usize>,
+            editor_focus: FocusHandle,
+        }
+
+        impl Render for CompletionMouseHarness {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().size_full().track_focus(&self.editor_focus).child(
+                    div()
+                        .debug_selector(|| "completion-mouse-test".into())
+                        .child(self.completion.clone()),
+                )
+            }
+        }
+
+        #[gpui::test]
+        fn completion_mouse_scroll_and_confirm_preserve_editor_focus(cx: &mut TestAppContext) {
+            use gpui::{Modifiers, ScrollDelta, ScrollWheelEvent, point};
+
+            cx.update(|cx| cx.set_global(crate::Theme::default()));
+            let (harness, cx) = cx.add_window_view(|window, cx| {
+                let completion = cx.new(|cx| {
+                    let mut view = CompletionView::new(cx);
+                    view.set_items(
+                        (0..14)
+                            .rev()
+                            .map(|i| CompletionItem::new(format!("item-{i:02}")))
+                            .collect(),
+                        cx,
+                    );
+                    view
+                });
+                cx.subscribe(
+                    &completion,
+                    |harness: &mut CompletionMouseHarness, _, event: &CompleteViaHelixEvent, _| {
+                        harness.confirmed.push(event.item_index);
+                    },
+                )
+                .detach();
+                let editor_focus = cx.focus_handle();
+                window.focus(&editor_focus, cx);
+                CompletionMouseHarness {
+                    completion,
+                    confirmed: Vec::new(),
+                    editor_focus,
+                }
+            });
+            cx.refresh().unwrap();
+            let bounds = cx.debug_bounds("completion-mouse-test").unwrap();
+            let row_top = cx.read(|cx| cx.global::<crate::Theme>().tokens.sizes.space_1) + px(1.0);
+            let first_row = bounds.origin + point(px(30.0), row_top + px(16.0));
+
+            cx.simulate_event(ScrollWheelEvent {
+                position: first_row,
+                delta: ScrollDelta::Pixels(point(px(0.0), px(-256.0))),
+                ..Default::default()
+            });
+            cx.simulate_click(first_row, Modifiers::none());
+            harness.read_with(cx, |harness, cx| {
+                assert_eq!(harness.confirmed, vec![8]);
+                assert_eq!(
+                    harness.completion.read(cx).selected_item().unwrap().text,
+                    "item-08"
+                );
+            });
+
+            let completion = harness.read_with(cx, |harness, _| harness.completion.clone());
+            completion.update(cx, |view, cx| view.select_last(cx));
+            cx.refresh().unwrap();
+            cx.simulate_click(first_row + point(px(0.0), px(160.0)), Modifiers::none());
+            harness.read_with(cx, |harness, _| assert_eq!(harness.confirmed, vec![8, 13]));
+
+            // Refiltering must reveal the new selection instead of retaining the old offset.
+            completion.update(cx, |view, cx| view.update_filter("item-0".into(), cx));
+            cx.refresh().unwrap();
+            cx.simulate_click(first_row, Modifiers::none());
+            harness.read_with(cx, |harness, _| {
+                assert_eq!(harness.confirmed, vec![8, 13, 0])
+            });
+            cx.update(|window, cx| {
+                assert!(harness.read(cx).editor_focus.is_focused(window));
+            });
+        }
 
         #[gpui::test]
         async fn completion_list_state_uses_six_visible_rows(cx: &mut TestAppContext) {

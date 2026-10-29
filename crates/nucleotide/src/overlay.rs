@@ -2223,21 +2223,25 @@ impl Render for OverlayView {
                 .size_full()
                 .top_0()
                 .left_0()
-                .occlude() // Ensure overlay is on top of other elements
-                // Clicking outside the completion popup dismisses it and restores focus
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(|this: &mut OverlayView, _e, window, cx| {
-                        window.disable_focus();
-                        this.dismiss_completion(cx);
-                    }),
-                )
                 .child(gpui::deferred(
                     canvas(
                         move |bounds, window, cx| {
                             let (x, y) = overlay.read(cx).calculate_completion_position(cx);
+                            let dismiss_overlay = overlay.clone();
                             let mut content = div()
-                                .on_mouse_down(MouseButton::Left, |_, _, _| {})
+                                // Only the popup blocks editor input. Outside clicks
+                                // dismiss during capture and still reach their target.
+                                .occlude()
+                                .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                    cx.stop_propagation();
+                                })
+                                .on_mouse_down_out(move |event, _, cx| {
+                                    if event.button == MouseButton::Left {
+                                        dismiss_overlay.update(cx, |this, cx| {
+                                            this.dismiss_completion(cx);
+                                        });
+                                    }
+                                })
                                 .child(completion_view)
                                 .into_any_element();
                             let popup_size = content.layout_as_root(
