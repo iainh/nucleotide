@@ -71,6 +71,16 @@ file-tree interaction events. Their owning component translates them to an
 Handlers run on the application loop. Keep them non-blocking; move expensive
 work to background tasks and emit the result back through `Update`.
 
+## Local file-tree filesystem events
+
+The file tree owns its local watcher task, so refreshing the tree replaces the
+watcher and dropping the view cancels it. Each relevant path in a notify batch
+is delivered; only an explicit ordered rename pair becomes a `Renamed` event.
+Renames across the watched or visible boundary become a creation or deletion.
+One debounce task coalesces changes by path and processes them after 300 ms
+without a new event. Gitignored paths remain eligible because the tree can show
+ignored entries; the tree owns ignore-rule filtering.
+
 ## Bridge lifetime
 
 The Helix event sender is stored in a process-global `OnceLock`. This matches
