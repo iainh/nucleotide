@@ -11351,13 +11351,29 @@ mod tests {
         Entity<crate::workspace::Workspace>,
         &'a mut gpui::VisualTestContext,
     ) {
+        new_test_workspace_with_runtime(cx, path, TEST_RUNTIME.handle().clone())
+    }
+
+    fn new_test_workspace_with_runtime<'a>(
+        cx: &'a mut gpui::TestAppContext,
+        path: &Path,
+        handle: tokio::runtime::Handle,
+    ) -> (
+        Entity<Application>,
+        Entity<crate::workspace::Workspace>,
+        &'a mut gpui::VisualTestContext,
+    ) {
         use crate::workspace::Workspace;
         use nucleotide_ui::FocusCoordinator;
 
-        let _runtime = TEST_RUNTIME.enter();
+        let _runtime = handle.enter();
         let core = new_test_application(cx);
         core.update(cx, |core, _cx| {
-            let _runtime = TEST_RUNTIME.enter();
+            let _runtime = handle.enter();
+            core.workspace_file_ops = crate::application::WorkspaceFileOpHandler::new(
+                local_workspace_backend(),
+                handle.clone(),
+            );
             core.project_directory = Some(path.parent().unwrap().to_path_buf());
             core.editor.open(path, Action::VerticalSplit).unwrap();
         });
@@ -11397,22 +11413,24 @@ mod tests {
         });
         let input = cx.new(|_| crate::Input);
         let core_for_input = core.clone();
+        let input_handle = handle.clone();
         cx.update(|cx| {
             cx.subscribe(&input, move |_, event: &crate::InputEvent, cx| {
                 core_for_input.update(cx, |core, cx| {
-                    core.handle_input_event(event.clone(), cx, TEST_RUNTIME.handle().clone());
+                    core.handle_input_event(event.clone(), cx, input_handle.clone());
                 });
             })
             .detach();
         });
         let core_for_workspace = core.clone();
+        let workspace_handle = handle.clone();
         let (workspace, cx) = cx.add_window_view(move |window, cx| {
-            let _runtime = TEST_RUNTIME.enter();
+            let _runtime = workspace_handle.enter();
             let overlay = cx.new(|cx| {
                 let view = crate::overlay::OverlayView::new(
                     &cx.focus_handle(),
                     &core_for_workspace,
-                    TEST_RUNTIME.handle().clone(),
+                    workspace_handle.clone(),
                 );
                 view.subscribe(&core_for_workspace, cx);
                 view
@@ -11431,7 +11449,7 @@ mod tests {
             Workspace::with_views(
                 core_for_workspace,
                 input,
-                TEST_RUNTIME.handle().clone(),
+                workspace_handle.clone(),
                 overlay,
                 notifications,
                 info,
@@ -11622,6 +11640,124 @@ mod tests {
                     .is_empty()
             );
         });
+    }
+
+    #[gpui::test]
+    fn file_name_prompts_do_not_complete_or_capture_commands(cx: &mut gpui::TestAppContext) {
+        use crate::actions::file_tree;
+        use nucleotide_ui::FocusCoordinator;
+
+        // File operations and the tree watcher use real filesystem I/O.
+        cx.background_executor.allow_parking();
+        let runtime = Arc::new(
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap(),
+        );
+        // GPUI drains detached tasks after the test function returns.
+        let runtime_for_app = runtime.clone();
+        cx.update(|cx| {
+            cx.on_app_quit(move |_| {
+                let runtime = runtime_for_app.clone();
+                async move { drop(runtime) }
+            })
+            .detach();
+        });
+        let _runtime = runtime.enter();
+        for operation in ["new-file", "new-folder", "rename", "duplicate"] {
+            for outcome in ["cancel", "replace", "submit"] {
+                let root = tempdir().unwrap();
+                let path = root.path().join("original.txt");
+                fs::write(&path, "original document\n").unwrap();
+                let (core, workspace, cx) =
+                    new_test_workspace_with_runtime(cx, &path, runtime.handle().clone());
+                // Drive Tokio as well as GPUI while the file tree loads.
+                for _ in 0..100 {
+                    runtime.block_on(async {
+                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                    });
+                    cx.run_until_parked();
+                    workspace.update_in(cx, |workspace, window, cx| {
+                        workspace.focus_file_tree(window, cx)
+                    });
+                    match operation {
+                        "new-file" => cx.dispatch_action(file_tree::NewFile),
+                        "new-folder" => cx.dispatch_action(file_tree::NewFolder),
+                        "rename" => cx.dispatch_action(file_tree::Rename),
+                        "duplicate" => cx.dispatch_action(file_tree::Duplicate),
+                        _ => unreachable!(),
+                    }
+                    if cx.update(|_, cx| cx.global::<FocusCoordinator>().prompt_focus().is_some()) {
+                        break;
+                    }
+                }
+                cx.run_until_parked();
+                cx.update(|window, cx| {
+                    assert!(
+                        cx.global::<FocusCoordinator>()
+                            .prompt_focus()
+                            .expect("file name prompt opened")
+                            .is_focused(window)
+                    );
+                });
+                // `w` is a command-completion prefix. Tab must leave this file
+                // name untouched, and one Escape must dismiss the prompt.
+                cx.simulate_keystrokes("ctrl-a w tab");
+                if outcome == "submit" {
+                    cx.simulate_keystrokes("enter");
+                    let target = root.path().join("w");
+                    for _ in 0..100 {
+                        cx.run_until_parked();
+                        if target.exists() {
+                            break;
+                        }
+                        runtime.block_on(async {
+                            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                        });
+                    }
+                    assert!(target.exists(), "{operation} must use the literal name w");
+                    match operation {
+                        "new-file" => assert_eq!(fs::read_to_string(&target).unwrap(), ""),
+                        "new-folder" => assert!(target.is_dir()),
+                        "rename" | "duplicate" => {
+                            assert_eq!(fs::read_to_string(&target).unwrap(), "original document\n");
+                            assert_eq!(path.exists(), operation == "duplicate");
+                        }
+                        _ => unreachable!(),
+                    }
+                } else {
+                    if outcome == "cancel" {
+                        cx.simulate_keystrokes("escape");
+                        cx.run_until_parked();
+                        cx.update(|_, cx| {
+                            assert!(cx.global::<FocusCoordinator>().prompt_focus().is_none());
+                        });
+                    }
+                    let before = core.read_with(cx, |core, _| core.editor.documents.len());
+                    cx.dispatch_action(crate::actions::workspace::ShowCommandPrompt);
+                    cx.run_until_parked();
+                    cx.simulate_keystrokes("n e w enter");
+                    cx.run_until_parked();
+                    core.read_with(cx, |core, _| {
+                        assert_eq!(
+                            core.editor.documents.len(),
+                            before + 1,
+                            "{operation}: {outcome}"
+                        );
+                        let view = core.editor.tree.get(core.editor.tree.focus);
+                        assert!(core.editor.documents[&view.doc].path().is_none());
+                    });
+                    assert_eq!(fs::read_to_string(&path).unwrap(), "original document\n");
+                    assert!(!root.path().join("new").exists());
+                    assert!(!root.path().join("w").exists());
+                }
+                cx.update(|window, _| window.remove_window());
+                drop(workspace);
+                drop(core);
+                cx.run_until_parked();
+            }
+        }
     }
 
     #[gpui::test]

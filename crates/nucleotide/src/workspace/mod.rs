@@ -79,7 +79,8 @@ use crate::remote_open::{
 };
 use crate::tab::{DraggedTab, TabId};
 use crate::types::{
-    EditorStatus, GlobalSearchLocation, HoverDocEntry, RegexSelectionAction, Severity,
+    EditorStatus, FileNamePrompt, GlobalSearchLocation, HoverDocEntry, RegexSelectionAction,
+    Severity,
 };
 use crate::updates::{UpdateController, UpdateControllerEvent, UpdateDialog};
 use crate::utils;
@@ -1062,8 +1063,6 @@ pub struct Workspace {
     notified_ready_update_version: Option<String>,
     update_restart_confirm_open: bool,
     window_was_active: bool,
-    // Pending file operation that expects a text input via prompt
-    pending_file_op: Option<PendingFileOp>,
     // Defer a file tree refresh until after processing core events
     needs_file_tree_refresh: bool,
     // Delete confirmation modal state
@@ -1348,24 +1347,6 @@ fn ui_completion_item_from_event(
         raw_lsp_item: item.raw_lsp_item,
         locality_score: 0,
     }
-}
-
-// Pending file operation kinds awaiting user input (used with the prompt overlay)
-enum PendingFileOp {
-    NewFile {
-        parent: std::path::PathBuf,
-    },
-    NewFolder {
-        parent: std::path::PathBuf,
-    },
-    Rename {
-        path: std::path::PathBuf,
-        was_dir: bool,
-    },
-    Duplicate {
-        path: std::path::PathBuf,
-        is_dir: bool,
-    },
 }
 
 #[derive(Debug, Clone)]
@@ -5130,15 +5111,11 @@ impl Workspace {
     }
 
     fn start_rename_file(&mut self, path: PathBuf, was_dir: bool, cx: &mut Context<Self>) {
-        let current_name = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("")
-            .to_string();
-        self.pending_file_op = Some(PendingFileOp::Rename { path, was_dir });
         self.core.update(cx, move |_core, cx| {
-            let prompt = crate::prompt::Prompt::native("Rename to", current_name, |_input| {});
-            cx.emit(crate::Update::Prompt(prompt));
+            cx.emit(crate::Update::FileNamePrompt(FileNamePrompt::Rename {
+                path,
+                was_dir,
+            }));
         });
     }
 
@@ -5713,7 +5690,6 @@ impl Workspace {
             notified_ready_update_version: None,
             update_restart_confirm_open: false,
             window_was_active: true,
-            pending_file_op: None,
             needs_file_tree_refresh: false,
             delete_confirm_open: false,
             delete_confirm_path: None,
@@ -6792,18 +6768,18 @@ impl Workspace {
         match intent {
             ProjectTreeContextMenuIntent::NewFile => {
                 let parent = context_menu_target_parent_path(&path, is_directory);
-                self.pending_file_op = Some(PendingFileOp::NewFile { parent });
                 self.core.update(cx, |_core, cx| {
-                    let prompt = crate::prompt::Prompt::native("New file name", "", |_input| {});
-                    cx.emit(crate::Update::Prompt(prompt));
+                    cx.emit(crate::Update::FileNamePrompt(FileNamePrompt::NewFile {
+                        parent,
+                    }));
                 });
             }
             ProjectTreeContextMenuIntent::NewFolder => {
                 let parent = context_menu_target_parent_path(&path, is_directory);
-                self.pending_file_op = Some(PendingFileOp::NewFolder { parent });
                 self.core.update(cx, |_core, cx| {
-                    let prompt = crate::prompt::Prompt::native("New folder name", "", |_input| {});
-                    cx.emit(crate::Update::Prompt(prompt));
+                    cx.emit(crate::Update::FileNamePrompt(FileNamePrompt::NewFolder {
+                        parent,
+                    }));
                 });
             }
             ProjectTreeContextMenuIntent::Rename => {
@@ -6813,19 +6789,11 @@ impl Workspace {
                 self.request_delete_path(path, is_directory, cx);
             }
             ProjectTreeContextMenuIntent::Duplicate => {
-                let base_name = path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .map(|s| format!("{} copy", s))
-                    .unwrap_or_else(|| "copy".to_string());
-                self.pending_file_op = Some(PendingFileOp::Duplicate {
-                    path,
-                    is_dir: is_directory,
-                });
                 self.core.update(cx, move |_core, cx| {
-                    let prompt =
-                        crate::prompt::Prompt::native("Duplicate as", base_name, |_input| {});
-                    cx.emit(crate::Update::Prompt(prompt));
+                    cx.emit(crate::Update::FileNamePrompt(FileNamePrompt::Duplicate {
+                        path,
+                        is_dir: is_directory,
+                    }));
                 });
             }
             ProjectTreeContextMenuIntent::CopyPath => {
@@ -8863,98 +8831,99 @@ impl Workspace {
         });
     }
 
+    fn handle_file_name_submitted(
+        &mut self,
+        operation: &FileNamePrompt,
+        name: &str,
+        cx: &mut Context<Self>,
+    ) {
+        use nucleotide_events::workspace::{Event as WsEvent, FileOpIntent};
+
+        // Build event and decide which directory to rescan using references to avoid moves
+        let (event, refresh_dir, lsp_file_operation): (
+            WsEvent,
+            Option<std::path::PathBuf>,
+            Option<LspFileOperationNotification>,
+        ) = match operation {
+            FileNamePrompt::NewFile { parent } => (
+                WsEvent::FileOpRequested {
+                    intent: FileOpIntent::NewFile {
+                        parent: parent.clone(),
+                        name: name.to_string(),
+                    },
+                },
+                Some(parent.clone()),
+                Some(LspFileOperationNotification::Created {
+                    path: parent.join(name),
+                    is_dir: false,
+                }),
+            ),
+            FileNamePrompt::NewFolder { parent } => (
+                WsEvent::FileOpRequested {
+                    intent: FileOpIntent::NewFolder {
+                        parent: parent.clone(),
+                        name: name.to_string(),
+                    },
+                },
+                Some(parent.clone()),
+                Some(LspFileOperationNotification::Created {
+                    path: parent.join(name),
+                    is_dir: true,
+                }),
+            ),
+            FileNamePrompt::Rename { path, was_dir } => {
+                let new_path = path
+                    .parent()
+                    .unwrap_or_else(|| std::path::Path::new("."))
+                    .join(name);
+                (
+                    WsEvent::FileOpRequested {
+                        intent: FileOpIntent::Rename {
+                            path: path.clone(),
+                            new_name: name.to_string(),
+                        },
+                    },
+                    path.parent().map(|p| p.to_path_buf()),
+                    Some(LspFileOperationNotification::Renamed {
+                        old_path: path.clone(),
+                        new_path,
+                        was_dir: *was_dir,
+                    }),
+                )
+            }
+            FileNamePrompt::Duplicate { path, is_dir } => {
+                let target_path = path
+                    .parent()
+                    .unwrap_or_else(|| std::path::Path::new("."))
+                    .join(name);
+                (
+                    WsEvent::FileOpRequested {
+                        intent: FileOpIntent::Duplicate {
+                            path: path.clone(),
+                            target_name: name.to_string(),
+                        },
+                    },
+                    path.parent().map(|p| p.to_path_buf()),
+                    Some(LspFileOperationNotification::Created {
+                        path: target_path,
+                        is_dir: *is_dir,
+                    }),
+                )
+            }
+        };
+
+        // Clear the overlay and dispatch the event
+        self.overlay
+            .update(cx, |overlay, cx| overlay.dismiss_all(cx));
+        self.dispatch_workspace_file_op_and_process(event, cx);
+
+        if let Some(notification) = lsp_file_operation {
+            self.observe_file_operation_completion(notification, refresh_dir, cx);
+        }
+    }
+
     fn handle_command_submitted(&mut self, command: &str, cx: &mut Context<Self>) {
         debug!("handle_command_submitted called with '{}'", command);
-
-        // If a file op is pending, treat the submitted text as the name and dispatch an intent
-        if let Some(pending) = self.pending_file_op.take() {
-            use nucleotide_events::workspace::{Event as WsEvent, FileOpIntent};
-
-            // Build event and decide which directory to rescan using references to avoid moves
-            let (event, refresh_dir, lsp_file_operation): (
-                WsEvent,
-                Option<std::path::PathBuf>,
-                Option<LspFileOperationNotification>,
-            ) = match &pending {
-                PendingFileOp::NewFile { parent } => (
-                    WsEvent::FileOpRequested {
-                        intent: FileOpIntent::NewFile {
-                            parent: parent.clone(),
-                            name: command.to_string(),
-                        },
-                    },
-                    Some(parent.clone()),
-                    Some(LspFileOperationNotification::Created {
-                        path: parent.join(command),
-                        is_dir: false,
-                    }),
-                ),
-                PendingFileOp::NewFolder { parent } => (
-                    WsEvent::FileOpRequested {
-                        intent: FileOpIntent::NewFolder {
-                            parent: parent.clone(),
-                            name: command.to_string(),
-                        },
-                    },
-                    Some(parent.clone()),
-                    Some(LspFileOperationNotification::Created {
-                        path: parent.join(command),
-                        is_dir: true,
-                    }),
-                ),
-                PendingFileOp::Rename { path, was_dir } => {
-                    let new_path = path
-                        .parent()
-                        .unwrap_or_else(|| std::path::Path::new("."))
-                        .join(command);
-                    (
-                        WsEvent::FileOpRequested {
-                            intent: FileOpIntent::Rename {
-                                path: path.clone(),
-                                new_name: command.to_string(),
-                            },
-                        },
-                        path.parent().map(|p| p.to_path_buf()),
-                        Some(LspFileOperationNotification::Renamed {
-                            old_path: path.clone(),
-                            new_path,
-                            was_dir: *was_dir,
-                        }),
-                    )
-                }
-                PendingFileOp::Duplicate { path, is_dir } => {
-                    let target_path = path
-                        .parent()
-                        .unwrap_or_else(|| std::path::Path::new("."))
-                        .join(command);
-                    (
-                        WsEvent::FileOpRequested {
-                            intent: FileOpIntent::Duplicate {
-                                path: path.clone(),
-                                target_name: command.to_string(),
-                            },
-                        },
-                        path.parent().map(|p| p.to_path_buf()),
-                        Some(LspFileOperationNotification::Created {
-                            path: target_path,
-                            is_dir: *is_dir,
-                        }),
-                    )
-                }
-            };
-
-            // Clear the overlay and dispatch the event
-            self.overlay
-                .update(cx, |overlay, cx| overlay.dismiss_all(cx));
-            self.dispatch_workspace_file_op_and_process(event, cx);
-
-            if let Some(notification) = lsp_file_operation {
-                self.observe_file_operation_completion(notification, refresh_dir, cx);
-            }
-            return;
-        }
-
-        // No pending file op: proceed with normal command handling
 
         // Clear the overlay first to hide the prompt
         self.overlay
@@ -10518,6 +10487,7 @@ impl Workspace {
                 self.handle_completion_event(completion_event, cx);
             }
             crate::Update::Prompt(_)
+            | crate::Update::FileNamePrompt(_)
             | crate::Update::Picker(_)
             | crate::Update::DirectoryPicker(_)
             | crate::Update::RemoteConnectionManager
@@ -10624,6 +10594,9 @@ impl Workspace {
                 cx.quit();
             }
             crate::Update::CommandSubmitted(command) => self.handle_command_submitted(command, cx),
+            crate::Update::FileNameSubmitted { operation, name } => {
+                self.handle_file_name_submitted(operation, name, cx)
+            }
             crate::Update::SearchSubmitted(search_text) => {
                 self.handle_search_submitted(search_text, cx)
             }
