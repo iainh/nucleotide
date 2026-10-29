@@ -71,10 +71,15 @@ UTF-16 offsets, while document transactions use character offsets.
 
 Preedit text uses temporary Helix transactions and a savepoint. Cancellation
 restores the original document, even if file preview has already switched the
-view to another buffer. Committed text goes through Helix insertion so
-multi-cursor edits, undo and dot-repeat retain their usual semantics. Commands
-and focus loss cancel composition and briefly disable native input across
-backend-observed frames to reject late commits.
+view to another buffer. If a native commit or preedit callback arrives after a
+document switch or closure, discard it, cancel the stale composition where
+possible, and reset native input. Never apply the old composition's ranges to
+the new buffer. Partial preedit replacements must stay inside the active marked
+span; the native handler finalizes preedit before replacing a range outside it.
+Committed text goes through Helix insertion so multi-cursor edits, undo and
+dot-repeat retain their usual semantics. Commands and focus loss cancel
+composition and briefly disable native input across backend-observed frames to
+reject late commits.
 
 GPUI's `unmark_text` finalizes the current preedit, matching Zed. It is not a
 cancellation callback: Wayland sends it before pointer presses, so a click can

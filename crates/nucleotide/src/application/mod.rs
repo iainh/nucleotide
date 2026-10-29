@@ -11163,6 +11163,23 @@ mod tests {
             });
         });
         window.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                // An outside replacement finalizes the old mark before starting
+                // a new one. Cancelling the new mark must retain that commit.
+                view.replace_and_mark_text_in_range(Some(1..3), "你好", None, window, cx);
+                view.replace_and_mark_text_in_range(Some(3..4), "日", None, window, cx);
+                let marked = view.marked_text_range(window, cx);
+                assert_eq!(marked, Some(3..4));
+                view.replace_text_in_range(marked, "", window, cx);
+                assert_eq!(
+                    view.text_for_range(0..usize::MAX, &mut None, window, cx)
+                        .as_deref(),
+                    Some("a你好b|cdé\n")
+                );
+                view.replace_text_in_range(Some(1..3), "ni", window, cx);
+            });
+        });
+        window.update(|window, cx| {
             core.update(cx, |core, _| {
                 let doc_id = core.editor.tree.get(view_id).doc;
                 core.editor
@@ -11223,6 +11240,107 @@ mod tests {
                 );
             });
         });
+    }
+
+    #[gpui::test]
+    fn editor_native_composition_rejects_stale_document_callbacks(cx: &mut gpui::TestAppContext) {
+        use gpui::EntityInputHandler;
+        use helix_view::document::Mode;
+
+        let _runtime = TEST_RUNTIME.enter();
+        let root = tempdir().unwrap();
+        let original = root.path().join("original.txt");
+        let replacement = root.path().join("replacement.txt");
+        fs::write(&original, "longer😀original\n").unwrap();
+        fs::write(&replacement, "x\n").unwrap();
+
+        for removed in ["neither", "original", "current", "view"] {
+            for callback in ["commit", "replace", "mark", "replace_mark", "unmark"] {
+                let core = new_test_application(cx);
+                let (view_id, original_doc) = core.update(cx, |core, _| {
+                    let doc_id = core.editor.open(&original, Action::VerticalSplit).unwrap();
+                    core.editor.mode = Mode::Insert;
+                    (core.editor.tree.focus, doc_id)
+                });
+                let view = cx.new(|cx| {
+                    crate::document::DocumentView::new(
+                        core.clone(),
+                        None,
+                        view_id,
+                        gpui::TextStyle::default(),
+                        &cx.focus_handle(),
+                        true,
+                    )
+                });
+                let window = cx.add_empty_window();
+                window.update(|window, cx| {
+                    view.update(cx, |view, cx| {
+                        view.replace_and_mark_text_in_range(
+                            Some(8..12),
+                            "候補😀",
+                            None,
+                            window,
+                            cx,
+                        );
+                    });
+                    let current_doc = core.update(cx, |core, _| {
+                        let doc_id = core.editor.open(&replacement, Action::Replace).unwrap();
+                        match removed {
+                            "original" => {
+                                assert!(core.editor.close_document(original_doc, true).is_ok());
+                            }
+                            "current" => {
+                                core.editor.documents.remove(&doc_id);
+                            }
+                            "view" => core.editor.close(view_id),
+                            _ => {}
+                        }
+                        core.editor.mode = Mode::Insert;
+                        doc_id
+                    });
+                    view.update(cx, |view, cx| {
+                        assert!(view.selected_text_range(true, window, cx).is_none());
+                        assert_eq!(view.marked_text_range(window, cx), None);
+                        match callback {
+                            "commit" => view.replace_text_in_range(None, "日", window, cx),
+                            "replace" => view.replace_text_in_range(Some(8..12), "日", window, cx),
+                            "mark" => {
+                                view.replace_and_mark_text_in_range(None, "日", None, window, cx)
+                            }
+                            "replace_mark" => view.replace_and_mark_text_in_range(
+                                Some(8..12),
+                                "日",
+                                None,
+                                window,
+                                cx,
+                            ),
+                            "unmark" => view.unmark_text(window, cx),
+                            _ => unreachable!(),
+                        }
+                        assert!(!view.has_native_composition(), "{removed}: {callback}");
+                        assert_eq!(view.marked_text_range(window, cx), None);
+                        // Reject subsequent OS callbacks until the native input reset.
+                        view.replace_text_in_range(None, "late", window, cx);
+                    });
+                    core.read_with(cx, |core, _| {
+                        if removed != "current" {
+                            assert_eq!(
+                                core.editor.documents[&current_doc].text().to_string(),
+                                "x\n",
+                                "{removed}: {callback} must not modify the replacement buffer"
+                            );
+                        }
+                        if removed != "original" && removed != "view" {
+                            assert_eq!(
+                                core.editor.documents[&original_doc].text().to_string(),
+                                "longer😀original\n",
+                                "{removed}: {callback} must restore the original buffer"
+                            );
+                        }
+                    });
+                });
+            }
+        }
     }
 
     fn new_test_workspace<'a>(

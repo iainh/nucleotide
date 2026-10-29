@@ -38,7 +38,7 @@ impl Composition {
     fn contains_range(&self, text: &Rope, range: Range<usize>) -> bool {
         let range = chars_from_utf16(text, range);
         let marked = &self.ranges[self.primary];
-        range.start >= marked.start && range.end <= marked.end
+        range.start >= marked.start && range.end <= marked.end && marked.end <= text.len_chars()
     }
 
     fn replace_within_mark(
@@ -77,6 +77,16 @@ impl NativeInput {
             .unwrap_or_default()
     }
 
+    fn has_stale_composition(&self, editor: &Editor, view_id: ViewId) -> bool {
+        self.composition.as_ref().is_some_and(|composition| {
+            editor
+                .tree
+                .try_get(view_id)
+                .is_none_or(|view| view.doc != composition.doc_id)
+                || !editor.documents.contains_key(&composition.doc_id)
+        })
+    }
+
     fn cancel(&mut self, editor: &mut Editor, view_id: ViewId) -> Option<Composition> {
         let composition = self.composition.take()?;
         // Preview can switch this view's document before its blur callback.
@@ -98,7 +108,7 @@ impl NativeInput {
         text: &str,
         selected: Option<Range<usize>>,
     ) {
-        if text.is_empty() && range.is_none() {
+        if self.has_stale_composition(editor, view_id) || (text.is_empty() && range.is_none()) {
             self.cancel(editor, view_id);
             return;
         }
@@ -118,6 +128,10 @@ impl NativeInput {
         let (text, prefix_chars) = if let Some(composition) = &self.composition
             && let Some(range) = range.clone()
         {
+            if !composition.contains_range(doc.text(), range.clone()) {
+                self.cancel(editor, view_id);
+                return;
+            }
             composition.replace_within_mark(doc.text(), range, text)
         } else {
             (text.to_owned(), 0)
@@ -247,7 +261,24 @@ impl DocumentView {
         !self.native_input.resetting
             && core.editor.mode() == Mode::Insert
             && core.editor.tree.focus == self.view_id
-            && core.editor.tree.try_get(self.view_id).is_some()
+            && core
+                .editor
+                .tree
+                .try_get(self.view_id)
+                .is_some_and(|view| core.editor.documents.contains_key(&view.doc))
+    }
+
+    fn prepare_native_input(&mut self, cx: &mut Context<Self>) -> bool {
+        if self
+            .native_input
+            .has_stale_composition(&self.core.read(cx).editor, self.view_id)
+        {
+            // Late callbacks belong to the old document. Restore it if it is
+            // still open, and reset native input instead of editing the new one.
+            self.cancel_native_composition(cx);
+            return false;
+        }
+        self.native_input_enabled(cx)
     }
 
     fn commit_native_text(
@@ -257,14 +288,16 @@ impl DocumentView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.native_input_enabled(cx) {
+        if !self.prepare_native_input(cx) {
             return;
         }
         let text = if let Some(composition) = &self.native_input.composition
             && let Some(range) = range.clone()
         {
             let core = self.core.read(cx);
-            let doc = &core.editor.documents[&composition.doc_id];
+            let Some(doc) = core.editor.documents.get(&composition.doc_id) else {
+                return;
+            };
             if composition.contains_range(doc.text(), range.clone()) {
                 composition.replace_within_mark(doc.text(), range, text).0
             } else {
@@ -276,18 +309,20 @@ impl DocumentView {
             text.to_owned()
         };
         let is_cancellation = self.native_input.composition.is_some() && text.is_empty();
-        let (doc_id, replacement) = self.core.update(cx, |core, _| {
+        let Some((doc_id, replacement)) = self.core.update(cx, |core, _| {
             let composition = self.native_input.cancel(&mut core.editor, self.view_id);
-            let view = core.editor.tree.get(self.view_id);
+            let view = core.editor.tree.try_get(self.view_id)?;
             let doc_id = view.doc;
-            let doc = core.editor.documents.get_mut(&doc_id).unwrap();
+            let doc = core.editor.documents.get_mut(&doc_id)?;
             let replacement = if let Some(composition) = composition {
                 composition.replacement
             } else {
                 range.map(|r| chars_from_utf16(doc.text(), r))
             };
-            (doc_id, replacement)
-        });
+            Some((doc_id, replacement))
+        }) else {
+            return;
+        };
         let workspace = window.root::<crate::workspace::Workspace>().flatten();
         if replacement.is_none() {
             for ch in text.chars() {
@@ -357,6 +392,9 @@ impl EntityInputHandler for DocumentView {
             .documents
             .get(&core.editor.tree.try_get(self.view_id)?.doc)?;
         let range = if let Some(composition) = &self.native_input.composition {
+            if composition.doc_id != doc.id() {
+                return None;
+            }
             composition.selected.clone()
         } else {
             // Helix's insert cursor still has a one-grapheme block selection.
@@ -375,12 +413,11 @@ impl EntityInputHandler for DocumentView {
 
     fn marked_text_range(&self, _: &mut Window, cx: &mut Context<Self>) -> Option<Range<usize>> {
         let composition = self.native_input.composition.as_ref()?;
-        let doc = self
-            .core
-            .read(cx)
-            .editor
-            .documents
-            .get(&composition.doc_id)?;
+        let core = self.core.read(cx);
+        if core.editor.tree.try_get(self.view_id)?.doc != composition.doc_id {
+            return None;
+        }
+        let doc = core.editor.documents.get(&composition.doc_id)?;
         Some(utf16_from_chars(
             doc.text(),
             composition.ranges[composition.primary].clone(),
@@ -412,15 +449,18 @@ impl EntityInputHandler for DocumentView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.native_input_enabled(cx) {
+        if !self.prepare_native_input(cx) {
             return;
         }
         if let Some(composition) = &self.native_input.composition
             && let Some(range) = range.clone()
-            && !composition.contains_range(
-                self.core.read(cx).editor.documents[&composition.doc_id].text(),
-                range,
-            )
+            && !self
+                .core
+                .read(cx)
+                .editor
+                .documents
+                .get(&composition.doc_id)
+                .is_some_and(|doc| composition.contains_range(doc.text(), range))
         {
             self.unmark_text(window, cx);
         }
@@ -560,6 +600,12 @@ pub(super) fn paint_marked_ranges(
     let Some(bounds) = bounds else { return };
     let view = view.read(cx);
     let core = view.core.read(cx);
+    if view
+        .native_input
+        .has_stale_composition(&core.editor, view.view_id)
+    {
+        return;
+    }
     let Some(doc) = core
         .editor
         .tree
@@ -580,6 +626,86 @@ pub(super) fn paint_marked_ranges(
                     color,
                 ));
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arc_swap::{ArcSwap, access::Map};
+    use helix_view::{editor::Action, editor::Config, graphics::Rect, handlers, theme};
+    use tokio::sync::mpsc;
+
+    #[tokio::test]
+    async fn native_mark_rejects_ranges_outside_its_document_and_mark() {
+        let config = Arc::new(ArcSwap::from_pointee(Config::default()));
+        let mut editor = Editor::new(
+            Rect::new(0, 0, 80, 24),
+            Arc::new(theme::Loader::new(&[])),
+            Arc::new(ArcSwap::from_pointee(helix_core::syntax::Loader::default())),
+            Arc::new(Map::new(config, |config: &Config| config)),
+            handlers::Handlers {
+                completions: handlers::completion::CompletionHandler::new(mpsc::channel(1).0),
+                signature_hints: mpsc::channel(1).0,
+                auto_save: mpsc::channel(1).0,
+                document_colors: mpsc::channel(1).0,
+                document_links: mpsc::channel(1).0,
+                word_index: handlers::word_index::Handler::spawn(),
+                pull_diagnostics: mpsc::channel(1).0,
+                pull_all_documents_diagnostics: mpsc::channel(1).0,
+                code_action_hint: mpsc::channel(1).0,
+            },
+            helix_loader::workspace_trust::WorkspaceTrust::fully_trusted(),
+        );
+        let doc_id = editor.new_file(Action::VerticalSplit);
+        let view_id = editor.tree.focus;
+        let doc = editor.documents.get_mut(&doc_id).unwrap();
+        doc.apply(
+            &Transaction::change(doc.text(), [(0, 0, Some("a😀bcd".into()))].into_iter()),
+            view_id,
+        );
+
+        let mut input = NativeInput::default();
+        // The marked span is UTF-16 3..6. Probe both sides and overlaps,
+        // including a range whose normalized start is beyond the mark.
+        for range in [
+            0..1,
+            1..4,
+            5..7,
+            7..8,
+            Range { start: 8, end: 1 },
+            usize::MAX..usize::MAX,
+        ] {
+            input.mark(&mut editor, view_id, Some(3..4), "é😀", None);
+            input.mark(&mut editor, view_id, Some(range), "日", None);
+            assert!(input.marked_ranges().is_empty());
+            assert_eq!(editor.documents[&doc_id].text().to_string(), "a😀bcd\n");
+        }
+
+        // Contained replacements include insertion at either edge and native
+        // ranges normalized from inverted or surrogate-interior offsets.
+        for (range, expected) in [
+            (3..3, "a😀日é😀cd\n"),
+            (6..6, "a😀é😀日cd\n"),
+            (4..6, "a😀é日cd\n"),
+            (3..6, "a😀日cd\n"),
+            (Range { start: 5, end: 4 }, "a😀é日😀cd\n"),
+        ] {
+            input.mark(&mut editor, view_id, Some(3..4), "é😀", None);
+            input.mark(&mut editor, view_id, Some(range), "日", Some(0..1));
+            assert_eq!(editor.documents[&doc_id].text().to_string(), expected);
+            input.cancel(&mut editor, view_id);
+        }
+
+        for range in [None, Some(3..6)] {
+            input.mark(&mut editor, view_id, Some(3..4), "é😀", None);
+            let replacement = editor.new_file(Action::Replace);
+            input.mark(&mut editor, view_id, range, "日", None);
+            assert!(input.marked_ranges().is_empty());
+            assert_eq!(editor.documents[&doc_id].text().to_string(), "a😀bcd\n");
+            assert_eq!(editor.documents[&replacement].text().to_string(), "\n");
+            editor.switch(doc_id, Action::Replace);
         }
     }
 }
