@@ -1760,8 +1760,9 @@ fn new_test_workspace_with_runtime<'a>(
             local_workspace_backend(),
             handle.clone(),
         );
+        let path = helix_stdx::path::canonicalize(path);
         core.project_directory = Some(path.parent().unwrap().to_path_buf());
-        core.editor.open(path, Action::VerticalSplit).unwrap();
+        core.editor.open(&path, Action::VerticalSplit).unwrap();
     });
     cx.update(|cx| {
         nucleotide_appearance::SystemAppearance::init(cx);
@@ -2054,7 +2055,8 @@ fn file_name_prompts_do_not_complete_or_capture_commands(cx: &mut gpui::TestAppC
     for operation in ["new-file", "new-folder", "rename", "duplicate"] {
         for outcome in ["cancel", "replace", "submit"] {
             let root = tempdir().unwrap();
-            let path = root.path().join("original.txt");
+            let root_path = helix_stdx::path::canonicalize(root.path());
+            let path = root_path.join("original.txt");
             fs::write(&path, "original document\n").unwrap();
             let (core, workspace, cx) =
                 new_test_workspace_with_runtime(cx, &path, runtime.handle().clone());
@@ -2097,7 +2099,7 @@ fn file_name_prompts_do_not_complete_or_capture_commands(cx: &mut gpui::TestAppC
             cx.simulate_keystrokes(select_all_and_type_w);
             if outcome == "submit" {
                 cx.simulate_keystrokes("enter");
-                let target = root.path().join("w");
+                let target = root_path.join("w");
                 for _ in 0..100 {
                     cx.run_until_parked();
                     if target.exists() {
