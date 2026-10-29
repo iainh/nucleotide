@@ -42,6 +42,7 @@ const REMOTE_FILE_TREE_RECONCILIATION_INTERVAL: std::time::Duration =
 const REMOTE_FILE_TREE_IDLE_BACKOFF_AFTER_POLLS: u32 = 3;
 const REMOTE_FILE_TREE_RESYNC_RETRY_INTERVAL: std::time::Duration =
     std::time::Duration::from_secs(2);
+const FILE_SYSTEM_DEBOUNCE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(300);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DirectoryListingFingerprint {
@@ -427,14 +428,16 @@ pub struct FileTreeView {
     vertical_scrollbar_state: ScrollbarState,
     /// Tokio runtime handle for async VCS operations
     _tokio_handle: Option<tokio::runtime::Handle>,
-    /// File system watcher for detecting changes
-    file_watcher: Option<FileTreeWatcher>,
+    /// Owns the local watcher; replacement or view drop cancels the task and OS watch.
+    file_watcher_task: Option<gpui::Task<()>>,
     /// Workspace backend used for directory listing and initial tree load.
     workspace_backend: WorkspaceBackendHandle,
     /// Pending file system events for debouncing
     pending_fs_events: std::collections::HashMap<PathBuf, FileTreeEvent>,
     /// Last file system event time for debouncing
     last_fs_event_time: Option<std::time::Instant>,
+    /// One task waits for the current filesystem event burst to settle.
+    fs_debounce_task: Option<gpui::Task<()>>,
     /// Whether remote directory polling is currently active.
     remote_file_polling_active: bool,
     /// Generation of the active remote polling task.
@@ -496,10 +499,11 @@ impl FileTreeView {
             horizontal_scroll_handle,
             vertical_scrollbar_state,
             _tokio_handle: None,
-            file_watcher: None,
+            file_watcher_task: None,
             workspace_backend,
             pending_fs_events: std::collections::HashMap::new(),
             last_fs_event_time: None,
+            fs_debounce_task: None,
             remote_file_polling_active: false,
             remote_file_polling_generation: 0,
             remote_file_poll_idle_ticks: 0,
@@ -569,10 +573,11 @@ impl FileTreeView {
             horizontal_scroll_handle,
             vertical_scrollbar_state,
             _tokio_handle: tokio_handle,
-            file_watcher: None,
+            file_watcher_task: None,
             workspace_backend,
             pending_fs_events: std::collections::HashMap::new(),
             last_fs_event_time: None,
+            fs_debounce_task: None,
             remote_file_polling_active: false,
             remote_file_polling_generation: 0,
             remote_file_poll_idle_ticks: 0,
@@ -687,8 +692,7 @@ impl FileTreeView {
                                 match FileTreeWatcher::new(root_path.clone()) {
                                     Ok(watcher) => {
                                         debug!(root_path = ?root_path, "File system watcher created successfully");
-                                        view.file_watcher = Some(watcher);
-                                        view.start_file_watcher(cx);
+                                        view.start_file_watcher(watcher, cx);
                                     }
                                     Err(error) => {
                                         warn!(
@@ -699,6 +703,7 @@ impl FileTreeView {
                                     }
                                 }
                             } else {
+                                view.file_watcher_task = None;
                                 debug!(
                                     backend = ?view.workspace_backend.identity(),
                                     watch_filesystem,
@@ -2086,24 +2091,22 @@ impl FileTreeView {
     }
 
     /// Start the file system watcher background task
-    fn start_file_watcher(&mut self, cx: &mut Context<Self>) {
-        if let Some(mut watcher) = self.file_watcher.take() {
-            debug!("Starting file system watcher background task");
+    fn start_file_watcher(&mut self, mut watcher: FileTreeWatcher, cx: &mut Context<Self>) {
+        self.file_watcher_task = None;
+        debug!("Starting file system watcher background task");
 
-            cx.spawn(async move |this, cx| {
-                while let Some(event) = watcher.next_event().await {
-                    if let Some(this) = this.upgrade() {
-                        this.update(cx, |view, cx| {
-                            view.queue_file_system_event(event, cx);
-                        });
-                    } else {
-                        // Component was dropped, stop watching
-                        break;
-                    }
+        self.file_watcher_task = Some(cx.spawn(async move |this, cx| {
+            while let Some(event) = watcher.next_event().await {
+                if this
+                    .update(cx, |view, cx| {
+                        view.queue_file_system_event(event, cx);
+                    })
+                    .is_err()
+                {
+                    break;
                 }
-            })
-            .detach();
-        }
+            }
+        }));
     }
 
     /// Queue a file system event for debounced processing
@@ -2125,36 +2128,41 @@ impl FileTreeView {
             } else {
                 self.pending_fs_events.insert(path.clone(), event);
             }
-            self.last_fs_event_time = Some(std::time::Instant::now());
+            self.last_fs_event_time = Some(cx.background_executor().now());
 
-            // Schedule a debounced processing after 300ms
-            cx.spawn(async move |this, cx| {
-                // Wait for debounce period
-                cx.background_executor()
-                    .timer(std::time::Duration::from_millis(300))
-                    .await;
+            if self.fs_debounce_task.is_some() {
+                return;
+            }
 
-                if let Some(this) = this.upgrade() {
-                    this.update(cx, |view, cx| {
+            self.fs_debounce_task = Some(cx.spawn(async move |this, cx| {
+                let mut delay = FILE_SYSTEM_DEBOUNCE_INTERVAL;
+                loop {
+                    cx.background_executor().timer(delay).await;
+
+                    let remaining = this.update(cx, |view, cx| {
+                        let elapsed = cx.background_executor().now()
+                            - view.last_fs_event_time.expect("queued filesystem event");
+                        if elapsed < FILE_SYSTEM_DEBOUNCE_INTERVAL {
+                            return Some(FILE_SYSTEM_DEBOUNCE_INTERVAL - elapsed);
+                        }
+
+                        view.fs_debounce_task = None;
                         view.process_pending_events(cx);
+                        None
                     });
+
+                    match remaining {
+                        Ok(Some(remaining)) => delay = remaining,
+                        _ => break,
+                    }
                 }
-            })
-            .detach();
+            }));
         }
     }
 
     /// Process pending file system events
     fn process_pending_events(&mut self, cx: &mut Context<Self>) {
         debug!("Processing pending file system events");
-
-        // Check if enough time has passed since the last event
-        if let Some(last_time) = self.last_fs_event_time
-            && last_time.elapsed() < std::time::Duration::from_millis(300)
-        {
-            debug!("Debounce time not elapsed yet, skipping processing");
-            return;
-        }
 
         // Collect events to process to avoid borrowing issues
         let events_to_process: Vec<_> = self.pending_fs_events.drain().collect();
@@ -3343,6 +3351,78 @@ mod tests {
             assert_eq!(view.selected_path(), Some(&root_path));
             assert_eq!(view.selected_paths(), vec![root_path]);
         });
+    }
+
+    #[gpui::test]
+    async fn filesystem_events_wait_for_quiet_period_and_flush_once_per_path(
+        cx: &mut TestAppContext,
+    ) {
+        use std::time::Duration;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path().to_path_buf();
+        let first = root.join("first.rs");
+        let second = root.join("second.txt");
+        std::fs::write(&first, "first").unwrap();
+        std::fs::write(&second, "second").unwrap();
+        cx.update(|cx| {
+            let handle = VcsServiceHandle::new(
+                nucleotide_vcs::VcsConfig {
+                    enabled: false,
+                    ..Default::default()
+                },
+                cx,
+            );
+            cx.set_global(handle);
+        });
+        let view = cx.new(|cx| FileTreeView::new(root, test_config(), cx));
+        let events = subscribe_file_tree_events(cx, &view);
+        let first_event = FileTreeEvent::FileSystemChanged {
+            path: first,
+            kind: FileSystemEventKind::Modified,
+        };
+        let second_event = FileTreeEvent::FileSystemChanged {
+            path: second,
+            kind: FileSystemEventKind::Deleted,
+        };
+
+        view.update(cx, |view, cx| {
+            view.queue_file_system_event(first_event.clone(), cx)
+        });
+        cx.run_until_parked();
+        cx.executor().advance_clock(Duration::from_millis(200));
+        view.update(cx, |view, cx| {
+            for _ in 0..100 {
+                view.queue_file_system_event(first_event.clone(), cx);
+                view.queue_file_system_event(second_event.clone(), cx);
+            }
+        });
+        cx.run_until_parked();
+        // The first timer wakes at 300 ms but must wait until 500 ms.
+        cx.executor().advance_clock(Duration::from_millis(100));
+        cx.run_until_parked();
+        assert!(events.borrow().is_empty());
+        cx.executor().advance_clock(Duration::from_millis(199));
+        cx.run_until_parked();
+        assert!(events.borrow().is_empty());
+        cx.executor().advance_clock(Duration::from_millis(1));
+        cx.run_until_parked();
+        assert_eq!(events.borrow().len(), 2);
+        assert!(events.borrow().contains(&first_event));
+        assert!(events.borrow().contains(&second_event));
+
+        // A later burst must start a new debounce cycle, not remain stuck.
+        events.borrow_mut().clear();
+        view.update(cx, |view, cx| {
+            view.queue_file_system_event(first_event.clone(), cx)
+        });
+        cx.run_until_parked();
+        cx.executor().advance_clock(Duration::from_millis(299));
+        cx.run_until_parked();
+        assert!(events.borrow().is_empty());
+        cx.executor().advance_clock(Duration::from_millis(1));
+        cx.run_until_parked();
+        assert_eq!(*events.borrow(), vec![first_event]);
     }
 
     #[gpui::test]
