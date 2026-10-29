@@ -1170,6 +1170,7 @@ pub mod engine {
             let title = terminal
                 .title()
                 .ok()
+                .and_then(|title| std::str::from_utf8(title).ok())
                 .and_then(|title| (!title.is_empty()).then(|| title.to_string()));
 
             self.cols = cols;

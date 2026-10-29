@@ -10,7 +10,7 @@
     };
 
     zig-overlay = {
-      url = "github:mitchellh/zig-overlay/f0acd78ef01f2d5e3471cc01b08022ab4e665898";
+      url = "github:mitchellh/zig-overlay/7216088d1ecf6beaa4d01b2efbc4a82a6b89969c";
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
@@ -20,7 +20,7 @@
 
     ghostty = {
       # Must match GHOSTTY_COMMIT in the pinned libghostty-vt-sys build script.
-      url = "github:ghostty-org/ghostty/3425025e585a3403340d4dc6d65132f42e05e605";
+      url = "github:ghostty-org/ghostty/521cf2c5d30bd48028ca61546c64e7913764073d";
       flake = false;
     };
 
@@ -78,7 +78,7 @@
         # Use the official compiler: nixpkgs' source-built 0.16 produces
         # unresolved ELF section symbols in Ghostty's compiler runtime.
         # zig-overlay retains the Nix dynamic-linker detection patch.
-        zig_0_16_0 = zig-overlay.packages.${system}."0.16.0";
+        zig_0_17_0 = zig-overlay.packages.${system}."0.17.0";
         # nixpkgs' Zig 0.16 also fails to link zstd in Linux musl helpers.
         # Keep their cross-compiler separate from Ghostty's native compiler.
         remoteHelperZig =
@@ -88,8 +88,8 @@
         # dependency too rather than relying on the shell's compiler ordering.
         cargoZigbuild = pkgs.cargo-zigbuild.override { zig = remoteHelperZig; };
         ghosttyZigDeps = pkgs.callPackage "${ghostty}/build.zig.zon.nix" {
-          zig_0_16 = zig_0_16_0;
-          name = "ghostty-cache-3425025e";
+          zig_0_17 = zig_0_17_0;
+          name = "ghostty-cache-521cf2c5";
         };
 
         # Keep Nix's cc wrapper so library paths and SDK flags are preserved,
@@ -211,7 +211,7 @@
               clang
               git
               pkg-config
-              zig_0_16_0
+              zig_0_17_0
             ]
             ++ lib.optionals stdenv.isDarwin [
               darwin.cctools
@@ -296,7 +296,7 @@
           #!${pkgs.stdenv.shell}
           set -e
 
-          export PATH="${zig_0_16_0}/bin:${rustToolchain}/bin:${pkgs.pkg-config}/bin:${pkgs.git}/bin:$PATH"
+          export PATH="${zig_0_17_0}/bin:${rustToolchain}/bin:${pkgs.pkg-config}/bin:${pkgs.git}/bin:$PATH"
           export PKG_CONFIG_PATH="${pkgs.openssl.dev}/lib/pkgconfig"
           export OPENSSL_NO_VENDOR=1
           export HELIX_RUNTIME="${helixRuntime}"
@@ -709,7 +709,7 @@
           {
             packages = with pkgs; [
               rustToolchain
-              zig_0_16_0
+              zig_0_17_0
               cargoZigbuild
               clang
               git
@@ -759,7 +759,7 @@
                   # For running the application
                   ripgrep
                   tree-sitter
-                  zig_0_16_0
+                  zig_0_17_0
 
                   # Build helpers
                   buildScript
@@ -807,7 +807,7 @@
           // {
             shellHook = ''
               # Keep Ghostty's required Zig ahead of any host-level installation.
-              export PATH="${zig_0_16_0}/bin:$PATH"
+              export PATH="${zig_0_17_0}/bin:$PATH"
 
               case "$NUCLEOTIDE_DOTNET_TOOL_PATH" in
                 /*) ;;

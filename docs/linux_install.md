@@ -6,7 +6,7 @@ Overview
 
 Prerequisites
 - Rust toolchain (stable) via rustup
-- Zig 0.16.0 for the Ghostty-backed integrated terminal build
+- Zig 0.17.0 for the Ghostty-backed integrated terminal build
 - C toolchain: distro build tools plus clang
 - System libraries (X11/Wayland, OpenGL/Vulkan, font, SSL/zlib for libgit2)
 
@@ -46,7 +46,7 @@ Rust toolchain
   rustup update
 
 Zig toolchain
-- Install Zig 0.16.0 and ensure `zig` is on `PATH`.
+- Install Zig 0.17.0 and ensure `zig` is on `PATH`.
 - If you use Nix, `nix develop` provides the pinned Zig version.
 
 Build
@@ -80,7 +80,7 @@ Known issues on Linux
 
 Common build errors
 - C toolchain errors: install the build tools and clang packages listed above.
-- Ghostty/libghostty build errors: ensure `zig version` reports 0.16.0.
+- Ghostty/libghostty build errors: ensure `zig version` reports 0.17.0.
 - openssl/libgit2 errors: ensure openssl and zlib dev packages are installed (see prerequisites).
 - Wayland/X11 missing headers: install libxkbcommon-dev and wayland-devel (see distro sections).
 

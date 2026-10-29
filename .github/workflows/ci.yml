@@ -47,7 +47,7 @@ jobs:
         if: runner.os == 'Windows'
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
         with:
-          version: 0.16.0
+          version: 0.17.0
           use-cache: false
 
       - name: Install Nix for ARM64 macOS
@@ -127,7 +127,7 @@ jobs:
         if: runner.os != 'Windows'
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
         with:
-          version: 0.16.0
+          version: 0.17.0
           use-cache: false
 
       - name: Install x64 build tools for Windows ARM64
@@ -254,7 +254,7 @@ jobs:
       - name: Install Zig
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
         with:
-          version: 0.16.0
+          version: 0.17.0
           use-cache: false
       
       - name: Install system dependencies

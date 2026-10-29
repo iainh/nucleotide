@@ -52,17 +52,17 @@
     "ghostty": {
       "flake": false,
       "locked": {
-        "lastModified": 1791118819,
-        "narHash": "sha256-n/DSzaoCxwTXV6bRthscvMrL4+TBJF5tph6Z+vVsAKQ=",
+        "lastModified": 1792594102,
+        "narHash": "sha256-TKWQK2zmv1zwoUasT9ESAZX3xulgmVX5AvGj0hBS7NI=",
         "owner": "ghostty-org",
         "repo": "ghostty",
-        "rev": "3425025e585a3403340d4dc6d65132f42e05e605",
+        "rev": "521cf2c5d30bd48028ca61546c64e7913764073d",
         "type": "github"
       },
       "original": {
         "owner": "ghostty-org",
         "repo": "ghostty",
-        "rev": "3425025e585a3403340d4dc6d65132f42e05e605",
+        "rev": "521cf2c5d30bd48028ca61546c64e7913764073d",
         "type": "github"
       }
     },
@@ -170,17 +170,17 @@
         "systems": "systems_2"
       },
       "locked": {
-        "lastModified": 1791635236,
-        "narHash": "sha256-AnEn78XeUUzBKISAhdyD462id4QP7gkn3kbIi9ZB9Pw=",
+        "lastModified": 1793147866,
+        "narHash": "sha256-GZMkHZx7tWTztJ+YCsFw2zUkzW6zvuDGgxD/4h0wh6I=",
         "owner": "mitchellh",
         "repo": "zig-overlay",
-        "rev": "f0acd78ef01f2d5e3471cc01b08022ab4e665898",
+        "rev": "7216088d1ecf6beaa4d01b2efbc4a82a6b89969c",
         "type": "github"
       },
       "original": {
         "owner": "mitchellh",
         "repo": "zig-overlay",
-        "rev": "f0acd78ef01f2d5e3471cc01b08022ab4e665898",
+        "rev": "7216088d1ecf6beaa4d01b2efbc4a82a6b89969c",
         "type": "github"
       }
     }
