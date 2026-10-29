@@ -774,6 +774,12 @@
                 ]
                 ++ lib.optionals stdenv.isDarwin [
                   darwin.DarwinTools
+                  # Ghostty needs Apple's nmedit, which Nix's SDK and xcbuild
+                  # do not provide. Scope host Xcode discovery to xcrun so the
+                  # rest of the shell retains Nix's compiler and SDK settings.
+                  (pkgs.writeShellScriptBin "xcrun" ''
+                    exec /usr/bin/env -u DEVELOPER_DIR /usr/bin/xcrun "$@"
+                  '')
                   xcbuild
                   lld
                   lldb # Debugging on macOS

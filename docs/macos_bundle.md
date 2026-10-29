@@ -17,6 +17,12 @@ When `target/release/nucl` is missing, `bundle-mac.sh` runs a default release
 build. Install Zig 0.17.0 first, or run the script from `nix develop`, so the
 Ghostty-backed terminal dependency can build.
 
+On macOS, the default Nix development shell uses the Apple developer tools
+selected by `xcode-select` for `xcrun` commands. Ghostty needs their `nmedit`
+tool, which Nix's SDK does not provide. Rust, Zig and the C compiler still
+come from Nix. Re-enter the shell after updating `flake.nix` (or run
+`direnv reload` if you use direnv).
+
 The script creates `Nucleotide.app`.
 
 To package that app for installation and automatic updates, install the
