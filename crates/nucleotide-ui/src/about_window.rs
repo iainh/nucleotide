@@ -21,13 +21,11 @@ pub struct AboutWindow {
 }
 
 impl AboutWindow {
-    pub fn new(cx: &mut Context<Self>) -> Self {
+    pub fn new(commit_hash: Option<&'static str>, cx: &mut Context<Self>) -> Self {
         let app_name = "Nucleotide".into();
         let version = env!("CARGO_PKG_VERSION").into();
         let author = "The Nucleotide Contributors".into();
-
-        // Try to get git commit hash
-        let commit_hash = Self::get_git_commit_hash();
+        let commit_hash = commit_hash.filter(|hash| !hash.is_empty()).map(Into::into);
 
         Self {
             app_name,
@@ -41,22 +39,6 @@ impl AboutWindow {
 
     fn dismiss(&mut self, cx: &mut Context<Self>) {
         cx.emit(DismissEvent);
-    }
-
-    fn get_git_commit_hash() -> Option<SharedString> {
-        // Try to get git commit hash at runtime
-        if let Ok(output) = nucleotide_process::command("git")
-            .args(["rev-parse", "--short", "HEAD"])
-            .output()
-            && output.status.success()
-        {
-            let commit_hash = String::from_utf8_lossy(&output.stdout).to_string();
-            let commit_hash = commit_hash.trim().to_string();
-            if !commit_hash.is_empty() {
-                return Some(commit_hash.into());
-            }
-        }
-        None
     }
 }
 

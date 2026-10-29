@@ -1074,29 +1074,8 @@ use helix_view::{Editor, doc_mut, graphics::Rect, handlers::Handlers};
 
 // Helper function to find workspace root from a specific directory
 pub fn find_workspace_root_from(start_dir: &Path) -> PathBuf {
-    // Prefer a Cargo workspace root when present
-    fn find_upwards_for(start: &Path, file: &str) -> Option<PathBuf> {
-        for ancestor in start.ancestors() {
-            let candidate = ancestor.join(file);
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-        }
-        None
-    }
-
-    fn cargo_toml_has_workspace(path: &Path) -> bool {
-        std::fs::read_to_string(path)
-            .ok()
-            .map(|s| s.contains("[workspace]"))
-            .unwrap_or(false)
-    }
-
-    if let Some(manifest) = find_upwards_for(start_dir, "Cargo.toml")
-        && cargo_toml_has_workspace(&manifest)
-        && let Some(parent) = manifest.parent()
-    {
-        return parent.to_path_buf();
+    if let Some(root) = find_cargo_workspace_root(start_dir) {
+        return root;
     }
 
     // Fallback: VCS root detection
@@ -1112,6 +1091,17 @@ pub fn find_workspace_root_from(start_dir: &Path) -> PathBuf {
         }
     }
     start_dir.to_path_buf()
+}
+
+fn find_cargo_workspace_root(start_dir: &Path) -> Option<PathBuf> {
+    start_dir.ancestors().find_map(|ancestor| {
+        let manifest = std::fs::read_to_string(ancestor.join("Cargo.toml")).ok()?;
+        let manifest = toml::from_str::<toml::Table>(&manifest).ok()?;
+        manifest
+            .get("workspace")
+            .filter(|workspace| workspace.is_table())
+            .map(|_| ancestor.to_path_buf())
+    })
 }
 
 #[cfg(any(target_os = "windows", test))]
@@ -7810,6 +7800,11 @@ fn navigation_display_path(
 
 /// Detect project root by walking up parent directories looking for project markers
 fn detect_project_root_from_file(file_path: &std::path::Path) -> Option<std::path::PathBuf> {
+    let start_dir = file_path.parent()?;
+    if let Some(root) = find_cargo_workspace_root(start_dir) {
+        return Some(root);
+    }
+
     // Common project markers to look for
     let project_markers = [
         "Cargo.toml",       // Rust
@@ -7824,37 +7819,14 @@ fn detect_project_root_from_file(file_path: &std::path::Path) -> Option<std::pat
         ".svn",             // Subversion repository
     ];
 
-    // Start from the file's parent directory
-    let mut current_dir = file_path.parent()?;
-
-    // Walk up the directory tree
-    while let Some(dir) = current_dir.parent() {
-        // Check if any project markers exist in this directory
-        for marker in &project_markers {
-            let marker_path = current_dir.join(marker);
-            if marker_path.exists() {
-                return Some(current_dir.to_path_buf());
-            }
-        }
-
-        // Move up one level
-        current_dir = dir;
-
-        // Stop at filesystem root
-        if current_dir == dir {
-            break;
-        }
-    }
-
-    // Also check the final directory (filesystem root)
-    for marker in &project_markers {
-        let marker_path = current_dir.join(marker);
-        if marker_path.exists() {
-            return Some(current_dir.to_path_buf());
-        }
-    }
-
-    None
+    start_dir
+        .ancestors()
+        .find(|dir| {
+            project_markers
+                .iter()
+                .any(|marker| dir.join(marker).exists())
+        })
+        .map(Path::to_path_buf)
 }
 
 /// Detect if we need CLI environment and create appropriate ProjectEnvironment.
@@ -9820,6 +9792,68 @@ mod tests {
     use std::time::Duration;
     use tempfile::tempdir;
     use tokio::sync::mpsc;
+
+    #[test]
+    fn workspace_roots_prefer_outer_cargo_workspace_over_member_markers() {
+        let dir = tempdir().unwrap();
+        let member = dir.path().join("crates/member");
+        let src = member.join("src");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(
+            dir.path().join("Cargo.toml"),
+            "[workspace]\nmembers = ['crates/member']\n",
+        )
+        .unwrap();
+        fs::write(
+            member.join("Cargo.toml"),
+            "[package]\nname = 'member'\nversion = '0.1.0'\n",
+        )
+        .unwrap();
+        fs::create_dir(member.join(".git")).unwrap();
+        fs::write(src.join("package.json"), "{}").unwrap();
+
+        assert_eq!(super::find_workspace_root_from(&src), dir.path());
+        assert_eq!(
+            super::detect_project_root_from_file(&src.join("lib.rs")),
+            Some(dir.path().to_path_buf())
+        );
+
+        // An explicit nested workspace takes precedence over an outer workspace.
+        fs::write(member.join("Cargo.toml"), "[workspace]\nmembers = []\n").unwrap();
+        assert_eq!(super::find_workspace_root_from(&src), member);
+        assert_eq!(
+            super::detect_project_root_from_file(&src.join("lib.rs")),
+            Some(member)
+        );
+    }
+
+    #[test]
+    fn workspace_roots_keep_fallbacks_without_a_cargo_workspace() {
+        let dir = tempdir().unwrap();
+        let member = dir.path().join("member");
+        let src = member.join("src");
+        fs::create_dir_all(&src).unwrap();
+        fs::create_dir(dir.path().join(".git")).unwrap();
+        fs::write(
+            member.join("Cargo.toml"),
+            "# [workspace] is only a comment\n[package]\nname = 'member'\n",
+        )
+        .unwrap();
+
+        assert_eq!(super::find_workspace_root_from(&src), dir.path());
+        assert_eq!(
+            super::detect_project_root_from_file(&src.join("lib.rs")),
+            Some(member)
+        );
+
+        fs::remove_dir(dir.path().join(".git")).unwrap();
+        fs::remove_file(dir.path().join("member/Cargo.toml")).unwrap();
+        assert_eq!(super::find_workspace_root_from(&src), src);
+        assert_eq!(
+            super::detect_project_root_from_file(&src.join("lib.rs")),
+            None
+        );
+    }
 
     fn assert_same_path(actual: &Path, expected: &Path) {
         fn comparable_path(path: &Path) -> PathBuf {
