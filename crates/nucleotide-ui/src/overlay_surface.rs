@@ -115,8 +115,12 @@ impl RenderOnce for OverlaySurface {
                 .justify_center()
                 .items_start()
                 .pt(self.top)
-                .on_any_mouse_down(|_, _, cx| cx.stop_propagation())
-                .children(self.children),
+                .child(
+                    div()
+                        .occlude()
+                        .on_any_mouse_down(|_, _, cx| cx.stop_propagation())
+                        .children(self.children),
+                ),
         )
     }
 }
@@ -127,8 +131,8 @@ mod tests {
     use std::rc::Rc;
 
     use gpui::{
-        Context, FocusHandle, IntoElement, ParentElement as _, Render, TestAppContext, Window, div,
-        px,
+        Context, FocusHandle, IntoElement, Modifiers, ParentElement as _, Render, TestAppContext,
+        Window, div, point, px,
     };
 
     use super::*;
@@ -136,6 +140,9 @@ mod tests {
     struct OverlaySurfaceHarness {
         focus_handle: FocusHandle,
         cancel_count: Rc<Cell<usize>>,
+        light_dismiss_count: Rc<Cell<usize>>,
+        child_mouse_down_count: Rc<Cell<usize>>,
+        ancestor_mouse_down_count: Rc<Cell<usize>>,
     }
 
     impl OverlaySurfaceHarness {
@@ -143,6 +150,9 @@ mod tests {
             Self {
                 focus_handle: cx.focus_handle(),
                 cancel_count,
+                light_dismiss_count: Rc::new(Cell::new(0)),
+                child_mouse_down_count: Rc::new(Cell::new(0)),
+                ancestor_mouse_down_count: Rc::new(Cell::new(0)),
             }
         }
     }
@@ -150,15 +160,87 @@ mod tests {
     impl Render for OverlaySurfaceHarness {
         fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
             let cancel_count = Rc::clone(&self.cancel_count);
+            let light_dismiss_count = Rc::clone(&self.light_dismiss_count);
+            let child_mouse_down_count = Rc::clone(&self.child_mouse_down_count);
+            let ancestor_mouse_down_count = Rc::clone(&self.ancestor_mouse_down_count);
 
-            div().size_full().child(
-                OverlaySurface::new()
-                    .top(px(16.0))
-                    .on_cancel(move |_, _, _| {
-                        cancel_count.set(cancel_count.get() + 1);
-                    })
-                    .child(div().track_focus(&self.focus_handle).child("overlay")),
+            div()
+                .size_full()
+                .on_any_mouse_down(move |_, _, _| {
+                    ancestor_mouse_down_count.set(ancestor_mouse_down_count.get() + 1);
+                })
+                .child(
+                    OverlaySurface::new()
+                        .top(px(16.0))
+                        .on_light_dismiss(move |_, _, _| {
+                            light_dismiss_count.set(light_dismiss_count.get() + 1);
+                        })
+                        .on_cancel(move |_, _, _| {
+                            cancel_count.set(cancel_count.get() + 1);
+                        })
+                        .child(
+                            div()
+                                .debug_selector(|| "overlay-content".into())
+                                .track_focus(&self.focus_handle)
+                                .w(px(200.0))
+                                .h(px(80.0))
+                                .on_any_mouse_down(move |_, _, _| {
+                                    child_mouse_down_count.set(child_mouse_down_count.get() + 1);
+                                })
+                                .child("overlay"),
+                        ),
+                )
+        }
+    }
+
+    #[gpui::test]
+    fn light_dismiss_only_handles_left_clicks_outside_content(cx: &mut TestAppContext) {
+        let (harness, cx) =
+            cx.add_window_view(|_, cx| OverlaySurfaceHarness::new(Rc::new(Cell::new(0)), cx));
+        let (dismiss_count, child_count, ancestor_count) = harness.read_with(cx, |harness, _| {
+            (
+                Rc::clone(&harness.light_dismiss_count),
+                Rc::clone(&harness.child_mouse_down_count),
+                Rc::clone(&harness.ancestor_mouse_down_count),
             )
+        });
+        cx.run_until_parked();
+        let content = cx.debug_bounds("overlay-content").unwrap();
+        cx.update(|window, _| {
+            assert_eq!(content.size.width, px(200.0));
+            assert_eq!(content.size.height, px(80.0));
+            assert_eq!(content.top(), px(16.0));
+            assert_eq!(content.center().x, window.viewport_size().width / 2.0);
+        });
+
+        for (index, button) in [MouseButton::Left, MouseButton::Right, MouseButton::Middle]
+            .into_iter()
+            .enumerate()
+        {
+            cx.simulate_mouse_down(content.center(), button, Modifiers::default());
+            cx.simulate_mouse_up(content.center(), button, Modifiers::default());
+            assert_eq!(child_count.get(), index + 1);
+            assert_eq!(dismiss_count.get(), 0);
+            assert_eq!(ancestor_count.get(), 0);
+        }
+
+        let outside = [
+            point(content.center().x, content.top() - px(1.0)),
+            point(content.left() - px(1.0), content.center().y),
+            point(content.right() + px(1.0), content.center().y),
+            point(content.center().x, content.bottom() + px(1.0)),
+        ];
+        for (index, position) in outside.into_iter().enumerate() {
+            cx.simulate_click(position, Modifiers::default());
+            assert_eq!(dismiss_count.get(), index + 1, "backdrop at {position:?}");
+            assert_eq!(child_count.get(), 3);
+            assert_eq!(ancestor_count.get(), 0);
+        }
+
+        for button in [MouseButton::Right, MouseButton::Middle] {
+            cx.simulate_mouse_down(outside[0], button, Modifiers::default());
+            cx.simulate_mouse_up(outside[0], button, Modifiers::default());
+            assert_eq!(dismiss_count.get(), outside.len());
         }
     }
 
