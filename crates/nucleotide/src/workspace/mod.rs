@@ -6124,10 +6124,10 @@ impl Workspace {
                                 .text_color(file_tree_tokens.item_text_secondary)
                                 .child(entry.server_name.clone()),
                         )
-                        .child(markdown_extended(
-                            entry.markdown.clone(),
-                            markdown_style.clone(),
-                        )),
+                        .child(
+                            markdown_extended(entry.markdown.clone(), markdown_style.clone())
+                                .id(("documentation-sidebar-markdown", index)),
+                        ),
                 );
             }
         }

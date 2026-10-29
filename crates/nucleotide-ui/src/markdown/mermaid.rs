@@ -1,7 +1,7 @@
 // ABOUTME: Background Mermaid rendering for the shared native Markdown component
 // ABOUTME: Keeps one cancellable render per visible block, with readable source fallback
 
-use super::{MarkdownStyle, MarkdownSyntaxLoader, render_code_block};
+use super::{MarkdownCodeBlock, MarkdownStyle};
 use crate::styling::{ColorTheory, ContrastRatios};
 use crate::tokens::mix;
 use anyhow::{Context as _, Result, anyhow, ensure};
@@ -144,7 +144,7 @@ impl MermaidView {
 }
 
 impl Render for MermaidView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         let content = match &self.result {
             Some(Ok(image)) => {
                 // As a direct Markdown flex item, img's intrinsic aspect ratio
@@ -158,12 +158,6 @@ impl Render for MermaidView {
                     .into_any_element();
             }
             result => {
-                let helix_theme = cx
-                    .try_global::<crate::theme_manager::ThemeManager>()
-                    .map(|manager| manager.helix_theme());
-                let loader = cx
-                    .try_global::<MarkdownSyntaxLoader>()
-                    .map(MarkdownSyntaxLoader::loader);
                 let message = match result {
                     Some(Err(error)) => format!("Mermaid: {error:#}"),
                     _ => "Rendering Mermaid diagram…".to_string(),
@@ -179,14 +173,12 @@ impl Render for MermaidView {
                             .text_color(self.style.secondary_color)
                             .child(message),
                     )
-                    .child(render_code_block(
-                        self.source.to_string(),
-                        Some("mermaid".to_string()),
-                        &self.style,
-                        helix_theme,
-                        loader,
-                        &format!("{}-source", self.id),
-                    ))
+                    .child(MarkdownCodeBlock {
+                        text: self.source.to_string(),
+                        language: Some("mermaid".to_string()),
+                        style: self.style.clone(),
+                        id: format!("{}-source", self.id),
+                    })
                     .into_any_element()
             }
         };
