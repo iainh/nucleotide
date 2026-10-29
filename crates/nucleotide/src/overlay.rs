@@ -1,10 +1,9 @@
 use crate::types::RegexSelectionAction;
 use gpui::{
-    App, AppContext, ClipboardItem, Context, DismissEvent, Entity, EventEmitter, FocusHandle,
-    Focusable, InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels, Render, Styled,
-    Window, div, px,
+    App, AppContext, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable,
+    InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels, Render, Styled, Window,
+    div, px,
 };
-use nucleotide_terminal::TerminalBounds;
 use nucleotide_ui::ThemedContext as UIThemedContext;
 use nucleotide_ui::completion_v2::CompletionView;
 use nucleotide_ui::picker::Picker;
@@ -26,32 +25,9 @@ pub struct OverlayView {
     remote_connection_manager_view:
         Option<Entity<crate::remote_connection_manager::RemoteConnectionManagerView>>,
     completion_view: Option<Entity<CompletionView>>,
-    terminal_panel: Option<Entity<nucleotide_terminal_panel::TerminalPanel>>,
-    // Resizable terminal panel height (pixels)
-    terminal_height_px: f32,
-    // Resize interaction state
-    _terminal_resizing: bool,
-    _resize_start_mouse_y: gpui::Pixels,
-    _resize_start_height: f32,
-    // Shared state for window-level resize listeners
-    resize_state: Arc<Mutex<ResizeStateInner>>,
-    // Track last dispatched terminal size to avoid redundant resize events
-    last_terminal_size: Option<(nucleotide_events::terminal::TerminalId, u16, u16)>,
     focus: FocusHandle,
     core: gpui::WeakEntity<crate::Core>,
     handle: tokio::runtime::Handle,
-    // Cached terminal font metrics to avoid per-frame font measurement
-    cached_font_key: Option<(String, f32, nucleotide_types::FontWeight)>, // (family, size, weight)
-    cached_char_width: Option<f32>,
-    cached_line_height: Option<f32>,
-}
-
-#[derive(Debug)]
-struct ResizeStateInner {
-    resizing: bool,
-    _start_mouse_y: f32,
-    _start_height: f32,
-    height: f32,
 }
 
 #[derive(Clone)]
@@ -410,24 +386,9 @@ impl OverlayView {
             regex_selection_preview: None,
             remote_connection_manager_view: None,
             completion_view: None,
-            terminal_panel: None,
-            terminal_height_px: 220.0,
-            _terminal_resizing: false,
-            _resize_start_mouse_y: px(0.0),
-            _resize_start_height: 220.0,
-            resize_state: Arc::new(Mutex::new(ResizeStateInner {
-                resizing: false,
-                _start_mouse_y: 0.0,
-                _start_height: 220.0,
-                height: 220.0,
-            })),
-            last_terminal_size: None,
             focus: focus.clone(),
             core: core.downgrade(),
             handle,
-            cached_font_key: None,
-            cached_char_width: None,
-            cached_line_height: None,
         }
     }
 
@@ -436,7 +397,6 @@ impl OverlayView {
         self.native_picker_view.is_some()
             || self.native_prompt_view.is_some()
             || self.remote_connection_manager_view.is_some()
-            || self.terminal_panel.is_some()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -715,31 +675,6 @@ impl OverlayView {
         if self.clear_completion(cx) {
             cx.notify();
         }
-    }
-
-    pub fn show_terminal_panel(
-        &mut self,
-        panel: Entity<nucleotide_terminal_panel::TerminalPanel>,
-        cx: &mut Context<Self>,
-    ) {
-        if let Some(previous) = self.terminal_panel.replace(panel.clone())
-            && let Some(coordinator) = cx.try_global::<nucleotide_ui::FocusCoordinator>().cloned()
-        {
-            coordinator.clear_terminal_focus_if(&previous.focus_handle(cx));
-        }
-        if let Some(coordinator) = cx.try_global::<nucleotide_ui::FocusCoordinator>().cloned() {
-            coordinator.set_terminal_focus(panel.focus_handle(cx));
-        }
-        cx.notify();
-    }
-
-    pub fn hide_terminal_panel(&mut self, cx: &mut Context<Self>) {
-        if let Some(panel) = self.terminal_panel.take()
-            && let Some(coordinator) = cx.try_global::<nucleotide_ui::FocusCoordinator>().cloned()
-        {
-            coordinator.clear_terminal_focus_if(&panel.focus_handle(cx));
-        }
-        cx.notify();
     }
 
     pub fn subscribe(&self, editor: &Entity<crate::Core>, cx: &mut Context<Self>) {
@@ -1221,10 +1156,6 @@ impl OverlayView {
                 .detach();
 
                 cx.notify();
-            }
-            crate::Update::TerminalPanel(panel) => {
-                nucleotide_logging::info!("TERMINAL: Showing Terminal panel overlay");
-                self.show_terminal_panel(panel.clone(), cx);
             }
             crate::Update::Picker(picker) => {
                 nucleotide_logging::trace!("DIAG: Overlay Update::Picker received");
@@ -2177,56 +2108,6 @@ pub struct WorkspaceLayoutInfo {
 impl gpui::Global for WorkspaceLayoutInfo {}
 
 impl OverlayView {
-    #[inline]
-    fn terminal_metrics(&mut self, cx: &mut Context<Self>) -> (f32, f32) {
-        // Build a cache key from the current editor font settings
-        let editor_font = cx.global::<nucleotide_types::EditorFontConfig>();
-        let font_key = (
-            editor_font.family.clone(),
-            editor_font.size,
-            editor_font.weight,
-        );
-
-        let need_recalc = match &self.cached_font_key {
-            Some(k) => k != &font_key,
-            None => true,
-        };
-
-        if need_recalc {
-            // Resolve font and measure advance for 'm'
-            let font = gpui::Font {
-                family: editor_font.family.clone().into(),
-                features: gpui::FontFeatures::default(),
-                weight: editor_font.weight.into(),
-                style: gpui::FontStyle::Normal,
-                fallbacks: None,
-            };
-            let font_id = cx.text_system().resolve_font(&font);
-            let font_size = gpui::px(editor_font.size);
-            let char_w = cx
-                .text_system()
-                .advance(font_id, font_size, 'm')
-                .map(|a| f32::from(a.width))
-                .unwrap_or(editor_font.size * 0.6)
-                .max(1.0);
-            // Prefer configured line_height when available
-            let line_h = if editor_font.line_height > 0.0 {
-                editor_font.line_height
-            } else {
-                (editor_font.size * 1.35).max(1.0)
-            };
-
-            self.cached_font_key = Some(font_key);
-            self.cached_char_width = Some(char_w);
-            self.cached_line_height = Some(line_h);
-        }
-
-        (
-            self.cached_char_width.unwrap_or(8.0),
-            self.cached_line_height
-                .unwrap_or((editor_font.size * 1.35).max(1.0)),
-        )
-    }
     /// Create PickerView using ThemedContext with design token fallbacks
     fn create_picker_view_with_context(cx: &mut gpui::Context<PickerView>) -> PickerView {
         // Get modal style using ThemedContext
@@ -2400,246 +2281,6 @@ impl Render for OverlayView {
                     .size_full(),
                 ))
                 .into_any_element();
-        }
-
-        // Terminal panel - docked at bottom
-        if let Some(panel) = self.terminal_panel.clone() {
-            {
-                let panel_focus = panel.focus_handle(cx);
-                let panel_focus_for_keys = panel_focus.clone();
-
-                // Sync from window-level resize state
-                if let Ok(st) = self.resize_state.lock()
-                    && (st.height - self.terminal_height_px).abs() >= 0.5
-                {
-                    self.terminal_height_px = st.height;
-                }
-
-                // Constrain terminal height to avoid covering the entire editor
-                let window_h = f32::from(_window.bounds().size.height);
-                let max_h = (window_h * 0.6).max(120.0);
-                let clamped_h = self.terminal_height_px.clamp(80.0, max_h);
-                if (clamped_h - self.terminal_height_px).abs() > 0.5 {
-                    self.terminal_height_px = clamped_h;
-                    if let Ok(mut st) = self.resize_state.lock() {
-                        st.height = clamped_h;
-                    }
-                }
-
-                // Dynamically compute terminal cols/rows from current window
-                // bounds and font metrics to keep the PTY/emulator sized to
-                // the visible area. Snap the rendered panel height to whole
-                // cells so the split and terminal surface cannot diverge.
-                let layout = self.get_workspace_layout_info(cx);
-                let window_width = f32::from(_window.bounds().size.width);
-                let (char_w, line_h) = self.terminal_metrics(cx);
-                let terminal_content_height = (self.terminal_height_px
-                    - nucleotide_terminal_panel::TERMINAL_PANEL_HEADER_HEIGHT_PX)
-                    .max(line_h);
-                let file_tree_width = f32::from(layout.file_tree_width);
-                let usable_width = (window_width - file_tree_width).max(1.0);
-                let bounds = TerminalBounds::from_pixels(
-                    char_w,
-                    line_h,
-                    usable_width,
-                    terminal_content_height,
-                );
-                let snapped_panel_height =
-                    nucleotide_terminal_panel::snapped_terminal_panel_height(
-                        self.terminal_height_px,
-                        line_h,
-                    )
-                    .clamp(80.0, max_h);
-
-                if (snapped_panel_height - self.terminal_height_px).abs() > 0.5 {
-                    self.terminal_height_px = snapped_panel_height;
-                    if let Ok(mut st) = self.resize_state.lock() {
-                        st.height = snapped_panel_height;
-                    }
-                }
-
-                // Update the panel entity with the current height before
-                // borrowing cx immutably.
-                if let Some(panel) = &self.terminal_panel {
-                    let h = self.terminal_height_px;
-                    panel.update(cx, |p, cx| {
-                        if (p.height_px - h).abs() > 0.5 {
-                            p.height_px = h;
-                            cx.notify();
-                        }
-                    });
-                }
-
-                // Read the active terminal id after metrics calculation to avoid borrow conflicts.
-                let active_id = if let Some(panel) = &self.terminal_panel {
-                    panel.read(cx).active
-                } else {
-                    // If panel disappeared mid-render, skip sizing.
-                    return div().into_any_element();
-                };
-                let cols = bounds.cols();
-                let rows = bounds.rows();
-                let changed = !matches!(
-                    self.last_terminal_size,
-                    Some((id, last_c, last_r))
-                        if id == active_id && last_c == cols && last_r == rows
-                );
-                if changed {
-                    self.last_terminal_size = Some((active_id, cols, rows));
-                    if let Some(core) = self.core.upgrade() {
-                        core.update(cx, |app, _| {
-                            app.terminal_runtime.dispatch(
-                                &nucleotide_events::terminal::Event::Resized {
-                                    id: active_id,
-                                    cols,
-                                    rows,
-                                    cell_width: char_w,
-                                    cell_height: line_h,
-                                },
-                            );
-                        });
-                    }
-                    // Notify the terminal view entity so it re-renders with
-                    // the updated grid dimensions (new row/column count).
-                    if let Some(panel) = &self.terminal_panel {
-                        panel.update(cx, |p, cx| {
-                            cx.notify();
-                            if let Some(view) = &p.view_entity {
-                                view.update(cx, |_, cx| cx.notify());
-                            }
-                        });
-                    }
-                }
-
-                // Theme after potential mutable cx borrow above
-                let theme = cx.theme();
-                let _tokens = &theme.tokens;
-
-                return div()
-                    .key_context("OverlayTerminalPanel")
-                    .absolute()
-                    .size_full()
-                    .bottom_0()
-                    .left_0()
-                    // Do NOT occlude the entire window; allow clicks to reach the editor
-                    .on_key_down(cx.listener(
-                        move |this: &mut OverlayView, event: &gpui::KeyDownEvent, window, cx| {
-                            if !panel_focus_for_keys.is_focused(window) {
-                                return;
-                            }
-                            if event.keystroke.modifiers.secondary()
-                                && event.keystroke.key.as_str() == "c"
-                                && let Some(text) = this
-                                    .terminal_panel
-                                    .as_ref()
-                                    .and_then(|panel| {
-                                        nucleotide_terminal_view::get_view_model(
-                                            panel.read(cx).active,
-                                        )
-                                    })
-                                    .and_then(|model| {
-                                        model
-                                            .lock()
-                                            .unwrap_or_else(|poisoned| poisoned.into_inner())
-                                            .selected_text()
-                                    })
-                            {
-                                cx.write_to_clipboard(ClipboardItem::new_string(text));
-                                cx.stop_propagation();
-                                return;
-                            }
-                            if let Some(core) = this.core.upgrade() {
-                                let maybe_id =
-                                    this.terminal_panel.as_ref().map(|p| p.read(cx).active);
-                                if let Some(id) = maybe_id {
-                                    let bytes =
-                                        crate::terminal_input::encode_key_event_for_terminal(
-                                            id, event,
-                                        );
-                                    if crate::terminal_input::send_terminal_input(
-                                        &core, id, bytes, cx,
-                                    ) {
-                                        cx.stop_propagation();
-                                    }
-                                }
-                            }
-                        },
-                    ))
-                    .child({
-                        // Use shared bottom panel split
-                        let on_change_height = {
-                            let entity = cx.entity().clone();
-                            let terminal_line_height_px = line_h;
-                            move |new_h: f32, app_cx: &mut gpui::App| {
-                                entity.update(app_cx, |this: &mut OverlayView, cx| {
-                                    let snapped_h =
-                                        nucleotide_terminal_panel::snapped_terminal_panel_height(
-                                            new_h,
-                                            terminal_line_height_px,
-                                        )
-                                        .clamp(80.0, max_h);
-                                    this.terminal_height_px = snapped_h;
-                                    if let Ok(mut st) = this.resize_state.lock() {
-                                        st.height = snapped_h;
-                                        st.resizing = true;
-                                    }
-                                    cx.notify();
-                                });
-                            }
-                        };
-
-                        nucleotide_ui::bottom_panel_split(
-                            self.terminal_height_px,
-                            80.0,
-                            (window_h * 0.6).max(120.0),
-                            4.0,
-                            220.0,
-                            on_change_height,
-                            {
-                                let debug = matches!(
-                                    std::env::var("NUCL_DEBUG_COLORS")
-                                        .map(|v| v.to_ascii_lowercase())
-                                        .as_deref(),
-                                    Ok("1") | Ok("true") | Ok("yes") | Ok("on")
-                                );
-                                let mut c = div().size_full().overflow_hidden().bg(cx
-                                    .theme()
-                                    .tokens
-                                    .editor
-                                    .background);
-                                if debug {
-                                    let theme = cx.global::<nucleotide_ui::Theme>();
-                                    c = c
-                                        .relative()
-                                        .bg(theme.tokens.chrome.surface_elevated)
-                                        .border_t_2()
-                                        .border_color(theme.tokens.chrome.border_default);
-                                }
-                                // First, terminal content
-                                if let Some(panel) = &self.terminal_panel {
-                                    c = c.child(panel.clone());
-                                }
-                                // Then the debug label so it stays on top
-                                if debug {
-                                    let theme = cx.global::<nucleotide_ui::Theme>();
-                                    c = c.child(
-                                        div()
-                                            .absolute()
-                                            .top_0()
-                                            .left_0()
-                                            .px(px(6.0))
-                                            .py(px(2.0))
-                                            .bg(theme.tokens.chrome.primary)
-                                            .text_color(theme.tokens.chrome.text_on_chrome)
-                                            .child("TERMINAL"),
-                                    );
-                                }
-                                c
-                            },
-                        )
-                    })
-                    .into_any_element();
-            }
         }
 
         // Empty overlay using design tokens

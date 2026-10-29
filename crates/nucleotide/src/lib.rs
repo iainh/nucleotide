@@ -36,9 +36,7 @@ pub use nucleotide_core::preview_tracker;
 pub use nucleotide_env::{
     CachedEnvironment, EnvironmentOrigin, ProjectEnvironment, ShellEnvironmentError,
 };
-pub use nucleotide_project::{
-    ProjectInfo, ProjectLspStatus, ProjectStatusHandle, ProjectStatusService, ProjectType,
-};
+pub use nucleotide_project::ProjectType;
 pub use nucleotide_vcs::{VcsConfig, VcsEvent, VcsService, VcsServiceHandle};
 
 // Re-export modules that were moved to other crates
