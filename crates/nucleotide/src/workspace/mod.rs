@@ -1274,81 +1274,6 @@ fn completion_commit_character_from_key(
     chars.next().is_none().then_some(ch)
 }
 
-fn ui_completion_item_from_event(
-    item: nucleotide_events::completion::CompletionItem,
-) -> nucleotide_ui::completion_v2::CompletionItem {
-    use nucleotide_events::completion::{CompletionItemKind, CompletionItemTag};
-    use nucleotide_ui::completion_v2::{
-        CompletionItem as UiCompletionItem, CompletionItemKind as UiCompletionItemKind,
-        CompletionItemTag as UiCompletionItemTag,
-    };
-
-    let ui_kind = match item.kind {
-        CompletionItemKind::Text => UiCompletionItemKind::Text,
-        CompletionItemKind::Method => UiCompletionItemKind::Method,
-        CompletionItemKind::Function => UiCompletionItemKind::Function,
-        CompletionItemKind::Constructor => UiCompletionItemKind::Constructor,
-        CompletionItemKind::Field => UiCompletionItemKind::Field,
-        CompletionItemKind::Variable => UiCompletionItemKind::Variable,
-        CompletionItemKind::Class => UiCompletionItemKind::Class,
-        CompletionItemKind::Interface => UiCompletionItemKind::Interface,
-        CompletionItemKind::Module => UiCompletionItemKind::Module,
-        CompletionItemKind::Property => UiCompletionItemKind::Property,
-        CompletionItemKind::Unit => UiCompletionItemKind::Unit,
-        CompletionItemKind::Value => UiCompletionItemKind::Value,
-        CompletionItemKind::Enum => UiCompletionItemKind::Enum,
-        CompletionItemKind::Keyword => UiCompletionItemKind::Keyword,
-        CompletionItemKind::Snippet => UiCompletionItemKind::Snippet,
-        CompletionItemKind::Color => UiCompletionItemKind::Color,
-        CompletionItemKind::File => UiCompletionItemKind::File,
-        CompletionItemKind::Reference => UiCompletionItemKind::Reference,
-        CompletionItemKind::Folder => UiCompletionItemKind::Folder,
-        CompletionItemKind::EnumMember => UiCompletionItemKind::EnumMember,
-        CompletionItemKind::Constant => UiCompletionItemKind::Constant,
-        CompletionItemKind::Struct => UiCompletionItemKind::Struct,
-        CompletionItemKind::Event => UiCompletionItemKind::Event,
-        CompletionItemKind::Operator => UiCompletionItemKind::Operator,
-        CompletionItemKind::TypeParameter => UiCompletionItemKind::TypeParameter,
-    };
-
-    UiCompletionItem {
-        text: item.insert_text.into(),
-        description: item.detail.as_ref().map(|d| d.clone().into()),
-        display_text: Some(item.label.into()),
-        kind: Some(ui_kind),
-        documentation: item.documentation.map(|d| d.into()),
-        detail: item.detail.map(|d| d.into()),
-        signature_info: item.signature_info.map(|s| s.into()),
-        type_info: item.type_info.map(|t| t.into()),
-        insert_text_format: match item.insert_text_format {
-            nucleotide_events::completion::InsertTextFormat::PlainText => {
-                nucleotide_ui::completion_v2::InsertTextFormat::PlainText
-            }
-            nucleotide_events::completion::InsertTextFormat::Snippet => {
-                nucleotide_ui::completion_v2::InsertTextFormat::Snippet
-            }
-        },
-        edit: item.edit.map(ui_completion_edit_from_event),
-        sort_text: item.sort_text.map(Into::into),
-        filter_text: item.filter_text.map(Into::into),
-        preselect: item.preselect,
-        commit_characters: item.commit_characters.into_iter().map(Into::into).collect(),
-        tags: item
-            .tags
-            .into_iter()
-            .map(|tag| match tag {
-                CompletionItemTag::Deprecated => UiCompletionItemTag::Deprecated,
-            })
-            .collect(),
-        data: item.data,
-        source_index: item.source_index,
-        selection_priority: 0,
-        server_id: item.server_id,
-        raw_lsp_item: item.raw_lsp_item,
-        locality_score: 0,
-    }
-}
-
 #[derive(Debug, Clone)]
 enum LspFileOperationNotification {
     Created {
@@ -11933,24 +11858,6 @@ impl Workspace {
                 self.update_specific_document_view(*doc_id, cx);
                 cx.notify();
             }
-            DocumentEvent::SaveFailed {
-                doc_id,
-                path,
-                error,
-            } => {
-                self.push_editor_status_notification(
-                    EditorStatus {
-                        status: format!("Failed to save {}: {error}", path.display()),
-                        severity: Severity::Error,
-                    },
-                    cx,
-                );
-                self.update_specific_document_view(*doc_id, cx);
-            }
-            DocumentEvent::LanguageDetected { doc_id, .. } => {
-                self.update_specific_document_view(*doc_id, cx);
-                cx.notify();
-            }
             DocumentEvent::DiagnosticsUpdated { doc_id, .. } => {
                 self.handle_diagnostics_changed(*doc_id, cx);
             }
@@ -12559,10 +12466,8 @@ impl Workspace {
             (doc.version(), doc.text().clone(), cursor)
         };
         let prefix_start = completion_word_start(document_text.slice(..), cursor);
-        let mut ui_items: Vec<nucleotide_ui::completion_v2::CompletionItem> = items
-            .into_iter()
-            .map(ui_completion_item_from_event)
-            .collect();
+        let mut ui_items: Vec<nucleotide_ui::completion_v2::CompletionItem> =
+            items.into_iter().map(Into::into).collect();
 
         for item in &mut ui_items {
             let key = Self::completion_memory_key(&language, &prefix, item);
@@ -12885,7 +12790,7 @@ impl Workspace {
             if let Some(this) = this.upgrade() {
                 this.update(cx, move |workspace, cx| {
                     let completion_item = match resolved_item {
-                        Ok(resolved_item) => ui_completion_item_from_event(resolved_item),
+                        Ok(resolved_item) => resolved_item.into(),
                         Err(err) => {
                             nucleotide_logging::warn!(
                                 error = %err,
@@ -17009,63 +16914,6 @@ fn sort_code_actions_like_helix(actions: &mut [lsp::CodeActionOrCommand]) {
     });
 }
 
-fn ui_completion_edit_from_event(
-    edit: nucleotide_events::completion::CompletionEdit,
-) -> nucleotide_ui::CompletionEdit {
-    nucleotide_ui::CompletionEdit {
-        offset_encoding: ui_completion_offset_encoding_from_event(edit.offset_encoding),
-        text_edit: edit.text_edit.map(ui_completion_text_edit_from_event),
-        additional_text_edits: edit
-            .additional_text_edits
-            .into_iter()
-            .map(ui_completion_text_edit_from_event)
-            .collect(),
-    }
-}
-
-fn ui_completion_text_edit_from_event(
-    edit: nucleotide_events::completion::CompletionTextEdit,
-) -> nucleotide_ui::CompletionTextEdit {
-    nucleotide_ui::CompletionTextEdit {
-        range: ui_completion_range_from_event(edit.range),
-        new_text: edit.new_text,
-    }
-}
-
-fn ui_completion_range_from_event(
-    range: nucleotide_events::completion::CompletionRange,
-) -> nucleotide_ui::CompletionRange {
-    nucleotide_ui::CompletionRange {
-        start: ui_completion_position_from_event(range.start),
-        end: ui_completion_position_from_event(range.end),
-    }
-}
-
-fn ui_completion_position_from_event(
-    position: nucleotide_events::completion::CompletionPosition,
-) -> nucleotide_ui::CompletionPosition {
-    nucleotide_ui::CompletionPosition {
-        line: position.line,
-        character: position.character,
-    }
-}
-
-fn ui_completion_offset_encoding_from_event(
-    offset_encoding: nucleotide_events::completion::CompletionOffsetEncoding,
-) -> nucleotide_ui::CompletionOffsetEncoding {
-    match offset_encoding {
-        nucleotide_events::completion::CompletionOffsetEncoding::Utf8 => {
-            nucleotide_ui::CompletionOffsetEncoding::Utf8
-        }
-        nucleotide_events::completion::CompletionOffsetEncoding::Utf16 => {
-            nucleotide_ui::CompletionOffsetEncoding::Utf16
-        }
-        nucleotide_events::completion::CompletionOffsetEncoding::Utf32 => {
-            nucleotide_ui::CompletionOffsetEncoding::Utf32
-        }
-    }
-}
-
 fn helix_offset_encoding_from_completion(
     offset_encoding: nucleotide_ui::CompletionOffsetEncoding,
 ) -> OffsetEncoding {
@@ -18805,48 +18653,6 @@ mod tests {
         let primary = transaction.selection().unwrap().primary();
         assert_eq!(primary.from(), 12);
         assert_eq!(primary.to(), 21);
-    }
-
-    #[test]
-    fn ui_completion_edit_from_event_preserves_payload() {
-        let edit = nucleotide_events::completion::CompletionEdit {
-            offset_encoding: nucleotide_events::completion::CompletionOffsetEncoding::Utf16,
-            text_edit: Some(nucleotide_events::completion::CompletionTextEdit {
-                range: nucleotide_events::completion::CompletionRange {
-                    start: nucleotide_events::completion::CompletionPosition {
-                        line: 1,
-                        character: 2,
-                    },
-                    end: nucleotide_events::completion::CompletionPosition {
-                        line: 1,
-                        character: 5,
-                    },
-                },
-                new_text: "value".to_string(),
-            }),
-            additional_text_edits: vec![nucleotide_events::completion::CompletionTextEdit {
-                range: nucleotide_events::completion::CompletionRange {
-                    start: nucleotide_events::completion::CompletionPosition {
-                        line: 0,
-                        character: 0,
-                    },
-                    end: nucleotide_events::completion::CompletionPosition {
-                        line: 0,
-                        character: 0,
-                    },
-                },
-                new_text: "use value;\n".to_string(),
-            }],
-        };
-
-        let ui_edit = ui_completion_edit_from_event(edit);
-
-        assert_eq!(
-            ui_edit.offset_encoding,
-            nucleotide_ui::CompletionOffsetEncoding::Utf16
-        );
-        assert_eq!(ui_edit.text_edit.as_ref().unwrap().new_text, "value");
-        assert_eq!(ui_edit.additional_text_edits.len(), 1);
     }
 
     fn test_view_id(index: u64) -> ViewId {

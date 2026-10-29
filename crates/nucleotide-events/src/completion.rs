@@ -1,110 +1,5 @@
-// ABOUTME: Completion domain events for lifecycle and user interactions
-// ABOUTME: Complete rewrite with proper lifecycle management
-
-use helix_view::{DocumentId, ViewId};
-
-/// Completion domain events - covers completion lifecycle, item selection, and display coordination  
-/// Following event sourcing principles: all events are immutable facts about what has happened
-#[derive(Debug)]
-pub enum Event {
-    /// Completion request lifecycle
-    Requested {
-        doc_id: DocumentId,
-        view_id: ViewId,
-        trigger: CompletionTrigger,
-        cursor_position: Position,
-        request_id: CompletionRequestId,
-    },
-
-    Cancelled {
-        request_id: CompletionRequestId,
-        reason: CancellationReason,
-    },
-
-    /// Results available
-    ResultsAvailable {
-        request_id: CompletionRequestId,
-        items: Vec<CompletionItem>,
-        is_incomplete: bool,
-        provider: CompletionProvider,
-        latency_ms: u64,
-    },
-
-    /// User interaction
-    ItemSelected {
-        request_id: CompletionRequestId,
-        item_index: usize,
-        selection_method: SelectionMethod,
-    },
-
-    ItemAccepted {
-        item: Box<CompletionItem>,
-        doc_id: DocumentId,
-        view_id: ViewId,
-        insert_position: Position,
-    },
-
-    /// Display management
-    MenuShown {
-        request_id: CompletionRequestId,
-        item_count: usize,
-        position: MenuPosition,
-    },
-
-    MenuHidden {
-        request_id: CompletionRequestId,
-        was_accepted: bool,
-    },
-
-    /// Filtering and ranking
-    FilteringCompleted {
-        request_id: CompletionRequestId,
-        original_count: usize,
-        filtered_count: usize,
-        filter_text: String,
-    },
-
-    /// Error handling
-    RequestFailed {
-        request_id: CompletionRequestId,
-        error: CompletionError,
-    },
-
-    /// Performance tracking
-    PerformanceMetrics {
-        request_id: CompletionRequestId,
-        metrics: CompletionMetrics,
-    },
-}
-
-/// Completion trigger types
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CompletionTrigger {
-    Manual,
-    Character(char),
-    TriggerSequence(String),
-    Automatic,
-}
-
-/// How an item was selected
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SelectionMethod {
-    Keyboard,
-    Mouse,
-    Tab,
-    Enter,
-}
-
-/// Position in document
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Position {
-    pub line: usize,
-    pub column: usize,
-}
-
-/// Unique identifier for completion requests
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct CompletionRequestId(pub u64);
+// ABOUTME: Shared completion items and metadata for application and UI consumers
+// ABOUTME: Language-server edit payloads use the negotiated offset encoding
 
 /// Completion item details
 #[derive(Debug, Clone)]
@@ -175,7 +70,7 @@ pub enum InsertTextFormat {
 }
 
 /// Types of completion items
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CompletionItemKind {
     Text,
     Method,
@@ -207,77 +102,6 @@ pub enum CompletionItemKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompletionItemTag {
     Deprecated,
-}
-
-/// Source of completion results
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CompletionProvider {
-    LSP,
-    Buffer,
-    Snippet,
-    Path,
-}
-
-/// Reason for cancellation
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CancellationReason {
-    UserCancelled,
-    NewRequest,
-    DocumentClosed,
-    Timeout,
-    Error,
-}
-
-/// Position for completion menu
-#[derive(Debug, Clone, Copy)]
-pub struct MenuPosition {
-    pub x: f32,
-    pub y: f32,
-    pub anchor: PositionAnchor,
-}
-
-/// Anchor point for menu positioning
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PositionAnchor {
-    TopLeft,
-    TopRight,
-    BottomLeft,
-    BottomRight,
-    Cursor,
-}
-
-/// Completion error information
-#[derive(Debug, Clone)]
-pub struct CompletionError {
-    pub message: String,
-    pub code: Option<i32>,
-    pub recoverable: bool,
-}
-
-/// Performance metrics for completion
-#[derive(Debug, Clone)]
-pub struct CompletionMetrics {
-    pub request_duration_ms: u64,
-    pub filter_duration_ms: u64,
-    pub render_duration_ms: u64,
-    pub total_items: usize,
-    pub visible_items: usize,
-}
-
-impl Position {
-    pub fn new(line: usize, column: usize) -> Self {
-        Self { line, column }
-    }
-}
-
-impl CompletionRequestId {
-    pub fn new(id: u64) -> Self {
-        Self(id)
-    }
-
-    pub fn as_u64(&self) -> u64 {
-        self.0
-    }
 }
 
 impl CompletionItem {
@@ -393,37 +217,6 @@ impl CompletionItem {
     pub fn with_raw_lsp_item(mut self, raw_lsp_item: Option<serde_json::Value>) -> Self {
         self.raw_lsp_item = raw_lsp_item;
         self
-    }
-}
-
-impl MenuPosition {
-    pub fn new(x: f32, y: f32, anchor: PositionAnchor) -> Self {
-        Self { x, y, anchor }
-    }
-}
-
-impl CompletionError {
-    pub fn with_code(mut self, code: i32) -> Self {
-        self.code = Some(code);
-        self
-    }
-}
-
-impl Default for CompletionMetrics {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl CompletionMetrics {
-    pub fn new() -> Self {
-        Self {
-            request_duration_ms: 0,
-            filter_duration_ms: 0,
-            render_duration_ms: 0,
-            total_items: 0,
-            visible_items: 0,
-        }
     }
 }
 
