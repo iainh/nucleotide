@@ -17,13 +17,17 @@ use nucleotide_types::scrollbar::SCROLLBAR_THICKNESS;
 pub struct ThemeDebugView {
     focus_handle: FocusHandle,
     scroll: UniformListScrollHandle,
+    scrollbar_state: crate::scrollbar::ScrollbarState,
 }
 
 impl ThemeDebugView {
     pub fn new(cx: &mut Context<Self>) -> Self {
+        let scroll = UniformListScrollHandle::new();
+        let scrollbar_state = crate::scrollbar::ScrollbarState::new(scroll.clone());
         Self {
             focus_handle: cx.focus_handle().tab_stop(false),
-            scroll: UniformListScrollHandle::new(),
+            scroll,
+            scrollbar_state,
         }
     }
 }
@@ -576,10 +580,10 @@ impl Render for ThemeDebugView {
                 els
             })
         })
-        .with_sizing_behavior(gpui::ListSizingBehavior::Infer)
+        .with_sizing_behavior(gpui::ListSizingBehavior::Auto)
         .with_horizontal_sizing_behavior(gpui::ListHorizontalSizingBehavior::FitList)
         .track_scroll(&self.scroll)
-        .h_full();
+        .size_full();
 
         div()
             .track_focus(&self.focus_handle)
@@ -591,6 +595,7 @@ impl Render for ThemeDebugView {
             .shadow(vec![tokens.chrome.shadow_lg.to_box_shadow(false)])
             .p_4()
             .w(px(860.0))
+            .h(px(600.0))
             .max_h(px(600.0))
             .flex()
             .flex_col()
@@ -608,15 +613,14 @@ impl Render for ThemeDebugView {
             .child(
                 div()
                     .relative()
+                    .flex_1()
                     .w_full()
                     .h_full()
                     .min_h(px(0.0))
                     .overflow_hidden()
                     .child(div().size_full().min_h(px(0.0)).child(list))
                     .when_some(
-                        crate::scrollbar::Scrollbar::vertical(
-                            crate::scrollbar::ScrollbarState::new(self.scroll.clone()),
-                        ),
+                        crate::scrollbar::Scrollbar::vertical(self.scrollbar_state.clone()),
                         |container, scrollbar| {
                             container.child(
                                 div()
