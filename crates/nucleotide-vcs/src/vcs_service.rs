@@ -1,14 +1,15 @@
 // ABOUTME: Centralized VCS service for monitoring git status across the application
 // ABOUTME: Provides events and queries for file modification status in version control
 
-use gpui::{App, AppContext, Context, Entity, EventEmitter};
+use gpui::{App, AppContext, Context, Entity, EventEmitter, Task};
 use helix_core::Rope;
-use helix_vcs::{DiffHandle, DiffProviderRegistry, Hunk};
-use nucleotide_logging::{debug, error, info, warn};
+use helix_vcs::DiffProviderRegistry;
+use imara_diff::{Algorithm, Diff, Hunk, IndentHeuristic, IndentLevel, InternedInput, Interner};
+use nucleotide_logging::{debug, error, info};
 use nucleotide_types::{DiffChangeType, DiffHunkInfo, VcsStatus};
 use nucleotide_workspace::{
-    FileKind, GitHeadResult, GitStatusEntry, GitStatusKind, GitStatusOptions, ProcessSpec,
-    ReadOptions, WorkspaceBackendHandle, WorkspaceIdentity, absolutize_workspace_path,
+    FileKind, GitStatusEntry, GitStatusKind, GitStatusOptions, ProcessSpec, ReadOptions,
+    WorkspaceBackendHandle, WorkspaceIdentity, absolutize_workspace_path, local_workspace_backend,
 };
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
@@ -47,39 +48,6 @@ pub enum VcsEvent {
     Error { message: String },
 }
 
-fn current_git_head(root_path: &Path) -> Option<String> {
-    let output = nucleotide_process::command("git")
-        .args(["rev-parse", "--verify", "HEAD"])
-        .current_dir(root_path)
-        .output()
-        .ok()?;
-
-    if !output.status.success() {
-        return None;
-    }
-
-    parse_git_head_output(&output.stdout)
-}
-
-fn current_git_ref(root_path: &Path) -> Option<String> {
-    let output = nucleotide_process::command("git")
-        .args(["symbolic-ref", "--quiet", "--short", "HEAD"])
-        .current_dir(root_path)
-        .output()
-        .ok()?;
-
-    output
-        .status
-        .success()
-        .then(|| parse_git_head_output(&output.stdout))
-        .flatten()
-}
-
-fn parse_git_head_output(stdout: &[u8]) -> Option<String> {
-    let head = std::str::from_utf8(stdout).ok()?.trim();
-    (!head.is_empty()).then(|| head.to_string())
-}
-
 /// Convert Helix Hunk to DiffHunkInfo
 fn hunk_to_diff_info(hunk: &Hunk) -> DiffHunkInfo {
     let change_type = if hunk.is_pure_insertion() {
@@ -97,6 +65,35 @@ fn hunk_to_diff_info(hunk: &Hunk) -> DiffHunkInfo {
         before_end: hunk.before.end,
         change_type,
     }
+}
+
+/// Compute a completed snapshot using the same line diff and heuristic as Helix.
+fn compute_diff_hunks(diff_base_bytes: &[u8], file_content: &Rope) -> Vec<DiffHunkInfo> {
+    // Preserve Helix's size limits before interning either rope.
+    const MAX_DIFF_LINES: usize = 64 * u16::MAX as usize;
+    const MAX_DIFF_BYTES: usize = MAX_DIFF_LINES * 128;
+    let diff_base = Rope::from_str(&String::from_utf8_lossy(diff_base_bytes));
+    if diff_base.len_lines() > MAX_DIFF_LINES
+        || file_content.len_lines() > MAX_DIFF_LINES
+        || diff_base.len_bytes() > MAX_DIFF_BYTES
+        || file_content.len_bytes() > MAX_DIFF_BYTES
+    {
+        return Vec::new();
+    }
+
+    let mut input = InternedInput {
+        before: Vec::with_capacity(diff_base.len_lines()),
+        after: Vec::with_capacity(file_content.len_lines()),
+        interner: Interner::new(diff_base.len_lines() + file_content.len_lines()),
+    };
+    input.update_before(diff_base.lines());
+    input.update_after(file_content.lines());
+    let mut diff = Diff::compute(Algorithm::Histogram, &input);
+    diff.postprocess_with_heuristic(
+        &input,
+        IndentHeuristic::new(|token| IndentLevel::for_ascii_line(input.interner[token].bytes(), 4)),
+    );
+    diff.hunks().map(|hunk| hunk_to_diff_info(&hunk)).collect()
 }
 
 /// Configuration for the VCS service
@@ -161,7 +158,9 @@ pub struct VcsService {
     /// Human-readable branch/ref for chrome; distinct from the diff base SHA.
     repository_ref: Option<String>,
     /// Workspace backend used for repository operations.
-    workspace_backend: Option<WorkspaceBackendHandle>,
+    workspace_backend: WorkspaceBackendHandle,
+    /// Distinguishes async results across stop/start cycles, even for the same root.
+    monitoring_generation: u64,
     /// Current VCS status cache
     status_cache: HashMap<PathBuf, VcsStatus>,
     /// Monotonic revision for presentation caches that consume status data.
@@ -170,8 +169,8 @@ pub struct VcsService {
     cache_timestamps: HashMap<PathBuf, Instant>,
     /// Diff provider registry for getting diff base files
     diff_provider: DiffProviderRegistry,
-    /// Active diff handles for files
-    diff_handles: HashMap<PathBuf, DiffHandle>,
+    /// Pending diff updates; replacing a task cancels an older update for that file.
+    diff_tasks: HashMap<PathBuf, Task<()>>,
     /// Cached diff hunks for files
     diff_hunks_cache: HashMap<PathBuf, Vec<DiffHunkInfo>>,
     /// Access order for bounded diff metadata caches
@@ -182,6 +181,8 @@ pub struct VcsService {
     last_check: Option<Instant>,
     /// Whether an async status refresh is already running
     status_refresh_in_flight: bool,
+    /// Coalesces requests received during a refresh into one follow-up refresh.
+    status_refresh_pending: bool,
     /// Cache TTL for individual entries
     cache_ttl: Duration,
     /// Whether monitoring is currently active
@@ -207,17 +208,19 @@ impl VcsService {
             root_path: None,
             repository_head: None,
             repository_ref: None,
-            workspace_backend: None,
+            workspace_backend: local_workspace_backend(),
+            monitoring_generation: 0,
             status_cache: HashMap::new(),
             status_revision: 0,
             cache_timestamps: HashMap::new(),
             diff_provider: DiffProviderRegistry::default(),
-            diff_handles: HashMap::new(),
+            diff_tasks: HashMap::new(),
             diff_hunks_cache: HashMap::new(),
             diff_access_order: VecDeque::new(),
             config,
             last_check: None,
             status_refresh_in_flight: false,
+            status_refresh_pending: false,
             cache_ttl: Duration::from_secs(5), // 5 second cache TTL
             is_monitoring: false,
             cache_stats: RefCell::new(CacheStats::default()),
@@ -228,7 +231,7 @@ impl VcsService {
     }
 
     pub fn set_workspace_backend(&mut self, backend: WorkspaceBackendHandle) {
-        self.workspace_backend = Some(backend);
+        self.workspace_backend = backend;
     }
 
     /// Start monitoring a repository
@@ -267,6 +270,7 @@ impl VcsService {
         }
 
         self.root_path = Some(root_path.clone());
+        self.monitoring_generation = self.monitoring_generation.wrapping_add(1);
         self.repository_head = None;
         self.repository_ref = None;
         self.is_monitoring = self.config.enabled;
@@ -294,6 +298,7 @@ impl VcsService {
     pub fn stop_monitoring(&mut self) {
         info!("VCS: Stopping monitoring");
         self.is_monitoring = false;
+        self.monitoring_generation = self.monitoring_generation.wrapping_add(1);
         self.root_path = None;
         self.repository_head = None;
         self.repository_ref = None;
@@ -301,11 +306,12 @@ impl VcsService {
             self.status_cache.clear();
             self.status_revision = self.status_revision.wrapping_add(1);
         }
-        self.diff_handles.clear();
+        self.diff_tasks.clear();
         self.diff_hunks_cache.clear();
         self.diff_access_order.clear();
         self.last_check = None;
         self.status_refresh_in_flight = false;
+        self.status_refresh_pending = false;
     }
 
     fn absolute_path(&self, path: &Path) -> Option<PathBuf> {
@@ -357,7 +363,7 @@ impl VcsService {
         self.diff_hunks_cache.get(&abs_path).map(|v| v.as_slice())
     }
 
-    /// Create or update a diff handle for a file
+    /// Read the diff base and compute hunks without blocking the UI thread.
     pub fn update_file_diff(
         &mut self,
         file_path: &Path,
@@ -369,138 +375,59 @@ impl VcsService {
             return;
         };
 
-        if self
-            .workspace_backend
-            .as_ref()
-            .is_some_and(|backend| matches!(backend.identity(), WorkspaceIdentity::Remote(_)))
-        {
-            self.update_remote_file_diff(abs_path, file_content, cx);
-            return;
-        }
+        let workspace_backend = self.workspace_backend.clone();
+        let diff_provider = self.diff_provider.clone();
+        let monitoring_generation = self.monitoring_generation;
+        let task_path = abs_path.clone();
 
-        // Get the diff base from VCS
-        if let Some(diff_base_bytes) = self.diff_provider.get_diff_base(&abs_path, true) {
-            self.update_file_diff_from_base(abs_path, diff_base_bytes, file_content, cx);
-        } else {
-            debug!(
-                file_path = %abs_path.display(),
-                "No diff base found for file, removing diff data"
-            );
-
-            // Remove diff data if no base is available
-            self.diff_handles.remove(&abs_path);
-            if self.diff_hunks_cache.remove(&abs_path).is_some() {
-                // Emit empty diff if we had hunks before
-                self.emit_vcs_event(
-                    VcsEvent::DiffHunksUpdated {
-                        file_path: abs_path,
-                        hunks: vec![],
-                        diff_base_revision: self.repository_head.clone(),
-                    },
-                    cx,
-                );
-            }
-        }
-    }
-
-    fn update_remote_file_diff(
-        &mut self,
-        abs_path: PathBuf,
-        file_content: Rope,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(workspace_backend) = self.workspace_backend.clone() else {
-            self.clear_file_diff(&abs_path, cx);
-            return;
-        };
-
-        cx.spawn(async move |this, cx| {
+        let task = cx.spawn(async move |this, cx| {
             let path = abs_path.clone();
-            let diff_base_result =
-                cx.background_executor()
-                    .spawn(async move {
-                        read_git_diff_base_from_workspace(workspace_backend, &path).await
-                    })
-                    .await;
+            let diff_result = cx
+                .background_executor()
+                .spawn(async move {
+                    let base =
+                        if matches!(workspace_backend.identity(), WorkspaceIdentity::Remote(_)) {
+                            read_git_diff_base_from_workspace(workspace_backend, &path).await?
+                        } else {
+                            diff_provider.get_diff_base(&path, true)
+                        };
+                    Ok::<_, String>(base.map(|bytes| compute_diff_hunks(&bytes, &file_content)))
+                })
+                .await;
 
             if let Some(this) = this.upgrade() {
                 this.update(cx, |service, cx| {
-                    let still_monitored = service
-                        .root_path
-                        .as_ref()
-                        .is_some_and(|root_path| abs_path.starts_with(root_path))
-                        && service.is_monitoring;
-
-                    if !still_monitored {
-                        debug!(
-                            file_path = %abs_path.display(),
-                            "VCS: Ignoring stale remote diff update"
-                        );
+                    if service.monitoring_generation != monitoring_generation {
                         return;
                     }
 
-                    match diff_base_result {
-                        Ok(Some(diff_base_bytes)) => {
-                            service.update_file_diff_from_base(
-                                abs_path,
-                                diff_base_bytes,
-                                file_content,
+                    service.diff_tasks.remove(&abs_path);
+                    match diff_result {
+                        Ok(Some(hunks)) => {
+                            service.insert_file_diff(abs_path.clone(), hunks.clone());
+                            service.emit_vcs_event(
+                                VcsEvent::DiffHunksUpdated {
+                                    file_path: abs_path,
+                                    hunks,
+                                    diff_base_revision: service.repository_head.clone(),
+                                },
                                 cx,
                             );
                         }
-                        Ok(None) => {
-                            service.clear_file_diff(&abs_path, cx);
-                        }
+                        Ok(None) => service.clear_file_diff(&abs_path, cx),
                         Err(error) => {
                             debug!(
                                 file_path = %abs_path.display(),
                                 error = %error,
-                                "VCS: Could not load remote diff base"
+                                "VCS: Could not load diff base"
                             );
                             service.clear_file_diff(&abs_path, cx);
                         }
                     }
                 });
             }
-        })
-        .detach();
-    }
-
-    fn update_file_diff_from_base(
-        &mut self,
-        abs_path: PathBuf,
-        diff_base_bytes: Vec<u8>,
-        file_content: Rope,
-        cx: &mut Context<Self>,
-    ) {
-        let diff_base_string = String::from_utf8_lossy(&diff_base_bytes);
-        let diff_base = Rope::from_str(&diff_base_string);
-        let diff_handle = DiffHandle::new(diff_base, file_content);
-
-        let hunks: Vec<DiffHunkInfo> = {
-            let diff = diff_handle.load();
-            (0..diff.len())
-                .map(|i| diff.nth_hunk(i))
-                .map(|hunk| hunk_to_diff_info(&hunk))
-                .collect()
-        };
-
-        self.insert_file_diff(abs_path.clone(), diff_handle, hunks.clone());
-
-        debug!(
-            file_path = %abs_path.display(),
-            hunk_count = hunks.len(),
-            "Updated diff hunks for file"
-        );
-
-        self.emit_vcs_event(
-            VcsEvent::DiffHunksUpdated {
-                file_path: abs_path,
-                hunks,
-                diff_base_revision: self.repository_head.clone(),
-            },
-            cx,
-        );
+        });
+        self.diff_tasks.insert(task_path, task);
     }
 
     /// Refresh VCS state after debounced filesystem watcher events.
@@ -546,6 +473,7 @@ impl VcsService {
     fn refresh_diff_metadata_from_workspace(&mut self, abs_path: &Path, cx: &mut Context<Self>) {
         let path = abs_path.to_path_buf();
         let workspace_backend = self.workspace_backend.clone();
+        let monitoring_generation = self.monitoring_generation;
 
         cx.spawn(async move |this, cx| {
             let path_for_read = path.clone();
@@ -564,7 +492,7 @@ impl VcsService {
                         .is_some_and(|root_path| path.starts_with(root_path))
                         && service.is_monitoring;
 
-                    if !still_monitored {
+                    if !still_monitored || service.monitoring_generation != monitoring_generation {
                         debug!(
                             file_path = %path.display(),
                             "VCS: Ignoring stale diff metadata refresh"
@@ -595,7 +523,7 @@ impl VcsService {
     }
 
     fn clear_file_diff(&mut self, abs_path: &Path, cx: &mut Context<Self>) {
-        self.diff_handles.remove(abs_path);
+        self.diff_tasks.remove(abs_path);
         self.diff_access_order.retain(|path| path != abs_path);
         if self.diff_hunks_cache.remove(abs_path).is_some() {
             self.emit_vcs_event(
@@ -609,13 +537,7 @@ impl VcsService {
         }
     }
 
-    fn insert_file_diff(
-        &mut self,
-        abs_path: PathBuf,
-        diff_handle: DiffHandle,
-        hunks: Vec<DiffHunkInfo>,
-    ) {
-        self.diff_handles.insert(abs_path.clone(), diff_handle);
+    fn insert_file_diff(&mut self, abs_path: PathBuf, hunks: Vec<DiffHunkInfo>) {
         self.diff_hunks_cache.insert(abs_path.clone(), hunks);
         self.touch_diff_cache_entry(&abs_path);
         self.evict_diff_cache_to_capacity();
@@ -627,13 +549,10 @@ impl VcsService {
     }
 
     fn evict_diff_cache_to_capacity(&mut self) {
-        while self.diff_handles.len() > DIFF_CACHE_CAPACITY
-            || self.diff_hunks_cache.len() > DIFF_CACHE_CAPACITY
-        {
+        while self.diff_hunks_cache.len() > DIFF_CACHE_CAPACITY {
             let Some(evicted) = self.diff_access_order.pop_front() else {
                 break;
             };
-            self.diff_handles.remove(&evicted);
             self.diff_hunks_cache.remove(&evicted);
         }
     }
@@ -889,6 +808,7 @@ impl VcsService {
         };
 
         if self.status_refresh_in_flight {
+            self.status_refresh_pending = true;
             debug!(root_path = %root_path.display(), "VCS: Status refresh already in flight");
             return;
         }
@@ -898,6 +818,7 @@ impl VcsService {
         let max_files = self.config.max_files;
         let refresh_root_path = root_path.clone();
         let workspace_backend = self.workspace_backend.clone();
+        let monitoring_generation = self.monitoring_generation;
 
         debug!(root_path = %root_path.display(), "VCS: Starting async status refresh");
         cx.spawn(async move |this, cx| {
@@ -911,9 +832,9 @@ impl VcsService {
 
             if let Some(this) = this.upgrade() {
                 this.update(cx, |service, cx| {
-                    service.status_refresh_in_flight = false;
-
-                    if service.root_path.as_ref() != Some(&root_path) || !service.is_monitoring {
+                    if service.monitoring_generation != monitoring_generation
+                        || !service.is_monitoring
+                    {
                         debug!(
                             root_path = %root_path.display(),
                             "VCS: Ignoring stale async status result"
@@ -921,6 +842,7 @@ impl VcsService {
                         return;
                     }
 
+                    service.status_refresh_in_flight = false;
                     match refresh_result {
                         Ok(refresh) => {
                             debug!(
@@ -943,6 +865,9 @@ impl VcsService {
                     }
 
                     service.last_check = Some(Instant::now());
+                    if std::mem::take(&mut service.status_refresh_pending) {
+                        service.refresh_status_async(cx);
+                    }
                 });
             }
         })
@@ -1061,13 +986,9 @@ struct GitRefreshResult {
 }
 
 async fn read_diff_text_from_workspace(
-    backend: Option<WorkspaceBackendHandle>,
+    backend: WorkspaceBackendHandle,
     path: &Path,
 ) -> Result<Option<String>, String> {
-    let Some(backend) = backend else {
-        return read_local_diff_text(path);
-    };
-
     let stat = backend
         .stat(path)
         .await
@@ -1162,24 +1083,15 @@ async fn read_git_diff_base_from_workspace(
     }
 }
 
-fn read_local_diff_text(path: &Path) -> Result<Option<String>, String> {
-    let metadata =
-        std::fs::metadata(path).map_err(|error| format!("Local file metadata failed: {error}"))?;
-    if !metadata.is_file() || metadata.len() > DIFF_METADATA_READ_LIMIT_BYTES {
-        return Ok(None);
-    }
-
-    std::fs::read_to_string(path)
-        .map(Some)
-        .map_err(|error| format!("Local file read failed: {error}"))
-}
-
 async fn run_git_refresh_with_backend(
-    backend: Option<WorkspaceBackendHandle>,
+    backend: WorkspaceBackendHandle,
     root_path: &Path,
     max_files: usize,
 ) -> Result<GitRefreshResult, String> {
-    let head = run_git_head_with_backend(backend.clone(), root_path).await?;
+    let head = backend
+        .git_head(root_path)
+        .await
+        .map_err(|error| format!("Workspace git head failed: {error}"))?;
     let status = run_git_status_with_backend(backend, root_path, max_files).await?;
 
     Ok(GitRefreshResult {
@@ -1189,33 +1101,11 @@ async fn run_git_refresh_with_backend(
     })
 }
 
-async fn run_git_head_with_backend(
-    backend: Option<WorkspaceBackendHandle>,
-    root_path: &Path,
-) -> Result<GitHeadResult, String> {
-    let Some(backend) = backend else {
-        return Ok(GitHeadResult {
-            root: root_path.to_path_buf(),
-            head: current_git_head(root_path),
-            display_ref: current_git_ref(root_path),
-        });
-    };
-
-    backend
-        .git_head(root_path)
-        .await
-        .map_err(|error| format!("Workspace git head failed: {error}"))
-}
-
 async fn run_git_status_with_backend(
-    backend: Option<WorkspaceBackendHandle>,
+    backend: WorkspaceBackendHandle,
     root_path: &Path,
     max_files: usize,
 ) -> Result<HashMap<PathBuf, VcsStatus>, String> {
-    let Some(backend) = backend else {
-        return run_git_status(root_path, max_files);
-    };
-
     let status = match backend
         .git_status(root_path, GitStatusOptions::with_limit(max_files))
         .await
@@ -1261,75 +1151,6 @@ fn vcs_status_from_workspace_entry(entry: &GitStatusEntry) -> VcsStatus {
         (Unmodified, Unmodified) => VcsStatus::Clean,
         (Added | Copied, _) | (_, Added | Copied) => VcsStatus::Modified,
     }
-}
-
-fn parse_git_status_line(line: &str) -> Option<(&str, VcsStatus)> {
-    let bytes = line.as_bytes();
-    if bytes.len() < 3 {
-        return None;
-    }
-
-    let status = match &bytes[0..2] {
-        b"??" => VcsStatus::Untracked,
-        b" M" | b"MM" | b" T" => VcsStatus::Modified,
-        b"M " | b"MT" => VcsStatus::Modified,
-        b"A " => VcsStatus::Added,
-        b"AM" => VcsStatus::Modified,
-        b" D" | b"D " | b"AD" => VcsStatus::Deleted,
-        b"R " | b"RM" => VcsStatus::Renamed,
-        b"C " => VcsStatus::Added,
-        b"UU" | b"AA" | b"DD" => VcsStatus::Conflicted,
-        _ => return None,
-    };
-
-    let file_path = line.get(3..)?.trim();
-    Some((file_path, status))
-}
-
-/// Run git status command and parse results
-fn run_git_status(
-    root_path: &Path,
-    max_files: usize,
-) -> Result<HashMap<PathBuf, VcsStatus>, String> {
-    let mut status_map = HashMap::new();
-
-    // Run git status --porcelain
-    let output = nucleotide_process::command("git")
-        .arg("status")
-        .arg("--porcelain")
-        .current_dir(root_path)
-        .output()
-        .map_err(|e| format!("Failed to execute git: {}", e))?;
-
-    if !output.status.success() {
-        if git_error_is_not_repository(&String::from_utf8_lossy(&output.stderr)) {
-            debug!(
-                root_path = %root_path.display(),
-                "VCS: Monitored root is not inside a git repository"
-            );
-            return Ok(HashMap::new());
-        }
-        return Err(format!("Git command failed with status: {}", output.status));
-    }
-
-    let git_output = String::from_utf8_lossy(&output.stdout);
-    let mut file_count = 0;
-
-    for line in git_output.lines() {
-        if file_count >= max_files {
-            warn!(max_files, "VCS: Reached maximum file limit");
-            break;
-        }
-
-        if let Some((file_path, status)) = parse_git_status_line(line) {
-            let full_path = root_path.join(file_path);
-            status_map.insert(full_path, status);
-            file_count += 1;
-        }
-    }
-
-    debug!(file_count, "VCS: Processed git status results");
-    Ok(status_map)
 }
 
 fn git_error_is_not_repository(message: &str) -> bool {
@@ -1499,45 +1320,417 @@ impl gpui::Global for VcsServiceHandle {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nucleotide_workspace::{
-        WorkspacePathMapping, local_workspace_backend, path_mapped_workspace_backend,
-    };
+    use nucleotide_workspace::*;
+    use std::sync::{Arc, Mutex};
+    use tokio::sync::oneshot;
+
+    /// Gates actual Git snapshots so tests can change the workspace while a read is in flight.
+    struct GatedBackend {
+        inner: WorkspaceBackendHandle,
+        executor: gpui::BackgroundExecutor,
+        status_gates: Mutex<VecDeque<oneshot::Receiver<bool>>>,
+        diff_gates: Mutex<VecDeque<oneshot::Receiver<()>>>,
+    }
+
+    impl GatedBackend {
+        fn new(cx: &gpui::TestAppContext) -> Self {
+            Self {
+                inner: local_workspace_backend(),
+                executor: cx.executor(),
+                status_gates: Mutex::default(),
+                diff_gates: Mutex::default(),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl WorkspaceBackend for GatedBackend {
+        fn identity(&self) -> WorkspaceIdentity {
+            WorkspaceIdentity::Remote(RemoteWorkspaceIdentity {
+                kind: RemoteWorkspaceKind::Other("test".into()),
+                name: "gated local repository".into(),
+            })
+        }
+
+        async fn git_head(&self, root: &Path) -> nucleotide_workspace::Result<GitHeadResult> {
+            assert!(!self.executor.is_main_thread());
+            self.inner.git_head(root).await
+        }
+
+        async fn git_status(
+            &self,
+            root: &Path,
+            options: GitStatusOptions,
+        ) -> nucleotide_workspace::Result<GitStatusResult> {
+            assert!(!self.executor.is_main_thread());
+            let snapshot = self.inner.git_status(root, options).await;
+            let gate = self.status_gates.lock().unwrap().pop_front();
+            if let Some(gate) = gate
+                && gate.await.unwrap()
+            {
+                return Err(WorkspaceError::Io {
+                    operation: "test git status",
+                    path: root.to_path_buf(),
+                    source: std::io::Error::other("injected status failure"),
+                });
+            }
+            snapshot
+        }
+
+        async fn run_process(
+            &self,
+            spec: ProcessSpec,
+        ) -> nucleotide_workspace::Result<ProcessOutput> {
+            assert!(!self.executor.is_main_thread());
+            let is_show = spec.args.first().is_some_and(|arg| arg == "show");
+            let output = self.inner.run_process(spec).await;
+            if is_show {
+                let gate = self.diff_gates.lock().unwrap().pop_front();
+                if let Some(gate) = gate {
+                    let _ = gate.await;
+                }
+            }
+            output
+        }
+
+        async fn stat(&self, path: &Path) -> nucleotide_workspace::Result<FileStat> {
+            assert!(!self.executor.is_main_thread());
+            self.inner.stat(path).await
+        }
+
+        async fn read_file(
+            &self,
+            path: &Path,
+            options: ReadOptions,
+        ) -> nucleotide_workspace::Result<FileRead> {
+            assert!(!self.executor.is_main_thread());
+            self.inner.read_file(path, options).await
+        }
+
+        async fn list_dir(&self, _: &Path) -> nucleotide_workspace::Result<DirectoryListing> {
+            unimplemented!()
+        }
+        async fn find_ancestor_file(
+            &self,
+            _: &Path,
+            _: &str,
+            _: usize,
+        ) -> nucleotide_workspace::Result<Option<PathBuf>> {
+            unimplemented!()
+        }
+        async fn create_file(&self, _: &Path) -> nucleotide_workspace::Result<FileStat> {
+            unimplemented!()
+        }
+        async fn create_dir(&self, _: &Path) -> nucleotide_workspace::Result<FileStat> {
+            unimplemented!()
+        }
+        async fn rename_path(&self, _: &Path, _: &Path) -> nucleotide_workspace::Result<FileStat> {
+            unimplemented!()
+        }
+        async fn delete_path(&self, _: &Path) -> nucleotide_workspace::Result<FileStat> {
+            unimplemented!()
+        }
+        async fn copy_path(&self, _: &Path, _: &Path) -> nucleotide_workspace::Result<FileStat> {
+            unimplemented!()
+        }
+        async fn write_file(
+            &self,
+            _: &Path,
+            _: &[u8],
+            _: WriteOptions,
+        ) -> nucleotide_workspace::Result<WriteResult> {
+            unimplemented!()
+        }
+        async fn file_search(
+            &self,
+            _: FileSearchQuery,
+        ) -> nucleotide_workspace::Result<FileSearchResult> {
+            unimplemented!()
+        }
+        async fn text_search(
+            &self,
+            _: TextSearchQuery,
+        ) -> nucleotide_workspace::Result<TextSearchResult> {
+            unimplemented!()
+        }
+        async fn project_environment(
+            &self,
+            _: &Path,
+        ) -> nucleotide_workspace::Result<ProjectEnvironmentSnapshot> {
+            unimplemented!()
+        }
+    }
+
+    fn git(root: &Path, args: &[&str]) -> String {
+        let output = nucleotide_process::command("git")
+            .args(args)
+            .current_dir(root)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap()
+    }
+
+    fn test_repository() -> tempfile::TempDir {
+        let temp = tempfile::tempdir().unwrap();
+        git(temp.path(), &["init", "-b", "vcs-test"]);
+        git(temp.path(), &["config", "user.name", "VCS Test"]);
+        git(
+            temp.path(),
+            &["config", "user.email", "vcs-test@example.com"],
+        );
+        git(temp.path(), &["config", "commit.gpgsign", "false"]);
+        git(temp.path(), &["config", "core.autocrlf", "false"]);
+        std::fs::write(temp.path().join("file.txt"), "first\nsecond\nthird\n").unwrap();
+        git(temp.path(), &["add", "."]);
+        git(temp.path(), &["commit", "-m", "initial"]);
+        temp
+    }
 
     fn insert_test_diff(service: &mut VcsService, index: usize) -> PathBuf {
         let path = PathBuf::from(format!("/repo/file-{index}.rs"));
-        let diff_handle = DiffHandle::new(Rope::from_str("base\n"), Rope::from_str("current\n"));
-        service.insert_file_diff(path.clone(), diff_handle, Vec::new());
+        service.insert_file_diff(path.clone(), Vec::new());
         path
     }
 
-    #[test]
-    fn parse_git_head_output_trims_sha() {
-        assert_eq!(
-            parse_git_head_output(b"abc123\n"),
-            Some("abc123".to_string())
-        );
+    #[gpui::test]
+    fn status_refresh_preserves_renamed_and_quoted_paths(cx: &mut gpui::TestAppContext) {
+        let temp = test_repository();
+        // Windows does not allow quotes, tabs or newlines in file names.
+        let renamed = if cfg!(windows) {
+            "renamed file.txt"
+        } else {
+            " renamed -> \"é\"\t.txt "
+        };
+        let untracked = if cfg!(windows) {
+            "untracked file.txt"
+        } else {
+            " notes\n\"quoted\".txt "
+        };
+        git(temp.path(), &["mv", "file.txt", renamed]);
+        std::fs::write(temp.path().join(untracked), "notes\n").unwrap();
+        let service = cx.new(|_| VcsService::new(VcsConfig::default()));
+        service.update(cx, |service, cx| {
+            service.start_monitoring(temp.path().to_path_buf(), cx)
+        });
+        cx.run_until_parked();
+        service.read_with(cx, |service, _| {
+            assert_eq!(
+                service.get_status(Path::new(renamed)),
+                Some(VcsStatus::Renamed)
+            );
+            assert_eq!(
+                service.get_status(Path::new(untracked)),
+                Some(VcsStatus::Untracked)
+            );
+            assert_eq!(service.get_all_status().len(), 2);
+            assert_eq!(
+                service.repository_head(),
+                Some(git(temp.path(), &["rev-parse", "HEAD"]).trim())
+            );
+            assert_eq!(service.repository_ref(), Some("vcs-test"));
+        });
     }
 
-    #[test]
-    fn parse_git_head_output_rejects_empty_output() {
-        assert_eq!(parse_git_head_output(b"\n"), None);
+    #[gpui::test(iterations = 10)]
+    fn refresh_requested_during_status_read_runs_after_success_or_error(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        for fail_first_read in [false, true] {
+            let temp = test_repository();
+            let backend = GatedBackend::new(cx);
+            let (release, gate) = oneshot::channel();
+            backend.status_gates.lock().unwrap().push_back(gate);
+            let service = cx.new(|_| {
+                let mut service = VcsService::new(VcsConfig::default());
+                service.set_workspace_backend(Arc::new(backend));
+                service
+            });
+            service.update(cx, |service, cx| {
+                service.start_monitoring(temp.path().to_path_buf(), cx)
+            });
+            cx.run_until_parked();
+            std::fs::write(temp.path().join("file.txt"), "changed\n").unwrap();
+            service.update(cx, |service, cx| {
+                service.force_refresh(cx);
+                service.force_refresh(cx);
+                service.force_refresh(cx);
+            });
+            release.send(fail_first_read).unwrap();
+            cx.run_until_parked();
+            service.read_with(cx, |service, _| {
+                assert_eq!(
+                    service.get_status(Path::new("file.txt")),
+                    Some(VcsStatus::Modified)
+                );
+            });
+        }
     }
 
-    #[test]
-    fn parse_git_status_line_reads_ascii_status_prefix() {
-        assert_eq!(
-            parse_git_status_line(" M src/lib.rs"),
-            Some(("src/lib.rs", VcsStatus::Modified))
-        );
-        assert_eq!(
-            parse_git_status_line("?? docs/notes.md"),
-            Some(("docs/notes.md", VcsStatus::Untracked))
-        );
+    #[gpui::test(iterations = 10)]
+    fn restarting_same_repository_ignores_old_status_completion(cx: &mut gpui::TestAppContext) {
+        let temp = test_repository();
+        let backend = GatedBackend::new(cx);
+        let (old_release, old_gate) = oneshot::channel();
+        let (new_release, new_gate) = oneshot::channel();
+        backend
+            .status_gates
+            .lock()
+            .unwrap()
+            .extend([old_gate, new_gate]);
+        let service = cx.new(|_| {
+            let mut service = VcsService::new(VcsConfig::default());
+            service.set_workspace_backend(Arc::new(backend));
+            service
+        });
+        service.update(cx, |service, cx| {
+            service.start_monitoring(temp.path().to_path_buf(), cx)
+        });
+        cx.run_until_parked();
+        std::fs::write(temp.path().join("file.txt"), "changed\n").unwrap();
+        service.update(cx, |service, cx| {
+            service.force_refresh(cx);
+            service.stop_monitoring();
+            service.start_monitoring(temp.path().to_path_buf(), cx);
+        });
+        cx.run_until_parked();
+        old_release.send(false).unwrap();
+        cx.run_until_parked();
+        service.read_with(cx, |service, _| assert_eq!(service.repository_head(), None));
+        git(temp.path(), &["checkout", "--", "file.txt"]);
+        service.update(cx, |service, cx| service.force_refresh(cx));
+        new_release.send(false).unwrap();
+        cx.run_until_parked();
+        service.read_with(cx, |service, _| {
+            assert!(service.get_all_status().is_empty())
+        });
     }
 
-    #[test]
-    fn parse_git_status_line_ignores_unicode_without_panicking() {
-        assert_eq!(parse_git_status_line("↪ src/lib.rs"), None);
+    #[gpui::test]
+    fn local_diff_publishes_completed_hunks_asynchronously(cx: &mut gpui::TestAppContext) {
+        let temp = test_repository();
+        let file = temp.path().join("file.txt");
+        let service = cx.new(|_| VcsService::new(VcsConfig::default()));
+        for (content, before, after, change_type) in [
+            (
+                "first\nchanged\nthird\n",
+                1..2,
+                1..2,
+                DiffChangeType::Modification,
+            ),
+            (
+                "first\nsecond\nextra\nthird\n",
+                2..2,
+                2..3,
+                DiffChangeType::Addition,
+            ),
+            ("first\nthird\n", 1..2, 1..1, DiffChangeType::Deletion),
+        ] {
+            let previous = service.read_with(cx, |service, _| {
+                service.get_diff_hunks(&file).map(<[_]>::to_vec)
+            });
+            service.update(cx, |service, cx| {
+                service.update_file_diff(&file, Rope::from_str(content), cx);
+                assert_eq!(service.get_diff_hunks(&file), previous.as_deref());
+            });
+            cx.run_until_parked();
+            service.read_with(cx, |service, _| {
+                assert_eq!(
+                    service.get_diff_hunks(&file),
+                    Some(
+                        [DiffHunkInfo {
+                            before_start: before.start,
+                            before_end: before.end,
+                            after_start: after.start,
+                            after_end: after.end,
+                            change_type,
+                        }]
+                        .as_slice()
+                    )
+                );
+            });
+        }
+        // The latest buffer wins even when two updates are queued before either starts.
+        service.update(cx, |service, cx| {
+            service.update_file_diff(&file, Rope::from_str("outdated\n"), cx);
+            service.update_file_diff(&file, Rope::from_str("first\nsecond\nthird\n"), cx);
+        });
+        cx.run_until_parked();
+        service.read_with(cx, |service, _| {
+            assert_eq!(service.get_diff_hunks(&file), Some([].as_slice()))
+        });
+        git(temp.path(), &["rm", "file.txt"]);
+        git(temp.path(), &["commit", "-m", "remove base"]);
+        service.update(cx, |service, cx| {
+            service.update_file_diff(&file, Rope::from_str("new\n"), cx)
+        });
+        cx.run_until_parked();
+        service.read_with(cx, |service, _| {
+            assert_eq!(service.get_diff_hunks(&file), None)
+        });
+    }
+
+    #[gpui::test(iterations = 10)]
+    fn remote_diff_does_not_overwrite_newer_buffer_with_late_result(cx: &mut gpui::TestAppContext) {
+        let temp = test_repository();
+        let file = temp.path().join("file.txt");
+        let backend = Arc::new(GatedBackend::new(cx));
+        let (release, gate) = oneshot::channel();
+        backend.diff_gates.lock().unwrap().push_back(gate);
+        let service = cx.new(|_| {
+            let mut service = VcsService::new(VcsConfig::default());
+            service.set_workspace_backend(backend.clone());
+            service
+        });
+        service.update(cx, |service, cx| {
+            service.start_monitoring(temp.path().to_path_buf(), cx);
+            service.update_file_diff(&file, Rope::from_str("outdated\n"), cx);
+        });
+        cx.run_until_parked();
+        service.read_with(cx, |service, _| {
+            assert_eq!(service.get_diff_hunks(&file), None)
+        });
+        service.update(cx, |service, cx| {
+            service.update_file_diff(&file, Rope::from_str("first\nthird\n"), cx)
+        });
+        cx.run_until_parked();
+        let _ = release.send(());
+        cx.run_until_parked();
+        service.read_with(cx, |service, _| {
+            assert_eq!(
+                service.get_diff_hunks(&file),
+                Some(
+                    [DiffHunkInfo {
+                        before_start: 1,
+                        before_end: 2,
+                        after_start: 1,
+                        after_end: 1,
+                        change_type: DiffChangeType::Deletion,
+                    }]
+                    .as_slice()
+                )
+            )
+        });
+        let (release, gate) = oneshot::channel();
+        backend.diff_gates.lock().unwrap().push_back(gate);
+        service.update(cx, |service, cx| {
+            service.update_file_diff(&file, Rope::from_str("stale after stop\n"), cx);
+        });
+        cx.run_until_parked();
+        service.update(cx, |service, cx| {
+            service.stop_monitoring();
+            service.start_monitoring(temp.path().to_path_buf(), cx);
+            service.update_file_diff(&file, Rope::from_str("first\nsecond\nthird\n"), cx);
+        });
+        let _ = release.send(());
+        cx.run_until_parked();
+        service.read_with(cx, |service, _| {
+            assert_eq!(service.get_diff_hunks(&file), Some([].as_slice()))
+        });
     }
 
     #[test]
@@ -1547,11 +1740,13 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn local_git_status_returns_empty_outside_repository() {
+    #[tokio::test]
+    async fn local_git_status_returns_empty_outside_repository() {
         let temp = tempfile::tempdir().unwrap();
 
-        let status = run_git_status(temp.path(), 10).unwrap();
+        let status = run_git_status_with_backend(local_workspace_backend(), temp.path(), 10)
+            .await
+            .unwrap();
 
         assert!(status.is_empty());
     }
@@ -1571,7 +1766,7 @@ mod tests {
             WorkspacePathMapping::new(display_root, native_root),
         );
 
-        let text = read_diff_text_from_workspace(Some(backend), &display_file)
+        let text = read_diff_text_from_workspace(backend, &display_file)
             .await
             .unwrap();
 
@@ -1617,7 +1812,7 @@ mod tests {
         )
         .unwrap();
 
-        let text = read_diff_text_from_workspace(Some(local_workspace_backend()), &file)
+        let text = read_diff_text_from_workspace(local_workspace_backend(), &file)
             .await
             .unwrap();
 
@@ -1663,29 +1858,32 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn diff_cache_stays_within_capacity() {
+    #[test]
+    fn diff_cache_stays_within_capacity() {
         let mut service = VcsService::new(VcsConfig::default());
 
         for index in 0..(DIFF_CACHE_CAPACITY + 10) {
             insert_test_diff(&mut service, index);
         }
 
-        assert_eq!(service.diff_handles.len(), DIFF_CACHE_CAPACITY);
         assert_eq!(service.diff_hunks_cache.len(), DIFF_CACHE_CAPACITY);
         assert!(
-            !service
-                .diff_handles
-                .contains_key(&PathBuf::from("/repo/file-0.rs"))
+            service
+                .get_diff_hunks(Path::new("/repo/file-0.rs"))
+                .is_none()
         );
-        assert!(service.diff_handles.contains_key(&PathBuf::from(format!(
-            "/repo/file-{}.rs",
-            DIFF_CACHE_CAPACITY + 9
-        ))));
+        assert!(
+            service
+                .get_diff_hunks(Path::new(&format!(
+                    "/repo/file-{}.rs",
+                    DIFF_CACHE_CAPACITY + 9
+                )))
+                .is_some()
+        );
     }
 
-    #[tokio::test]
-    async fn diff_cache_keeps_refreshed_entries() {
+    #[test]
+    fn diff_cache_keeps_refreshed_entries() {
         let mut service = VcsService::new(VcsConfig::default());
 
         for index in 0..DIFF_CACHE_CAPACITY {
@@ -1696,14 +1894,14 @@ mod tests {
 
         assert!(
             service
-                .diff_handles
-                .contains_key(&PathBuf::from("/repo/file-0.rs"))
+                .get_diff_hunks(Path::new("/repo/file-0.rs"))
+                .is_some()
         );
         assert!(
-            !service
-                .diff_handles
-                .contains_key(&PathBuf::from("/repo/file-1.rs"))
+            service
+                .get_diff_hunks(Path::new("/repo/file-1.rs"))
+                .is_none()
         );
-        assert_eq!(service.diff_handles.len(), DIFF_CACHE_CAPACITY);
+        assert_eq!(service.diff_hunks_cache.len(), DIFF_CACHE_CAPACITY);
     }
 }
