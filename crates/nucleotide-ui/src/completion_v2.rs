@@ -7,6 +7,10 @@ use gpui::{
     IntoElement, KeyBinding, MouseButton, ParentElement, Render, SharedString,
     StatefulInteractiveElement, Styled, Task, Window, div, px, relative, uniform_list,
 };
+pub use nucleotide_events::completion::{
+    CompletionEdit, CompletionItemKind, CompletionItemTag, CompletionOffsetEncoding,
+    CompletionPosition, CompletionRange, CompletionTextEdit, InsertTextFormat,
+};
 use std::cmp::Ordering as CmpOrdering;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -314,7 +318,7 @@ impl Ord for StringMatch {
     }
 }
 
-/// Enhanced completion item with richer metadata
+/// UI projection of a shared completion item, with display and ranking state.
 #[derive(Debug, Clone)]
 pub struct CompletionItem {
     pub text: SharedString,
@@ -350,9 +354,32 @@ pub struct CompletionItem {
     pub locality_score: u16,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CompletionItemTag {
-    Deprecated,
+impl From<nucleotide_events::completion::CompletionItem> for CompletionItem {
+    fn from(item: nucleotide_events::completion::CompletionItem) -> Self {
+        Self {
+            text: item.insert_text.into(),
+            description: item.detail.as_ref().map(|detail| detail.clone().into()),
+            display_text: Some(item.label.into()),
+            kind: Some(item.kind),
+            documentation: item.documentation.map(Into::into),
+            detail: item.detail.map(Into::into),
+            signature_info: item.signature_info.map(Into::into),
+            type_info: item.type_info.map(Into::into),
+            insert_text_format: item.insert_text_format,
+            edit: item.edit,
+            sort_text: item.sort_text.map(Into::into),
+            filter_text: item.filter_text.map(Into::into),
+            preselect: item.preselect,
+            commit_characters: item.commit_characters.into_iter().map(Into::into).collect(),
+            tags: item.tags,
+            data: item.data,
+            source_index: item.source_index,
+            selection_priority: 0,
+            server_id: item.server_id,
+            raw_lsp_item: item.raw_lsp_item,
+            locality_score: 0,
+        }
+    }
 }
 
 fn compare_completion_items(left: &CompletionItem, right: &CompletionItem) -> CmpOrdering {
@@ -397,76 +424,6 @@ fn completion_kind_rank(kind: Option<CompletionItemKind>) -> u8 {
         Some(CompletionItemKind::Event) => 18,
         Some(CompletionItemKind::Operator) => 19,
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CompletionEdit {
-    pub offset_encoding: CompletionOffsetEncoding,
-    pub text_edit: Option<CompletionTextEdit>,
-    pub additional_text_edits: Vec<CompletionTextEdit>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CompletionTextEdit {
-    pub range: CompletionRange,
-    pub new_text: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CompletionRange {
-    pub start: CompletionPosition,
-    pub end: CompletionPosition,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CompletionPosition {
-    pub line: u32,
-    pub character: u32,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CompletionOffsetEncoding {
-    Utf8,
-    Utf16,
-    Utf32,
-}
-
-/// LSP Insert Text Format
-#[derive(Debug, Clone, PartialEq)]
-pub enum InsertTextFormat {
-    /// Plain text insertion
-    PlainText,
-    /// Snippet with tabstops and placeholders ($0, $1, ${1:placeholder})
-    Snippet,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum CompletionItemKind {
-    Text,
-    Method,
-    Function,
-    Constructor,
-    Field,
-    Variable,
-    Class,
-    Interface,
-    Module,
-    Property,
-    Unit,
-    Value,
-    Enum,
-    Keyword,
-    Snippet,
-    Color,
-    File,
-    Reference,
-    Folder,
-    EnumMember,
-    Constant,
-    Struct,
-    Event,
-    Operator,
-    TypeParameter,
 }
 
 impl CompletionItem {
@@ -2358,6 +2315,85 @@ mod tests {
             }))
         );
         assert_eq!(item.locality_score, 25);
+    }
+
+    #[test]
+    fn shared_completion_item_preserves_display_and_acceptance_metadata() {
+        use nucleotide_events::completion::CompletionItem as SharedCompletionItem;
+
+        let edit = CompletionEdit {
+            offset_encoding: CompletionOffsetEncoding::Utf16,
+            text_edit: Some(CompletionTextEdit {
+                range: CompletionRange {
+                    start: CompletionPosition {
+                        line: 1,
+                        character: 2,
+                    },
+                    end: CompletionPosition {
+                        line: 1,
+                        character: 5,
+                    },
+                },
+                new_text: "value(${1:arg})$0".into(),
+            }),
+            additional_text_edits: vec![CompletionTextEdit {
+                range: CompletionRange {
+                    start: CompletionPosition {
+                        line: 0,
+                        character: 0,
+                    },
+                    end: CompletionPosition {
+                        line: 0,
+                        character: 0,
+                    },
+                },
+                new_text: "use value;\n".into(),
+            }],
+        };
+        let item = SharedCompletionItem::new("value(arg)".into(), CompletionItemKind::Function)
+            .with_insert_text("value(${1:arg})$0".into())
+            .with_detail("fn value(arg: u32)".into())
+            .with_documentation("Returns a value".into())
+            .with_signature_info("(arg: u32)".into())
+            .with_type_info("u32".into())
+            .with_insert_text_format(InsertTextFormat::Snippet)
+            .with_edit(edit.clone())
+            .with_sort_text(Some("001".into()))
+            .with_filter_text(Some("value".into()))
+            .with_preselect(true)
+            .with_commit_characters(vec!["(".into(), ".".into()])
+            .with_tags(vec![CompletionItemTag::Deprecated])
+            .with_data(Some(serde_json::json!({"resolve": 7})))
+            .with_source_index(3)
+            .with_server_id(Some(42))
+            .with_raw_lsp_item(Some(serde_json::json!({"label": "value(arg)"})));
+
+        let ui_item = CompletionItem::from(item);
+
+        assert_eq!(ui_item.text, "value(${1:arg})$0");
+        assert_eq!(ui_item.display_text.as_deref(), Some("value(arg)"));
+        assert_eq!(ui_item.description.as_deref(), Some("fn value(arg: u32)"));
+        assert_eq!(ui_item.detail.as_deref(), Some("fn value(arg: u32)"));
+        assert_eq!(ui_item.documentation.as_deref(), Some("Returns a value"));
+        assert_eq!(ui_item.signature_info.as_deref(), Some("(arg: u32)"));
+        assert_eq!(ui_item.type_info.as_deref(), Some("u32"));
+        assert_eq!(ui_item.kind, Some(CompletionItemKind::Function));
+        assert_eq!(ui_item.insert_text_format, InsertTextFormat::Snippet);
+        assert_eq!(ui_item.edit, Some(edit));
+        assert_eq!(ui_item.sort_text.as_deref(), Some("001"));
+        assert_eq!(ui_item.filter_text.as_deref(), Some("value"));
+        assert!(ui_item.preselect);
+        assert_eq!(ui_item.commit_characters, vec!["(", "."]);
+        assert_eq!(ui_item.tags, vec![CompletionItemTag::Deprecated]);
+        assert_eq!(ui_item.data, Some(serde_json::json!({"resolve": 7})));
+        assert_eq!(ui_item.source_index, 3);
+        assert_eq!(ui_item.server_id, Some(42));
+        assert_eq!(
+            ui_item.raw_lsp_item,
+            Some(serde_json::json!({"label": "value(arg)"}))
+        );
+        assert_eq!(ui_item.selection_priority, 0);
+        assert_eq!(ui_item.locality_score, 0);
     }
 
     #[test]

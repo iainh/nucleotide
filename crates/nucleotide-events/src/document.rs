@@ -42,20 +42,6 @@ pub enum Event {
         revision: u64,
     },
 
-    /// Document save failed
-    SaveFailed {
-        doc_id: DocumentId,
-        path: PathBuf,
-        error: String,
-    },
-
-    /// Document language detected/changed
-    LanguageDetected {
-        doc_id: DocumentId,
-        language_id: String,
-        previous_language: Option<String>,
-    },
-
     /// Diagnostics updated for document
     DiagnosticsUpdated {
         doc_id: DocumentId,
