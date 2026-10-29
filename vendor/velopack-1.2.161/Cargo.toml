@@ -166,7 +166,7 @@ features = [
 version = "1.4"
 
 [dependencies.zip]
-version = "8.6"
+version = "9.0"
 features = ["deflate"]
 default-features = false
 

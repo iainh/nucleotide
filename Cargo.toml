@@ -91,7 +91,7 @@ async-trait = "0.1"
 rand = "0.10"
 slotmap = "1.0"
 pulldown-cmark = { version = "0.13", default-features = false }
-zstd = { version = "0.13", default-features = false }
+zstd = { version = "0.14", default-features = false }
 velopack = "=1.2.161"
 
 # macOS framework bindings
