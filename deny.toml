@@ -87,6 +87,12 @@ ignore = [
     # smartstring is pulled transitively by the pinned Helix revision. It is
     # unmaintained rather than vulnerable and has no patched release.
     "RUSTSEC-2026-0249",
+    # zvariant, zbus_names, and zvariant_derive were merged into zbus 6.0 and
+    # marked unmaintained; they are pulled transitively by GPUI's Linux
+    # accessibility/portal stack (accesskit_unix, atspi, ashpd, zbus 5).
+    "RUSTSEC-2026-0370",
+    "RUSTSEC-2026-0371",
+    "RUSTSEC-2026-0372",
 ]
 
 # This section is considered when running `cargo deny check licenses`
@@ -128,8 +134,8 @@ exceptions = [
     #{ allow = ["ISC", "MIT", "OpenSSL"], crate = "openssl" },
     # Velopack's rustls transport uses Mozilla's CA root data. The CDLA 2.0
     # licence is permissive but applies only to these data crates.
-    { allow = ["CDLA-Permissive-2.0"], crate = "webpki-roots@1.0.9" },
-    { allow = ["CDLA-Permissive-2.0"], crate = "webpki-root-certs@1.0.9" },
+    { allow = ["CDLA-Permissive-2.0"], crate = "webpki-roots" },
+    { allow = ["CDLA-Permissive-2.0"], crate = "webpki-root-certs" },
 ]
 
 # Some crates don't have (easily) machine readable licensing information,
