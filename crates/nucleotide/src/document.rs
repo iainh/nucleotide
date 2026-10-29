@@ -932,12 +932,12 @@ impl DocumentView {
             })
             .px(tokens.sizes.space_8)
             .py(tokens.sizes.space_8)
-            .child(
-                div().w_full().max_w(reading_width).mx_auto().child(
-                    markdown_extended(snapshot.source.clone(), markdown_style)
-                        .selectable(format!("markdown-selection-{}", snapshot.doc_id), focus),
+            .child(div().w_full().max_w(reading_width).mx_auto().child(
+                markdown_extended(snapshot.source.clone(), markdown_style).selectable(
+                    format!("markdown-selection-{}-{:?}", snapshot.doc_id, self.view_id),
+                    focus,
                 ),
-            );
+            ));
 
         div()
             .id(SharedString::from(format!(

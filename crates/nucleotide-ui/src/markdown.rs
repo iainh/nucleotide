@@ -142,14 +142,17 @@ impl gpui::Global for MarkdownSyntaxLoader {}
 
 #[derive(Clone, Debug, IntoElement)]
 pub struct MarkdownElement {
+    id: ElementId,
     source: SharedString,
     style: MarkdownStyle,
     parse_mode: MarkdownParseMode,
     selection: Option<(ElementId, gpui::FocusHandle)>,
 }
 
+#[track_caller]
 pub fn markdown(source: impl Into<SharedString>, style: MarkdownStyle) -> MarkdownElement {
     MarkdownElement {
+        id: ElementId::CodeLocation(*std::panic::Location::caller()),
         source: source.into(),
         style,
         parse_mode: MarkdownParseMode::CommonMark,
@@ -157,8 +160,10 @@ pub fn markdown(source: impl Into<SharedString>, style: MarkdownStyle) -> Markdo
     }
 }
 
+#[track_caller]
 pub fn markdown_extended(source: impl Into<SharedString>, style: MarkdownStyle) -> MarkdownElement {
     MarkdownElement {
+        id: ElementId::CodeLocation(*std::panic::Location::caller()),
         source: source.into(),
         style,
         parse_mode: MarkdownParseMode::Extended,
@@ -167,15 +172,50 @@ pub fn markdown_extended(source: impl Into<SharedString>, style: MarkdownStyle) 
 }
 
 impl MarkdownElement {
-    /// Enable document-wide mouse selection and platform Copy/Select All shortcuts.
-    pub fn selectable(mut self, id: impl Into<ElementId>, focus: gpui::FocusHandle) -> Self {
-        self.selection = Some((id.into(), focus));
+    /// Set a stable instance ID. Required for repeated Markdown at the same call site.
+    pub fn id(mut self, id: impl Into<ElementId>) -> Self {
+        self.id = id.into();
         self
+    }
+
+    /// Enable document-wide mouse selection and platform Copy/Select All shortcuts.
+    /// The selection ID also identifies this Markdown instance.
+    pub fn selectable(mut self, id: impl Into<ElementId>, focus: gpui::FocusHandle) -> Self {
+        let id = id.into();
+        self.id = id.clone();
+        self.selection = Some((id, focus));
+        self
+    }
+}
+
+struct MarkdownParseCache {
+    source: SharedString,
+    mode: MarkdownParseMode,
+    document: Rc<MarkdownDocument>,
+}
+
+impl MarkdownParseCache {
+    fn new(source: SharedString, mode: MarkdownParseMode) -> Self {
+        let document = Rc::new(MarkdownDocument::parse_with_mode(&source, mode));
+        Self {
+            source,
+            mode,
+            document,
+        }
     }
 }
 
 impl RenderOnce for MarkdownElement {
     fn render(mut self, window: &mut Window, cx: &mut gpui::App) -> impl IntoElement {
+        let cache = window.use_keyed_state(self.id.clone(), cx, |_, _| {
+            MarkdownParseCache::new(self.source.clone(), self.parse_mode)
+        });
+        let document = cache.update(cx, |cache, _| {
+            if cache.source != self.source || cache.mode != self.parse_mode {
+                *cache = MarkdownParseCache::new(self.source.clone(), self.parse_mode);
+            }
+            cache.document.clone()
+        });
         let selection = self.selection.map(|(id, focus)| {
             let state = window.use_keyed_state(id.clone(), cx, |_, _| MarkdownSelection::default());
             let selection = state.read(cx).clone();
@@ -192,15 +232,9 @@ impl RenderOnce for MarkdownElement {
             self.style.selection = Some(selection.clone());
             (id, focus, selection)
         });
-        let document = MarkdownDocument::parse_with_mode(&self.source, self.parse_mode);
-        let helix_theme = cx
-            .try_global::<crate::theme_manager::ThemeManager>()
-            .map(|theme_manager| theme_manager.helix_theme());
-        let syntax_loader = cx
-            .try_global::<MarkdownSyntaxLoader>()
-            .map(MarkdownSyntaxLoader::loader);
-
-        let content = render_document(document, self.style, helix_theme, syntax_loader);
+        // Scope every child ID, including deferred Mermaid keyed state, to this
+        // instance. Child block IDs only need to be unique within this root.
+        let content = render_document(&document, self.style).id(self.id);
         if let Some((id, focus, selection)) = selection {
             selectable_document(content, id, focus, selection).into_any_element()
         } else {
@@ -298,7 +332,7 @@ impl MarkdownSelectionState {
 }
 
 fn selectable_document(
-    content: gpui::Div,
+    content: impl IntoElement,
     id: ElementId,
     focus: gpui::FocusHandle,
     selection: MarkdownSelection,
@@ -1712,20 +1746,9 @@ fn code_block_language(kind: &CodeBlockKind<'_>) -> Option<String> {
     }
 }
 
-fn render_document(
-    document: MarkdownDocument,
-    style: MarkdownStyle,
-    helix_theme: Option<&helix_view::Theme>,
-    syntax_loader: Option<&syntax::Loader>,
-) -> gpui::Div {
+fn render_document(document: &MarkdownDocument, style: MarkdownStyle) -> gpui::Div {
     let gap = block_gap(&style);
-    let elements = render_blocks(
-        document.blocks,
-        &style,
-        helix_theme,
-        syntax_loader,
-        "markdown",
-    );
+    let elements = render_blocks(document.blocks.clone(), &style, "markdown");
 
     div()
         .flex()
@@ -1750,8 +1773,6 @@ fn block_gap(style: &MarkdownStyle) -> Pixels {
 fn render_blocks(
     blocks: Vec<MarkdownBlock>,
     style: &MarkdownStyle,
-    helix_theme: Option<&helix_view::Theme>,
-    syntax_loader: Option<&syntax::Loader>,
     id_prefix: &str,
 ) -> Vec<gpui::AnyElement> {
     blocks
@@ -1805,30 +1826,19 @@ fn render_blocks(
                     .as_deref()
                     .is_some_and(|language| language.eq_ignore_ascii_case("mermaid")) =>
             {
-                let mut style = style.clone();
-                if let Some(selection) = &mut style.selection {
-                    // The entity renders later than surrounding text. Reserve its
-                    // reading-order slot; successful images leave it empty.
-                    let mut state = selection.0.borrow_mut();
-                    selection.1 = Some(state.nodes.len());
-                    let placeholder = StyledText::new(SharedString::default());
-                    state.nodes.push(("".into(), placeholder.layout().clone()));
-                }
                 mermaid::MermaidBlock::new(
                     text,
-                    style,
+                    deferred_block_style(style),
                     format!("{id_prefix}-code-block-{block_index}"),
                 )
                 .into_any_element()
             }
-            MarkdownBlock::CodeBlock { language, text } => render_code_block(
+            MarkdownBlock::CodeBlock { language, text } => MarkdownCodeBlock {
                 text,
                 language,
-                style,
-                helix_theme,
-                syntax_loader,
-                &format!("{id_prefix}-code-block-{block_index}"),
-            )
+                style: deferred_block_style(style),
+                id: format!("{id_prefix}-code-block-{block_index}"),
+            }
             .into_any_element(),
             MarkdownBlock::HtmlBlock { text } => render_html_block(
                 text,
@@ -1855,8 +1865,6 @@ fn render_blocks(
             MarkdownBlock::ListItem { .. } => render_list_item(
                 block,
                 style,
-                helix_theme,
-                syntax_loader,
                 &format!("{id_prefix}-list-item-{block_index}"),
             )
             .into_any_element(),
@@ -1864,8 +1872,6 @@ fn render_blocks(
                 kind,
                 blocks,
                 style,
-                helix_theme,
-                syntax_loader,
                 &format!("{id_prefix}-block-quote-{block_index}"),
             )
             .into_any_element(),
@@ -1889,6 +1895,19 @@ fn render_blocks(
 fn preview_heading_size(style: &MarkdownStyle, level: u8) -> Pixels {
     let index = usize::from(level.saturating_sub(1)).min(style.heading_font_sizes.len() - 1);
     style.heading_font_sizes[index]
+}
+
+fn deferred_block_style(style: &MarkdownStyle) -> MarkdownStyle {
+    let mut style = style.clone();
+    if let Some(selection) = &mut style.selection {
+        // Deferred components render after surrounding text. Reserve their
+        // reading-order slots; successful Mermaid images leave theirs empty.
+        let mut state = selection.0.borrow_mut();
+        selection.1 = Some(state.nodes.len());
+        let placeholder = StyledText::new(SharedString::default());
+        state.nodes.push(("".into(), placeholder.layout().clone()));
+    }
+    style
 }
 
 fn render_rich_text(
@@ -2190,17 +2209,92 @@ fn next_char_boundary(content: &str, mut index: usize) -> usize {
     index
 }
 
-fn render_code_block(
+#[derive(IntoElement)]
+struct MarkdownCodeBlock {
     text: String,
     language: Option<String>,
+    style: MarkdownStyle,
+    id: String,
+}
+
+struct MarkdownCodeCache {
+    content: String,
+    language: Option<String>,
+    theme: Option<helix_view::Theme>,
+    loader: Option<Arc<syntax::Loader>>,
+    scopes: Option<Arc<Vec<String>>>,
+    highlights: Vec<(Range<usize>, HighlightStyle)>,
+}
+
+impl RenderOnce for MarkdownCodeBlock {
+    fn render(self, window: &mut Window, cx: &mut gpui::App) -> impl IntoElement {
+        let state = window.use_keyed_state(self.id.clone(), cx, |_, _| None::<MarkdownCodeCache>);
+        let content = code_block_display_text(&self.text);
+        let highlights = state.update(cx, |cache, cx| {
+            let theme = cx
+                .try_global::<crate::theme_manager::ThemeManager>()
+                .map(|manager| manager.helix_theme());
+            let loader = cx.try_global::<MarkdownSyntaxLoader>();
+            let scopes = loader.map(|loader| Arc::clone(&loader.loader.scopes()));
+            let valid = cache.as_ref().is_some_and(|cache| {
+                cache.content == content
+                    && cache.language == self.language
+                    && same_highlight_theme(cache.theme.as_ref(), theme)
+                    && match (&cache.loader, loader) {
+                        (Some(previous), Some(current)) => Arc::ptr_eq(previous, &current.loader),
+                        (None, None) => true,
+                        _ => false,
+                    }
+                    && match (&cache.scopes, &scopes) {
+                        (Some(previous), Some(current)) => Arc::ptr_eq(previous, current),
+                        (None, None) => true,
+                        _ => false,
+                    }
+            });
+            if !valid {
+                *cache = Some(MarkdownCodeCache {
+                    highlights: code_syntax_highlights(
+                        &content,
+                        self.language.as_deref(),
+                        theme,
+                        loader.map(MarkdownSyntaxLoader::loader),
+                    ),
+                    content: content.clone(),
+                    language: self.language.clone(),
+                    theme: theme.cloned(),
+                    loader: loader.map(|loader| loader.loader.clone()),
+                    scopes,
+                });
+            }
+            cache.as_ref().unwrap().highlights.clone()
+        });
+        render_code_block(content, self.language, &self.style, highlights, &self.id)
+    }
+}
+
+fn same_highlight_theme(a: Option<&helix_view::Theme>, b: Option<&helix_view::Theme>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => {
+            // Compare actual styles, not theme names or addresses: a theme can
+            // be reloaded in place with different colours under the same name.
+            a.scopes() == b.scopes()
+                && (0..a.scopes().len()).all(|index| {
+                    let highlight = syntax::Highlight::new(index as u32);
+                    a.highlight(highlight) == b.highlight(highlight)
+                })
+        }
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+fn render_code_block(
+    content: String,
+    language: Option<String>,
     style: &MarkdownStyle,
-    helix_theme: Option<&helix_view::Theme>,
-    syntax_loader: Option<&syntax::Loader>,
+    highlights: Vec<(Range<usize>, HighlightStyle)>,
     block_id: &str,
 ) -> gpui::Div {
-    let content = code_block_display_text(&text);
-    let highlights =
-        code_syntax_highlights(&content, language.as_deref(), helix_theme, syntax_loader);
     let code = div()
         .id(block_id.to_string())
         .w_full()
@@ -3226,13 +3320,7 @@ fn rich_text_from_plain(text: impl AsRef<str>) -> RichText {
     rich_text
 }
 
-fn render_list_item(
-    block: MarkdownBlock,
-    style: &MarkdownStyle,
-    helix_theme: Option<&helix_view::Theme>,
-    syntax_loader: Option<&syntax::Loader>,
-    block_id: &str,
-) -> gpui::Div {
+fn render_list_item(block: MarkdownBlock, style: &MarkdownStyle, block_id: &str) -> gpui::Div {
     let MarkdownBlock::ListItem {
         ordered,
         index,
@@ -3273,13 +3361,7 @@ fn render_list_item(
     // Register selectable text in reading order, before the nested blocks.
     let text = (!text.is_empty())
         .then(|| render_rich_text(text, style, style.body_color, block_id.to_string()));
-    let child_blocks = render_blocks(
-        children,
-        style,
-        helix_theme,
-        syntax_loader,
-        &format!("{block_id}-child"),
-    );
+    let child_blocks = render_blocks(children, style, &format!("{block_id}-child"));
     let content = div()
         .flex()
         .flex_col()
@@ -3347,20 +3429,12 @@ fn render_block_quote(
     kind: Option<MarkdownAlertKind>,
     blocks: Vec<MarkdownBlock>,
     style: &MarkdownStyle,
-    helix_theme: Option<&helix_view::Theme>,
-    syntax_loader: Option<&syntax::Loader>,
     block_id: &str,
 ) -> impl IntoElement {
     let border_color = kind
         .map(|kind| kind.color(style))
         .unwrap_or(style.quote_border);
-    let content = render_blocks(
-        blocks,
-        style,
-        helix_theme,
-        syntax_loader,
-        &format!("{block_id}-content"),
-    );
+    let content = render_blocks(blocks, style, &format!("{block_id}-content"));
     let is_empty = content.is_empty();
 
     div()
@@ -5249,6 +5323,106 @@ plain"#,
         assert_eq!(cx.opened_url().as_deref(), Some("https://example.com"));
     }
 
+    fn assert_markdown_instances_keep_diagrams_and_selection_independent(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        struct MultipleMarkdown {
+            sources: [SharedString; 2],
+            focus: [gpui::FocusHandle; 2],
+            selectable: bool,
+        }
+
+        impl Render for MultipleMarkdown {
+            fn render(
+                &mut self,
+                _window: &mut Window,
+                _cx: &mut gpui::Context<Self>,
+            ) -> impl IntoElement {
+                div().flex().w(px(600.0)).h(px(600.0)).children(
+                    self.sources.iter().enumerate().map(|(index, source)| {
+                        let markdown = markdown_extended(
+                            source.clone(),
+                            MarkdownStyle::preview_from_tokens(&DesignTokens::dark()),
+                        )
+                        .id(("multiple-markdown", index));
+                        let markdown = if self.selectable {
+                            markdown.selectable(
+                                ("multiple-markdown-selection", index),
+                                self.focus[index].clone(),
+                            )
+                        } else {
+                            markdown
+                        };
+                        div().w(px(300.0)).child(markdown)
+                    }),
+                )
+            }
+        }
+
+        let (view, cx) = cx.add_window_view(|_, cx| MultipleMarkdown {
+            sources: [
+                "```mermaid\nflowchart LR\nA[Unclosed label\n```\n\nleft".into(),
+                "```mermaid\nflowchart LR\nA --> B\n```\n\n```rust\nlet right = 2;\n```\n\nright"
+                    .into(),
+            ],
+            focus: [cx.focus_handle(), cx.focus_handle()],
+            selectable: false,
+        });
+        cx.run_until_parked();
+        // Different blocks at index zero must coexist, not share MermaidView.
+        assert!(cx.debug_bounds("markdown-code-block-0-fallback").is_some());
+        assert!(cx.debug_bounds("markdown-code-block-0-diagram").is_some());
+
+        view.update(cx, |view, cx| {
+            view.selectable = true;
+            cx.notify();
+        });
+        cx.run_until_parked();
+        let select_all_copy = if cfg!(target_os = "macos") {
+            "cmd-a cmd-c"
+        } else {
+            "ctrl-a ctrl-c"
+        };
+        for (index, expected) in [
+            (0, "flowchart LR\nA[Unclosed label\n\nleft"),
+            (1, "let right = 2;\n\nright"),
+        ] {
+            cx.update(|window, cx| {
+                let focus = view.read(cx).focus[index].clone();
+                window.focus(&focus, cx);
+            });
+            cx.simulate_keystrokes(select_all_copy);
+            assert_eq!(
+                cx.read_from_clipboard()
+                    .and_then(|item| item.text())
+                    .as_deref(),
+                Some(expected),
+            );
+        }
+
+        // Editing the other pane must not reset this pane's existing selection.
+        view.update(cx, |view, cx| {
+            view.sources[1] = "edited right".into();
+            cx.notify();
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let focus = view.read(cx).focus[0].clone();
+            window.focus(&focus, cx);
+        });
+        cx.simulate_keystrokes(if cfg!(target_os = "macos") {
+            "cmd-c"
+        } else {
+            "ctrl-c"
+        });
+        assert_eq!(
+            cx.read_from_clipboard()
+                .and_then(|item| item.text())
+                .as_deref(),
+            Some("flowchart LR\nA[Unclosed label\n\nleft"),
+        );
+    }
+
     #[test]
     fn ordered_lists_preserve_start_index() {
         let document = MarkdownDocument::parse("3. three\n4. four");
@@ -5502,6 +5676,7 @@ plain"#,
 
     #[gpui::test]
     fn markdown_mermaid_falls_back_and_recovers_after_edits(cx: &mut gpui::TestAppContext) {
+        assert_markdown_instances_keep_diagrams_and_selection_independent(cx);
         let (view, cx) = cx.add_window_view(|_, cx| MermaidFixture {
             source: "```mermaid\nflowchart LR\nA --> B\n```".into(),
             style: MarkdownStyle::from_tokens(&DesignTokens::dark()).compact(),
