@@ -68,7 +68,11 @@ impl<B: WorkspaceBackend> WorkspaceService<B> {
         cancellation: WorkspaceCancellationToken,
         eof: Arc<AtomicBool>,
     ) {
-        let result = self.prepare_pty(&request).and_then(|(mut command, cwd)| {
+        let prepared = self.prepare_pty(&request, &cancellation);
+        let result = prepared.and_then(|(mut command, cwd)| {
+            if cancellation.is_cancelled() {
+                return Err(session_error("cancelled", "pty.session was reset"));
+            }
             command.cwd(cwd);
             let pair = native_pty_system()
                 .openpty(PtySize {
@@ -208,11 +212,17 @@ impl<B: WorkspaceBackend> WorkspaceService<B> {
                         Ok(V5ProcessSessionInput::End)
                         | Err(mpsc::RecvTimeoutError::Disconnected) => {
                             eof.store(true, Ordering::Release);
-                            // Closing the master writer is the PTY equivalent of stdin EOF. Merely
-                            // remembering END leaves readers such as `cat` blocked forever.
+                            // portable-pty injects newline/VEOF when the writer is dropped.
+                            // Canonical readers interpret EOF; raw readers receive the bytes.
                             writer.take();
                         }
-                        Err(mpsc::RecvTimeoutError::Timeout) => {}
+                        Err(mpsc::RecvTimeoutError::Timeout) => {
+                            // END may not fit in the bounded ingress queue. Honour its atomic
+                            // fallback only after queued input and resizes have drained.
+                            if eof.load(Ordering::Acquire) {
+                                writer.take();
+                            }
+                        }
                     }
                     while let Ok(event) = rx.try_recv() {
                         match event {
@@ -276,6 +286,7 @@ impl<B: WorkspaceBackend> WorkspaceService<B> {
     fn prepare_pty(
         &self,
         request: &PtySessionRequest,
+        cancellation: &WorkspaceCancellationToken,
     ) -> std::result::Result<(CommandBuilder, PathBuf), RemoteError> {
         let (program, args) = match &request.command {
             PtySessionCommand::Command { program, args } => (program.clone(), args.clone()),
@@ -291,7 +302,7 @@ impl<B: WorkspaceBackend> WorkspaceService<B> {
             environment: request.environment.clone(),
             env_overrides: request.env_overrides.clone(),
         };
-        let (program, cwd, mut env) = self.prepare_v5_process_session(&process)?;
+        let (program, cwd, mut env) = self.prepare_v5_process_session(&process, cancellation)?;
         for key in crate::proxy::INTERACTIVE_SHELL_STATE_ENV_VARS {
             env.remove(*key);
         }
