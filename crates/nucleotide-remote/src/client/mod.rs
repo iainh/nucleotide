@@ -1019,7 +1019,33 @@ where
         let workspace_root = PathBuf::from(&self.server_hello.workspace_root);
         let watch =
             self.start_v5_watch_with_context_and_cancellation(v5_request, context, cancellation)?;
-        Ok(Some(workspace_watch_from_v5(watch, workspace_root)))
+        let watch_id = watch.watch_id;
+        // Keep cleanup on the transport that allocated this physical ID. A
+        // reconnect may reuse the ID for an entirely different subscription.
+        let owner = Self {
+            server_hello: self.server_hello.clone(),
+            shared: Arc::clone(&self.shared),
+            _reader: std::marker::PhantomData,
+        };
+        match workspace_watch_from_v5(watch, workspace_root, move || {
+            let active = owner
+                .shared
+                .watch_stream_by_id
+                .lock()
+                .is_ok_and(|watches| watches.contains_key(&watch_id));
+            if active
+                && !owner.shared.closed.load(Ordering::Acquire)
+                && let Err(error) = owner.stop_v5_watch(watch_id)
+            {
+                tracing::warn!(%error, watch_id, "Failed to stop abandoned remote watch");
+            }
+        }) {
+            Ok(watch) => Ok(Some(watch)),
+            Err(error) => {
+                let _ = self.stop_v5_watch(watch_id);
+                Err(error)
+            }
+        }
     }
 
     fn update_watch(

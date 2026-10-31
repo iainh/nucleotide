@@ -59,6 +59,17 @@ Cancellation tests wait for actual child readiness, cancel or drop the handle, a
 
 Watch support is optional: unsupported watches produce explicit `skip` events, not fake event coverage. Process sessions, PTYs and real clangd are required. This matrix describes harness intent; use the actual run's log to establish what executed.
 
+## Lifecycle regression checks
+
+The soak stops watches explicitly. Run the watch lifecycle regressions as well:
+
+```sh
+cargo test --locked -p nucleotide-remote --test v5_loopback_fixtures
+cargo test --locked -p nucleotide --lib remote_watch_is_disposed_when_disabled_or_view_closes
+```
+
+Dropping the final `WorkspaceWatch` consumer now triggers asynchronous subscription cleanup, even on a quiet root or through a display/native path adapter. Dropping one clone leaves the others usable. Restored watches clean up on the transport that owns their physical ID. File-tree receivers also dispose of their watches when watching is disabled or the view closes, including late watch-start responses.
+
 ## Desktop checklist before updating a work machine
 
 Run this in an interactive Windows session using an isolated fixture and the exact candidate build. Don't redirect input into an existing editor or capture private projects. A service-session executor cannot drive an RDP desktop merely because an RDP user is logged in.

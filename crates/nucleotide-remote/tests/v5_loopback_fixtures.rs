@@ -6,7 +6,8 @@ use nucleotide_remote::{
 };
 use nucleotide_workspace::{
     ProcessEvent, ProcessSpec, ReadOptions, RemoteWorkspaceIdentity, RemoteWorkspaceKind,
-    WorkspaceCancellationToken, WorkspaceWatchRequest, classify_workspace_location,
+    WorkspaceCancellationToken, WorkspacePathMapping, WorkspaceWatchRequest,
+    classify_workspace_location, path_mapped_workspace_backend,
 };
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -24,6 +25,15 @@ const PROCESS_RELEASED_OUTPUT: &str = "nucleotide-v5-loopback-process-released";
 
 #[tokio::test]
 async fn stopped_watches_release_event_streams_on_a_retained_connection() {
+    check_watch_lifetime_on_a_retained_connection(true).await;
+}
+
+#[tokio::test]
+async fn dropped_watches_release_subscriptions_on_a_retained_connection() {
+    check_watch_lifetime_on_a_retained_connection(false).await;
+}
+
+async fn check_watch_lifetime_on_a_retained_connection(stop_explicitly: bool) {
     let temp = tempfile::tempdir().unwrap();
     let connection = connect_workspace_backend_for_location(
         classify_workspace_location(temp.path()),
@@ -34,6 +44,17 @@ async fn stopped_watches_release_event_streams_on_a_retained_connection() {
         },
     )
     .unwrap();
+    // Disposal must propagate through the display/native adapter used by WSL
+    // and SSH, even when no more filesystem events arrive.
+    let root = if stop_explicitly {
+        temp.path().to_path_buf()
+    } else {
+        temp.path().join("display-workspace")
+    };
+    let backend = path_mapped_workspace_backend(
+        connection.backend.clone(),
+        WorkspacePathMapping::new(&root, temp.path()),
+    );
     tokio::time::timeout(Duration::from_secs(30), async {
         #[cfg(windows)]
         let (program, args) = (
@@ -62,19 +83,28 @@ async fn stopped_watches_release_event_streams_on_a_retained_connection() {
                 env_overrides: BTreeMap::new(),
             })
             .unwrap();
-        // Exceed the protocol's concurrent-stream limit sequentially: every
-        // stopped watch must give its event stream back without reconnecting.
-        for attempt in 0..140 {
-            let mut request = WorkspaceWatchRequest::expanded_dirs([temp.path().to_path_buf()]);
+        // Exceed the stream limit for quiet disposal and post-event disposal
+        // independently, without allowing reconnects to hide leaked watches.
+        let attempts = if stop_explicitly { 140 } else { 280 };
+        for attempt in 0..attempts {
+            let mut request = WorkspaceWatchRequest::expanded_dirs([root.clone()]);
             request.debounce_ms = 1;
-            let watch = connection
-                .backend
+            let watch = backend
                 .start_watch(request)
                 .await
                 .unwrap_or_else(|error| panic!("watch {attempt}: {error}"))
                 .expect("local helper must support watches");
-            let path = temp.path().join(format!("event-{attempt}.txt"));
-            connection.backend.create_file(&path).await.unwrap();
+            if !stop_explicitly && attempt < 140 {
+                // Abandon quiet watches too: cleanup cannot wait for another event.
+                drop(watch);
+                tokio::time::sleep(Duration::from_millis(30)).await;
+                continue;
+            }
+            let surviving_clone = watch.clone();
+            drop(watch);
+            let watch = surviving_clone;
+            let path = root.join(format!("event-{attempt}.txt"));
+            backend.create_file(&path).await.unwrap();
             let deadline = Instant::now() + Duration::from_secs(3);
             loop {
                 if watch
@@ -86,9 +116,12 @@ async fn stopped_watches_release_event_streams_on_a_retained_connection() {
                 assert!(Instant::now() < deadline, "watch {attempt} missed mutation");
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
-            connection.backend.stop_watch(watch.watch_id).await.unwrap();
+            if stop_explicitly {
+                backend.stop_watch(watch.watch_id).await.unwrap();
+            }
+            drop(watch);
             assert_eq!(
-                connection.backend.stat(temp.path()).await.unwrap().kind,
+                backend.stat(&root).await.unwrap().kind,
                 nucleotide_workspace::FileKind::Directory
             );
         }
