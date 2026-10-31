@@ -145,7 +145,7 @@ impl<B: WorkspaceBackend> WorkspaceService<B> {
         eof: Arc<AtomicBool>,
     ) {
         let result =
-            self.prepare_v5_process_session(&request)
+            self.prepare_v5_process_session(&request, &cancellation)
                 .and_then(|(program, cwd, env)| {
                     if cancellation.is_cancelled() {
                         return Err(session_error("cancelled", "process.session was reset"));
@@ -277,7 +277,11 @@ impl<B: WorkspaceBackend> WorkspaceService<B> {
     pub(crate) fn prepare_v5_process_session(
         &self,
         request: &ProcessSessionRequest,
+        cancellation: &WorkspaceCancellationToken,
     ) -> std::result::Result<(PathBuf, PathBuf, BTreeMap<String, String>), RemoteError> {
+        if cancellation.is_cancelled() {
+            return Err(session_error("cancelled", "session was reset"));
+        }
         if request.program.is_empty() || request.program.contains('\0') {
             return Err(session_error("invalid_request", "invalid process program"));
         }
@@ -311,7 +315,7 @@ impl<B: WorkspaceBackend> WorkspaceService<B> {
         let mut env: BTreeMap<String, String> = match env_root {
             None => self.environment_baseline.clone().into_iter().collect(),
             Some(root) => {
-                self.load_project_environment(&root)
+                self.load_project_environment_with_cancellation(&root, Some(cancellation))
                     .map_err(remote_error_from_environment)?
                     .variables
             }
