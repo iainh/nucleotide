@@ -94,8 +94,16 @@ jobs:
           cache-workspace-crates: true
           save-if: false
 
+      - name: Install language server for remote fixtures
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clangd
+
       - name: Run remote transport fixtures
         run: cargo test -p nucleotide-remote --locked --test v5_external_fixtures --test v5_loopback_fixtures
+
+      - name: Run remote language server fixture
+        run: cargo test -p nucleotide-remote --locked --test v5_external_fixtures remote_lsp_clangd -- --ignored --nocapture
 
   architecture:
     name: Check ${{ matrix.name }}

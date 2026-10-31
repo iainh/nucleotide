@@ -1162,7 +1162,7 @@ impl Application {
     fn poll_pending_helix_events(
         &mut self,
         cx: &mut gpui::Context<crate::Core>,
-        _handle: &tokio::runtime::Handle,
+        handle: &tokio::runtime::Handle,
         task_cx: &mut TaskContext<'_>,
     ) -> bool {
         let mut helix_events = Vec::new();
@@ -1206,7 +1206,7 @@ impl Application {
         }
 
         for helix_event in helix_events {
-            self.handle_helix_event(&helix_event, cx);
+            self.handle_helix_event(&helix_event, handle, cx);
         }
 
         progressed
@@ -1215,6 +1215,7 @@ impl Application {
     fn handle_helix_event(
         &mut self,
         helix_event: &event_bridge::HelixEvent,
+        handle: &tokio::runtime::Handle,
         cx: &mut gpui::Context<crate::Core>,
     ) {
         use nucleotide_events::{LspEvent, document::Event as DocumentEvent};
@@ -1250,6 +1251,16 @@ impl Application {
                 } else {
                     (std::path::PathBuf::from("unknown"), None)
                 };
+
+                if matches!(
+                    self.workspace_backend.identity(),
+                    WorkspaceIdentity::Remote(_)
+                ) {
+                    if let Some(document) = self.editor.document_mut(*doc_id) {
+                        set_remote_document_lsp_url(document, &path);
+                    }
+                    self.attach_or_start_remote_document_servers(*doc_id, handle, cx);
+                }
 
                 cx.emit(Update::Document(DocumentEvent::Opened {
                     doc_id: *doc_id,
@@ -2416,6 +2427,12 @@ impl Application {
                         } else {
                             debug!(server = %server_name, "DIAG: No config available to send in didChangeConfiguration");
                         }
+                        // The frontend initialization hook owns didOpen for existing
+                        // attachments; later attachments open their documents immediately.
+                        helix_event::dispatch(helix_view::events::LanguageServerInitialized {
+                            editor: &mut self.editor,
+                            server_id,
+                        });
                         debug!(server_id = ?server_id, "LSP server initialized");
                     }
                     Notification::PublishDiagnostics(params) => {

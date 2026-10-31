@@ -1289,6 +1289,8 @@ pub struct Editor {
     pub macro_recording: Option<(char, Vec<KeyEvent>)>,
     pub macro_replaying: Vec<char>,
     pub language_servers: helix_lsp::Registry,
+    /// Servers whose frontend initialization hook has opened existing attachments.
+    pub(crate) initialized_language_servers: HashSet<LanguageServerId>,
     pub diagnostics: Diagnostics,
     pub diff_providers: DiffProviderRegistry,
 
@@ -1469,6 +1471,7 @@ impl Editor {
             macro_replaying: Vec::new(),
             theme: theme_loader.default(),
             language_servers,
+            initialized_language_servers: HashSet::new(),
             diagnostics: Diagnostics::new(),
             diff_providers: DiffProviderRegistry::default(),
             debug_adapters: dap::registry::Registry::new(),
@@ -1700,8 +1703,15 @@ impl Editor {
             return true;
         }
 
-        let language_id = doc.language_id().map(ToOwned::to_owned).unwrap_or_default();
-        language_server.text_document_did_open(doc_url, doc.version(), doc.text(), language_id);
+        // Transport readiness precedes the frontend initialization hook. Until that
+        // hook runs, attach only: it owns opening all documents present at that point.
+        if self
+            .initialized_language_servers
+            .contains(&language_server_id)
+        {
+            let language_id = doc.language_id().map(ToOwned::to_owned).unwrap_or_default();
+            language_server.text_document_did_open(doc_url, doc.version(), doc.text(), language_id);
+        }
         doc.language_servers.insert(server_name, language_server);
 
         true
@@ -1969,13 +1979,17 @@ impl Editor {
         });
 
         for (_, language_server) in language_servers_not_in_doc {
-            // TODO: this now races with on_init code if the init happens too quickly
-            language_server.text_document_did_open(
-                doc_url.clone(),
-                doc.version(),
-                doc.text(),
-                language_id.clone(),
-            );
+            if self
+                .initialized_language_servers
+                .contains(&language_server.id())
+            {
+                language_server.text_document_did_open(
+                    doc_url.clone(),
+                    doc.version(),
+                    doc.text(),
+                    language_id.clone(),
+                );
+            }
         }
 
         doc.language_servers = language_servers;

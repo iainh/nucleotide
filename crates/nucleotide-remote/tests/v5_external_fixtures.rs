@@ -233,6 +233,264 @@ fn ssh_v5_fixture_exercises_watch_search_process_and_path_mapping() {
     block_on(backend.stop_watch(watch.watch_id)).unwrap();
 }
 
+/// Uses real clangd, but only simulates the WSL launcher. Set
+/// NUCLEOTIDE_TEST_SSH_CONFIG to an OpenSSH config containing a `devbox` host
+/// to exercise real SSH too. That host must be this machine (shared temp paths).
+#[test]
+#[ignore = "requires clangd; optionally a loopback SSH devbox host"]
+fn remote_lsp_clangd_exercises_startup_editing_navigation_and_shutdown() {
+    use nucleotide_remote::RemotePipedProcessSessionRequest;
+    use serde_json::json;
+    use tokio::io::{AsyncReadExt, BufReader};
+
+    let clangd = std::env::var("NUCLEOTIDE_TEST_CLANGD").unwrap_or_else(|_| "clangd".into());
+    assert!(
+        std::process::Command::new(&clangd)
+            .arg("--version")
+            .status()
+            .unwrap()
+            .success()
+    );
+    let ssh_config = std::env::var_os("NUCLEOTIDE_TEST_SSH_CONFIG");
+    for wsl in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let launcher_dir = temp.path().join("bin");
+        std::fs::create_dir(&launcher_dir).unwrap();
+        let (_guard, _path) = path_fixture(
+            &launcher_dir,
+            if wsl {
+                install_fake_wsl
+            } else {
+                install_fake_ssh
+            },
+        );
+        // Real SSH must not resolve the fixture's fake ssh executable.
+        if !wsl && ssh_config.is_some() {
+            std::fs::remove_file(launcher_dir.join("ssh")).unwrap();
+        }
+        let connection_root = temp.path().join("remote workspace");
+        let workspace = connection_root.join("project with spaces");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let remote_bin = workspace.join("remote-bin");
+        std::fs::create_dir(&remote_bin).unwrap();
+        // This command is absent from the host PATH. Both cwd and overrides must
+        // reach the helper for startup to succeed; stdout must stay pure LSP.
+        write_executable(
+            &remote_bin.join("remote-clangd"),
+            &format!(
+                "#!/bin/sh\n[ \"$PWD\" = \"$EXPECTED_CWD\" ] || exit 71\n[ \"$LSP_TEST\" = remote ] || exit 72\necho $$ > server.pid\nexec '{}' --background-index=0 --clang-tidy=0 --log=error\n",
+                clangd.replace('\'', "'\\''")
+            ),
+        );
+        let display_root = if wsl {
+            PathBuf::from(r"\\wsl.localhost\Ubuntu\home\me\project")
+        } else {
+            PathBuf::from("ssh://devbox/home/me/project")
+        };
+        let location = if wsl {
+            WorkspaceLocation::Wsl {
+                original_path: display_root.clone(),
+                distro: "Ubuntu".into(),
+                linux_path: connection_root.clone(),
+            }
+        } else {
+            WorkspaceLocation::Ssh {
+                original_path: display_root.clone(),
+                target: SshWorkspaceTarget {
+                    host: "devbox".into(),
+                    user: None,
+                    port: None,
+                },
+                path: connection_root,
+            }
+        };
+        let display_root = location.path_mapping().to_display_path(&workspace);
+        let mut options = RemoteWorkspaceBackendOptions {
+            remote_helper_path: PathBuf::from(env!("CARGO_BIN_EXE_nucleotide-remote")),
+            remote_helper_path_is_override: true,
+            ssh_helper_install_policy: RemoteHelperInstallPolicy::Never,
+            wsl_helper_install_policy: RemoteHelperInstallPolicy::Never,
+            ssh_control_path: None,
+            ..RemoteWorkspaceBackendOptions::default()
+        };
+        if !wsl && let Some(config) = &ssh_config {
+            options.ssh_extra_args = vec!["-F".into(), config.clone()];
+        }
+        let connection = connect_workspace_backend_for_location(location, &options).unwrap();
+        let launcher = connection
+            .process_session_launcher
+            .as_ref()
+            .expect("process_sessions_v1");
+        // Model the mixed separators produced by Windows PathBuf::join. The
+        // actual Linux helper must receive normalized cwd and anchor fields.
+        let process_root = if wsl {
+            PathBuf::from(format!(
+                "{}\\project with spaces",
+                connection.location.native_root().display()
+            ))
+        } else {
+            connection
+                .location
+                .path_mapping()
+                .to_native_path(&display_root)
+        };
+        let request = RemotePipedProcessSessionRequest {
+            program: "remote-clangd".into(),
+            args: vec![],
+            cwd: process_root.clone(),
+            environment_anchor: process_root,
+            env_overrides: BTreeMap::from([
+                (
+                    "PATH".into(),
+                    format!("{}:/usr/bin:/bin", remote_bin.display()),
+                ),
+                (
+                    "EXPECTED_CWD".into(),
+                    workspace.to_string_lossy().into_owned(),
+                ),
+                ("LSP_TEST".into(), "remote".into()),
+            ]),
+        };
+        let mut parts = launcher.launch(request.clone()).unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            tokio::time::timeout(Duration::from_secs(30), async {
+                let stderr = tokio::spawn(async move {
+                    let mut bytes = Vec::new();
+                    parts.stderr.read_to_end(&mut bytes).await.unwrap();
+                    bytes
+                });
+                let mut stdout = BufReader::new(parts.stdout);
+                // Encode spaces as a real file URI, rather than a remote display URI.
+                let root_uri = format!("file://{}", workspace.display()).replace(' ', "%20");
+                let uri = format!("{root_uri}/main.c");
+                send_lsp(&mut parts.stdin, json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{
+                    "processId":null,"rootUri":root_uri,"capabilities":{"textDocument":{"publishDiagnostics":{"versionSupport":true}}},
+                    "workspaceFolders":[{"uri":root_uri,"name":"remote test"}]
+                }})).await;
+                let initialized = receive_lsp_until(&mut stdout, |m| m["id"] == 1).await;
+                assert!(initialized["result"]["capabilities"]["definitionProvider"].as_bool().unwrap());
+                send_lsp(&mut parts.stdin, json!({"jsonrpc":"2.0","method":"initialized","params":{}})).await;
+                let broken = "int remote_answer(void) { return 42; }\nint main(void) { return missing_value; }\n";
+                std::fs::write(workspace.join("main.c"), broken).unwrap();
+                send_lsp(&mut parts.stdin, json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{
+                    "textDocument":{"uri":uri,"languageId":"c","version":1,"text":broken}
+                }})).await;
+                let diagnostics = receive_lsp_until(&mut stdout, |m| m["method"] == "textDocument/publishDiagnostics" && m["params"]["version"] == 1).await;
+                assert_eq!(diagnostics["params"]["uri"], uri);
+                assert!(diagnostics["params"]["diagnostics"].as_array().unwrap().iter().any(|d| d["message"].as_str().unwrap().contains("missing_value")));
+                // File requests must still work while a full-duplex LSP is alive.
+                let read = connection.backend.read_file(&display_root.join("main.c"), ReadOptions::default()).await.unwrap();
+                assert_eq!(read.bytes, broken.as_bytes());
+                let fixed = "int remote_answer(void) { return 42; }\nint main(void) { return remote_answer(); }\n";
+                send_lsp(&mut parts.stdin, json!({"jsonrpc":"2.0","method":"textDocument/didChange","params":{
+                    "textDocument":{"uri":uri,"version":2},"contentChanges":[{"text":fixed}]
+                }})).await;
+                let diagnostics = receive_lsp_until(&mut stdout, |m| m["method"] == "textDocument/publishDiagnostics" && m["params"]["version"] == 2).await;
+                assert_eq!(diagnostics["params"]["diagnostics"], json!([]));
+                for (id, method) in [(2, "textDocument/hover"), (3, "textDocument/definition")] {
+                    send_lsp(&mut parts.stdin, json!({"jsonrpc":"2.0","id":id,"method":method,"params":{
+                        "textDocument":{"uri":uri},"position":{"line":1,"character":28}
+                    }})).await;
+                    let response = receive_lsp_until(&mut stdout, |m| m["id"] == id).await;
+                    if id == 2 {
+                        assert!(response["result"]["contents"].to_string().contains("remote_answer"), "{response}");
+                    } else {
+                        assert_eq!(response["result"][0]["uri"], uri);
+                        assert_eq!(response["result"][0]["range"]["start"]["line"], 0);
+                    }
+                }
+                let partial = "int remote_answer(void) { return 42; }\nint main(void) { return remote_ans; }\n";
+                send_lsp(&mut parts.stdin, json!({"jsonrpc":"2.0","method":"textDocument/didChange","params":{
+                    "textDocument":{"uri":uri,"version":3},"contentChanges":[{"text":partial}]
+                }})).await;
+                send_lsp(&mut parts.stdin, json!({"jsonrpc":"2.0","id":4,"method":"textDocument/completion","params":{
+                    "textDocument":{"uri":uri},"position":{"line":1,"character":33}
+                }})).await;
+                let completion = receive_lsp_until(&mut stdout, |m| m["id"] == 4).await;
+                assert!(completion["result"]["items"].as_array().unwrap().iter().any(|item| item["label"].as_str().unwrap().contains("remote_answer")), "{completion}");
+                send_lsp(&mut parts.stdin, json!({"jsonrpc":"2.0","id":5,"method":"shutdown","params":null})).await;
+                let shutdown = receive_lsp_until(&mut stdout, |m| m["id"] == 5).await;
+                assert_eq!(shutdown.get("result"), Some(&serde_json::Value::Null));
+                send_lsp(&mut parts.stdin, json!({"jsonrpc":"2.0","method":"exit","params":null})).await;
+                let completion = parts.completion.await.unwrap();
+                let stderr = stderr.await.unwrap();
+                assert!(completion.success, "{completion:?}: {}", String::from_utf8_lossy(&stderr));
+                let pid_path = workspace.join("server.pid");
+                let pid = std::fs::read_to_string(&pid_path).unwrap();
+                assert!(!Path::new("/proc").join(pid.trim()).exists(), "LSP survived clean exit");
+
+                let missing = launcher.launch(RemotePipedProcessSessionRequest {
+                    program: "nucleotide-nonexistent-lsp".into(), ..request.clone()
+                }).unwrap();
+                let error = missing.completion.await.unwrap_err().to_string();
+                assert!(error.contains("failed to spawn process.session"), "{error}");
+
+                // Dropping an active client must terminate its server, and a
+                // failed startup must not prevent the next server from starting.
+                std::fs::remove_file(&pid_path).unwrap();
+                let cancelled = launcher.launch(request.clone()).unwrap();
+                while !std::fs::read_to_string(&pid_path).is_ok_and(|pid| !pid.trim().is_empty()) {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                let pid = std::fs::read_to_string(&pid_path).unwrap();
+                assert!(Path::new("/proc").join(pid.trim()).exists());
+                drop(cancelled.lifecycle);
+                assert!(cancelled.completion.await.is_err());
+                while Path::new("/proc").join(pid.trim()).exists() {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                connection.backend.stat(&display_root).await.unwrap();
+                eprintln!("{}: remote-only PATH/cwd/env, initialize, diagnostics, didChange, hover, definition, completion, concurrent file read, clean exit, missing server, restart and cancellation cleanup passed", if wsl { "simulated WSL" } else if ssh_config.is_some() { "real SSH" } else { "simulated SSH" });
+            }).await.expect("remote LSP exchange exceeded 30 seconds");
+        });
+    }
+}
+
+async fn send_lsp(
+    writer: &mut nucleotide_remote::RemoteProcessSessionWriter,
+    message: serde_json::Value,
+) {
+    use tokio::io::AsyncWriteExt;
+    let body = serde_json::to_vec(&message).unwrap();
+    writer
+        .write_all(format!("Content-Length: {}\r\n\r\n", body.len()).as_bytes())
+        .await
+        .unwrap();
+    writer.write_all(&body).await.unwrap();
+    writer.flush().await.unwrap();
+}
+
+async fn receive_lsp_until(
+    reader: &mut tokio::io::BufReader<nucleotide_remote::RemoteProcessSessionReader>,
+    predicate: impl Fn(&serde_json::Value) -> bool,
+) -> serde_json::Value {
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt};
+    loop {
+        let mut length = None;
+        loop {
+            let mut header = String::new();
+            assert_ne!(
+                reader.read_line(&mut header).await.unwrap(),
+                0,
+                "LSP stdout closed before response"
+            );
+            if header == "\r\n" {
+                break;
+            }
+            if let Some(value) = header.strip_prefix("Content-Length:") {
+                length = Some(value.trim().parse::<usize>().unwrap());
+            }
+        }
+        let mut body = vec![0; length.expect("LSP Content-Length")];
+        reader.read_exact(&mut body).await.unwrap();
+        let message = serde_json::from_slice(&body).unwrap();
+        if predicate(&message) {
+            return message;
+        }
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn wsl_v5_fixture_exercises_path_mapping_and_watch_availability() {

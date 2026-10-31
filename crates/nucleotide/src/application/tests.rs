@@ -3182,6 +3182,241 @@ async fn maintenance_handles_lsp_initialized_through_application_event(
 }
 
 #[gpui::test]
+fn remote_documents_open_once_across_initialization_and_open_events(cx: &mut gpui::TestAppContext) {
+    use futures_util::StreamExt;
+    use helix_lsp::{ExternalTransport, ExternalTransportProvider};
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+
+    struct TransportProvider(std::sync::Mutex<Option<ExternalTransport>>);
+    impl ExternalTransportProvider for TransportProvider {
+        fn provide(
+            &self,
+            _: &str,
+            _: &[String],
+            _: &Path,
+            _: &HashMap<String, String>,
+        ) -> helix_lsp::Result<Option<ExternalTransport>> {
+            Ok(self.0.lock().unwrap().take())
+        }
+    }
+
+    async fn read_message(reader: &mut BufReader<tokio::io::DuplexStream>) -> serde_json::Value {
+        let mut length = None;
+        loop {
+            let mut line = String::new();
+            assert_ne!(reader.read_line(&mut line).await.unwrap(), 0);
+            if line == "\r\n" {
+                break;
+            }
+            if let Some(value) = line.strip_prefix("Content-Length: ") {
+                length = Some(value.trim().parse::<usize>().unwrap());
+            }
+        }
+        let mut body = vec![0; length.unwrap()];
+        reader.read_exact(&mut body).await.unwrap();
+        serde_json::from_slice(&body).unwrap()
+    }
+
+    // Do not poll the shared test runtime: it may retain GPUI tasks from other tests.
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let app = new_test_application(cx);
+    let root = PathBuf::from("ssh://me@example.com/home/me/project");
+    let path = root.join("main.c");
+    let context = helix_lsp::LspWorkspaceContext::remote(
+        PathBuf::from("/home/me/project"),
+        PathBuf::from("/home/me/project"),
+    );
+    let (stdin, server_stdin) = tokio::io::duplex(65536);
+    let (mut server_stdout, stdout) = tokio::io::duplex(65536);
+    let provider = TransportProvider(std::sync::Mutex::new(Some(ExternalTransport {
+        stdin: Box::new(stdin),
+        stdout: Box::new(stdout),
+        stderr: Box::new(tokio::io::empty()),
+        lifecycle_guard: Box::new(()),
+    })));
+    let mut reader = BufReader::new(server_stdin);
+    let (server_id, first_doc_id) = app.update(cx, |app, _cx| {
+        let _runtime = runtime.enter();
+        helix_event::register_event::<helix_view::events::LanguageServerInitialized>();
+        helix_event::register_event::<helix_view::events::DocumentDidChange>();
+        helix_event::register_event::<helix_view::events::DocumentDidClose>();
+        helix_view::handlers::lsp::register_hooks(&app.editor.handlers);
+        app.set_workspace_backend(Arc::new(RemoteIdentityLocalBackend));
+        app.project_directory = Some(root.clone());
+        let loader = syntax::Loader::new(
+            helix_loader::config::default_lang_config()
+                .try_into()
+                .unwrap(),
+        )
+        .unwrap();
+        let loader = Arc::new(loader);
+        let language = loader
+            .language_configs()
+            .find(|language| language.language_id == "c")
+            .unwrap();
+        app.editor.syn_loader.store(loader.clone());
+        let doc_id = app.editor.new_file(Action::VerticalSplit);
+        let doc = app.editor.document_mut(doc_id).unwrap();
+        doc.set_path(Some(&path));
+        doc.set_language_by_language_id("c", &loader).unwrap();
+        super::set_remote_document_lsp_url(doc, &path);
+        let client = app
+            .editor
+            .language_servers
+            .get_named_with_workspace_context_and_transport_provider(
+                language,
+                "clangd",
+                None,
+                &[],
+                false,
+                Some(&context),
+                Some(&provider),
+            )
+            .unwrap()
+            .unwrap();
+        assert!(!client.is_initialized());
+        assert!(
+            app.editor
+                .ensure_document_tracked_by_language_server(doc_id, client.id())
+        );
+        (client.id(), doc_id)
+    });
+
+    // Keep initialization pending while the first document is attached.
+    let initialize = runtime.block_on(async {
+        let request = tokio::time::timeout(Duration::from_secs(5), read_message(&mut reader))
+            .await
+            .unwrap();
+        assert_eq!(request["method"], "initialize");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), read_message(&mut reader))
+                .await
+                .is_err(),
+            "didOpen must not reach an uninitialized server"
+        );
+        request
+    });
+    runtime.block_on(async {
+        let response = serde_json::to_vec(&serde_json::json!({
+            "jsonrpc": "2.0", "id": initialize["id"], "result": {"capabilities": {}}
+        }))
+        .unwrap();
+        server_stdout
+            .write_all(format!("Content-Length: {}\r\n\r\n", response.len()).as_bytes())
+            .await
+            .unwrap();
+        server_stdout.write_all(&response).await.unwrap();
+    });
+    let second_doc_id = app.update(cx, |app, _cx| {
+        let (id, call) = runtime.block_on(async {
+            tokio::time::timeout(
+                Duration::from_secs(5),
+                app.editor.language_servers.incoming.next(),
+            )
+            .await
+            .unwrap()
+            .unwrap()
+        });
+        assert_eq!(id, server_id);
+        assert!(
+            app.editor
+                .language_server_by_id(id)
+                .unwrap()
+                .is_initialized()
+        );
+
+        // Reproduce the real race: the transport is initialized, but the frontend
+        // has not handled its initialization event when another attachment arrives.
+        let _runtime = runtime.enter();
+        let loader = app.editor.syn_loader.load_full();
+        let doc_id = app.editor.new_file(Action::VerticalSplit);
+        let doc = app.editor.document_mut(doc_id).unwrap();
+        doc.set_path(Some(&root.join("during-init.c")));
+        doc.set_language_by_language_id("c", &loader).unwrap();
+        super::set_remote_document_lsp_url(doc, &root.join("during-init.c"));
+        assert!(
+            app.editor
+                .ensure_document_tracked_by_language_server(doc_id, id)
+        );
+        app.handle_language_server_message(call, id);
+        doc_id
+    });
+    runtime.block_on(async {
+        let mut expected = std::collections::HashSet::from([
+            "file:///home/me/project/main.c".to_string(),
+            "file:///home/me/project/during-init.c".to_string(),
+        ]);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !expected.is_empty() {
+                let opened = read_message(&mut reader).await;
+                if opened["method"] == "initialized" {
+                    continue;
+                }
+                assert_eq!(opened["method"], "textDocument/didOpen");
+                assert_eq!(opened["params"]["textDocument"]["languageId"], "c");
+                let uri = opened["params"]["textDocument"]["uri"].as_str().unwrap();
+                assert!(
+                    expected.remove(uri),
+                    "duplicate or unexpected didOpen: {uri}"
+                );
+            }
+        })
+        .await
+        .expect("initialized server must receive each attached document once");
+    });
+
+    // Helix commands open documents without the native frontend's URI/attachment setup.
+    // Delayed events for existing documents must not reopen them, while a new
+    // document opened against an already-ready server must be opened immediately.
+    app.update(cx, |app, cx| {
+        let _runtime = runtime.enter();
+        for doc_id in [first_doc_id, second_doc_id] {
+            app.handle_helix_event(
+                &event_bridge::HelixEvent::DocumentOpened { doc_id },
+                runtime.handle(),
+                cx,
+            );
+        }
+        let loader = app.editor.syn_loader.load_full();
+        let doc_id = app.editor.new_file(Action::VerticalSplit);
+        let doc = app.editor.document_mut(doc_id).unwrap();
+        doc.set_path(Some(&root.join("second.c")));
+        doc.set_language_by_language_id("c", &loader).unwrap();
+        app.handle_helix_event(
+            &event_bridge::HelixEvent::DocumentOpened { doc_id },
+            runtime.handle(),
+            cx,
+        );
+        app.handle_helix_event(
+            &event_bridge::HelixEvent::DocumentOpened { doc_id },
+            runtime.handle(),
+            cx,
+        );
+    });
+    let opened = runtime.block_on(async {
+        tokio::time::timeout(Duration::from_secs(2), read_message(&mut reader))
+            .await
+            .expect("Helix-opened document must reach the remote language server")
+    });
+    assert_eq!(opened["method"], "textDocument/didOpen");
+    assert_eq!(
+        opened["params"]["textDocument"]["uri"],
+        "file:///home/me/project/second.c"
+    );
+    runtime.block_on(async {
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), read_message(&mut reader))
+                .await
+                .is_err(),
+            "startup and delayed/repeated DocumentOpened events must not send duplicate opens"
+        );
+    });
+}
+
+#[gpui::test]
 async fn lsp_progress_entries_preserve_active_server_output_and_omit_idle_servers(
     cx: &mut gpui::TestAppContext,
 ) {
