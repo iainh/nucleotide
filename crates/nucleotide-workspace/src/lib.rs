@@ -1410,7 +1410,18 @@ pub struct WorkspaceWatchBatch {
 pub struct WorkspaceWatch {
     pub watch_id: u64,
     pub event_stream_id: u64,
-    receiver: Arc<Mutex<mpsc::Receiver<WorkspaceWatchBatch>>>,
+    receiver: Arc<WorkspaceWatchReceiver>,
+}
+
+struct WorkspaceWatchReceiver {
+    batches: Mutex<mpsc::Receiver<WorkspaceWatchBatch>>,
+    cancellation: WorkspaceCancellationToken,
+}
+
+impl Drop for WorkspaceWatchReceiver {
+    fn drop(&mut self) {
+        self.cancellation.cancel();
+    }
 }
 
 impl WorkspaceWatch {
@@ -1422,12 +1433,21 @@ impl WorkspaceWatch {
         Self {
             watch_id,
             event_stream_id,
-            receiver: Arc::new(Mutex::new(receiver)),
+            receiver: Arc::new(WorkspaceWatchReceiver {
+                batches: Mutex::new(receiver),
+                cancellation: WorkspaceCancellationToken::new(),
+            }),
         }
     }
 
+    /// Cancels when the final consumer clone is dropped. Producers can retain
+    /// this token without keeping the consumer alive, including on quiet roots.
+    pub fn cancellation(&self) -> WorkspaceCancellationToken {
+        self.receiver.cancellation.clone()
+    }
+
     pub fn recv(&self) -> std::result::Result<WorkspaceWatchBatch, mpsc::RecvError> {
-        match self.receiver.lock() {
+        match self.receiver.batches.lock() {
             Ok(receiver) => receiver.recv(),
             Err(_) => Err(mpsc::RecvError),
         }
@@ -1437,14 +1457,14 @@ impl WorkspaceWatch {
         &self,
         timeout: Duration,
     ) -> std::result::Result<WorkspaceWatchBatch, mpsc::RecvTimeoutError> {
-        match self.receiver.lock() {
+        match self.receiver.batches.lock() {
             Ok(receiver) => receiver.recv_timeout(timeout),
             Err(_) => Err(mpsc::RecvTimeoutError::Disconnected),
         }
     }
 
     pub fn try_recv(&self) -> std::result::Result<WorkspaceWatchBatch, mpsc::TryRecvError> {
-        match self.receiver.lock() {
+        match self.receiver.batches.lock() {
             Ok(receiver) => receiver.try_recv(),
             Err(_) => Err(mpsc::TryRecvError::Disconnected),
         }
@@ -1964,21 +1984,28 @@ impl PathMappedWorkspaceBackend {
     fn map_watch_to_display(&self, watch: WorkspaceWatch) -> WorkspaceWatch {
         let mapping = self.mapping.clone();
         let (sender, receiver) = mpsc::channel();
-        let watch_id = watch.watch_id;
-        let event_stream_id = watch.event_stream_id;
+        let mapped = WorkspaceWatch::new(watch.watch_id, watch.event_stream_id, receiver);
+        let cancellation = mapped.cancellation();
         std::thread::Builder::new()
             .name("nucleotide-workspace-watch-map".to_string())
             .spawn(move || {
-                while let Ok(mut batch) = watch.recv() {
-                    PathMappedWorkspaceBackend::map_watch_batch_with_mapping(&mapping, &mut batch);
-                    let mapped = batch;
-                    if sender.send(mapped).is_err() {
-                        break;
+                while !cancellation.is_cancelled() {
+                    match watch.recv_timeout(Duration::from_millis(100)) {
+                        Ok(mut batch) => {
+                            PathMappedWorkspaceBackend::map_watch_batch_with_mapping(
+                                &mapping, &mut batch,
+                            );
+                            if sender.send(batch).is_err() {
+                                break;
+                            }
+                        }
+                        Err(mpsc::RecvTimeoutError::Timeout) => {}
+                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
                     }
                 }
             })
             .ok();
-        WorkspaceWatch::new(watch_id, event_stream_id, receiver)
+        mapped
     }
 }
 

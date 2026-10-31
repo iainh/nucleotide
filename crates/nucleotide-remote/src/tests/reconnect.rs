@@ -790,9 +790,9 @@ fn reconnecting_v5_watch_restores_desired_roots_behind_resync_barrier() {
         PathBuf::from("/workspace/after-barrier")
     );
 
-    let stop_client = Arc::clone(&client);
-    let stop_watch_id = watch.watch_id;
-    let stop = std::thread::spawn(move || stop_client.stop_watch(stop_watch_id));
+    // Dropping the last consumer after restoration must stop the replacement
+    // subscription, not the old transport's physical watch with a different ID.
+    drop(watch);
     let stop_stream =
         wait_for_v5_request_stream_after(&replacement_output, "watch.stop", resync_stream);
     let stop_request: protocol_v5::WatchStop =
@@ -803,7 +803,6 @@ fn reconnecting_v5_watch_restores_desired_roots_behind_resync_barrier() {
         "watch.stop",
         Vec::new(),
     )));
-    stop.join().unwrap().unwrap();
 
     replacement_input.close();
     std::thread::sleep(Duration::from_millis(250));

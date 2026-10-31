@@ -203,22 +203,30 @@ pub(crate) fn clear_v5_directory_cache<W>(shared: &RemoteWorkspaceV5Shared<W>) {
 pub(crate) fn workspace_watch_from_v5(
     watch: RemoteWorkspaceV5Watch,
     workspace_root: PathBuf,
-) -> WorkspaceWatch {
+    cleanup: impl FnOnce() + Send + 'static,
+) -> std::result::Result<WorkspaceWatch, RemoteClientError> {
     let (sender, receiver) = mpsc::sync_channel(V5_WATCH_DELIVERY_CAPACITY);
-    let watch_id = watch.watch_id;
-    let event_stream_id = watch.event_stream_id;
+    let mapped = WorkspaceWatch::new(watch.watch_id, watch.event_stream_id, receiver);
+    let cancellation = mapped.cancellation();
     std::thread::Builder::new()
         .name("nucleotide-v5-watch-map".to_string())
         .spawn(move || {
-            while let Ok(batch) = watch.recv() {
-                let batch = workspace_watch_batch_from_v5(batch, &workspace_root);
-                if sender.send(batch).is_err() {
-                    break;
+            while !cancellation.is_cancelled() {
+                match watch.recv_timeout(Duration::from_millis(100)) {
+                    Ok(batch) => {
+                        let batch = workspace_watch_batch_from_v5(batch, &workspace_root);
+                        if sender.send(batch).is_err() {
+                            break;
+                        }
+                    }
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 }
             }
+            cleanup();
         })
-        .ok();
-    WorkspaceWatch::new(watch_id, event_stream_id, receiver)
+        .map_err(RemoteClientError::Io)?;
+    Ok(mapped)
 }
 
 pub(crate) fn workspace_watch_update_from_v5(

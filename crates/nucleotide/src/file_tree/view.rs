@@ -763,6 +763,7 @@ impl FileTreeView {
         self.remote_file_watch_roots = roots.iter().cloned().collect();
         self.remote_file_watch_last_sequence = 0;
         self.invalidate_remote_file_watch_refreshes();
+        let starting_epoch = self.remote_file_watch_epoch;
         let workspace_backend = self.workspace_backend.clone();
         debug!(
             root_path = %self.tree.root_path().display(),
@@ -783,6 +784,15 @@ impl FileTreeView {
             let Some(entity) = this.upgrade() else {
                 return;
             };
+            if !entity.update(cx, |view, _cx| {
+                view.should_watch_remote_filesystem()
+                    && view.remote_file_watch_active
+                    && view.remote_file_watch_epoch == starting_epoch
+            }) {
+                // Disabling or replacing a watch while start was pending must
+                // also dispose of a late successful subscription.
+                return;
+            }
 
             let watch = match watch_result {
                 Ok(Some(watch)) => {
@@ -820,13 +830,26 @@ impl FileTreeView {
                     return;
                 }
             };
+            // Only the UI owns the view; the detached receiver must not keep
+            // it alive while waiting on an otherwise idle remote subscription.
+            drop(entity);
 
             loop {
+                let Some(entity) = this.upgrade() else {
+                    break;
+                };
+                if !entity.update(cx, |view, _cx| {
+                    view.should_watch_remote_filesystem()
+                        && view.remote_file_watch_id == Some(watch.watch_id)
+                }) {
+                    break;
+                }
+                drop(entity);
                 let watch_for_recv = watch.clone();
                 let batch_result = cx
                     .background_executor()
                     .spawn(async move {
-                        watch_for_recv.recv_timeout(std::time::Duration::from_secs(30))
+                        watch_for_recv.recv_timeout(std::time::Duration::from_millis(500))
                     })
                     .await;
 
@@ -1138,6 +1161,7 @@ impl FileTreeView {
 
                     Some(view.remote_poll_interval())
                 });
+                drop(entity);
 
                 let Some(interval) = interval else {
                     break;
@@ -1170,6 +1194,7 @@ impl FileTreeView {
                         view.remote_file_watch_epoch,
                     ))
                 });
+                drop(entity);
 
                 let Some((workspace_backend, directories, watch_epoch)) = poll_plan else {
                     break;
@@ -2988,8 +3013,10 @@ mod tests {
         }
     }
 
-    #[derive(Debug)]
-    struct RemoteWatchTestBackend;
+    #[derive(Default)]
+    struct RemoteWatchTestBackend {
+        watch: std::sync::Mutex<Option<nucleotide_workspace::WorkspaceWatch>>,
+    }
 
     impl RemoteWatchTestBackend {
         fn unsupported<T>(
@@ -3115,6 +3142,13 @@ mod tests {
             spec: ProcessSpec,
         ) -> nucleotide_workspace::Result<ProcessOutput> {
             self.unsupported("run process", &spec.cwd)
+        }
+
+        async fn start_watch(
+            &self,
+            _request: WorkspaceWatchRequest,
+        ) -> nucleotide_workspace::Result<Option<nucleotide_workspace::WorkspaceWatch>> {
+            Ok(self.watch.lock().unwrap().take())
         }
     }
 
@@ -3305,6 +3339,55 @@ mod tests {
     }
 
     #[gpui::test]
+    async fn remote_watch_is_disposed_when_disabled_or_view_closes(cx: &mut TestAppContext) {
+        for action in ["disable_pending", "disable_active", "close_view"] {
+            let temp = tempfile::tempdir().unwrap();
+            let view = cx.new(|cx| FileTreeView::new(temp.path().into(), test_config(), cx));
+            cx.run_until_parked();
+            let (_sender, receiver) = std::sync::mpsc::channel();
+            let watch = nucleotide_workspace::WorkspaceWatch::new(7, 9, receiver);
+            let cancellation = watch.cancellation();
+            view.update(cx, |view, cx| {
+                view.workspace_backend = Arc::new(RemoteWatchTestBackend {
+                    watch: std::sync::Mutex::new(Some(watch)),
+                });
+                let mut config = test_config();
+                config.watch_filesystem = true;
+                view.set_config(config, cx);
+            });
+            if action != "disable_pending" {
+                for _ in 0..100 {
+                    if view.read_with(cx, |view, _cx| view.remote_file_watch_id.is_some()) {
+                        break;
+                    }
+                    assert!(cx.executor().tick(), "watch never started: {action}");
+                }
+                assert!(view.read_with(cx, |view, _cx| view.remote_file_watch_id.is_some()));
+            }
+            if action != "close_view" {
+                view.update(cx, |view, cx| view.set_config(test_config(), cx));
+            }
+            let retained_view = if action == "close_view" {
+                drop(view);
+                None
+            } else {
+                Some(view)
+            };
+            for _ in 0..100 {
+                if cancellation.is_cancelled() {
+                    break;
+                }
+                if !cx.executor().tick() {
+                    break;
+                }
+            }
+            assert!(cancellation.is_cancelled(), "watch survived {action}");
+            drop(retained_view);
+            cx.run_until_parked();
+        }
+    }
+
+    #[gpui::test]
     async fn remote_watch_disconnect_restarts_polling_at_fast_interval(cx: &mut TestAppContext) {
         let temp_dir = tempfile::tempdir().unwrap();
         let root_path = temp_dir.path().to_path_buf();
@@ -3314,7 +3397,7 @@ mod tests {
         let view = cx.new(|cx| FileTreeView::new(root_path.clone(), config, cx));
 
         view.update(cx, |view, cx| {
-            view.workspace_backend = std::sync::Arc::new(RemoteWatchTestBackend);
+            view.workspace_backend = std::sync::Arc::new(RemoteWatchTestBackend::default());
             view.start_remote_file_polling(cx);
             let initial_generation = view.remote_file_polling_generation;
             view.remote_file_poll_idle_ticks = REMOTE_FILE_TREE_IDLE_BACKOFF_AFTER_POLLS + 3;
@@ -3781,7 +3864,7 @@ mod tests {
         let view = cx.new(|cx| FileTreeView::new(root_path.clone(), config, cx));
 
         view.update(cx, |view, _cx| {
-            view.workspace_backend = std::sync::Arc::new(RemoteWatchTestBackend);
+            view.workspace_backend = std::sync::Arc::new(RemoteWatchTestBackend::default());
             view.remote_file_watch_active = true;
             view.remote_file_watch_id = Some(1);
             let expanded_root = view.tree.expanded_directory_paths()[0].clone();
@@ -3851,7 +3934,7 @@ mod tests {
         let view = cx.new(|cx| FileTreeView::new(root_path.clone(), config, cx));
 
         view.update(cx, |view, cx| {
-            view.workspace_backend = std::sync::Arc::new(RemoteWatchTestBackend);
+            view.workspace_backend = std::sync::Arc::new(RemoteWatchTestBackend::default());
             view.remote_file_watch_active = true;
             view.remote_file_watch_id = Some(7);
             let old_epoch = view.remote_file_watch_epoch;

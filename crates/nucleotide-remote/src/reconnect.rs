@@ -327,7 +327,7 @@ pub(crate) struct ReconnectingWatchRegistration {
     physical_watch_id: Mutex<Option<u64>>,
     operation_gate: Mutex<()>,
     next_sequence: AtomicU64,
-    stopped: AtomicBool,
+    stopped: WorkspaceCancellationToken,
     sender: mpsc::SyncSender<WorkspaceWatchBatch>,
 }
 
@@ -718,13 +718,14 @@ where
             ));
         }
         let (sender, receiver) = mpsc::sync_channel(V5_WATCH_DELIVERY_CAPACITY);
+        let watch = WorkspaceWatch::new(logical_watch_id, logical_watch_id, receiver);
         let registration = Arc::new(ReconnectingWatchRegistration {
             logical_watch_id,
             desired: Mutex::new(request),
             physical_watch_id: Mutex::new(Some(physical_watch.watch_id)),
             operation_gate: Mutex::new(()),
             next_sequence: AtomicU64::new(1),
-            stopped: AtomicBool::new(false),
+            stopped: watch.cancellation(),
             sender,
         });
         self.watches
@@ -756,11 +757,7 @@ where
             return Err(RemoteClientError::Io(source));
         }
 
-        Ok(WorkspaceWatch::new(
-            logical_watch_id,
-            logical_watch_id,
-            receiver,
-        ))
+        Ok(watch)
     }
 
     fn watch_registration(
@@ -793,7 +790,7 @@ where
         let _operation = registration.operation_gate.lock().map_err(|_| {
             RemoteClientError::Protocol("remote watch operation lock is poisoned".to_string())
         })?;
-        if registration.stopped.load(Ordering::Acquire) || self.closed.load(Ordering::Acquire) {
+        if registration.stopped.is_cancelled() || self.closed.load(Ordering::Acquire) {
             return Err(RemoteClientError::Disconnected);
         }
 
@@ -818,7 +815,7 @@ where
             ));
         };
 
-        if registration.stopped.load(Ordering::Acquire) || self.closed.load(Ordering::Acquire) {
+        if registration.stopped.is_cancelled() || self.closed.load(Ordering::Acquire) {
             let _ = self.stop_physical_watch_with_cancellation(watch.watch_id, &cancellation);
             return Err(RemoteClientError::Disconnected);
         }
@@ -833,7 +830,7 @@ where
 
         let barrier_deadline = Instant::now() + V5_REQUEST_CONTROL_DEADLINE;
         loop {
-            if registration.stopped.load(Ordering::Acquire) || self.closed.load(Ordering::Acquire) {
+            if registration.stopped.is_cancelled() || self.closed.load(Ordering::Acquire) {
                 let _ = self.stop_physical_watch_with_cancellation(watch.watch_id, &cancellation);
                 return Err(RemoteClientError::Disconnected);
             }
@@ -1296,7 +1293,7 @@ where
             .map(|(_, registration)| registration)
             .collect::<Vec<_>>();
         for registration in registrations {
-            registration.stopped.store(true, Ordering::Release);
+            registration.stopped.cancel();
         }
         let current = self
             .client
@@ -1378,7 +1375,7 @@ where
         let _operation = registration.operation_gate.lock().map_err(|_| {
             RemoteClientError::Protocol("remote watch operation lock is poisoned".to_string())
         })?;
-        if registration.stopped.load(Ordering::Acquire) {
+        if registration.stopped.is_cancelled() {
             return Err(RemoteClientError::Disconnected);
         }
         {
@@ -1446,7 +1443,7 @@ where
         let Some(registration) = self.remove_watch_registration(watch_id) else {
             return self.stop_physical_watch_with_cancellation(watch_id, cancellation);
         };
-        registration.stopped.store(true, Ordering::Release);
+        registration.stopped.cancel();
         let _operation = registration.operation_gate.lock().map_err(|_| {
             RemoteClientError::Protocol("remote watch operation lock is poisoned".to_string())
         })?;
@@ -1475,7 +1472,7 @@ pub(crate) fn run_reconnecting_workspace_watch<C>(
 {
     let mut retry_delay = RECONNECTING_WATCH_RETRY_MIN_DELAY;
     'watch: loop {
-        if registration.stopped.load(Ordering::Acquire) || client.closed.load(Ordering::Acquire) {
+        if registration.stopped.is_cancelled() || client.closed.load(Ordering::Acquire) {
             break;
         }
         match physical_watch.recv_timeout(RECONNECTING_WATCH_POLL_INTERVAL) {
@@ -1483,7 +1480,7 @@ pub(crate) fn run_reconnecting_workspace_watch<C>(
                 batch.watch_id = registration.logical_watch_id;
                 batch.sequence = registration.next_sequence.fetch_add(1, Ordering::AcqRel);
                 if registration.sender.send(batch).is_err() {
-                    registration.stopped.store(true, Ordering::Release);
+                    registration.stopped.cancel();
                     break;
                 }
                 retry_delay = RECONNECTING_WATCH_RETRY_MIN_DELAY;
@@ -1495,8 +1492,7 @@ pub(crate) fn run_reconnecting_workspace_watch<C>(
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
                 loop {
-                    if registration.stopped.load(Ordering::Acquire)
-                        || client.closed.load(Ordering::Acquire)
+                    if registration.stopped.is_cancelled() || client.closed.load(Ordering::Acquire)
                     {
                         break 'watch;
                     }
@@ -1506,7 +1502,7 @@ pub(crate) fn run_reconnecting_workspace_watch<C>(
                             resync_batch.sequence =
                                 registration.next_sequence.fetch_add(1, Ordering::AcqRel);
                             if registration.sender.send(resync_batch).is_err() {
-                                registration.stopped.store(true, Ordering::Release);
+                                registration.stopped.cancel();
                                 break 'watch;
                             }
                             physical_watch = watch;
@@ -1522,7 +1518,7 @@ pub(crate) fn run_reconnecting_workspace_watch<C>(
                             );
                             let retry_at = Instant::now() + retry_delay;
                             while Instant::now() < retry_at {
-                                if registration.stopped.load(Ordering::Acquire)
+                                if registration.stopped.is_cancelled()
                                     || client.closed.load(Ordering::Acquire)
                                 {
                                     break 'watch;
@@ -1542,7 +1538,7 @@ pub(crate) fn run_reconnecting_workspace_watch<C>(
                                 logical_watch_id = registration.logical_watch_id,
                                 "Remote watch restoration failed permanently"
                             );
-                            registration.stopped.store(true, Ordering::Release);
+                            registration.stopped.cancel();
                             break 'watch;
                         }
                     }
