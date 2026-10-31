@@ -867,7 +867,8 @@ impl Tab {
         let icon_color = Tab::content_icon_color(tokens);
         let vcs_status = Tab::icon_vcs_status(git_status, diagnostic_severity);
         let icon = if let Some(ref path) = file_path {
-            VcsIcon::from_path(path, false)
+            // Document tabs are files; do not probe the filesystem during rendering.
+            VcsIcon::from_extension(path.extension().and_then(|extension| extension.to_str()))
                 .size(TAB_SLOT_ICON_SIZE)
                 .text_color(icon_color)
                 .vcs_status(vcs_status)
