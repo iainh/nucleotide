@@ -3658,6 +3658,11 @@ impl WatchGenerationTracker {
         self.directory_generations.get(path).copied().unwrap_or(0)
     }
 
+    /// Release subscription-local sequencing while retaining connection-wide cache generations.
+    pub(crate) fn remove_watch(&mut self, watch_id: u64) {
+        self.next_sequence_by_watch.remove(&watch_id);
+    }
+
     pub fn build_batch<I, P>(
         &mut self,
         watch_id: u64,
@@ -8058,6 +8063,21 @@ mod tests {
         assert_eq!(next.directory_generations[0].generation, 2);
         assert!(next.overflow);
         assert!(next.resync_required);
+    }
+
+    #[test]
+    fn watch_generation_tracker_removes_only_subscription_sequence() {
+        let mut tracker = WatchGenerationTracker::default();
+        for watch_id in 1..=8 {
+            tracker
+                .build_batch(watch_id, ["src"], Vec::new(), false, false)
+                .unwrap();
+            assert_eq!(tracker.next_sequence_by_watch.len(), 1);
+            tracker.remove_watch(watch_id);
+            tracker.remove_watch(watch_id);
+            assert!(tracker.next_sequence_by_watch.is_empty());
+            assert_eq!(tracker.generation("src"), watch_id);
+        }
     }
 
     #[test]

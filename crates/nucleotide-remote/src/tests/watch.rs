@@ -1,6 +1,151 @@
 // Service-side watch registration, delivery, expiry, and overflow tests.
 
 #[test]
+fn v5_service_watch_reset_releases_subscription_and_preserves_end_half_close() {
+    v5_watch_reset_lifecycle(false);
+}
+
+#[test]
+fn v5_concurrent_service_watch_reset_releases_subscription_and_preserves_end_half_close() {
+    v5_watch_reset_lifecycle(true);
+}
+
+fn v5_watch_reset_lifecycle(concurrent: bool) {
+    let temp = tempfile::tempdir().unwrap();
+    let mut frames = Vec::new();
+    for cycle in 0..4 {
+        let request_id = 1 + cycle * 10;
+        let watch_id = cycle + 1;
+        let event_stream_id = watch_id * 2;
+        frames.extend(v5_protobuf_request_frames(
+            request_id,
+            "watch.start",
+            &protocol_v5::WatchStart::expanded_dirs(["."]),
+        ));
+        // END closes only the unused client sending half, not the subscription.
+        frames.push(protocol_v5::Frame::new(
+            protocol_v5::FrameType::EndStream,
+            event_stream_id,
+        ));
+        frames.extend(v5_protobuf_request_frames(
+            request_id + 2,
+            "watch.resync",
+            &protocol_v5::WatchResync {
+                watch_id,
+                roots: Vec::new(),
+            },
+        ));
+        frames.push(protocol_v5::reset_stream_frame(
+            event_stream_id,
+            protocol_v5::RESET_CANCELLED,
+            "watch receiver disposed",
+        ));
+        frames.extend(v5_protobuf_request_frames(
+            request_id + 4,
+            "watch.update",
+            &protocol_v5::WatchUpdate {
+                watch_id,
+                add_roots: Vec::new(),
+                remove_roots: Vec::new(),
+            },
+        ));
+        // A stop after reset must still acknowledge, without closing a dead stream.
+        frames.extend(v5_protobuf_request_frames(
+            request_id + 6,
+            "watch.stop",
+            &protocol_v5::WatchStop { watch_id },
+        ));
+    }
+    // Normal stop remains usable on the same connection after repeated resets.
+    frames.extend(v5_protobuf_request_frames(
+        41,
+        "watch.start",
+        &protocol_v5::WatchStart::expanded_dirs(["."]),
+    ));
+    frames.extend(v5_protobuf_request_frames(
+        43,
+        "watch.stop",
+        &protocol_v5::WatchStop { watch_id: 5 },
+    ));
+    let input = BlockingRead::default();
+    input.push(v5_client_input(Vec::new()));
+    let output = SharedWrite::default();
+    let service = WorkspaceService::new(LocalWorkspaceBackend, temp.path().to_path_buf()).unwrap();
+    let info = protocol_v5::ServerHandshakeInfo::current(temp.path().display().to_string());
+    let service_input = input.clone();
+    let service_output = output.clone();
+    let worker = std::thread::spawn(move || {
+        let mut io = protocol_v5::FramedIo::new(service_input, service_output);
+        if concurrent {
+            service.serve_v5_concurrent(io, &info)
+        } else {
+            service.serve_v5(&mut io, &info)
+        }
+    });
+    let mut pending = Vec::new();
+    for frame in frames {
+        if frame.frame_type == protocol_v5::FrameType::ResetStream {
+            input.push(encode_v5_sequenced_frames(std::mem::take(&mut pending)));
+            // Observe the END control's batch before RESET can invalidate queued output.
+            let started = Instant::now();
+            while find_v5_watch_batch(&output, frame.stream_id).is_none()
+                && !worker.is_finished()
+                && started.elapsed() < Duration::from_secs(5)
+            {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+        pending.push(frame);
+    }
+    input.push(encode_v5_sequenced_frames(pending));
+    let started = Instant::now();
+    loop {
+        let done = read_v5_complete_frames(output.bytes()).iter().any(|frame| {
+            frame.stream_id == 43 && frame.frame_type == protocol_v5::FrameType::EndStream
+        });
+        if done || worker.is_finished() || started.elapsed() > Duration::from_secs(5) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    input.close();
+    worker
+        .join()
+        .unwrap()
+        .expect("watch reset must not terminate the service");
+    let frames = read_v5_frames(output.bytes());
+    for cycle in 0..4 {
+        let request_id = 1 + cycle * 10;
+        let event_stream_id = (cycle + 1) * 2;
+        let (_, error) = decode_v5_protobuf_service_response::<protocol_v5::WatchUpdateResponse>(
+            &frames,
+            request_id + 4,
+        );
+        assert_eq!(
+            error.expect("reset must remove watch ownership").code,
+            "not_found"
+        );
+        assert!(
+            find_v5_watch_batch_in_frames(&frames, event_stream_id).is_some(),
+            "END must preserve the server event-sending half"
+        );
+        assert!(frames.iter().any(|frame| frame.stream_id == request_id + 6
+            && frame.frame_type == protocol_v5::FrameType::EndStream));
+        assert!(
+            !frames.iter().any(|frame| frame.stream_id == event_stream_id
+                && frame.frame_type == protocol_v5::FrameType::EndStream)
+        );
+    }
+    for stream_id in [10, 43] {
+        assert!(
+            frames.iter().any(|frame| frame.stream_id == stream_id
+                && frame.frame_type == protocol_v5::FrameType::EndStream),
+            "normal stop must finish the event stream and acknowledge on the retained connection"
+        );
+    }
+}
+
+#[test]
 fn v5_service_watch_start_returns_degraded_poll_event_stream() {
     let temp = tempfile::tempdir().unwrap();
     std::fs::create_dir(temp.path().join("src")).unwrap();
@@ -175,6 +320,32 @@ fn v5_service_watch_resync_emits_resync_batch() {
     assert!(batch.resync_required);
     assert!(!batch.overflow);
     assert_eq!(batch.directory_generations[0].path, ".");
+}
+
+#[test]
+fn v5_watch_registry_stop_and_reset_prune_sequences_but_retain_directory_generations() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut watches = V5WatchRegistry::default();
+    watches.start(2, 4, vec![".".to_string()], 50, 500, temp.path());
+    for cycle in 1..=8 {
+        // Reusing an ID here exposes stale sequence metadata that monotonic IDs conceal.
+        watches.start(1, 2, vec![".".to_string()], 50, 500, temp.path());
+        watches.resync(1, None).unwrap();
+        let batches = watches.poll_due(temp.path()).unwrap();
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].1.sequence, 1);
+        assert_eq!(batches[0].1.directory_generations[0].generation, cycle);
+        if cycle % 2 == 0 {
+            watches.stop(1).unwrap();
+        } else {
+            watches.stop_event_stream(2);
+        }
+        watches.stop_event_stream(2);
+        assert!(!watches.subscriptions.contains_key(&1));
+        assert!(watches.subscriptions.contains_key(&2));
+    }
+    watches.stop(2).unwrap();
+    assert!(!watches.has_active_watches());
 }
 
 #[test]

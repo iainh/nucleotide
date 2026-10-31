@@ -125,7 +125,21 @@ impl V5WatchRegistry {
     }
 
     pub(crate) fn stop(&mut self, watch_id: u64) -> Option<V5WatchSubscription> {
+        self.generations.remove_watch(watch_id);
         self.subscriptions.remove(&watch_id)
+    }
+
+    pub(crate) fn stop_event_stream(&mut self, event_stream_id: u64) {
+        let watch_id = self
+            .subscriptions
+            .iter()
+            .find_map(|(&watch_id, subscription)| {
+                (subscription.event_stream_id == event_stream_id).then_some(watch_id)
+            });
+        if let Some(watch_id) = watch_id {
+            // Dropping the subscription also releases its native watcher and pending batch.
+            self.stop(watch_id);
+        }
     }
 
     pub(crate) fn resync(
