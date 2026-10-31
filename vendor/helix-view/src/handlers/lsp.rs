@@ -390,6 +390,13 @@ impl Editor {
 
 pub fn register_hooks(_handlers: &Handlers) {
     register_hook!(move |event: &mut LanguageServerInitialized<'_>| {
+        let editor = &mut event.editor;
+        editor
+            .initialized_language_servers
+            .retain(|id| editor.language_servers.get_by_id(*id).is_some());
+        if !editor.initialized_language_servers.insert(event.server_id) {
+            return Ok(());
+        }
         let language_server = event.editor.language_server_by_id(event.server_id).unwrap();
 
         for doc in event

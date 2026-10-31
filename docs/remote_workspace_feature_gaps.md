@@ -12,10 +12,31 @@ The protocol redesign for the first two priority gaps is documented in [Nucleoti
 - The remote prompt supports saved project names, recent project completions, `save <name> <target>`, `forget <name>`, `reconnect` and `cancel`. The File menu also exposes Reconnect Remote and Cancel Remote Connection.
 - `nucleotide-remote serve` handles the main workspace backend operations: stat, directory listing, batched directory listing, ancestor lookup, create, rename, delete, copy, read, write, file search, text search, project environment capture, git head, git status and process execution.
 - When the connected service advertises `process_sessions_v1`, remote LSPs are service-owned piped sessions bound to that workspace connection. The client sends native remote `file://` URIs and uses the same native root for the process cwd and environment anchor. Older helpers retain the `nucleotide-remote lsp-proxy` compatibility path.
+- Documents attached while a language server starts are opened once through Helix's frontend initialization hook. Attachment waits for that hook, not just transport readiness, so a delayed initialization event cannot send a duplicate `didOpen`. Later attachments open immediately; repeated document-open events do not reopen an existing attachment. Helix document-open events also apply native remote URIs and attach servers, including for files opened with `:open` through a Windows WSL display path.
 - The LSP menu labels servers launched through remote transports as “Remote”. The status bar shows a remote-machine icon at normal widths and includes “Remote” in its tooltip and accessibility label at every width. This describes where the server runs, independently of its startup or activity status.
 - Remote terminals route through `nucleotide-remote terminal-proxy` and load the project environment on the target.
 - SSH and WSL helper deployment can auto-upload or remotely download Linux `nucleotide-remote` helpers for `x86_64` and `aarch64`. Both transports probe the target platform, use a versioned XDG cache path, verify protocol compatibility, and retry once with a fresh helper after a startup compatibility failure.
 - Remote file trees use backend directory loading and poll expanded directories for changes. Local file trees use host filesystem notifications.
+
+## Testing remote language servers
+
+On Linux, install `clangd` and run:
+
+```sh
+cargo test -p nucleotide-remote --locked --test v5_external_fixtures remote_lsp_clangd -- --ignored --nocapture
+```
+
+Set `NUCLEOTIDE_TEST_CLANGD` to an executable name or absolute path if it is not named `clangd`. The Linux remote-fixtures CI job installs clangd and runs this opt-in test.
+
+The test starts the real helper and real clangd through simulated SSH and WSL launchers. It checks a nested project with spaces in its path, remote-only executable lookup, cwd and environment overrides, initialization, diagnostics, unsaved edits, hover, definitions, completion, concurrent file reads, clean shutdown, missing-server errors, another launch after failure and cancellation cleanup. The simulated WSL case supplies Windows-joined cwd and environment-anchor paths to check normalization across the wire. It uses the public process-session launcher, not the GUI or Helix client, and does not exercise the legacy LSP proxy.
+
+To replace the simulated SSH launcher with real SSH, set `NUCLEOTIDE_TEST_SSH_CONFIG` to an OpenSSH config defining a `devbox` host. It must connect to the same Linux machine and user: the fixture creates temporary projects and uses the host-built helper at their local absolute paths. Use a dedicated loopback SSH service with key authentication; the test does not configure SSH or modify authorized keys.
+
+These Linux tests do **not** validate Windows-to-WSL execution. Passing them does not establish that Windows process creation, `wsl.exe`, UNC paths, Windows environment handling or GUI language-server registration work. The request codec separately tests POSIX serialization of Windows-shaped cwd and environment-anchor paths; path values must be checked after serialization, not just as host `PathBuf` values. Full WSL validation still requires a Windows host with WSL and a language server installed inside the selected distribution.
+
+The native Windows GUI has also been exercised against real WSL2 Ubuntu with Linux clangd: startup, UNC `:open`, diagnostics, hover, definition, unsaved edits, completion and close/reopen after reconnect. The final startup/open/reconnect run recorded no duplicate `didOpen` notifications. Same-root reconnect reused its server, so replacement by a new server remains unverified. Rust-analyzer was exercised with an explicitly configured Linux executable and toolchain PATH; automatic remote toolchain discovery was not established. These were source-checkout builds, not release installers, and WSL1 and ARM64 were not tested.
+
+The application regression `remote_documents_open_once_across_initialization_and_open_events` forces attachments before transport readiness, between transport readiness and frontend initialization, and after initialization. It checks native document URIs and rejects duplicate opens from delayed or repeated document-open events. Run it with `cargo test --locked -p nucleotide --lib remote_documents_open_once_across_initialization_and_open_events -- --test-threads=1`.
 
 ## Gap summary
 
