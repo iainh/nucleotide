@@ -1120,7 +1120,12 @@ impl<E> Stream for RemoteEventStream<E> {
             Poll::Ready(Some(Err(error))) => {
                 self.finished = true;
                 self.cancellation = None;
-                if let Some(callback) = self.terminal_error.take() {
+                // A remote rejection or cancellation ends only this stream.
+                // Invalidating its transport would also kill unrelated LSPs
+                // and terminals sharing the connection.
+                if !matches!(error, RemoteClientError::Remote(_))
+                    && let Some(callback) = self.terminal_error.take()
+                {
                     callback();
                 }
                 Poll::Ready(Some(Err(error)))

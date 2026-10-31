@@ -91,6 +91,24 @@ pub(crate) fn handle_v5_client_watch_event<W>(
         }
         protocol_v5::StreamEvent::EndStream { stream_id }
         | protocol_v5::StreamEvent::ResetStream { stream_id, .. } => {
+            // Event streams have no client payload, but END closes only the
+            // server's half. Release ours too or stopped watches accumulate
+            // against the concurrent-stream limit on both endpoints.
+            let close_result = shared
+                .session
+                .lock()
+                .map_err(v5_client_lock_error)
+                .and_then(|mut session| {
+                    if session.get_stream(stream_id).is_some() {
+                        session
+                            .finish_stream(stream_id, protocol_v5::Priority::VisibleFileTree)
+                            .map_err(RemoteClientError::Io)?;
+                    }
+                    Ok(())
+                });
+            if let Err(error) = close_result {
+                fail_all_v5_waiters_for_error(shared, &error);
+            }
             if let Ok(mut watch_batches) = shared.watch_batches.lock() {
                 watch_batches.remove(&stream_id);
             }
