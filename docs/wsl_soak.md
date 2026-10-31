@@ -61,14 +61,17 @@ Watch support is optional: unsupported watches produce explicit `skip` events, n
 
 ## Lifecycle regression checks
 
-The soak stops watches explicitly. Run the watch lifecycle regressions as well:
+The soak stops watches explicitly and does not saturate PTY input. Run the focused regressions as well:
 
 ```sh
 cargo test --locked -p nucleotide-remote --test v5_loopback_fixtures
+cargo test --locked -p nucleotide-remote --test pty_lifecycle
 cargo test --locked -p nucleotide --lib remote_watch_is_disposed_when_disabled_or_view_closes
 ```
 
 Dropping the final `WorkspaceWatch` consumer now triggers asynchronous subscription cleanup, even on a quiet root or through a display/native path adapter. Dropping one clone leaves the others usable. Restored watches clean up on the transport that owns their physical ID. File-tree receivers also dispose of their watches when watching is disabled or the view closes, including late watch-start responses.
+
+On Linux, the PTY regressions saturate input to a non-reading child, then cancel or drop the session guard. They require the child PID to disappear, pending input and completion to settle, and the connection to remain usable. The helper supervises and reaps the child independently of blocking input writes, at the cost of one joined supervisor thread per active PTY. This helper-side correction requires an updated helper; client-only checks against an unchanged installed helper do not verify it. These tests do not establish containment of daemonized PTY descendants.
 
 ## Desktop checklist before updating a work machine
 
