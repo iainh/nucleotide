@@ -792,6 +792,7 @@ where
                                 if let protocol_v5::StreamEvent::ResetStream { stream_id, .. } =
                                     &stream_event
                                 {
+                                    watches.stop_event_stream(*stream_id);
                                     requests.remove(stream_id);
                                     task_pools.remove_pending(*stream_id);
                                     let was_active = active_streams.contains(stream_id);
@@ -1093,6 +1094,9 @@ where
         watches: &mut V5WatchRegistry,
         event: protocol_v5::StreamEvent,
     ) -> Result<(bool, bool)> {
+        if let protocol_v5::StreamEvent::ResetStream { stream_id, .. } = &event {
+            watches.stop_event_stream(*stream_id);
+        }
         let (stream_id, request) =
             match self.queue_v5_stream_event(requests, request_budget, event)? {
                 V5QueuedStreamEvent::Pending => return Ok((false, true)),
@@ -2924,7 +2928,7 @@ where
         self.load_project_environment_with_cancellation(root, None)
     }
 
-    fn load_project_environment_with_cancellation(
+    pub(crate) fn load_project_environment_with_cancellation(
         &self,
         root: &Path,
         cancellation: Option<&WorkspaceCancellationToken>,
