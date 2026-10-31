@@ -1432,13 +1432,28 @@ where
                 let pending = waiters
                     .remove(&stream_id)
                     .expect("process-session waiter exists");
+                drop(waiters);
+                // A child can exit while its input is still open. Close our
+                // half too, so the service can release the completed session.
+                let close_result = shared
+                    .session
+                    .lock()
+                    .map_err(v5_client_lock_error)
+                    .and_then(|mut session| {
+                        if session.get_stream(stream_id).is_some() {
+                            session
+                                .finish_stream(stream_id, protocol_v5::Priority::UserInput)
+                                .map_err(RemoteClientError::Io)?;
+                        }
+                        Ok(())
+                    });
                 let result = if let Some(error) = pending.final_error {
                     Err(RemoteClientError::Remote(error))
                 } else {
                     serde_json::from_slice::<ProcessSessionCompletion>(&pending.payload)
                         .map_err(RemoteClientError::Json)
                 };
-                pending.mailbox.complete(result);
+                pending.mailbox.complete(close_result.and(result));
                 true
             }
             protocol_v5::StreamEvent::ResetStream {

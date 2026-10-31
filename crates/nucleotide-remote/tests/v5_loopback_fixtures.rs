@@ -1,7 +1,12 @@
 use futures::executor::block_on;
-use nucleotide_remote::{local_service_command, spawn_child_process_workspace_backend};
+use nucleotide_remote::{
+    RemotePipedProcessSessionRequest, RemoteWorkspaceBackendOptions,
+    connect_workspace_backend_for_location, local_service_command,
+    spawn_child_process_workspace_backend,
+};
 use nucleotide_workspace::{
     ProcessSpec, ReadOptions, RemoteWorkspaceIdentity, RemoteWorkspaceKind,
+    classify_workspace_location,
 };
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -9,12 +14,67 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 const PROCESS_HELPER_MODE: &str = "NUCLEOTIDE_V5_LOOPBACK_PROCESS_HELPER";
 const PROCESS_HELPER_STARTED: &str = "NUCLEOTIDE_V5_LOOPBACK_PROCESS_STARTED";
 const PROCESS_HELPER_RELEASE: &str = "NUCLEOTIDE_V5_LOOPBACK_PROCESS_RELEASE";
 const PROCESS_READY_OUTPUT: &str = "nucleotide-v5-loopback-process-ready";
 const PROCESS_RELEASED_OUTPUT: &str = "nucleotide-v5-loopback-process-released";
+
+#[tokio::test]
+async fn real_v5_helper_releases_completed_full_duplex_sessions() {
+    let temp = tempfile::tempdir().unwrap();
+    let connection = connect_workspace_backend_for_location(
+        classify_workspace_location(temp.path()),
+        &RemoteWorkspaceBackendOptions {
+            use_local_service: true,
+            local_helper_path: Some(env!("CARGO_BIN_EXE_nucleotide-remote").into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let launcher = connection.process_session_launcher.unwrap();
+    // More than the service's concurrent-session limit, on one connection. A
+    // child can exit without waiting for stdin EOF (as interactive shells do).
+    // Also cover callers that half-close stdin before the child exits.
+    for close_stdin in [false, true] {
+        for attempt in 0..12 {
+            #[cfg(windows)]
+            let (program, args) = (
+                "cmd.exe",
+                vec!["/D", "/C", "echo session-completed & exit 7"],
+            );
+            #[cfg(not(windows))]
+            let (program, args) = ("/bin/sh", vec!["-c", "echo session-completed; exit 7"]);
+            let mut session = launcher
+                .launch(RemotePipedProcessSessionRequest {
+                    program: program.into(),
+                    args: args.into_iter().map(String::from).collect(),
+                    cwd: temp.path().into(),
+                    environment_anchor: temp.path().into(),
+                    env_overrides: BTreeMap::new(),
+                })
+                .unwrap();
+            let result = tokio::time::timeout(Duration::from_secs(10), async {
+                if close_stdin {
+                    // A fast child may have completed before shutdown is polled.
+                    let _ = session.stdin.shutdown().await;
+                }
+                let mut stdout = String::new();
+                session.stdout.read_to_string(&mut stdout).await.unwrap();
+                let completion = session.completion.await.unwrap();
+                assert_eq!(completion.status_code, Some(7));
+                assert!(stdout.contains("session-completed"), "{stdout:?}");
+            })
+            .await;
+            assert!(
+                result.is_ok(),
+                "close_stdin={close_stdin} attempt={attempt}"
+            );
+        }
+    }
+}
 
 #[test]
 fn remote_helper_persists_command_failures_on_the_helper_host() {
