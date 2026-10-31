@@ -4,6 +4,7 @@
 use super::*;
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use prost::Message;
+use std::os::fd::{AsRawFd, BorrowedFd};
 
 impl<B: WorkspaceBackend> WorkspaceService<B> {
     pub(crate) fn start_v5_pty_session<'scope>(
@@ -82,31 +83,49 @@ impl<B: WorkspaceBackend> WorkspaceService<B> {
                     pixel_height: request.pixel_height,
                 })
                 .map_err(|e| session_error("spawn_failed", e.to_string()))?;
-            let reader = pair
-                .master
-                .try_clone_reader()
+            let master_fd = pair.master.as_raw_fd().expect("Linux PTY has a master fd");
+            // SAFETY: pair owns this descriptor until after the duplicate is created.
+            let master = unsafe { BorrowedFd::borrow_raw(master_fd) };
+            // Reader and writer share these flags and both explicitly handle WouldBlock.
+            // Killing every slave holder does not reliably interrupt a blocked master write.
+            let flags = unsafe { libc::fcntl(master_fd, libc::F_GETFL) };
+            if flags < 0
+                || unsafe { libc::fcntl(master_fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0
+            {
+                return Err(session_error(
+                    "spawn_failed",
+                    std::io::Error::last_os_error().to_string(),
+                ));
+            }
+            let reader = master
+                .try_clone_to_owned()
+                .map(std::fs::File::from)
                 .map_err(|e| session_error("spawn_failed", e.to_string()))?;
             let mut writer = Some(
-                pair.master
-                    .take_writer()
+                master
+                    .try_clone_to_owned()
+                    .map(std::fs::File::from)
                     .map_err(|e| session_error("spawn_failed", e.to_string()))?,
             );
             let mut child = pair
                 .slave
                 .spawn_command(command)
                 .map_err(|e| session_error("spawn_failed", e.to_string()))?;
+            let pid = child.process_id().expect("Linux PTY child has a PID") as libc::pid_t;
             drop(pair.slave);
             let (tx, rx) = mpsc::sync_channel(16);
-            spawn_session_pipe(reader, protocol_v5::DataChannel::Stdout, tx);
             std::thread::scope(|scope| {
-                // portable-pty has no portable nonblocking writer. Keep input
-                // and resize operations ordered here, and supervise the child
-                // independently of blocked writes (including writer-drop EOF).
-                // Own the full Child: the cloned Unix killer only sends HUP,
-                // whereas Child::kill escalates before we reap it with wait.
+                // The sender's lifetime stops the reader on every return/unwind before
+                // scope joins it, even when a different job group retains the slave.
+                let (_reader_stop, reader_stopped) = mpsc::channel::<()>();
+                scope.spawn(move || read_pty_output(reader, tx, reader_stopped));
+                // Keep input and resize operations ordered here, with cancellation-aware
+                // nonblocking I/O and independent child supervision.
                 let (_stop, stopped) = mpsc::channel::<()>();
                 let (exit_tx, child_exit) = mpsc::channel();
                 let worker_cancellation = &cancellation;
+                let input_stop = WorkspaceCancellationToken::new();
+                let child_input_stop = input_stop.clone();
                 scope.spawn(move || {
                     loop {
                         if worker_cancellation.is_cancelled()
@@ -115,17 +134,25 @@ impl<B: WorkspaceBackend> WorkspaceService<B> {
                                 Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected)
                             )
                         {
+                            let _ = terminate_pty_group(pid);
                             let _ = child.kill();
                             let _ = exit_tx.send(child.wait());
                             break;
                         }
-                        match child.try_wait() {
-                            Ok(Some(status)) => {
-                                let _ = exit_tx.send(Ok(status));
+                        match pty_child_exited(pid) {
+                            Ok(true) => {
+                                // portable-pty starts a new session/group with PGID=PID.
+                                // Kill original-group descendants BEFORE reaping the leader:
+                                // its reserved PID prevents signalling a reused unrelated PGID.
+                                // Preserve its exit status, and drain already-produced output.
+                                let terminated = terminate_pty_group(pid);
+                                let status = child.wait();
+                                let _ = exit_tx.send(terminated.and(status));
                                 break;
                             }
-                            Ok(None) => {}
+                            Ok(false) => {}
                             Err(error) => {
+                                let _ = terminate_pty_group(pid);
                                 let _ = child.kill();
                                 let _ = child.wait();
                                 let _ = exit_tx.send(Err(error));
@@ -133,6 +160,9 @@ impl<B: WorkspaceBackend> WorkspaceService<B> {
                             }
                         }
                     }
+                    // A completed leader must also release pending input when a
+                    // different job group still holds a non-reading slave.
+                    child_input_stop.cancel();
                 });
                 // Every return drops _stop, waking the supervisor before the
                 // scope joins it. No writer or child-wait thread is detached.
@@ -145,10 +175,9 @@ impl<B: WorkspaceBackend> WorkspaceService<B> {
                     }
                     match input.recv_timeout(Duration::from_millis(2)) {
                         Ok(V5ProcessSessionInput::Data { body, credit }) => {
-                            let disposition = if writer
-                                .as_mut()
-                                .is_some_and(|writer| writer.write_all(&body).is_ok())
-                            {
+                            let disposition = if writer.as_mut().is_some_and(|writer| {
+                                write_pty_input(writer, &body, &cancellation, &input_stop).is_ok()
+                            }) {
                                 SessionInputDisposition::Consumed
                             } else {
                                 SessionInputDisposition::Discarded
@@ -212,15 +241,17 @@ impl<B: WorkspaceBackend> WorkspaceService<B> {
                         Ok(V5ProcessSessionInput::End)
                         | Err(mpsc::RecvTimeoutError::Disconnected) => {
                             eof.store(true, Ordering::Release);
-                            // portable-pty injects newline/VEOF when the writer is dropped.
-                            // Canonical readers interpret EOF; raw readers receive the bytes.
-                            writer.take();
+                            if let Some(mut writer) = writer.take() {
+                                send_pty_eof(&mut writer, &cancellation, &input_stop);
+                            }
                         }
                         Err(mpsc::RecvTimeoutError::Timeout) => {
                             // END may not fit in the bounded ingress queue. Honour its atomic
                             // fallback only after queued input and resizes have drained.
                             if eof.load(Ordering::Acquire) {
-                                writer.take();
+                                if let Some(mut writer) = writer.take() {
+                                    send_pty_eof(&mut writer, &cancellation, &input_stop);
+                                }
                             }
                         }
                     }
@@ -249,8 +280,8 @@ impl<B: WorkspaceBackend> WorkspaceService<B> {
                         }
                         if exit.is_some() {
                             writer.take();
-                            // A descendant may retain the slave. Give final bytes a bounded window,
-                            // then finish without ever joining the portable-pty blocking reader.
+                            // Other job groups may retain the slave. Bound final output drain,
+                            // then stop and join our reader without waiting for slave closure.
                             drain_deadline = Some(Instant::now() + Duration::from_millis(250));
                         }
                     }
@@ -331,6 +362,164 @@ impl<B: WorkspaceBackend> WorkspaceService<B> {
             command.env(key, value);
         }
         Ok((command, cwd))
+    }
+}
+
+fn pty_child_exited(pid: libc::pid_t) -> std::io::Result<bool> {
+    loop {
+        // SAFETY: waitid writes a siginfo_t for our owned child. WNOWAIT retains
+        // the leader's PID until group cleanup completes and Child::wait reaps it.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        let result = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                pid as libc::id_t,
+                &mut info,
+                libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+            )
+        };
+        if result == 0 {
+            return Ok(unsafe { info.si_pid() } != 0);
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() != std::io::ErrorKind::Interrupted {
+            return Err(error);
+        }
+    }
+}
+
+fn terminate_pty_group(pid: libc::pid_t) -> std::io::Result<()> {
+    // SAFETY: portable-pty creates this group; its direct leader is still owned
+    // and unreaped. Never call this after Child::wait/try_wait/kill can reap it.
+    if unsafe { libc::kill(-pid, libc::SIGKILL) } == 0 {
+        return Ok(());
+    }
+    let error = std::io::Error::last_os_error();
+    if error.raw_os_error() == Some(libc::ESRCH) {
+        Ok(())
+    } else {
+        Err(error)
+    }
+}
+
+fn read_pty_output(
+    mut reader: std::fs::File,
+    sender: mpsc::SyncSender<SessionPipeResult>,
+    stopped: mpsc::Receiver<()>,
+) {
+    let mut buffer = [0; 8192];
+    loop {
+        if !matches!(stopped.try_recv(), Err(mpsc::TryRecvError::Empty)) {
+            return;
+        }
+        let mut fd = libc::pollfd {
+            fd: reader.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: fd describes our live nonblocking reader.
+        let ready = unsafe { libc::poll(&mut fd, 1, 10) };
+        if ready == 0 {
+            continue;
+        }
+        if ready < 0 && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+            continue;
+        }
+        let event = if ready < 0 || fd.revents & libc::POLLNVAL != 0 {
+            SessionPipeResult::Closed
+        } else {
+            // Sole reader: HUP may accompany final buffered data; read it before
+            // treating EOF/Linux PTY EIO as closure.
+            match reader.read(&mut buffer) {
+                Ok(0) => SessionPipeResult::Closed,
+                Ok(n) => {
+                    SessionPipeResult::Data(protocol_v5::DataChannel::Stdout, buffer[..n].to_vec())
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::Interrupted | std::io::ErrorKind::WouldBlock
+                    ) =>
+                {
+                    continue;
+                }
+                Err(_) => SessionPipeResult::Closed,
+            }
+        };
+        let closed = matches!(event, SessionPipeResult::Closed);
+        let mut pending = event;
+        loop {
+            if !matches!(stopped.try_recv(), Err(mpsc::TryRecvError::Empty)) {
+                return;
+            }
+            match sender.try_send(pending) {
+                Ok(()) => break,
+                Err(mpsc::TrySendError::Disconnected(_)) => return,
+                Err(mpsc::TrySendError::Full(event)) => {
+                    pending = event;
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+            }
+        }
+        if closed {
+            return;
+        }
+    }
+}
+
+fn write_pty_input(
+    writer: &mut std::fs::File,
+    mut body: &[u8],
+    cancellation: &WorkspaceCancellationToken,
+    input_stop: &WorkspaceCancellationToken,
+) -> std::io::Result<()> {
+    while !body.is_empty() {
+        if cancellation.is_cancelled() || input_stop.is_cancelled() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                "PTY input cancelled",
+            ));
+        }
+        match writer.write(body) {
+            Ok(0) => return Err(std::io::ErrorKind::WriteZero.into()),
+            Ok(n) => body = &body[n..],
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                let mut fd = libc::pollfd {
+                    fd: writer.as_raw_fd(),
+                    events: libc::POLLOUT,
+                    revents: 0,
+                };
+                // SAFETY: writer owns this live descriptor; the timeout bounds cancellation polling.
+                if unsafe { libc::poll(&mut fd, 1, 10) } < 0 {
+                    let error = std::io::Error::last_os_error();
+                    if error.kind() != std::io::ErrorKind::Interrupted {
+                        return Err(error);
+                    }
+                } else if fd.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
+                    return Err(std::io::ErrorKind::BrokenPipe.into());
+                }
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
+fn send_pty_eof(
+    writer: &mut std::fs::File,
+    cancellation: &WorkspaceCancellationToken,
+    input_stop: &WorkspaceCancellationToken,
+) {
+    // Match portable-pty's writer-drop convention without a blocking Drop: newline
+    // then VEOF. Canonical readers interpret EOF; raw readers receive literal bytes.
+    let mut termios: libc::termios = unsafe { std::mem::zeroed() };
+    // SAFETY: termios is writable and writer owns the live master descriptor.
+    if unsafe { libc::tcgetattr(writer.as_raw_fd(), &mut termios) } == 0 {
+        let eof = termios.c_cc[libc::VEOF];
+        if eof != 0 {
+            let _ = write_pty_input(writer, &[b'\n', eof], cancellation, input_stop);
+        }
     }
 }
 

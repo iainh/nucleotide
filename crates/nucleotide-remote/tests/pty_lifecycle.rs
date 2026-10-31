@@ -130,3 +130,47 @@ async fn guard_drop_reaps_backpressured_pty() {
 async fn cancellation_reaps_pty_without_input() {
     backpressured_teardown(false, false).await;
 }
+
+#[tokio::test]
+async fn input_shutdown_preserves_raw_terminal_eof_bytes() {
+    let temp = tempfile::tempdir().unwrap();
+    let connection = connect_workspace_backend_for_location(
+        classify_workspace_location(temp.path()),
+        &RemoteWorkspaceBackendOptions {
+            use_local_service: true,
+            local_helper_path: Some(env!("CARGO_BIN_EXE_nucleotide-remote").into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let mut session = connection.pty_session_launcher.as_ref().unwrap().launch(PtySessionRequest {
+        command: PtySessionCommand::Command {
+            program: "/usr/bin/python3".into(),
+            args: vec!["-c".into(), "import os, signal, tty\nsignal.alarm(10)\ntty.setraw(0)\nos.write(1, b'READY')\ndata = b''\nwhile len(data) < 2: data += os.read(0, 2-len(data))\nassert data == b'\\n\\x04', repr(data)\nos.write(1, b'DONE')".into()],
+        },
+        cwd: temp.path().into(),
+        environment: ProjectEnvironmentSelection::Bare,
+        env_overrides: BTreeMap::new(),
+        cols: 80, rows: 24, pixel_width: 0, pixel_height: 0,
+    }).unwrap();
+    let mut ready = [0; 5];
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        session.output.read_exact(&mut ready),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(&ready, b"READY");
+    session.input.shutdown().await.unwrap();
+    let mut tail = Vec::new();
+    let (completion, output) = tokio::time::timeout(Duration::from_secs(3), async {
+        tokio::join!(session.completion, session.output.read_to_end(&mut tail))
+    })
+    .await
+    .expect("raw EOF bytes were not delivered");
+    assert!(completion.unwrap().success);
+    output.unwrap();
+    assert_eq!(tail, b"DONE");
+    assert!(connection.backend.stat(temp.path()).await.is_ok());
+}
