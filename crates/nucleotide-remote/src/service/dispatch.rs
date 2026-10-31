@@ -2966,7 +2966,7 @@ where
         let mut candidate = normalize_path_lexically(cwd);
 
         loop {
-            if candidate.join(".envrc").is_file() {
+            if candidate.join(".envrc").is_file() || candidate.join("devenv.nix").is_file() {
                 return candidate;
             }
 

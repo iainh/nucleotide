@@ -1318,6 +1318,7 @@ impl RemoteEventStream<RemoteTextSearchEvent> {
 #[serde(rename_all = "snake_case")]
 pub enum RemoteProjectEnvironmentOrigin {
     NativeFlake,
+    Devenv,
     DirectoryShell,
     ProcessBaseline,
     Cli,

@@ -643,6 +643,7 @@ pub(crate) fn remote_project_environment_origin(
 ) -> RemoteProjectEnvironmentOrigin {
     match origin {
         ProjectEnvironmentOrigin::NativeFlake => RemoteProjectEnvironmentOrigin::NativeFlake,
+        ProjectEnvironmentOrigin::Devenv => RemoteProjectEnvironmentOrigin::Devenv,
         ProjectEnvironmentOrigin::DirectoryShell => RemoteProjectEnvironmentOrigin::DirectoryShell,
         ProjectEnvironmentOrigin::ProcessBaseline => {
             RemoteProjectEnvironmentOrigin::ProcessBaseline
@@ -657,6 +658,7 @@ pub(crate) fn project_environment_origin_from_response(
 ) -> ProjectEnvironmentOrigin {
     match origin {
         RemoteProjectEnvironmentOrigin::NativeFlake => ProjectEnvironmentOrigin::NativeFlake,
+        RemoteProjectEnvironmentOrigin::Devenv => ProjectEnvironmentOrigin::Devenv,
         RemoteProjectEnvironmentOrigin::DirectoryShell => ProjectEnvironmentOrigin::DirectoryShell,
         RemoteProjectEnvironmentOrigin::ProcessBaseline => {
             ProjectEnvironmentOrigin::ProcessBaseline
@@ -672,6 +674,7 @@ pub(crate) fn project_environment_origin_from_cached(
     match origin {
         EnvironmentOrigin::Cli => ProjectEnvironmentOrigin::Cli,
         EnvironmentOrigin::NativeFlake => ProjectEnvironmentOrigin::NativeFlake,
+        EnvironmentOrigin::Devenv => ProjectEnvironmentOrigin::Devenv,
         EnvironmentOrigin::DirectoryShell => ProjectEnvironmentOrigin::DirectoryShell,
         EnvironmentOrigin::Process => ProjectEnvironmentOrigin::ProcessBaseline,
     }

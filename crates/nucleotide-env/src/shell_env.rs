@@ -43,6 +43,9 @@ pub enum ShellEnvironmentError {
     #[error("nix print-dev-env failed: {0}")]
     NixPrintDevEnvFailed(String),
 
+    #[error("devenv print-dev-env failed: {0}")]
+    DevenvPrintDevEnvFailed(String),
+
     #[error("Directory not found: {0}")]
     DirectoryNotFound(String),
 }
@@ -52,6 +55,7 @@ pub enum ShellEnvironmentError {
 pub enum EnvironmentOrigin {
     Cli,
     NativeFlake,
+    Devenv,
     DirectoryShell,
     Process,
 }
@@ -157,15 +161,23 @@ impl ProjectEnvironment {
             return Ok(environment);
         }
 
-        // Priority 2: Native `.envrc` subset for `use flake`.
-        match self
-            .load_native_flake_environment(&canonical_dir, &baseline_env, cancellation)
+        // Priority 2: Native project environments, including devenv without direnv.
+        let native_result = match self
+            .load_devenv_environment(&canonical_dir, &baseline_env, cancellation)
             .await
         {
-            Ok(Some(native_env)) => {
+            Ok(Some(environment)) => Ok(Some((environment, EnvironmentOrigin::Devenv))),
+            Ok(None) => self
+                .load_native_flake_environment(&canonical_dir, &baseline_env, cancellation)
+                .await
+                .map(|environment| environment.map(|env| (env, EnvironmentOrigin::NativeFlake))),
+            Err(error) => Err(error),
+        };
+        match native_result {
+            Ok(Some((native_env, origin))) => {
                 let cached_env = CachedEnvironment {
                     environment: native_env.environment.clone(),
-                    origin: EnvironmentOrigin::NativeFlake,
+                    origin,
                     directory: canonical_dir.clone(),
                     native_watch_state: Some(native_env.watch_state.clone()),
                 };
@@ -187,17 +199,18 @@ impl ProjectEnvironment {
                     directory = %canonical_dir.display(),
                     env_count = native_env.environment.len(),
                     watched_files = native_env.watch_state.len(),
-                    "Successfully loaded native flake environment"
+                    "Successfully loaded native project environment"
                 );
 
                 return Ok(native_env.environment);
             }
             Ok(None) => {}
+            Err(ShellEnvironmentError::Cancelled) => return Err(ShellEnvironmentError::Cancelled),
             Err(error) => {
                 warn!(
                     directory = %canonical_dir.display(),
                     error = %error,
-                    "Native flake environment loading skipped"
+                    "Native project environment loading skipped"
                 );
 
                 let message = error.to_string();
@@ -486,12 +499,98 @@ impl ProjectEnvironment {
         }
     }
 
+    async fn load_devenv_environment(
+        &self,
+        directory: &Path,
+        baseline_env: &HashMap<String, String>,
+        cancellation: Option<&AtomicBool>,
+    ) -> Result<Option<NativeEnvironment>, ShellEnvironmentError> {
+        if !directory.join("devenv.nix").is_file() {
+            return Ok(None);
+        }
+
+        let envrc_path = directory.join(".envrc");
+        let plan = if envrc_path.is_file() {
+            let Some(plan) = parse_devenv_envrc(&fs::read_to_string(&envrc_path)?)? else {
+                // An explicit `use flake` still wins in a project containing devenv.nix.
+                return Ok(None);
+            };
+            plan
+        } else {
+            DevenvPlan::default()
+        };
+
+        let baseline = if resolve_devenv_binary(baseline_env).is_none()
+            && login_shell_process_environment_supported()
+        {
+            self.login_shell_process_environment_with_cancellation(
+                baseline_env.clone(),
+                cancellation,
+            )
+            .await
+        } else {
+            baseline_env.clone()
+        };
+        let binary = resolve_devenv_binary(&baseline).ok_or_else(|| {
+            ShellEnvironmentError::DevenvPrintDevEnvFailed(
+                "devenv executable was not found in PATH or a standard Nix profile".to_string(),
+            )
+        })?;
+
+        let mut command = nucleotide_process::tokio_command(binary);
+        command
+            .current_dir(directory)
+            .envs(&baseline)
+            .arg("print-dev-env")
+            .arg("--json")
+            .args(&plan.args);
+        let output = cancellable_command_output(command, 30, cancellation).await?;
+        if !output.status.success() {
+            return Err(ShellEnvironmentError::DevenvPrintDevEnvFailed(
+                String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            ));
+        }
+
+        let mut environment = merge_native_flake_environment(
+            &baseline,
+            parse_nix_print_dev_env_json(&output.stdout)?,
+        );
+        environment.insert("ZED_ENVIRONMENT".to_string(), "devenv".to_string());
+
+        // Devenv owns persistent evaluation caching. Its input manifest includes imported
+        // Nix files, so edits beyond devenv.nix also invalidate our in-memory environment.
+        let mut paths = vec![envrc_path];
+        for name in [
+            "devenv.nix",
+            "devenv.yaml",
+            "devenv.lock",
+            "devenv.local.nix",
+            "devenv.local.yaml",
+            ".devenv/input-paths.txt",
+        ] {
+            push_unique_path(&mut paths, directory.join(name));
+        }
+        for path in plan.watched_files {
+            push_unique_path(&mut paths, directory.join(path));
+        }
+        if let Ok(inputs) = fs::read_to_string(directory.join(".devenv/input-paths.txt")) {
+            for input in inputs.lines().filter(|line| !line.is_empty()) {
+                push_unique_path(&mut paths, directory.join(input));
+            }
+        }
+
+        Ok(Some(NativeEnvironment {
+            environment,
+            watch_state: snapshot_watched_files(paths),
+        }))
+    }
+
     async fn load_native_flake_environment(
         &self,
         directory: &Path,
         baseline_env: &HashMap<String, String>,
         cancellation: Option<&AtomicBool>,
-    ) -> Result<Option<NativeFlakeEnvironment>, ShellEnvironmentError> {
+    ) -> Result<Option<NativeEnvironment>, ShellEnvironmentError> {
         let envrc_path = directory.join(".envrc");
         if !envrc_path.is_file() {
             return Ok(None);
@@ -541,7 +640,7 @@ impl ProjectEnvironment {
             );
             let mut environment = merge_native_flake_environment(&native_baseline, exported);
             environment.insert("ZED_ENVIRONMENT".to_string(), "native-flake".to_string());
-            return Ok(Some(NativeFlakeEnvironment {
+            return Ok(Some(NativeEnvironment {
                 environment,
                 watch_state,
             }));
@@ -560,7 +659,7 @@ impl ProjectEnvironment {
         let mut environment = merge_native_flake_environment(&native_baseline, exported);
         environment.insert("ZED_ENVIRONMENT".to_string(), "native-flake".to_string());
 
-        Ok(Some(NativeFlakeEnvironment {
+        Ok(Some(NativeEnvironment {
             environment,
             watch_state: watch_state_after,
         }))
@@ -713,7 +812,7 @@ impl ProjectEnvironment {
 }
 
 #[derive(Debug)]
-struct NativeFlakeEnvironment {
+struct NativeEnvironment {
     environment: HashMap<String, String>,
     watch_state: Vec<WatchedFileState>,
 }
@@ -741,7 +840,7 @@ enum WatchedPathState {
 
 fn cached_environment_is_current(cached: &CachedEnvironment) -> bool {
     match cached.origin {
-        EnvironmentOrigin::NativeFlake => cached
+        EnvironmentOrigin::NativeFlake | EnvironmentOrigin::Devenv => cached
             .native_watch_state
             .as_deref()
             .is_some_and(watched_files_are_current),
@@ -933,6 +1032,50 @@ enum EnvrcParseError {
     Unsupported { line: usize, message: String },
 }
 
+#[derive(Default)]
+struct DevenvPlan {
+    args: Vec<String>,
+    watched_files: Vec<PathBuf>,
+}
+
+fn parse_devenv_envrc(contents: &str) -> Result<Option<DevenvPlan>, ShellEnvironmentError> {
+    // Recognize only devenv's bootstrap, never evaluate arbitrary .envrc shell code.
+    // Explicit flake projects are left to the existing strict flake parser.
+    if !contents.lines().any(|line| {
+        split_envrc_words(line).is_ok_and(|words| {
+            matches!(words.as_slice(), [use_cmd, tool, ..] if use_cmd == "use" && tool == "devenv")
+        })
+    }) {
+        return Ok(None);
+    }
+
+    let mut plan = DevenvPlan::default();
+    let mut seen_use = false;
+    for line in contents.lines() {
+        let line = line.trim();
+        if line == "eval \"$(devenv direnvrc)\"" {
+            continue;
+        }
+        let words = split_envrc_words(line).map_err(ShellEnvironmentError::EnvrcUnsupported)?;
+        match words.as_slice() {
+            [] => {}
+            [use_cmd, tool, args @ ..] if use_cmd == "use" && tool == "devenv" && !seen_use => {
+                seen_use = true;
+                plan.args = args.to_vec();
+            }
+            [watch, paths @ ..] if watch == "watch_file" && !paths.is_empty() => {
+                plan.watched_files.extend(paths.iter().map(PathBuf::from));
+            }
+            _ => {
+                return Err(ShellEnvironmentError::EnvrcUnsupported(format!(
+                    "unsupported devenv directive: {line}"
+                )));
+            }
+        }
+    }
+    Ok(Some(plan))
+}
+
 fn parse_native_flake_envrc(contents: &str) -> Result<Option<NativeFlakePlan>, EnvrcParseError> {
     let mut flake_args: Option<Vec<String>> = None;
     let mut watched_files = Vec::new();
@@ -1092,6 +1235,25 @@ fn resolve_nix_binary_with_system_profiles(
                 .iter()
                 .find(|candidate| candidate.is_file())
                 .map(|candidate| candidate.to_path_buf())
+        })
+}
+
+fn resolve_devenv_binary(environment: &HashMap<String, String>) -> Option<PathBuf> {
+    resolve_program_from_env_path("devenv", environment)
+        .or_else(|| {
+            environment
+                .get("HOME")
+                .map(|home| Path::new(home).join(".nix-profile/bin/devenv"))
+                .filter(|candidate| candidate.is_file())
+        })
+        .or_else(|| {
+            [
+                "/nix/var/nix/profiles/default/bin/devenv",
+                "/run/current-system/sw/bin/devenv",
+            ]
+            .into_iter()
+            .map(PathBuf::from)
+            .find(|candidate| candidate.is_file())
         })
 }
 
@@ -1917,6 +2079,93 @@ fn insert_env_line(env_map: &mut HashMap<String, String>, line: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn devenv_loads_with_and_without_direnv_and_reloads_changed_inputs() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = executable_tempdir();
+        let binary = temp.path().join("devenv");
+        fs::write(
+            &binary,
+            r#"#!/bin/sh
+[ "$1" = print-dev-env ] && [ "$2" = --json ] || exit 2
+printf '%s\n' "$@" > arguments
+printf 'called\n' >> calls
+IFS= read -r value < imported.nix
+printf '{"variables":{"PROJECT_VALUE":{"type":"exported","value":"%s"},"HOME":{"type":"exported","value":"/wrong-home"},"TMPDIR":{"type":"exported","value":"/wrong-tmp"},"PATH":{"type":"exported","value":"/project/bin"}}}\n' "$value"
+"#,
+        )
+        .unwrap();
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let root = temp.path().join("project with spaces");
+        fs::create_dir_all(root.join(".devenv")).unwrap();
+        fs::write(root.join("devenv.nix"), "{}").unwrap();
+        fs::write(root.join("imported.nix"), "first\n").unwrap();
+        fs::write(root.join(".devenv/input-paths.txt"), "imported.nix\n").unwrap();
+        let baseline = HashMap::from([
+            ("PATH".into(), temp.path().display().to_string()),
+            ("HOME".into(), temp.path().display().to_string()),
+            ("TMPDIR".into(), temp.path().display().to_string()),
+        ]);
+        let project = ProjectEnvironment::new(Some(baseline.clone()));
+        let env = project.get_environment_for_directory(&root).await.unwrap();
+        assert_eq!(env["PROJECT_VALUE"], "first");
+        assert_eq!(env["HOME"], baseline["HOME"]);
+        assert_eq!(env["TMPDIR"], baseline["TMPDIR"]);
+        assert_eq!(env["PATH"], format!("/project/bin:{}", baseline["PATH"]));
+        assert_eq!(
+            project.get_cached_origin(&root).await,
+            Some(EnvironmentOrigin::Devenv)
+        );
+        project.get_environment_for_directory(&root).await.unwrap();
+        assert_eq!(fs::read_to_string(root.join("calls")).unwrap(), "called\n");
+
+        fs::write(root.join("imported.nix"), "second-value\n").unwrap();
+        let env = project.get_environment_for_directory(&root).await.unwrap();
+        assert_eq!(env["PROJECT_VALUE"], "second-value");
+
+        fs::write(
+            root.join(".envrc"),
+            "# devenv bootstrap\neval \"$(devenv direnvrc)\"\nuse devenv --impure --profile 'backend tools'\nwatch_file extra.nix\n",
+        )
+        .unwrap();
+        let env = project.get_environment_for_directory(&root).await.unwrap();
+        assert_eq!(env["ZED_ENVIRONMENT"], "devenv");
+        assert_eq!(
+            fs::read_to_string(root.join("arguments")).unwrap(),
+            "print-dev-env\n--json\n--impure\n--profile\nbackend tools\n"
+        );
+        fs::write(root.join("extra.nix"), "new input").unwrap();
+        project.get_environment_for_directory(&root).await.unwrap();
+        assert_eq!(
+            fs::read_to_string(root.join("calls"))
+                .unwrap()
+                .lines()
+                .count(),
+            4
+        );
+
+        // Unsupported shell code must not be silently ignored or executed.
+        fs::write(root.join(".envrc"), "use devenv\nexport EXTRA=unsafe\n").unwrap();
+        let env = project.get_environment_for_directory(&root).await.unwrap();
+        assert!(!env.contains_key("PROJECT_VALUE"));
+        assert!(!project.get_environment_diagnostics(&root).await.is_empty());
+
+        fs::remove_file(root.join(".envrc")).unwrap();
+        fs::write(
+            &binary,
+            "#!/bin/sh\necho 'broken devenv fixture' >&2\nexit 1\n",
+        )
+        .unwrap();
+        let env = project.get_environment_for_directory(&root).await.unwrap();
+        assert!(!env.contains_key("PROJECT_VALUE"));
+        assert!(
+            project.get_environment_diagnostics(&root).await[0].contains("broken devenv fixture")
+        );
+    }
 
     #[cfg(unix)]
     fn executable_tempdir() -> tempfile::TempDir {
