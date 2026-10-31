@@ -169,6 +169,30 @@ impl<B: WorkspaceBackend> WorkspaceService<B> {
                 let mut reader_open = true;
                 let mut exit = None;
                 let mut drain_deadline = None;
+                let forward_output = || {
+                    let mut closed = false;
+                    // Bound each output turn so continuously readable output cannot
+                    // starve input. The write loop also pumps this queue while blocked:
+                    // a child may need its output drained before it can consume input.
+                    for _ in 0..16 {
+                        match rx.try_recv() {
+                            Ok(SessionPipeResult::Data(_, body)) => {
+                                let _ = output.send_with_cancellation(
+                                    V5ServeOutputEvent::SessionStreamData {
+                                        stream_id,
+                                        channel: protocol_v5::DataChannel::Stdout,
+                                        body,
+                                        priority,
+                                    },
+                                    &cancellation,
+                                );
+                            }
+                            Ok(SessionPipeResult::Closed) => closed = true,
+                            Err(_) => break,
+                        }
+                    }
+                    closed
+                };
                 loop {
                     if cancellation.is_cancelled() {
                         return Err(session_error("cancelled", "pty.session was reset"));
@@ -176,7 +200,14 @@ impl<B: WorkspaceBackend> WorkspaceService<B> {
                     match input.recv_timeout(Duration::from_millis(2)) {
                         Ok(V5ProcessSessionInput::Data { body, credit }) => {
                             let disposition = if writer.as_mut().is_some_and(|writer| {
-                                write_pty_input(writer, &body, &cancellation, &input_stop).is_ok()
+                                write_pty_input(
+                                    writer,
+                                    &body,
+                                    &cancellation,
+                                    &input_stop,
+                                    &mut || reader_open &= !forward_output(),
+                                )
+                                .is_ok()
                             }) {
                                 SessionInputDisposition::Consumed
                             } else {
@@ -242,7 +273,9 @@ impl<B: WorkspaceBackend> WorkspaceService<B> {
                         | Err(mpsc::RecvTimeoutError::Disconnected) => {
                             eof.store(true, Ordering::Release);
                             if let Some(mut writer) = writer.take() {
-                                send_pty_eof(&mut writer, &cancellation, &input_stop);
+                                send_pty_eof(&mut writer, &cancellation, &input_stop, &mut || {
+                                    reader_open &= !forward_output()
+                                });
                             }
                         }
                         Err(mpsc::RecvTimeoutError::Timeout) => {
@@ -250,27 +283,17 @@ impl<B: WorkspaceBackend> WorkspaceService<B> {
                             // fallback only after queued input and resizes have drained.
                             if eof.load(Ordering::Acquire) {
                                 if let Some(mut writer) = writer.take() {
-                                    send_pty_eof(&mut writer, &cancellation, &input_stop);
+                                    send_pty_eof(
+                                        &mut writer,
+                                        &cancellation,
+                                        &input_stop,
+                                        &mut || reader_open &= !forward_output(),
+                                    );
                                 }
                             }
                         }
                     }
-                    while let Ok(event) = rx.try_recv() {
-                        match event {
-                            SessionPipeResult::Data(_, body) => {
-                                let _ = output.send_with_cancellation(
-                                    V5ServeOutputEvent::SessionStreamData {
-                                        stream_id,
-                                        channel: protocol_v5::DataChannel::Stdout,
-                                        body,
-                                        priority,
-                                    },
-                                    &cancellation,
-                                );
-                            }
-                            SessionPipeResult::Closed => reader_open = false,
-                        }
-                    }
+                    reader_open &= !forward_output();
                     if exit.is_none() {
                         if let Ok(status) = child_exit.try_recv() {
                             exit = Some(
@@ -472,6 +495,7 @@ fn write_pty_input(
     mut body: &[u8],
     cancellation: &WorkspaceCancellationToken,
     input_stop: &WorkspaceCancellationToken,
+    forward_output: &mut impl FnMut(),
 ) -> std::io::Result<()> {
     while !body.is_empty() {
         if cancellation.is_cancelled() || input_stop.is_cancelled() {
@@ -480,7 +504,10 @@ fn write_pty_input(
                 "PTY input cancelled",
             ));
         }
-        match writer.write(body) {
+        forward_output();
+        // A bounded write turn keeps both directions moving, including when
+        // every write succeeds but the child is continuously producing output.
+        match writer.write(&body[..body.len().min(8192)]) {
             Ok(0) => return Err(std::io::ErrorKind::WriteZero.into()),
             Ok(n) => body = &body[n..],
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
@@ -510,6 +537,7 @@ fn send_pty_eof(
     writer: &mut std::fs::File,
     cancellation: &WorkspaceCancellationToken,
     input_stop: &WorkspaceCancellationToken,
+    forward_output: &mut impl FnMut(),
 ) {
     // Match portable-pty's writer-drop convention without a blocking Drop: newline
     // then VEOF. Canonical readers interpret EOF; raw readers receive literal bytes.
@@ -518,7 +546,13 @@ fn send_pty_eof(
     if unsafe { libc::tcgetattr(writer.as_raw_fd(), &mut termios) } == 0 {
         let eof = termios.c_cc[libc::VEOF];
         if eof != 0 {
-            let _ = write_pty_input(writer, &[b'\n', eof], cancellation, input_stop);
+            let _ = write_pty_input(
+                writer,
+                &[b'\n', eof],
+                cancellation,
+                input_stop,
+                forward_output,
+            );
         }
     }
 }

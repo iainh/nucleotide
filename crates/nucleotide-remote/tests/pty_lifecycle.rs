@@ -174,3 +174,125 @@ async fn input_shutdown_preserves_raw_terminal_eof_bytes() {
     assert_eq!(tail, b"DONE");
     assert!(connection.backend.stat(temp.path()).await.is_ok());
 }
+
+#[tokio::test]
+async fn duplex_progress_preserves_input_output_and_eof() {
+    use sha2::{Digest, Sha256};
+
+    const OUTPUT: usize = 4 * 1024 * 1024;
+    // The child writes more than the PTY and reader queue can hold before reading
+    // input. Large concurrent input must not prevent the worker forwarding output.
+    for (input_size, output_first) in [(OUTPUT, true), (1024, false), (OUTPUT, false)] {
+        let temp = tempfile::tempdir().unwrap();
+        let connection = connect_workspace_backend_for_location(
+            classify_workspace_location(temp.path()),
+            &RemoteWorkspaceBackendOptions {
+                use_local_service: true,
+                local_helper_path: Some(env!("CARGO_BIN_EXE_nucleotide-remote").into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let code = format!(
+            r#"import os, signal, tty, time, hashlib
+signal.alarm(20)
+tty.setraw(0)
+os.write(1, b'READY')
+while not os.path.exists('go'): time.sleep(.005)
+data = b'0123456789abcdef' * {blocks}
+while data:
+    n = os.write(1, data)
+    data = data[n:]
+h = hashlib.sha256()
+got = 0
+while got < {input_size}:
+    data = os.read(0, min(65536, {input_size} - got))
+    assert data
+    h.update(data)
+    got += len(data)
+open('input.result', 'w').write(str(got) + ' ' + h.hexdigest())
+eof = b''
+while len(eof) < 2: eof += os.read(0, 2 - len(eof))
+assert eof == b'\n\x04', repr(eof)
+"#,
+            blocks = OUTPUT / 16,
+        );
+        let RemotePtySessionParts {
+            mut input,
+            mut output,
+            completion,
+            control: _,
+            lifecycle,
+        } = connection
+            .pty_session_launcher
+            .as_ref()
+            .unwrap()
+            .launch(PtySessionRequest {
+                command: PtySessionCommand::Command {
+                    program: "/usr/bin/python3".into(),
+                    args: vec!["-c".into(), code],
+                },
+                cwd: temp.path().into(),
+                environment: ProjectEnvironmentSelection::Bare,
+                env_overrides: BTreeMap::new(),
+                cols: 80,
+                rows: 24,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .unwrap();
+        let mut ready = [0; 5];
+        tokio::time::timeout(Duration::from_secs(5), output.read_exact(&mut ready))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(&ready, b"READY");
+        let bytes = vec![b'x'; input_size];
+        let expected_input = format!("{} {:x}", input_size, Sha256::digest(&bytes));
+        let write = async {
+            input.write_all(&bytes).await?;
+            input.shutdown().await
+        };
+        tokio::pin!(write);
+        let mut received = Vec::new();
+        if output_first {
+            std::fs::write(temp.path().join("go"), "go").unwrap();
+            received.resize(OUTPUT, 0);
+            tokio::time::timeout(Duration::from_secs(5), output.read_exact(&mut received))
+                .await
+                .unwrap()
+                .unwrap();
+        } else {
+            // Poll the actual write while the child is gated, establishing the
+            // large-input backpressure before allowing it to produce output.
+            if input_size == OUTPUT {
+                assert!(
+                    tokio::time::timeout(Duration::from_millis(200), &mut write)
+                        .await
+                        .is_err(),
+                    "large input must be backpressured before releasing the child"
+                );
+            }
+            std::fs::write(temp.path().join("go"), "go").unwrap();
+        }
+        let (written, completed, read) = tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::join!(write, completion, output.read_to_end(&mut received))
+        })
+        .await
+        .unwrap_or_else(|_| {
+            panic!("duplex stalled: input={input_size}, output_first={output_first}")
+        });
+        written.unwrap();
+        let status = completed.unwrap();
+        assert!(status.success, "{status:?}");
+        assert_eq!(status.status_code, Some(0));
+        read.unwrap();
+        assert_eq!(received, b"0123456789abcdef".repeat(OUTPUT / 16));
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("input.result")).unwrap(),
+            expected_input
+        );
+        assert!(connection.backend.stat(temp.path()).await.is_ok());
+        drop(lifecycle);
+    }
+}
