@@ -78,11 +78,6 @@ impl<B: WorkspaceBackend> WorkspaceService<B> {
                     pixel_height: request.pixel_height,
                 })
                 .map_err(|e| session_error("spawn_failed", e.to_string()))?;
-            let mut child = pair
-                .slave
-                .spawn_command(command)
-                .map_err(|e| session_error("spawn_failed", e.to_string()))?;
-            drop(pair.slave);
             let reader = pair
                 .master
                 .try_clone_reader()
@@ -92,146 +87,188 @@ impl<B: WorkspaceBackend> WorkspaceService<B> {
                     .take_writer()
                     .map_err(|e| session_error("spawn_failed", e.to_string()))?,
             );
+            let mut child = pair
+                .slave
+                .spawn_command(command)
+                .map_err(|e| session_error("spawn_failed", e.to_string()))?;
+            drop(pair.slave);
             let (tx, rx) = mpsc::sync_channel(16);
             spawn_session_pipe(reader, protocol_v5::DataChannel::Stdout, tx);
-            let mut reader_open = true;
-            let mut exit = None;
-            let mut drain_deadline = None;
-            loop {
-                if cancellation.is_cancelled() {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(session_error("cancelled", "pty.session was reset"));
-                }
-                match input.recv_timeout(Duration::from_millis(2)) {
-                    Ok(V5ProcessSessionInput::Data { body, credit }) => {
-                        let disposition = if writer
-                            .as_mut()
-                            .is_some_and(|writer| writer.write_all(&body).is_ok())
+            std::thread::scope(|scope| {
+                // portable-pty has no portable nonblocking writer. Keep input
+                // and resize operations ordered here, and supervise the child
+                // independently of blocked writes (including writer-drop EOF).
+                // Own the full Child: the cloned Unix killer only sends HUP,
+                // whereas Child::kill escalates before we reap it with wait.
+                let (_stop, stopped) = mpsc::channel::<()>();
+                let (exit_tx, child_exit) = mpsc::channel();
+                let worker_cancellation = &cancellation;
+                scope.spawn(move || {
+                    loop {
+                        if worker_cancellation.is_cancelled()
+                            || matches!(
+                                stopped.recv_timeout(Duration::from_millis(2)),
+                                Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected)
+                            )
                         {
-                            SessionInputDisposition::Consumed
-                        } else {
-                            SessionInputDisposition::Discarded
-                        };
-                        let _ = output.send_with_cancellation(
-                            V5ServeOutputEvent::SessionInputSettled {
-                                stream_id,
-                                bytes: credit,
-                                disposition,
-                                priority,
-                            },
-                            &cancellation,
-                        );
-                    }
-                    Ok(V5ProcessSessionInput::PtyControl { body, credit }) => {
-                        let applied = protocol_v5::PtyControl::decode(body.as_slice())
-                            .ok()
-                            .and_then(|c| c.resize)
-                            .filter(|r| {
-                                r.cols > 0
-                                    && r.rows > 0
-                                    && r.cols <= u16::MAX.into()
-                                    && r.rows <= u16::MAX.into()
-                                    && r.pixel_width <= u16::MAX.into()
-                                    && r.pixel_height <= u16::MAX.into()
-                            })
-                            .and_then(|r| {
-                                pair.master
-                                    .resize(PtySize {
-                                        rows: r.rows as u16,
-                                        cols: r.cols as u16,
-                                        pixel_width: r.pixel_width as u16,
-                                        pixel_height: r.pixel_height as u16,
-                                    })
-                                    .ok()
-                            });
-                        let disposition = if applied.is_some() {
-                            SessionInputDisposition::Consumed
-                        } else {
-                            SessionInputDisposition::Discarded
-                        };
-                        let _ = output.send_with_cancellation(
-                            V5ServeOutputEvent::SessionInputSettled {
-                                stream_id,
-                                bytes: credit,
-                                disposition,
-                                priority,
-                            },
-                            &cancellation,
-                        );
-                        if applied.is_none() {
                             let _ = child.kill();
-                            let _ = child.wait();
-                            return Err(session_error(
-                                "invalid_request",
-                                "invalid PTY resize control",
-                            ));
+                            let _ = exit_tx.send(child.wait());
+                            break;
+                        }
+                        match child.try_wait() {
+                            Ok(Some(status)) => {
+                                let _ = exit_tx.send(Ok(status));
+                                break;
+                            }
+                            Ok(None) => {}
+                            Err(error) => {
+                                let _ = child.kill();
+                                let _ = child.wait();
+                                let _ = exit_tx.send(Err(error));
+                                break;
+                            }
                         }
                     }
-                    Ok(V5ProcessSessionInput::Reset) => {
-                        let _ = child.kill();
-                        let _ = child.wait();
+                });
+                // Every return drops _stop, waking the supervisor before the
+                // scope joins it. No writer or child-wait thread is detached.
+                let mut reader_open = true;
+                let mut exit = None;
+                let mut drain_deadline = None;
+                loop {
+                    if cancellation.is_cancelled() {
                         return Err(session_error("cancelled", "pty.session was reset"));
                     }
-                    Ok(V5ProcessSessionInput::End) | Err(mpsc::RecvTimeoutError::Disconnected) => {
-                        eof.store(true, Ordering::Release);
-                        // Closing the master writer is the PTY equivalent of stdin EOF. Merely
-                        // remembering END leaves readers such as `cat` blocked forever.
-                        writer.take();
-                    }
-                    Err(mpsc::RecvTimeoutError::Timeout) => {}
-                }
-                while let Ok(event) = rx.try_recv() {
-                    match event {
-                        SessionPipeResult::Data(_, body) => {
+                    match input.recv_timeout(Duration::from_millis(2)) {
+                        Ok(V5ProcessSessionInput::Data { body, credit }) => {
+                            let disposition = if writer
+                                .as_mut()
+                                .is_some_and(|writer| writer.write_all(&body).is_ok())
+                            {
+                                SessionInputDisposition::Consumed
+                            } else {
+                                SessionInputDisposition::Discarded
+                            };
                             let _ = output.send_with_cancellation(
-                                V5ServeOutputEvent::SessionStreamData {
+                                V5ServeOutputEvent::SessionInputSettled {
                                     stream_id,
-                                    channel: protocol_v5::DataChannel::Stdout,
-                                    body,
+                                    bytes: credit,
+                                    disposition,
                                     priority,
                                 },
                                 &cancellation,
                             );
                         }
-                        SessionPipeResult::Closed => reader_open = false,
+                        Ok(V5ProcessSessionInput::PtyControl { body, credit }) => {
+                            let applied = protocol_v5::PtyControl::decode(body.as_slice())
+                                .ok()
+                                .and_then(|c| c.resize)
+                                .filter(|r| {
+                                    r.cols > 0
+                                        && r.rows > 0
+                                        && r.cols <= u16::MAX.into()
+                                        && r.rows <= u16::MAX.into()
+                                        && r.pixel_width <= u16::MAX.into()
+                                        && r.pixel_height <= u16::MAX.into()
+                                })
+                                .and_then(|r| {
+                                    pair.master
+                                        .resize(PtySize {
+                                            rows: r.rows as u16,
+                                            cols: r.cols as u16,
+                                            pixel_width: r.pixel_width as u16,
+                                            pixel_height: r.pixel_height as u16,
+                                        })
+                                        .ok()
+                                });
+                            let disposition = if applied.is_some() {
+                                SessionInputDisposition::Consumed
+                            } else {
+                                SessionInputDisposition::Discarded
+                            };
+                            let _ = output.send_with_cancellation(
+                                V5ServeOutputEvent::SessionInputSettled {
+                                    stream_id,
+                                    bytes: credit,
+                                    disposition,
+                                    priority,
+                                },
+                                &cancellation,
+                            );
+                            if applied.is_none() {
+                                return Err(session_error(
+                                    "invalid_request",
+                                    "invalid PTY resize control",
+                                ));
+                            }
+                        }
+                        Ok(V5ProcessSessionInput::Reset) => {
+                            return Err(session_error("cancelled", "pty.session was reset"));
+                        }
+                        Ok(V5ProcessSessionInput::End)
+                        | Err(mpsc::RecvTimeoutError::Disconnected) => {
+                            eof.store(true, Ordering::Release);
+                            // Closing the master writer is the PTY equivalent of stdin EOF. Merely
+                            // remembering END leaves readers such as `cat` blocked forever.
+                            writer.take();
+                        }
+                        Err(mpsc::RecvTimeoutError::Timeout) => {}
                     }
-                }
-                if exit.is_none() {
-                    exit = child
-                        .try_wait()
-                        .map_err(|e| session_error("process_failed", e.to_string()))?;
-                    if exit.is_some() {
-                        writer.take();
-                        // A descendant may retain the slave. Give final bytes a bounded window,
-                        // then finish without ever joining the portable-pty blocking reader.
-                        drain_deadline = Some(Instant::now() + Duration::from_millis(250));
-                    }
-                }
-                if exit.is_some()
-                    && (!reader_open || drain_deadline.is_some_and(|d| Instant::now() >= d))
-                {
-                    // Drain everything already queued before completion/END is emitted.
                     while let Ok(event) = rx.try_recv() {
-                        if let SessionPipeResult::Data(_, body) = event {
-                            let _ = output.send_with_cancellation(
-                                V5ServeOutputEvent::SessionStreamData {
-                                    stream_id,
-                                    channel: protocol_v5::DataChannel::Stdout,
-                                    body,
-                                    priority,
-                                },
-                                &cancellation,
-                            );
+                        match event {
+                            SessionPipeResult::Data(_, body) => {
+                                let _ = output.send_with_cancellation(
+                                    V5ServeOutputEvent::SessionStreamData {
+                                        stream_id,
+                                        channel: protocol_v5::DataChannel::Stdout,
+                                        body,
+                                        priority,
+                                    },
+                                    &cancellation,
+                                );
+                            }
+                            SessionPipeResult::Closed => reader_open = false,
                         }
                     }
-                    let status = exit.expect("exit status checked above");
-                    return Ok(ProcessSessionCompletion {
-                        status_code: status.exit_code().try_into().ok(),
-                        success: status.success(),
-                    });
+                    if exit.is_none() {
+                        if let Ok(status) = child_exit.try_recv() {
+                            exit = Some(
+                                status
+                                    .map_err(|e| session_error("process_failed", e.to_string()))?,
+                            );
+                        }
+                        if exit.is_some() {
+                            writer.take();
+                            // A descendant may retain the slave. Give final bytes a bounded window,
+                            // then finish without ever joining the portable-pty blocking reader.
+                            drain_deadline = Some(Instant::now() + Duration::from_millis(250));
+                        }
+                    }
+                    if exit.is_some()
+                        && (!reader_open || drain_deadline.is_some_and(|d| Instant::now() >= d))
+                    {
+                        // Drain everything already queued before completion/END is emitted.
+                        while let Ok(event) = rx.try_recv() {
+                            if let SessionPipeResult::Data(_, body) = event {
+                                let _ = output.send_with_cancellation(
+                                    V5ServeOutputEvent::SessionStreamData {
+                                        stream_id,
+                                        channel: protocol_v5::DataChannel::Stdout,
+                                        body,
+                                        priority,
+                                    },
+                                    &cancellation,
+                                );
+                            }
+                        }
+                        let status = exit.expect("exit status checked above");
+                        return Ok(ProcessSessionCompletion {
+                            status_code: status.exit_code().try_into().ok(),
+                            success: status.success(),
+                        });
+                    }
                 }
-            }
+            })
         });
         send_session_terminal(&output, stream_id, priority, result, &cancellation);
     }
