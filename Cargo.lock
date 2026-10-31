@@ -5757,6 +5757,7 @@ dependencies = [
  "dirs",
  "futures",
  "ignore",
+ "libc",
  "notify",
  "nucleotide-env",
  "nucleotide-logging",
