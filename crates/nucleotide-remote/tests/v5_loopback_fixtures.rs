@@ -5,8 +5,8 @@ use nucleotide_remote::{
     spawn_child_process_workspace_backend,
 };
 use nucleotide_workspace::{
-    ProcessSpec, ReadOptions, RemoteWorkspaceIdentity, RemoteWorkspaceKind,
-    classify_workspace_location,
+    ProcessEvent, ProcessSpec, ReadOptions, RemoteWorkspaceIdentity, RemoteWorkspaceKind,
+    WorkspaceCancellationToken, WorkspaceWatchRequest, classify_workspace_location,
 };
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -21,6 +21,184 @@ const PROCESS_HELPER_STARTED: &str = "NUCLEOTIDE_V5_LOOPBACK_PROCESS_STARTED";
 const PROCESS_HELPER_RELEASE: &str = "NUCLEOTIDE_V5_LOOPBACK_PROCESS_RELEASE";
 const PROCESS_READY_OUTPUT: &str = "nucleotide-v5-loopback-process-ready";
 const PROCESS_RELEASED_OUTPUT: &str = "nucleotide-v5-loopback-process-released";
+
+#[tokio::test]
+async fn stopped_watches_release_event_streams_on_a_retained_connection() {
+    let temp = tempfile::tempdir().unwrap();
+    let connection = connect_workspace_backend_for_location(
+        classify_workspace_location(temp.path()),
+        &RemoteWorkspaceBackendOptions {
+            use_local_service: true,
+            local_helper_path: Some(env!("CARGO_BIN_EXE_nucleotide-remote").into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    tokio::time::timeout(Duration::from_secs(30), async {
+        #[cfg(windows)]
+        let (program, args) = (
+            "cmd.exe",
+            vec![
+                "/D",
+                "/Q",
+                "/C",
+                "set /p line= & echo retained-watch-session & exit 7",
+            ],
+        );
+        #[cfg(not(windows))]
+        let (program, args) = (
+            "/bin/sh",
+            vec!["-c", "read line; echo retained-watch-session; exit 7"],
+        );
+        let mut retained = connection
+            .process_session_launcher
+            .as_ref()
+            .unwrap()
+            .launch(RemotePipedProcessSessionRequest {
+                program: program.into(),
+                args: args.into_iter().map(String::from).collect(),
+                cwd: temp.path().into(),
+                environment_anchor: temp.path().into(),
+                env_overrides: BTreeMap::new(),
+            })
+            .unwrap();
+        // Exceed the protocol's concurrent-stream limit sequentially: every
+        // stopped watch must give its event stream back without reconnecting.
+        for attempt in 0..140 {
+            let mut request = WorkspaceWatchRequest::expanded_dirs([temp.path().to_path_buf()]);
+            request.debounce_ms = 1;
+            let watch = connection
+                .backend
+                .start_watch(request)
+                .await
+                .unwrap_or_else(|error| panic!("watch {attempt}: {error}"))
+                .expect("local helper must support watches");
+            let path = temp.path().join(format!("event-{attempt}.txt"));
+            connection.backend.create_file(&path).await.unwrap();
+            let deadline = Instant::now() + Duration::from_secs(3);
+            loop {
+                if watch
+                    .try_recv()
+                    .is_ok_and(|batch| batch.events.iter().any(|event| event.path == path))
+                {
+                    break;
+                }
+                assert!(Instant::now() < deadline, "watch {attempt} missed mutation");
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            connection.backend.stop_watch(watch.watch_id).await.unwrap();
+            assert_eq!(
+                connection.backend.stat(temp.path()).await.unwrap().kind,
+                nucleotide_workspace::FileKind::Directory
+            );
+        }
+        // Backend retry must not conceal connection loss by starting a fresh
+        // helper: the session created before all the watches must still work.
+        retained.stdin.write_all(b"resume\r\n").await.unwrap();
+        retained.stdin.flush().await.unwrap();
+        let mut stdout = String::new();
+        retained.stdout.read_to_string(&mut stdout).await.unwrap();
+        assert!(stdout.contains("retained-watch-session"), "{stdout:?}");
+        assert_eq!(retained.completion.await.unwrap().status_code, Some(7));
+    })
+    .await
+    .expect("watch lifecycle deadline exceeded");
+}
+
+#[tokio::test]
+async fn cancelling_process_stream_preserves_other_sessions() {
+    let temp = tempfile::tempdir().unwrap();
+    let connection = connect_workspace_backend_for_location(
+        classify_workspace_location(temp.path()),
+        &RemoteWorkspaceBackendOptions {
+            use_local_service: true,
+            local_helper_path: Some(env!("CARGO_BIN_EXE_nucleotide-remote").into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    #[cfg(windows)]
+    let (program, retained_args, cancelled_args) = (
+        "cmd.exe",
+        vec![
+            "/D",
+            "/Q",
+            "/C",
+            "set /p line= & echo retained-session-alive & exit 7",
+        ],
+        vec![
+            "/D",
+            "/Q",
+            "/C",
+            "echo cancellable-ready & ping -n 20 127.0.0.1 > nul",
+        ],
+    );
+    #[cfg(not(windows))]
+    let (program, retained_args, cancelled_args) = (
+        "/bin/sh",
+        vec!["-c", "read line; printf retained-session-alive; exit 7"],
+        vec!["-c", "printf cancellable-ready; exec sleep 20"],
+    );
+    let mut retained = connection
+        .process_session_launcher
+        .unwrap()
+        .launch(RemotePipedProcessSessionRequest {
+            program: program.into(),
+            args: retained_args.into_iter().map(String::from).collect(),
+            cwd: temp.path().into(),
+            environment_anchor: temp.path().into(),
+            env_overrides: BTreeMap::new(),
+        })
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(15), async {
+        let cancellation = WorkspaceCancellationToken::new();
+        let mut stream = connection
+            .backend
+            .run_process_stream_with_cancellation(
+                ProcessSpec {
+                    program: program.into(),
+                    args: cancelled_args.into_iter().map(String::from).collect(),
+                    cwd: temp.path().into(),
+                    env: BTreeMap::new(),
+                    clear_env: false,
+                    inherit_project_environment: true,
+                    stdin: vec![],
+                    max_output_bytes: Some(4096),
+                    timeout_ms: Some(30_000),
+                },
+                &cancellation,
+            )
+            .await
+            .unwrap();
+        let mut ready = Vec::new();
+        while !String::from_utf8_lossy(&ready).contains("cancellable-ready") {
+            match stream
+                .next()
+                .await
+                .expect("process ended before ready")
+                .unwrap()
+            {
+                ProcessEvent::Stdout(bytes) => ready.extend(bytes),
+                ProcessEvent::Complete(done) => {
+                    panic!("process completed before cancellation: {done:?}")
+                }
+                _ => {}
+            }
+        }
+        cancellation.cancel();
+        assert!(stream.collect_output(temp.path()).await.is_err());
+        // A stream-local reset must not close the retained session or replay it.
+        retained.stdin.write_all(b"resume\r\n").await.unwrap();
+        retained.stdin.flush().await.unwrap();
+        let mut stdout = String::new();
+        retained.stdout.read_to_string(&mut stdout).await.unwrap();
+        let done = retained.completion.await.unwrap();
+        assert!(stdout.contains("retained-session-alive"), "{stdout:?}");
+        assert_eq!(done.status_code, Some(7));
+    })
+    .await
+    .expect("session isolation deadline exceeded");
+}
 
 #[tokio::test]
 async fn real_v5_helper_releases_completed_full_duplex_sessions() {
