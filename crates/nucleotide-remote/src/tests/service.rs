@@ -1,5 +1,77 @@
 // Service dispatch, scheduling, streaming operation, and shutdown tests.
 
+#[cfg(unix)]
+#[test]
+fn devenv_remote_process_inherits_nearest_project_environment() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = tempfile::tempdir().unwrap();
+    let project = temp.path().join("nested project");
+    let cwd = project.join("src");
+    std::fs::create_dir_all(&cwd).unwrap();
+    std::fs::write(project.join("devenv.nix"), "{}").unwrap();
+    let binary = temp.path().join("devenv");
+    std::fs::write(
+        &binary,
+        r#"#!/bin/sh
+[ "$1" = print-dev-env ] && [ "$2" = --json ] || exit 2
+[ -f devenv.nix ] || exit 3
+printf '{"variables":{"PROJECT_VALUE":{"type":"exported","value":"from-devenv"}}}\n'
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    for with_envrc in [false, true] {
+        if with_envrc {
+            std::fs::write(
+                project.join(".envrc"),
+                "eval \"$(devenv direnvrc)\"\nuse devenv\n",
+            )
+            .unwrap();
+        }
+        let service = WorkspaceService::with_environment_baseline(
+            LocalWorkspaceBackend,
+            temp.path().to_path_buf(),
+            HashMap::from([("PATH".into(), temp.path().display().to_string())]),
+        )
+        .unwrap();
+        let request = RemoteRequest::RunProcess(ProcessRequest {
+            program: "/bin/sh".into(),
+            args: vec![
+                "-c".into(),
+                "printf '%s' \"$PROJECT_VALUE:$ZED_ENVIRONMENT\"".into(),
+            ],
+            cwd: cwd.clone(),
+            env: BTreeMap::new(),
+            clear_env: false,
+            inherit_project_environment: true,
+            max_output_bytes: None,
+            timeout_ms: None,
+        });
+        let input = v5_client_input(v5_request_frames(1, &request, &[]));
+        let mut io = protocol_v5::FramedIo::new(Cursor::new(input), Vec::new());
+        service
+            .serve_v5(
+                &mut io,
+                &protocol_v5::ServerHandshakeInfo::current(temp.path().display().to_string()),
+            )
+            .unwrap();
+        let (_, output) = io.into_inner();
+        let (response, body, error) = decode_v5_service_response(&read_v5_frames(output), 1);
+        assert!(error.is_none(), "{error:?}");
+        assert!(matches!(response, Some(RemoteResponse::RunProcess(output)) if output.success));
+        assert_eq!(body, b"from-devenv:devenv");
+
+        let snapshot = service.load_project_environment(&project).unwrap();
+        let response = project_environment_response(snapshot);
+        let encoded = serde_json::to_vec(&response).unwrap();
+        let decoded: ProjectEnvironmentResponse = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(decoded.origin, RemoteProjectEnvironmentOrigin::Devenv);
+        assert_eq!(decoded.variables["PROJECT_VALUE"], "from-devenv");
+    }
+}
+
 #[test]
 fn v5_service_reads_file_through_protocol_session() {
     let temp = tempfile::tempdir().unwrap();

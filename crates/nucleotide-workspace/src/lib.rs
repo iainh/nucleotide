@@ -1165,6 +1165,7 @@ fn event_stream_error(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProjectEnvironmentOrigin {
     NativeFlake,
+    Devenv,
     DirectoryShell,
     ProcessBaseline,
     Cli,

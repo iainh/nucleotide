@@ -297,7 +297,7 @@ impl<B: WorkspaceBackend> WorkspaceService<B> {
                     root.pop();
                 }
                 loop {
-                    if root.join(".envrc").is_file() {
+                    if root.join(".envrc").is_file() || root.join("devenv.nix").is_file() {
                         break;
                     }
                     if root == self.workspace_root || !root.pop() {
