@@ -81,9 +81,6 @@ ignore = [
     # zbus_xml; update once those crates allow quick-xml >= 0.41.
     "RUSTSEC-2026-0194",
     "RUSTSEC-2026-0195",
-    # derivative is pulled transitively by the pinned Velopack 1.2 SDK. It is
-    # unmaintained rather than vulnerable and has no patched release.
-    "RUSTSEC-2024-0388",
     # smartstring is pulled transitively by the pinned Helix revision. It is
     # unmaintained rather than vulnerable and has no patched release.
     "RUSTSEC-2026-0249",

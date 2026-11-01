@@ -95,9 +95,6 @@ version = "1.0"
 [dependencies.bitflags]
 version = "2.13"
 
-[dependencies.derivative]
-version = "2.2"
-
 [dependencies.glob]
 version = "0.3"
 
@@ -166,7 +163,7 @@ features = [
 version = "1.4"
 
 [dependencies.zip]
-version = "9.0"
+version = "9.0.3"
 features = ["deflate"]
 default-features = false
 
