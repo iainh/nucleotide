@@ -2406,8 +2406,11 @@ impl Workspace {
                     .cancel_workspace_commands(&mut core.editor);
                 core.editor.set_error(error);
             }
+            let active_slot = self.pane_host.active_slot();
+            let active_document =
+                active_slot.and_then(|slot| core.editor.tree.try_get(slot).map(|view| view.doc));
             core.editor_input
-                .set_hosted_active_slot(self.pane_host.active_slot());
+                .set_hosted_active_context(active_slot, active_document);
         });
         let live = self.pane_host.layout.panes();
         self.sync_terminal_hosts();
@@ -8472,7 +8475,7 @@ impl Workspace {
             project_directory,
             {
                 let workspace = cx.entity().clone();
-                move |doc_id, _window, cx| {
+                move |doc_id, window, cx| {
                     workspace.update(cx, |workspace, cx| {
                         workspace.focus_tab_pane(pane_id, cx);
                         match doc_id {
@@ -8493,6 +8496,7 @@ impl Workspace {
                         workspace.close_tab_context_menu();
                         workspace.allow_tab_bar_auto_scroll();
                         workspace.update_document_views(cx);
+                        workspace.focus_editor(window, cx);
                     });
                 }
             },

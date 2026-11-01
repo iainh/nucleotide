@@ -563,7 +563,93 @@ fn final_main_quit_after_last_dock_terminal_close_validates_dirty_documents(
 }
 
 #[gpui::test]
+fn global_command_prompt_replacement_cancels_the_search_edit_tail(cx: &mut gpui::TestAppContext) {
+    use nucleotide_ui::FocusCoordinator;
+
+    let _runtime = TEST_RUNTIME.enter();
+    let root = tempdir().unwrap();
+    let path = root.path().join("prompt.txt");
+    fs::write(&path, "alpha beta alpha\n").unwrap();
+    // First prove matching search submission releases its own mapped edit.
+    for replace in [false, true] {
+        let (core, workspace, cx) = new_test_workspace(cx, &path);
+        let (document, slot) = core.update(cx, |core, _| {
+            let config: ConfigRaw =
+                toml::from_str("[keys.normal]\nF12 = [\"search\", \"delete_selection\"]").unwrap();
+            let mut keys = helix_term::config::Config::default().keys;
+            helix_term::keymap::merge_keys(&mut keys, config.keys.unwrap());
+            core.editor_input =
+                EditorInputBridge::new(Keymaps::new(Box::new(arc_swap::access::Constant(keys))));
+            core.editor_input.enable_hosted_commands();
+            let slot = core.editor.tree.focus;
+            (core.editor.tree.get(slot).doc, slot)
+        });
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.focus_editor(window, cx)
+        });
+        cx.simulate_keystrokes("f12");
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            assert!(
+                cx.global::<FocusCoordinator>()
+                    .prompt_focus()
+                    .unwrap()
+                    .is_focused(window)
+            )
+        });
+        if replace {
+            // This is the global UI action, not a token-bearing submission of
+            // the search prompt that owns the pending delete_selection.
+            submit_command(cx, "move_char_right");
+        } else {
+            cx.simulate_input("beta");
+            cx.simulate_keystrokes("enter");
+            cx.run_until_parked();
+        }
+        core.read_with(cx, |core, _| {
+            let doc = &core.editor.documents[&document];
+            if replace {
+                assert_eq!(
+                    doc.text().to_string(),
+                    "alpha beta alpha\n",
+                    "replacing search must discard its edit tail"
+                );
+                assert_eq!(
+                    doc.selection(slot).primary().cursor(doc.text().slice(..)),
+                    1
+                );
+                assert!(!doc.is_modified());
+            } else {
+                assert_eq!(
+                    doc.text().to_string(),
+                    "alpha  alpha\n",
+                    "matching search submission must finish its own delete"
+                );
+            }
+        });
+        cx.update(|window, _| window.remove_window());
+        drop(workspace);
+        drop(core);
+        cx.run_until_parked();
+    }
+}
+
+#[gpui::test]
 fn delayed_definition_cannot_release_an_old_edit_into_another_pane(cx: &mut gpui::TestAppContext) {
+    definition_continuation_scenario(cx, "other-pane");
+}
+
+#[gpui::test]
+fn delayed_definition_rejects_same_slot_document_aba(cx: &mut gpui::TestAppContext) {
+    definition_continuation_scenario(cx, "same-slot-aba");
+}
+
+#[gpui::test]
+fn definition_picker_open_failure_cancels_the_source_edit_tail(cx: &mut gpui::TestAppContext) {
+    definition_continuation_scenario(cx, "picker-open-failure");
+}
+
+fn definition_continuation_scenario(cx: &mut gpui::TestAppContext, scenario: &str) {
     use super::new_test_workspace_with_runtime;
     use futures_util::StreamExt;
     use gpui::{Modifiers, MouseButton};
@@ -648,6 +734,11 @@ fn delayed_definition_cannot_release_an_old_edit_into_another_pane(cx: &mut gpui
     let mut reader = BufReader::new(server_stdin);
     let (a, a_slot, c, c_slot, server_id) = core.update(cx, |core, cx| {
         init_lsp_test_hooks(&core.editor.handlers);
+        if scenario == "same-slot-aba" {
+            let mut config = (**core.helix_config_arc.load()).clone();
+            config.editor.bufferline = helix_view::editor::BufferLine::Always;
+            core.helix_config_arc.store(Arc::new(config));
+        }
         let a_slot = core.editor.tree.focus;
         let a = core.editor.tree.get(a_slot).doc;
         let c = core.editor.open(&c_path, Action::VerticalSplit).unwrap();
@@ -725,6 +816,18 @@ fn delayed_definition_cannot_release_an_old_edit_into_another_pane(cx: &mut gpui
     cx.simulate_keystrokes("ctrl-w h");
     cx.run_until_parked();
     core.read_with(cx, |core, _| assert_eq!(core.editor.tree.focus, a_slot));
+    if scenario == "same-slot-aba" {
+        let pane = workspace.read_with(cx, |workspace, _| {
+            workspace.pane_id_for_slot(a_slot).unwrap()
+        });
+        workspace.update(cx, |workspace, cx| {
+            workspace.activate_test_pane_tab(pane, crate::tab::TabId::Document(c), cx);
+            workspace.activate_test_pane_tab(pane, crate::tab::TabId::Document(a), cx);
+        });
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.focus_editor(window, cx)
+        });
+    }
     cx.update(|window, cx| window.draw(cx).clear());
     cx.simulate_keystrokes("f12");
     cx.run_until_parked();
@@ -747,23 +850,187 @@ fn delayed_definition_cannot_release_an_old_edit_into_another_pane(cx: &mut gpui
         );
         assert_eq!(core.editor.documents[&c].text().to_string(), "charlie\n");
     });
-    let pane = workspace.read_with(cx, |workspace, _| {
-        workspace.pane_id_for_slot(c_slot).unwrap()
-    });
-    let selector = Box::leak(format!("pane-drop-body-{pane:?}").into_boxed_str());
-    let position = cx.debug_bounds(selector).unwrap().center();
-    cx.simulate_mouse_down(position, MouseButton::Left, Modifiers::none());
-    cx.simulate_mouse_up(position, MouseButton::Left, Modifiers::none());
-    cx.simulate_keystrokes("h");
-    cx.run_until_parked();
-    core.read_with(cx, |core, _| {
-        assert_eq!(core.editor.tree.focus, c_slot);
-        assert_eq!(
-            core.editor.documents[&c].text().to_string(),
-            "charlie\n",
-            "an unrelated physical key must not release the old tail"
-        );
-    });
+    if scenario == "picker-open-failure" {
+        use nucleotide_ui::FocusCoordinator;
+
+        let target = root.path().join("00-target.c");
+        fs::write(&target, "target symbol\n").unwrap();
+        let uri = helix_lsp::Url::from_file_path(&target).unwrap();
+        let other_uri = helix_lsp::Url::from_file_path(&c_path).unwrap();
+        let locations = serde_json::json!([
+            {"uri":uri, "range":{"start":{"line":0,"character":0},"end":{"line":0,"character":6}}},
+            {"uri":other_uri, "range":{"start":{"line":0,"character":0},"end":{"line":0,"character":7}}}
+        ]);
+        runtime.block_on(write(
+            &mut server_stdout,
+            serde_json::json!({"jsonrpc":"2.0", "id":request["id"], "result":locations}),
+        ));
+        for _ in 0..100 {
+            runtime.block_on(async { tokio::time::sleep(Duration::from_millis(5)).await });
+            cx.run_until_parked();
+            if cx.update(|_, cx| cx.global::<FocusCoordinator>().picker_focus().is_some()) {
+                break;
+            }
+        }
+        cx.update(|window, cx| window.draw(cx).clear());
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            assert!(
+                cx.global::<FocusCoordinator>()
+                    .picker_focus()
+                    .unwrap()
+                    .contains_focused(window, cx)
+            )
+        });
+        // The server returned a valid file, but it becomes unopenable while
+        // the real picker is waiting. Selecting must cancel, not edit A.
+        fs::remove_file(&target).unwrap();
+        fs::create_dir(&target).unwrap();
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        core.read_with(cx, |core, _| {
+            assert!(
+                core.editor.is_err(),
+                "failed navigation must retain an error"
+            );
+            assert_eq!(core.editor.tree.focus, a_slot);
+            assert_eq!(
+                core.editor.documents[&a].text().to_string(),
+                "alpha symbol\n",
+                "failed picker navigation must not release deletion into its source"
+            );
+            assert_eq!(core.editor.documents[&c].text().to_string(), "charlie\n");
+            assert!(
+                core.editor
+                    .documents
+                    .values()
+                    .all(|doc| doc.path() != Some(target.as_path()))
+            );
+        });
+        cx.simulate_keystrokes("h");
+        cx.run_until_parked();
+        core.read_with(cx, |core, _| {
+            assert_eq!(
+                core.editor.documents[&a].text().to_string(),
+                "alpha symbol\n",
+                "failed navigation must discard, not postpone, the tail"
+            )
+        });
+
+        // Positive control: the same two-result picker can open a real target
+        // and delete its selected range, without touching the source.
+        fs::remove_dir(&target).unwrap();
+        fs::write(&target, "target symbol\n").unwrap();
+        cx.simulate_keystrokes("f12");
+        cx.run_until_parked();
+        let matching = runtime.block_on(async {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    let message = read(&mut reader).await;
+                    if message["method"] == "textDocument/definition" {
+                        break message;
+                    }
+                }
+            })
+            .await
+            .unwrap()
+        });
+        assert_ne!(matching["id"], request["id"]);
+        runtime.block_on(write(
+            &mut server_stdout,
+            serde_json::json!({"jsonrpc":"2.0", "id":matching["id"], "result":locations}),
+        ));
+        for _ in 0..100 {
+            runtime.block_on(async { tokio::time::sleep(Duration::from_millis(5)).await });
+            cx.run_until_parked();
+            if cx.update(|_, cx| cx.global::<FocusCoordinator>().picker_focus().is_some()) {
+                break;
+            }
+        }
+        cx.update(|window, cx| window.draw(cx).clear());
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            assert!(
+                cx.global::<FocusCoordinator>()
+                    .picker_focus()
+                    .unwrap()
+                    .contains_focused(window, cx)
+            )
+        });
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        core.read_with(cx, |core, _| {
+            let selected = core.editor.tree.get(core.editor.tree.focus).doc;
+            assert_eq!(
+                core.editor.documents[&selected].path(),
+                Some(target.as_path())
+            );
+            assert_eq!(
+                core.editor.documents[&selected].text().to_string(),
+                " symbol\n"
+            );
+            assert_eq!(
+                core.editor.documents[&a].text().to_string(),
+                "alpha symbol\n"
+            );
+            assert_eq!(core.editor.documents[&c].text().to_string(), "charlie\n");
+        });
+        assert_eq!(fs::read_to_string(&target).unwrap(), "target symbol\n");
+        cx.update(|window, _| window.remove_window());
+        drop(workspace);
+        drop(core);
+        cx.run_until_parked();
+        return;
+    }
+    let expected_slot = if scenario == "same-slot-aba" {
+        let pane = workspace.read_with(cx, |workspace, _| {
+            workspace.pane_id_for_slot(a_slot).unwrap()
+        });
+        for document in [c, a] {
+            cx.update(|window, cx| window.draw(cx).clear());
+            let selector = Box::leak(format!("pane-tab-{pane:?}-{document}").into_boxed_str());
+            let position = cx.debug_bounds(selector).unwrap().center();
+            cx.simulate_mouse_down(position, MouseButton::Left, Modifiers::none());
+            cx.simulate_mouse_up(position, MouseButton::Left, Modifiers::none());
+            cx.run_until_parked();
+            core.read_with(cx, |core, _| {
+                assert_eq!(
+                    core.editor.tree.focus, a_slot,
+                    "ABA must keep the same real ViewId"
+                );
+                assert_eq!(core.editor.tree.get(a_slot).doc, document);
+            });
+            cx.update(|window, cx| {
+                assert!(
+                    cx.global::<nucleotide_ui::FocusCoordinator>()
+                        .editor_focus()
+                        .unwrap()
+                        .is_focused(window),
+                    "tab activation must focus the current editor, not just its Helix slot"
+                );
+            });
+        }
+        a_slot
+    } else {
+        let pane = workspace.read_with(cx, |workspace, _| {
+            workspace.pane_id_for_slot(c_slot).unwrap()
+        });
+        let selector = Box::leak(format!("pane-drop-body-{pane:?}").into_boxed_str());
+        let position = cx.debug_bounds(selector).unwrap().center();
+        cx.simulate_mouse_down(position, MouseButton::Left, Modifiers::none());
+        cx.simulate_mouse_up(position, MouseButton::Left, Modifiers::none());
+        cx.simulate_keystrokes("h");
+        cx.run_until_parked();
+        core.read_with(cx, |core, _| {
+            assert_eq!(core.editor.tree.focus, c_slot);
+            assert_eq!(
+                core.editor.documents[&c].text().to_string(),
+                "charlie\n",
+                "an unrelated physical key must not release the old tail"
+            );
+        });
+        c_slot
+    };
     // Release exactly the retained request, using its real JSON-RPC ID.
     let uri = helix_lsp::Url::from_file_path(&a_path).unwrap();
     runtime.block_on(write(&mut server_stdout, serde_json::json!({"jsonrpc":"2.0", "id":request["id"], "result":{"uri":uri, "range":{"start":{"line":0,"character":6},"end":{"line":0,"character":12}}}})));
@@ -773,7 +1040,7 @@ fn delayed_definition_cannot_release_an_old_edit_into_another_pane(cx: &mut gpui
     }
     core.read_with(cx, |core, _| {
         assert_eq!(
-            core.editor.tree.focus, c_slot,
+            core.editor.tree.focus, expected_slot,
             "stale definition completion must not steal focus"
         );
         assert_eq!(core.editor.documents[&c].text().to_string(), "charlie\n");
@@ -784,8 +1051,10 @@ fn delayed_definition_cannot_release_an_old_edit_into_another_pane(cx: &mut gpui
     });
     // Positive control: a second request with unchanged origin must release its
     // own tail after its matching response, without needing another key.
-    cx.simulate_keystrokes("ctrl-w h");
-    cx.run_until_parked();
+    if scenario != "same-slot-aba" {
+        cx.simulate_keystrokes("ctrl-w h");
+        cx.run_until_parked();
+    }
     core.read_with(cx, |core, _| assert_eq!(core.editor.tree.focus, a_slot));
     cx.simulate_keystrokes("f12");
     cx.run_until_parked();

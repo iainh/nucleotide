@@ -277,3 +277,78 @@ mock. It also includes a matching-response positive control for the fixed
 implementation; that later branch is not reached by the pre-fix run. G owns the
 runtime fixes and the after-fix integrated rerun. No native GUI or PTY result is
 implied by these headless tests.
+
+## Integrated after-fix regression record
+
+G installed the corrected fixtures and runtime fixes. H inspected G's
+`/tmp/shared-panes-full7.log` and independently counted **2,306 passed,
+0 failed and 11 ignored across 51 test/doc-test suites**, including all
+**15 shared-pane tests**. G ran:
+
+```sh
+CARGO_PROFILE_DEV_DEBUG=0 cargo test --workspace --locked -- --skip tests::performance_tests --skip tests::integration_tests::tests::performance_tests
+```
+
+The green run covers mapped close-to-terminal cancellation, synchronous
+viewport continuation, held and stale real LSP responses, a matching-response
+positive control, bounded image-pane slot ownership, inactive-document state
+transfer, final-pane dirty/forced quit and zero-slot maintenance.
+
+Two fixture corrections preserve existing contracts rather than changing
+production behaviour: scrolloff is explicitly zero in the short-document
+viewport scenario, and deleting the returned LSP range 6–12 removes the entire
+`symbol`, leaving exactly `alpha \n`. Both real LSP fixtures share one event/hook
+initializer so they can run together without duplicate global registration.
+
+G's resulting local revision is `424b6fb2375d6588a47b5817f69f3d4ee5776794`.
+The full run preceded removal of one unused `cfg(test)` accessor; G rebuilt
+after that removal. Runtime code was unchanged, but this is not a claim of a
+second full-suite run on that final tree. The local integration bundle has
+SHA-256 `df7307d0e655e4f91be37adc875d56a8c6509163648f03113d67818736f08a26`.
+Nothing was pushed, and these headless results do not replace the native GUI,
+IME, PTY or platform acceptance evidence above.
+
+## Continuation follow-up regressions
+
+H executed three additional regressions against unchanged v2
+`424b6fb2375d6588a47b5817f69f3d4ee5776794`, changing only the dedicated
+application contract test file. The original 15 tests passed and all three new
+tests failed. These are executed failures, not source-review hypotheses.
+
+| Scenario | Distinguishing pre-fix result | Required positive control |
+| --- | --- | --- |
+| Replace an open mapped search with the global command prompt; submit `move_char_right` | `alpha beta alpha\n` became `apha beta alpha\n`: the abandoned search tail deleted `l`. | Matching search submission deletes exactly the selected `beta`. |
+| Return two real definition locations, then replace the selected target file with a directory before picker confirmation | The error remained, but source `alpha symbol\n` became `lpha symbol\n`. | A fresh real two-result request opens a valid target and deletes only its selected range, leaving source and unrelated document unchanged. |
+| Hold a definition response while clicking A → C → A tabs in one PaneId and ViewId, without an intervening key | The old response was accepted and source became `alpha \n`. | A second request from the unchanged origin must reach the real server and complete its matching edit without another key. |
+
+The LSP cases extend the existing real duplex JSON-RPC fixture. They retain
+actual request IDs, delay server responses and exercise the registry, Core
+callback and picker. They do not call completion callbacks directly or mock the
+adapter. Picker focus checks use descendant focus because its query input owns
+keyboard focus.
+
+An intermediate owner-fix run passed 17 of 18 tests: stale ABA text and logical
+focus checks passed, but the matching second request timed out. H then measured
+actual GPUI editor focus as false before F12. A retained assertion after each
+tab click reproduced this earlier and directly. G fixed the tab activation
+callback to focus the newly active editor; the fixture does not force-refocus
+after those clicks.
+
+H independently reran the complete shared-pane selection with the final contract
+file, SHA-256
+`47e85e1fc37090f6f3db3ccba09b4f67f03c40f65d6259968d1abd86025041d5`:
+
+```sh
+CARGO_TARGET_DIR=/home/user/workspace/repo/target CARGO_PROFILE_DEV_DEBUG=0 cargo test -p nucleotide --locked --lib shared_pane -- --nocapture
+```
+
+Result: **18 passed, 0 failed, 0 ignored**. The tree was exact v2 plus C's
+`v2-command-context-followup.patch` (SHA-256
+`b3d18fec85a87385656c3b7bda733f99ed0dd010e27bacdaea0e9235a978f7e4`),
+G's current overlay navigation-failure fix and workspace context-projection/tab
+focus fix, and the owned contract file above. H applied owner-supplied runtime
+changes only in the disposable verification worktree, not the baseline checkout.
+The run passed both rejection and matching-success controls, including actual
+editor focus after each ABA click. It is headless GPUI evidence, not native
+platform interaction or a new full-workspace result. G owns the combined
+workspace rerun and final integrated revision.
