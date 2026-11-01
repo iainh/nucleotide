@@ -45,6 +45,22 @@ impl TerminalPanel {
         }
     }
 
+    /// Mount controller-owned content without recreating its view or focus handle.
+    /// `new` remains available for callers that do not yet own session descriptors.
+    pub fn with_view(
+        active: TerminalId,
+        height_px: f32,
+        view: Entity<TerminalView>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let focus = view.focus_handle(cx);
+        Self {
+            view_entity: Some(view),
+            focus,
+            ..Self::new(active, height_px, cx)
+        }
+    }
+
     pub fn on_close(
         mut self,
         handler: impl Fn(TerminalId, &mut Window, &mut App) + 'static,

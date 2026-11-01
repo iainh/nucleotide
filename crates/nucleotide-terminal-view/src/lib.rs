@@ -282,8 +282,8 @@ impl TerminalViewModel {
     }
 
     #[cfg(feature = "emulator")]
-    fn finish_mouse_selection(&mut self) {
-        self.mouse_selecting = false;
+    fn finish_mouse_selection(&mut self) -> bool {
+        std::mem::replace(&mut self.mouse_selecting, false)
     }
 
     #[cfg(feature = "emulator")]
@@ -779,6 +779,12 @@ impl TerminalView {
     }
 }
 
+impl gpui::Focusable for TerminalView {
+    fn focus_handle(&self, _cx: &gpui::App) -> FocusHandle {
+        self.focus.clone()
+    }
+}
+
 impl Render for TerminalView {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         let theme = _cx.theme();
@@ -944,8 +950,9 @@ impl Render for TerminalView {
             let interactive_content = interactive_content.on_mouse_up(
                 MouseButton::Left,
                 move |_event: &MouseUpEvent, _window, cx| {
-                    lock_or_recover(selection_model.as_ref()).finish_mouse_selection();
-                    cx.stop_propagation();
+                    if lock_or_recover(selection_model.as_ref()).finish_mouse_selection() {
+                        cx.stop_propagation();
+                    }
                 },
             );
 
@@ -953,8 +960,9 @@ impl Render for TerminalView {
             let interactive_content = interactive_content.on_mouse_up_out(
                 MouseButton::Left,
                 move |_event: &MouseUpEvent, _window, cx| {
-                    lock_or_recover(selection_model.as_ref()).finish_mouse_selection();
-                    cx.stop_propagation();
+                    if lock_or_recover(selection_model.as_ref()).finish_mouse_selection() {
+                        cx.stop_propagation();
+                    }
                 },
             );
             div()
@@ -1240,6 +1248,65 @@ mod tests {
             3,
             "clearing the selection must repaint immediately"
         );
+    }
+
+    #[gpui::test]
+    fn terminal_consumes_mouse_up_only_for_its_own_selection(cx: &mut TestAppContext) {
+        struct ReleaseHost {
+            terminal: gpui::Entity<TerminalView>,
+            releases: Rc<LayoutCell<usize>>,
+        }
+
+        impl Render for ReleaseHost {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let releases = self.releases.clone();
+                div()
+                    .flex()
+                    .w(px(200.0))
+                    .h(px(100.0))
+                    .on_mouse_up(MouseButton::Left, move |_, _, _| {
+                        releases.set(releases.get() + 1);
+                    })
+                    .child(div().w(px(100.0)).h_full().child(self.terminal.clone()))
+                    .child(div().w(px(100.0)).h_full())
+            }
+        }
+
+        cx.update(install_test_globals);
+        let model = Arc::new(Mutex::new(TerminalViewModel::new(TerminalId(2))));
+        lock_or_recover(&model).resize_grid(10, 2, Some((8.0, 20.0)));
+        let releases = Rc::new(LayoutCell::new(0));
+        let (_, cx) = cx.add_window_view(|_, cx| ReleaseHost {
+            terminal: cx.new(|cx| TerminalView::new(model.clone(), cx.focus_handle(), cx)),
+            releases: releases.clone(),
+        });
+        let inside = point(px(4.0), px(10.0));
+        let outside = point(px(150.0), px(10.0));
+
+        // A foreign drag can end outside or inside the terminal without starting a selection.
+        for (position, expected) in [(outside, 1), (inside, 2)] {
+            cx.simulate_mouse_down(outside, MouseButton::Left, gpui::Modifiers::none());
+            cx.simulate_mouse_up(position, MouseButton::Left, gpui::Modifiers::none());
+            assert_eq!(
+                releases.get(),
+                expected,
+                "unrelated mouse-up must reach its owner"
+            );
+            assert!(!lock_or_recover(&model).mouse_selecting);
+        }
+
+        // The terminal still consumes its own selection release, including outside its bounds.
+        for position in [outside, inside] {
+            cx.simulate_mouse_down(inside, MouseButton::Left, gpui::Modifiers::none());
+            assert!(lock_or_recover(&model).mouse_selecting);
+            cx.simulate_mouse_up(position, MouseButton::Left, gpui::Modifiers::none());
+            assert!(!lock_or_recover(&model).mouse_selecting);
+            assert_eq!(
+                releases.get(),
+                2,
+                "selection mouse-up belongs to the terminal"
+            );
+        }
     }
 
     fn scroll_model(history_size: usize, display_offset: usize) -> Arc<Mutex<TerminalViewModel>> {

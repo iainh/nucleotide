@@ -1789,25 +1789,6 @@ fn remote_terminal_proxy_command_rejects_different_remote_target() {
 }
 
 #[test]
-fn terminal_cwd_matching_detects_project_root_changes() {
-    let old_root = PathBuf::from("/tmp/old-project");
-    let new_root = PathBuf::from("/tmp/new-project");
-
-    assert!(Workspace::terminal_cwd_matches(
-        Some(old_root.as_path()),
-        Some(old_root.as_path())
-    ));
-    assert!(!Workspace::terminal_cwd_matches(
-        Some(old_root.as_path()),
-        Some(new_root.as_path())
-    ));
-    assert!(!Workspace::terminal_cwd_matches(
-        None,
-        Some(new_root.as_path())
-    ));
-}
-
-#[test]
 fn tab_bar_new_menu_entries_match_zed_grouping() {
     let labels = Workspace::tab_bar_new_menu_entries()
         .iter()

@@ -1,6 +1,8 @@
 // ABOUTME: Individual tab component for the tab bar with close button
 // ABOUTME: Displays buffer name, modified indicator, and handles click events
 
+use crate::workspace::ImageId;
+use crate::workspace::pane_layout::PaneId;
 use gpui::prelude::FluentBuilder;
 use gpui::{
     App, AppContext, ClickEvent, Context, CursorStyle, Div, ElementId, InteractiveElement,
@@ -8,7 +10,7 @@ use gpui::{
     Stateful, StatefulInteractiveElement, Styled, Window, div, px, svg,
 };
 use helix_core::diagnostic::Severity as DiagnosticSeverity;
-use helix_view::{DocumentId, ViewId};
+use helix_view::DocumentId;
 use nucleotide_types::VcsStatus;
 use nucleotide_ui::ThemedContext;
 use nucleotide_ui::{
@@ -27,7 +29,7 @@ type MouseDownEventHandler = Arc<dyn Fn(&MouseDownEvent, &mut Window, &mut App) 
 
 #[derive(Clone)]
 pub(crate) struct DraggedTab {
-    pub(crate) pane: ViewId,
+    pub(crate) pane: PaneId,
     pub(crate) tab: TabId,
     label: SharedString,
 }
@@ -172,7 +174,8 @@ enum TabContentIcon {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum TabId {
     Document(DocumentId),
-    Image(u64),
+    Image(ImageId),
+    Terminal(nucleotide_events::terminal::TerminalId),
 }
 
 impl From<DocumentId> for TabId {
@@ -191,7 +194,8 @@ impl std::fmt::Display for TabId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Document(doc_id) => write!(f, "{doc_id}"),
-            Self::Image(id) => write!(f, "image-{id}"),
+            Self::Image(id) => write!(f, "image-{}", id.0),
+            Self::Terminal(id) => write!(f, "terminal-{}", id.0),
         }
     }
 }
@@ -270,7 +274,7 @@ pub struct Tab {
 impl Tab {
     pub(crate) fn with_pane_drag_drop(
         mut self,
-        pane: ViewId,
+        pane: PaneId,
         on_drop: impl Fn(&DraggedTab, &mut Window, &mut App) + 'static,
     ) -> Self {
         let payload = DraggedTab {

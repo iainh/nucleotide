@@ -119,6 +119,15 @@ pub enum Update {
     Lsp(LspEvent),
     Ui(UiEvent),
     Workspace(WorkspaceEvent),
+    WorkspaceCommand {
+        request: crate::application::editor_input::workspace_commands::WorkspaceCommandRequest,
+        continuation: Option<crate::application::editor_input::EditorContinuation>,
+    },
+    /// Bind the immediately following native UI install/handoff to this token.
+    NativeUiContinuation(Option<crate::application::editor_input::EditorContinuation>),
+    /// An async result was claimed/applied; reconcile host focus before resuming.
+    ContinueCommand(crate::application::editor_input::EditorCommandToken),
+    Terminal(nucleotide_events::terminal::Event),
 
     // Complex UI components with behavior (closures/callbacks)
     Prompt(crate::prompt::Prompt),
@@ -165,10 +174,12 @@ pub enum Update {
     ViewportScroll {
         view_id: helix_view::ViewId,
         request: nucleotide_editor::EditorViewportScrollRequest,
+        continuation: Option<crate::application::editor_input::EditorContinuation>,
     },
     ViewportCursor {
         view_id: helix_view::ViewId,
         request: nucleotide_editor::EditorViewportCursorRequest,
+        continuation: Option<crate::application::editor_input::EditorContinuation>,
     },
     ShowFilePicker,
     ShowFilePickerAt(std::path::PathBuf),
@@ -212,6 +223,15 @@ impl std::fmt::Debug for Update {
             Update::Lsp(event) => write!(f, "Lsp({event:?})"),
             Update::Ui(event) => write!(f, "Ui({event:?})"),
             Update::Workspace(event) => write!(f, "Workspace({event:?})"),
+            Update::WorkspaceCommand {
+                request,
+                continuation,
+            } => write!(f, "WorkspaceCommand({request:?}, {continuation:?})"),
+            Update::NativeUiContinuation(continuation) => {
+                write!(f, "NativeUiContinuation({continuation:?})")
+            }
+            Update::ContinueCommand(token) => write!(f, "ContinueCommand({token:?})"),
+            Update::Terminal(event) => write!(f, "Terminal({event:?})"),
             Update::Prompt(_) => write!(f, "Prompt(...)"),
             Update::FileNamePrompt(operation) => write!(f, "FileNamePrompt({operation:?})"),
             Update::Picker(_) => write!(f, "Picker(...)"),
@@ -248,10 +268,14 @@ impl std::fmt::Debug for Update {
                 write!(f, "SelectionRestored(doc: {doc_id:?}, view: {view_id:?})")
             }
             Update::ViewFocused { view_id } => write!(f, "ViewFocused({view_id:?})"),
-            Update::ViewportScroll { view_id, request } => {
+            Update::ViewportScroll {
+                view_id, request, ..
+            } => {
                 write!(f, "ViewportScroll(view: {view_id:?}, request: {request:?})")
             }
-            Update::ViewportCursor { view_id, request } => {
+            Update::ViewportCursor {
+                view_id, request, ..
+            } => {
                 write!(f, "ViewportCursor(view: {view_id:?}, request: {request:?})")
             }
             Update::CompletionEvent(_) => write!(f, "CompletionEvent(...)"),

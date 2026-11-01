@@ -1,3 +1,6 @@
+#[path = "shared_pane_contract_tests.rs"]
+mod shared_pane_contract_tests;
+
 use super::completion::{
     buffer_word_completion_items, completion_context_for_trigger, dedupe_completion_items,
     local_path_completion_context, lsp_completion_insert_text, lsp_completion_insert_text_format,
@@ -1290,6 +1293,7 @@ fn new_test_application(cx: &mut gpui::TestAppContext) -> Entity<Application> {
             ),
             pending_lsp_workspace_edits: std::collections::VecDeque::new(),
             terminal_runtime: crate::application::TerminalRuntimeHandle::new(),
+            pending_terminal_events: Arc::default(),
             maintenance_wake: None,
         };
         app.lsp_state = Some(cx.new(|_cx| nucleotide_lsp::LspState::new()));
@@ -1964,8 +1968,8 @@ fn tab_copy_actions_preserve_unicode_paths(cx: &mut gpui::TestAppContext) {
     let file_name = "\u{e9}cole \u{6771}\u{4eac}.txt";
     let path = helix_stdx::path::canonicalize(root.path()).join(file_name);
     fs::write(&path, "clipboard fixture\n").unwrap();
-    let (core, _workspace, cx) = new_test_workspace(cx, &path);
-    let (pane, doc) = core.update(cx, |core, cx| {
+    let (core, workspace, cx) = new_test_workspace(cx, &path);
+    let (slot, doc) = core.update(cx, |core, cx| {
         let mut config = (**core.helix_config_arc.load()).clone();
         config.editor.bufferline = helix_view::editor::BufferLine::Always;
         core.helix_config_arc.store(Arc::new(config));
@@ -1974,6 +1978,8 @@ fn tab_copy_actions_preserve_unicode_paths(cx: &mut gpui::TestAppContext) {
         cx.emit(crate::Update::Redraw);
         result
     });
+    cx.run_until_parked();
+    let pane = workspace.read_with(cx, |workspace, _| workspace.pane_id_for_slot(slot).unwrap());
     let tab = Box::leak(format!("pane-tab-{pane:?}-{doc}").into_boxed_str());
 
     for (intent, expected) in [
@@ -2199,22 +2205,20 @@ fn opening_directory_closes_file_buffers_but_preserves_scratch(cx: &mut gpui::Te
         );
     });
 
-    // With no existing scratch, closing the last file must still leave
-    // a usable editor containing a fresh scratch buffer.
+    // With no retained scratch, a project switch must not manufacture a
+    // document or editor slot just to keep the workspace alive.
     core.update(cx, |core, cx| {
         assert!(core.editor.close_document(scratch, true).is_ok());
-        let empty_scratch = core.editor.tree.get(core.editor.tree.focus).doc;
+        assert!(core.editor.documents.is_empty());
+        assert_eq!(core.editor.tree.views().count(), 0);
         core.editor.open(&alpha_path, Action::Replace).unwrap();
-        assert!(!core.editor.documents.contains_key(&empty_scratch));
         cx.emit(crate::Update::OpenDirectory(next_directory.clone()));
     });
     cx.run_until_parked();
     core.read_with(cx, |core, _| {
-        assert_eq!(core.editor.documents.len(), 1);
-        let doc = core.editor.documents.values().next().unwrap();
-        assert!(doc.path().is_none());
-        assert!(!doc.is_modified());
-        assert!(core.editor.tree.views().next().is_some());
+        assert_eq!(core.project_directory.as_ref(), Some(&next_directory));
+        assert!(core.editor.documents.is_empty());
+        assert_eq!(core.editor.tree.views().count(), 0);
     });
 }
 
@@ -2264,13 +2268,8 @@ fn opening_directory_waits_for_unsaved_buffer_confirmation(cx: &mut gpui::TestAp
     cx.run_until_parked();
     core.read_with(cx, |core, _| {
         assert_eq!(core.project_directory.as_ref(), Some(&next_directory));
-        assert_eq!(core.editor.documents.len(), 1);
-        assert!(
-            core.editor
-                .documents
-                .values()
-                .all(|doc| doc.path().is_none())
-        );
+        assert!(core.editor.documents.is_empty());
+        assert_eq!(core.editor.tree.views().count(), 0);
     });
     assert_eq!(fs::read_to_string(alpha_path).unwrap(), "alpha\n");
 }
@@ -2307,10 +2306,16 @@ fn split_tabs_transfer_through_drag_and_drop(cx: &mut gpui::TestAppContext) {
 
     // Selectors locate public tab hitboxes; clicks and drops exercise the
     // actual callbacks rather than calling workspace transfer helpers.
-    let alpha_left = Box::leak(format!("pane-tab-{:?}-{}", left, alpha).into_boxed_str());
-    let beta_left = Box::leak(format!("pane-tab-{:?}-{}", left, beta).into_boxed_str());
-    let alpha_right = Box::leak(format!("pane-tab-{:?}-{}", right, alpha).into_boxed_str());
-    let beta_right = Box::leak(format!("pane-tab-{:?}-{}", right, beta).into_boxed_str());
+    let (left_pane, right_pane) = workspace.read_with(cx, |workspace, _| {
+        (
+            workspace.pane_id_for_slot(left).unwrap(),
+            workspace.pane_id_for_slot(right).unwrap(),
+        )
+    });
+    let alpha_left = Box::leak(format!("pane-tab-{left_pane:?}-{alpha}").into_boxed_str());
+    let beta_left = Box::leak(format!("pane-tab-{left_pane:?}-{beta}").into_boxed_str());
+    let alpha_right = Box::leak(format!("pane-tab-{right_pane:?}-{alpha}").into_boxed_str());
+    let beta_right = Box::leak(format!("pane-tab-{right_pane:?}-{beta}").into_boxed_str());
     let start = cx.debug_bounds(beta_left).unwrap().center();
     let end = cx.debug_bounds(alpha_right).unwrap().center();
     cx.simulate_mouse_move(start, None, Modifiers::none());
@@ -2400,7 +2405,9 @@ fn split_tabs_transfer_through_drag_and_drop(cx: &mut gpui::TestAppContext) {
     cx.update(|window, cx| {
         window.draw(cx).clear();
     });
-    let alpha_copy = Box::leak(format!("pane-tab-{:?}-{}", copy, alpha).into_boxed_str());
+    let copy_pane =
+        workspace.read_with(cx, |workspace, _| workspace.pane_id_for_slot(copy).unwrap());
+    let alpha_copy = Box::leak(format!("pane-tab-{copy_pane:?}-{alpha}").into_boxed_str());
     let point = cx.debug_bounds(alpha_copy).unwrap().center();
     cx.simulate_mouse_down(point, MouseButton::Middle, Modifiers::none());
     cx.simulate_mouse_up(point, MouseButton::Middle, Modifiers::none());
@@ -2465,10 +2472,15 @@ fn pane_edge_drag_previews_and_splits_only_the_destination(cx: &mut gpui::TestAp
             cx.update(|window, cx| window.draw(cx).clear());
         };
         draw(cx);
-        let tab = Box::leak(format!("pane-tab-{source:?}-{beta}").into_boxed_str());
-        let target_selector = Box::leak(format!("editor-pane-{target:?}").into_boxed_str());
-        let source_body = Box::leak(format!("pane-drop-body-{source:?}").into_boxed_str());
-        let target_body = Box::leak(format!("pane-drop-body-{target:?}").into_boxed_str());
+        let [source_pane, target_pane, sibling_pane] = workspace.read_with(cx, |workspace, _| {
+            [source, target, sibling].map(|slot| workspace.pane_id_for_slot(slot).unwrap())
+        });
+        let tab = Box::leak(format!("pane-tab-{source_pane:?}-{beta}").into_boxed_str());
+        let source_selector = Box::leak(format!("editor-pane-{source_pane:?}").into_boxed_str());
+        let target_selector = Box::leak(format!("editor-pane-{target_pane:?}").into_boxed_str());
+        let sibling_selector = Box::leak(format!("editor-pane-{sibling_pane:?}").into_boxed_str());
+        let source_body = Box::leak(format!("pane-drop-body-{source_pane:?}").into_boxed_str());
+        let target_body = Box::leak(format!("pane-drop-body-{target_pane:?}").into_boxed_str());
         let start = cx.debug_bounds(tab).unwrap().center();
         let bounds = cx.debug_bounds(target_selector).unwrap();
         let body = cx.debug_bounds(target_body).unwrap();
@@ -2491,9 +2503,11 @@ fn pane_edge_drag_previews_and_splits_only_the_destination(cx: &mut gpui::TestAp
                 },
             )
         };
-        let original = core.read_with(cx, |core, _| {
-            [source, target, sibling].map(|id| core.editor.tree.get(id).area)
-        });
+        let original = [
+            cx.debug_bounds(source_selector).unwrap(),
+            bounds,
+            cx.debug_bounds(sibling_selector).unwrap(),
+        ];
         cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::none());
         cx.simulate_mouse_move(
             start + point(px(20.0), px(0.0)),
@@ -2544,8 +2558,8 @@ fn pane_edge_drag_previews_and_splits_only_the_destination(cx: &mut gpui::TestAp
         );
         core.read_with(cx, |core, _| {
             assert_eq!(core.editor.tree.views().count(), 3);
-            assert_eq!(core.editor.tree.get(target).area, original[1]);
         });
+        assert_eq!(cx.debug_bounds(target_selector).unwrap(), original[1]);
 
         // Leaving the target and cancelling cannot change the layout or
         // leave a stale shaded rectangle behind. The multi-tab source
@@ -2570,6 +2584,9 @@ fn pane_edge_drag_previews_and_splits_only_the_destination(cx: &mut gpui::TestAp
         core.read_with(cx, |core, _| {
             assert_eq!(core.editor.tree.views().count(), 3)
         });
+        assert_eq!(cx.debug_bounds(source_selector).unwrap(), original[0]);
+        assert_eq!(cx.debug_bounds(target_selector).unwrap(), original[1]);
+        assert_eq!(cx.debug_bounds(sibling_selector).unwrap(), original[2]);
 
         cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::none());
         cx.simulate_mouse_move(
@@ -2586,27 +2603,32 @@ fn pane_edge_drag_previews_and_splits_only_the_destination(cx: &mut gpui::TestAp
         let destination = core.read_with(cx, |core, _| {
             let destination = core.editor.tree.focus;
             assert_eq!(core.editor.tree.views().count(), 4);
-            assert_eq!(core.editor.tree.get(source).area, original[0]);
-            assert_eq!(core.editor.tree.get(sibling).area, original[2]);
             assert_eq!(core.editor.tree.get(source).doc, alpha);
             assert_eq!(core.editor.tree.get(target).doc, alpha);
             assert_eq!(core.editor.tree.get(destination).doc, beta);
-            let moved = core.editor.tree.get(destination).area;
-            let remaining = core.editor.tree.get(target).area;
-            if horizontal {
-                assert_eq!(moved.height, original[1].height);
-                assert!(moved.width.abs_diff(remaining.width) <= 1);
-                assert_eq!(moved.x < remaining.x, before);
-            } else {
-                assert_eq!(moved.width, original[1].width);
-                assert!(moved.height.abs_diff(remaining.height) <= 1);
-                assert_eq!(moved.y < remaining.y, before);
-            }
             destination
         });
+        let destination_pane = workspace.read_with(cx, |workspace, _| {
+            workspace.pane_id_for_slot(destination).unwrap()
+        });
+        let destination_selector =
+            Box::leak(format!("editor-pane-{destination_pane:?}").into_boxed_str());
+        let moved = cx.debug_bounds(destination_selector).unwrap();
+        let remaining = cx.debug_bounds(target_selector).unwrap();
+        assert_eq!(cx.debug_bounds(source_selector).unwrap(), original[0]);
+        assert_eq!(cx.debug_bounds(sibling_selector).unwrap(), original[2]);
+        if horizontal {
+            assert_eq!(moved.size.height, original[1].size.height);
+            assert!((moved.size.width - remaining.size.width).abs() <= px(1.0));
+            assert_eq!(moved.left() < remaining.left(), before);
+        } else {
+            assert_eq!(moved.size.width, original[1].size.width);
+            assert!((moved.size.height - remaining.size.height).abs() <= px(1.0));
+            assert_eq!(moved.top() < remaining.top(), before);
+        }
         assert!(cx.debug_bounds(tab).is_none());
-        let moved_tab = Box::leak(format!("pane-tab-{destination:?}-{beta}").into_boxed_str());
-        let retained_tab = Box::leak(format!("pane-tab-{source:?}-{alpha}").into_boxed_str());
+        let moved_tab = Box::leak(format!("pane-tab-{destination_pane:?}-{beta}").into_boxed_str());
+        let retained_tab = Box::leak(format!("pane-tab-{source_pane:?}-{alpha}").into_boxed_str());
         assert!(cx.debug_bounds(moved_tab).is_some());
         assert!(cx.debug_bounds(retained_tab).is_some());
     }
@@ -2649,7 +2671,10 @@ fn pane_tab_drag_creates_first_split(cx: &mut gpui::TestAppContext) {
                 cx.update(|window, cx| window.draw(cx).clear());
             };
             draw(cx);
-            let pane = Box::leak(format!("editor-pane-{source:?}").into_boxed_str());
+            let source_pane = workspace.read_with(cx, |workspace, _| {
+                workspace.pane_id_for_slot(source).unwrap()
+            });
+            let pane = Box::leak(format!("editor-pane-{source_pane:?}").into_boxed_str());
             let bounds = cx.debug_bounds(pane).unwrap();
             let end = if horizontal {
                 point(
@@ -2670,8 +2695,8 @@ fn pane_tab_drag_creates_first_split(cx: &mut gpui::TestAppContext) {
                     },
                 )
             };
-            let lone_tab = Box::leak(format!("pane-tab-{source:?}-{alpha}").into_boxed_str());
-            let tab = Box::leak(format!("pane-tab-{source:?}-{beta}").into_boxed_str());
+            let lone_tab = Box::leak(format!("pane-tab-{source_pane:?}-{alpha}").into_boxed_str());
+            let tab = Box::leak(format!("pane-tab-{source_pane:?}-{beta}").into_boxed_str());
             let start = cx.debug_bounds(tab).unwrap().center();
             cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::none());
             cx.simulate_mouse_move(
@@ -2704,27 +2729,31 @@ fn pane_tab_drag_creates_first_split(cx: &mut gpui::TestAppContext) {
                 assert_ne!(destination, source);
                 assert_eq!(core.editor.tree.get(source).doc, alpha);
                 assert_eq!(core.editor.tree.get(destination).doc, beta);
-                let moved = core.editor.tree.get(destination).area;
-                let remaining = core.editor.tree.get(source).area;
-                if horizontal {
-                    assert_eq!(moved.height, remaining.height);
-                    assert!(moved.width.abs_diff(remaining.width) <= 1);
-                    assert_eq!(moved.x < remaining.x, before);
-                } else {
-                    assert_eq!(moved.width, remaining.width);
-                    assert!(moved.height.abs_diff(remaining.height) <= 1);
-                    assert_eq!(moved.y < remaining.y, before);
-                }
                 destination
             });
+            let destination_id = workspace.read_with(cx, |workspace, _| {
+                workspace.pane_id_for_slot(destination).unwrap()
+            });
+            let destination_pane =
+                Box::leak(format!("editor-pane-{destination_id:?}").into_boxed_str());
+            let moved = cx.debug_bounds(destination_pane).unwrap();
+            let remaining = cx.debug_bounds(pane).unwrap();
+            if horizontal {
+                assert_eq!(moved.size.height, remaining.size.height);
+                assert!((moved.size.width - remaining.size.width).abs() <= px(1.0));
+                assert_eq!(moved.left() < remaining.left(), before);
+            } else {
+                assert_eq!(moved.size.width, remaining.size.width);
+                assert!((moved.size.height - remaining.size.height).abs() <= px(1.0));
+                assert_eq!(moved.top() < remaining.top(), before);
+            }
             assert!(cx.debug_bounds(lone_tab).is_some());
             assert!(cx.debug_bounds(tab).is_none());
-            let moved_tab = Box::leak(format!("pane-tab-{destination:?}-{beta}").into_boxed_str());
+            let moved_tab =
+                Box::leak(format!("pane-tab-{destination_id:?}-{beta}").into_boxed_str());
             assert!(cx.debug_bounds(moved_tab).is_some());
 
             // A lone tab cannot be transferred into a split of its own pane.
-            let destination_pane =
-                Box::leak(format!("editor-pane-{destination:?}").into_boxed_str());
             let start = cx.debug_bounds(moved_tab).unwrap().center();
             let end = cx.debug_bounds(destination_pane).unwrap().center();
             cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::none());
@@ -2759,18 +2788,22 @@ fn pane_tab_drag_creates_first_split(cx: &mut gpui::TestAppContext) {
             assert!(cx.debug_bounds(destination_pane).is_none());
             assert!(cx.debug_bounds(moved_tab).is_none());
             assert!(cx.debug_bounds(lone_tab).is_some());
-            let gamma_tab = Box::leak(format!("pane-tab-{source:?}-{gamma}").into_boxed_str());
+            let gamma_tab = Box::leak(format!("pane-tab-{source_pane:?}-{gamma}").into_boxed_str());
             assert!(cx.debug_bounds(gamma_tab).is_some());
 
-            // Closing the remaining tabs must leave the final editor pane.
-            for tab in [&*gamma_tab, &*lone_tab] {
+            // The final workspace pane survives without a phantom editor slot.
+            for (remaining_tabs, tab) in [(1, &*gamma_tab), (0, &*lone_tab)] {
                 let position = cx.debug_bounds(tab).unwrap().center();
                 cx.simulate_mouse_down(position, MouseButton::Middle, Modifiers::none());
                 cx.simulate_mouse_up(position, MouseButton::Middle, Modifiers::none());
                 draw(cx);
                 core.read_with(cx, |core, _| {
-                    assert_eq!(core.editor.tree.views().count(), 1)
+                    assert_eq!(core.editor.tree.views().count(), remaining_tabs);
+                    if remaining_tabs == 0 {
+                        assert!(core.editor.documents.is_empty());
+                    }
                 });
+                assert!(cx.debug_bounds(pane).is_some());
             }
         }
     }
@@ -3263,10 +3296,7 @@ fn remote_documents_open_once_across_initialization_and_open_events(cx: &mut gpu
     let mut reader = BufReader::new(server_stdin);
     let (server_id, first_doc_id) = app.update(cx, |app, _cx| {
         let _runtime = runtime.enter();
-        helix_event::register_event::<helix_view::events::LanguageServerInitialized>();
-        helix_event::register_event::<helix_view::events::DocumentDidChange>();
-        helix_event::register_event::<helix_view::events::DocumentDidClose>();
-        helix_view::handlers::lsp::register_hooks(&app.editor.handlers);
+        shared_pane_contract_tests::init_lsp_test_hooks(&app.editor.handlers);
         app.set_workspace_backend(Arc::new(RemoteIdentityLocalBackend));
         app.project_directory = Some(root.clone());
         let loader = syntax::Loader::new(

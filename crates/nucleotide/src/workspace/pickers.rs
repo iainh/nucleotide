@@ -16,12 +16,14 @@ use nucleotide_workspace::{
 
 use super::{Workspace, document_lsp_identifier};
 use crate::Core;
+use crate::application::editor_input::EditorContinuation;
 use crate::overlay::OverlayView;
 
 pub(super) fn open(
     core: Entity<Core>,
     handle: tokio::runtime::Handle,
     overlay: Entity<OverlayView>,
+    continuation: Option<EditorContinuation>,
     cx: &mut Context<Workspace>,
 ) {
     let (base_dir, workspace_backend, file_picker_config) = core.update(cx, |core, _| {
@@ -41,6 +43,7 @@ pub(super) fn open(
         base_dir,
         workspace_backend,
         file_picker_config,
+        continuation,
         cx,
     );
 }
@@ -55,6 +58,7 @@ pub(super) fn open_at(
     base_dir: std::path::PathBuf,
     workspace_backend: WorkspaceBackendHandle,
     file_picker_config: helix_view::editor::FilePickerConfig,
+    continuation: Option<EditorContinuation>,
     cx: &mut Context<Workspace>,
 ) {
     debug!("Opening file picker");
@@ -87,7 +91,19 @@ pub(super) fn open_at(
         };
 
         if let Some(this) = this.upgrade() {
-            this.update(cx, |_workspace, cx| {
+            this.update(cx, |workspace, cx| {
+                if let Some(continuation) = continuation
+                    && !workspace
+                        .core
+                        .read(cx)
+                        .editor_input
+                        .command_continuation_is_current(
+                            continuation.token,
+                            &workspace.core.read(cx).editor,
+                        )
+                {
+                    return;
+                }
                 let items = match search_result {
                     Ok(result) => file_picker_items_from_search_result(&item_base_dir, result),
                     Err(err) => {
@@ -99,7 +115,14 @@ pub(super) fn open_at(
                         Vec::new()
                     }
                 };
-                emit_file_picker_from_items(items, picker_backend, picker_handle, overlay, cx);
+                emit_file_picker_from_items(
+                    items,
+                    picker_backend,
+                    picker_handle,
+                    overlay,
+                    continuation,
+                    cx,
+                );
             });
         }
     })
@@ -111,6 +134,7 @@ fn emit_file_picker_from_items(
     workspace_backend: WorkspaceBackendHandle,
     handle: tokio::runtime::Handle,
     overlay: Entity<OverlayView>,
+    continuation: Option<EditorContinuation>,
     cx: &mut Context<Workspace>,
 ) {
     // Sort items by label (path) for consistent ordering
@@ -176,6 +200,9 @@ fn emit_file_picker_from_items(
 
     debug!("Emitting file picker to overlay");
 
+    overlay.update(cx, |overlay, cx| {
+        overlay.handle_event(&crate::Update::NativeUiContinuation(continuation), cx)
+    });
     emit_picker_update(file_picker, &overlay, cx);
 }
 
@@ -569,6 +596,10 @@ pub(super) fn emit_picker_update(
 ) {
     let update = crate::Update::Picker(picker);
     overlay.update(cx, |overlay, cx| overlay.handle_event(&update, cx));
+    let workspace = cx.weak_entity();
+    cx.defer(move |cx| {
+        let _ = workspace.update(cx, |workspace, cx| workspace.handle_overlay_update(cx));
+    });
     cx.emit(update);
 }
 
@@ -685,7 +716,12 @@ pub(super) fn sort_code_actions_like_helix(actions: &mut [lsp::CodeActionOrComma
     });
 }
 
-pub(super) fn show_code_actions(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &mut App) {
+pub(super) fn show_code_actions(
+    core: Entity<Core>,
+    _handle: tokio::runtime::Handle,
+    continuation: Option<EditorContinuation>,
+    cx: &mut App,
+) {
     use futures_util::stream::{FuturesOrdered, StreamExt};
     use helix_lsp::lsp;
     use helix_lsp::util::{diagnostic_to_lsp_diagnostic, range_to_lsp_range};
@@ -722,6 +758,10 @@ pub(super) fn show_code_actions(core: Entity<Core>, _handle: tokio::runtime::Han
         Some((identifier, selection_range, doc_text, diags, servers))
     })() else {
         core.update(cx, |core, cx| {
+            if let Some(continuation) = continuation {
+                core.editor_input
+                    .cancel_command_continuation(continuation.token, &mut core.editor);
+            }
             core.editor
                 .set_error("Code actions require a file-backed document");
             cx.notify();
@@ -732,6 +772,10 @@ pub(super) fn show_code_actions(core: Entity<Core>, _handle: tokio::runtime::Han
     if servers.is_empty() {
         debug!("No language servers with CodeAction support");
         core.update(cx, |core, cx| {
+            if let Some(continuation) = continuation {
+                core.editor_input
+                    .cancel_command_continuation(continuation.token, &mut core.editor);
+            }
             core.editor
                 .set_error("No configured language server supports code actions");
             cx.notify();
@@ -764,6 +808,10 @@ pub(super) fn show_code_actions(core: Entity<Core>, _handle: tokio::runtime::Han
 
     if futures.is_empty() {
         core.update(cx, |core, cx| {
+            if let Some(continuation) = continuation {
+                core.editor_input
+                    .cancel_command_continuation(continuation.token, &mut core.editor);
+            }
             core.editor
                 .set_error("No configured language server supports code actions");
             cx.notify();
@@ -809,6 +857,10 @@ pub(super) fn show_code_actions(core: Entity<Core>, _handle: tokio::runtime::Han
         if items.is_empty() {
             if let Some(core) = core_weak.upgrade() {
                 core.update(cx, |core, cx| {
+                    if let Some(continuation) = continuation {
+                        core.editor_input
+                            .cancel_command_continuation(continuation.token, &mut core.editor);
+                    }
                     core.editor.set_error("No code actions available");
                     cx.emit(crate::Update::EditorStatus(
                         nucleotide_types::EditorStatus {
@@ -825,7 +877,15 @@ pub(super) fn show_code_actions(core: Entity<Core>, _handle: tokio::runtime::Han
             let picker = crate::picker::Picker::native("Code Actions", items, |_index| {
                 // Selection is handled by OverlayView via typed code-action payloads.
             });
-            core.update(cx, |_core, cx| {
+            core.update(cx, |core, cx| {
+                if let Some(continuation) = continuation
+                    && !core
+                        .editor_input
+                        .command_continuation_is_current(continuation.token, &core.editor)
+                {
+                    return;
+                }
+                cx.emit(crate::Update::NativeUiContinuation(continuation));
                 cx.emit(crate::Update::Picker(picker));
             });
         }
@@ -841,6 +901,6 @@ impl Workspace {
         let handle = self.handle.clone();
         let core = self.core.clone();
         let overlay = self.overlay.clone();
-        open(core, handle, overlay, cx);
+        open(core, handle, overlay, None, cx);
     }
 }

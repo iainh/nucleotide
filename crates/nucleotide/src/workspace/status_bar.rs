@@ -317,11 +317,16 @@ impl Workspace {
         let mut document_metadata = None;
 
         if let Some(tab) = self
-            .active_image_tab_id
+            .active_image_id()
             .and_then(|doc_id| self.image_tabs.iter().find(|tab| tab.id == doc_id))
         {
             file_name = tab.path.display().to_string();
-            position_text = image_zoom_percent(tab.zoom);
+            position_text = image_zoom_percent(
+                self.image_presentations
+                    .get(self.focused_pane_id(), tab.id)
+                    .map(|state| state.zoom)
+                    .unwrap_or(1.0),
+            );
             return (mode, mode_name, file_name, position_text, None, false, None);
         }
 

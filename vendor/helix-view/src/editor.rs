@@ -66,6 +66,9 @@ use arc_swap::{
 pub const DIR_STACK_CAP: usize = 10;
 pub const DEFAULT_AUTO_SAVE_DELAY: u64 = 3000;
 
+pub mod hosted;
+use hosted::{DocumentReplacementReason, HostedEffect, HostedState, SlotRemovalReason};
+
 fn deserialize_duration_millis<'de, D>(deserializer: D) -> Result<Duration, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -1274,6 +1277,7 @@ pub struct Editor {
     /// Current editing mode.
     pub mode: Mode,
     pub tree: Tree,
+    hosted: Option<HostedState>,
     pub next_document_id: DocumentId,
     pub documents: BTreeMap<DocumentId, Document>,
 
@@ -1387,7 +1391,7 @@ pub enum CompleteAction {
     },
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum Action {
     Load,
     Replace,
@@ -1460,6 +1464,7 @@ impl Editor {
         Self {
             mode: Mode::Normal,
             tree: Tree::new(area),
+            hosted: None,
             next_document_id: DocumentId::default(),
             documents: BTreeMap::new(),
             saves: HashMap::new(),
@@ -2010,34 +2015,68 @@ impl Editor {
             }
         }
 
+        let hosted = self.is_hosted();
+        let active_slot = self.hosted_active_slot();
         for (view, _) in self.tree.views_mut() {
             let doc = doc_mut!(self, &view.doc);
             view.sync_changes(doc);
             view.gutters = config.gutters.clone();
-            view.ensure_cursor_in_view(doc, config.scrolloff)
+            // Retained slots are not presentations: refreshing another slot must
+            // not scroll hidden content before the host can reconcile its state.
+            if !hosted || active_slot == Some(view.id) {
+                view.ensure_cursor_in_view(doc, config.scrolloff);
+            }
         }
     }
 
-    fn replace_document_in_view(&mut self, current_view: ViewId, doc_id: DocumentId) {
+    fn replace_document_in_view(
+        &mut self,
+        current_view: ViewId,
+        doc_id: DocumentId,
+        reason: DocumentReplacementReason,
+    ) {
         let scrolloff = self.config().scrolloff;
         let view = self.tree.get_mut(current_view);
 
-        view.doc = doc_id;
+        let previous = std::mem::replace(&mut view.doc, doc_id);
         let doc = doc_mut!(self, &doc_id);
 
         doc.ensure_view_init(view.id);
         view.sync_changes(doc);
         doc.mark_as_focused();
 
-        view.ensure_cursor_in_view(doc, scrolloff)
+        view.ensure_cursor_in_view(doc, scrolloff);
+        self.record_hosted(HostedEffect::DocumentReplaced {
+            slot: current_view,
+            previous,
+            document: doc_id,
+            reason,
+        });
     }
 
     pub fn switch(&mut self, id: DocumentId, action: Action) {
-        use crate::tree::Layout;
-
         if !self.documents.contains_key(&id) {
             log::error!("cannot switch to document that does not exist (anymore)");
             return;
+        }
+
+        // A content-only active pane must never replace a hidden slot's document.
+        if self.is_hosted() && self.hosted_active_slot().is_none() {
+            match action {
+                Action::Load => {
+                    self.record_hosted(HostedEffect::DocumentLoaded {
+                        document: id,
+                        slot: None,
+                    });
+                    return;
+                }
+                Action::Replace => {
+                    self.create_editor_slot(id, action);
+                    self._refresh();
+                    return;
+                }
+                _ => {}
+            }
         }
 
         if !matches!(action, Action::Load) {
@@ -2050,7 +2089,7 @@ impl Editor {
                 // If the current view is an empty scratch buffer and is not displayed in any other views, delete it.
                 // Boolean value is determined before the call to `view_mut` because the operation requires a borrow
                 // of `self.tree`, which is mutably borrowed when `view_mut` is called.
-                let remove_empty_scratch = !doc.is_modified()
+                let remove_empty_scratch = !self.is_hosted() && !doc.is_modified()
                     // If the buffer has no path and is not modified, it is an empty scratch buffer.
                     && doc.path().is_none()
                     // If the buffer we are changing to is not this buffer
@@ -2092,7 +2131,7 @@ impl Editor {
                     }
                 }
 
-                self.replace_document_in_view(view_id, id);
+                self.replace_document_in_view(view_id, id, DocumentReplacementReason::Switch);
 
                 dispatch(DocumentFocusLost {
                     editor: self,
@@ -2105,28 +2144,14 @@ impl Editor {
                 let doc = doc_mut!(self, &id);
                 doc.ensure_view_init(view_id);
                 doc.mark_as_focused();
+                self.record_hosted(HostedEffect::DocumentLoaded {
+                    document: id,
+                    slot: Some(view_id),
+                });
                 return;
             }
             Action::HorizontalSplit | Action::VerticalSplit | Action::SplitAt { .. } => {
-                let focus_lost = self.tree.try_get(self.tree.focus).map(|view| view.doc);
-                // copy the current view, unless there is no view yet
-                let view = self
-                    .tree
-                    .try_get(self.tree.focus)
-                    .filter(|v| id == v.doc) // Different Document
-                    .cloned()
-                    .unwrap_or_else(|| View::new(id, self.config().gutters.clone()));
-                let view_id = match action {
-                    Action::SplitAt { layout, before } => self.tree.split_at(view, layout, before),
-                    Action::HorizontalSplit => self.tree.split(view, Layout::Horizontal),
-                    Action::VerticalSplit => self.tree.split(view, Layout::Vertical),
-                    _ => unreachable!(),
-                };
-                // initialize selection for view
-                let doc = doc_mut!(self, &id);
-                doc.ensure_view_init(view_id);
-                doc.mark_as_focused();
-                focus_lost
+                self.create_editor_slot(id, action)
             }
         };
 
@@ -2139,6 +2164,42 @@ impl Editor {
         }
     }
 
+    fn create_editor_slot(&mut self, id: DocumentId, action: Action) -> Option<DocumentId> {
+        use crate::tree::Layout;
+        let source = if self.is_hosted() {
+            self.hosted_active_slot()
+        } else {
+            self.tree.try_get(self.tree.focus).map(|view| view.id)
+        };
+        let focus_lost = source.map(|slot| self.tree.get(slot).doc);
+        let view = source
+            .map(|slot| self.tree.get(slot))
+            .filter(|view| view.doc == id)
+            .cloned()
+            .unwrap_or_else(|| View::new(id, self.config().gutters.clone()));
+        let slot = if self.is_hosted() && (self.tree.is_empty() || source.is_none()) {
+            self.tree.insert(view)
+        } else {
+            match action {
+                Action::SplitAt { layout, before } => self.tree.split_at(view, layout, before),
+                Action::HorizontalSplit => self.tree.split(view, Layout::Horizontal),
+                Action::VerticalSplit => self.tree.split(view, Layout::Vertical),
+                _ => unreachable!(),
+            }
+        };
+        let doc = doc_mut!(self, &id);
+        doc.ensure_view_init(slot);
+        doc.mark_as_focused();
+        self.activate_hosted(slot);
+        self.record_hosted(HostedEffect::SlotCreated {
+            slot,
+            document: id,
+            source,
+            action,
+        });
+        focus_lost
+    }
+
     /// Generate an id for a new document and register it.
     fn new_document(&mut self, mut doc: Document) -> DocumentId {
         let id = self.next_document_id;
@@ -2147,6 +2208,7 @@ impl Editor {
             DocumentId(unsafe { NonZeroUsize::new_unchecked(self.next_document_id.0.get() + 1) });
         doc.id = id;
         self.documents.insert(id, doc);
+        self.record_hosted(HostedEffect::DocumentRegistered { document: id });
 
         let (save_sender, save_receiver) = tokio::sync::mpsc::unbounded_channel();
         self.saves.insert(id, save_sender);
@@ -2286,11 +2348,31 @@ impl Editor {
     }
 
     pub fn close(&mut self, id: ViewId) {
+        self.close_editor_slot(id, SlotRemovalReason::ExplicitClose);
+    }
+
+    fn close_editor_slot(&mut self, id: ViewId, reason: SlotRemovalReason) {
+        let document = self.tree.get(id).doc;
+        if self.is_hosted() && self.tree.focus == id {
+            self.enter_normal_mode();
+            let (view, doc) = current!(self);
+            doc.append_changes_to_history(view);
+        }
         // Remove selections for the closed view on all documents.
         for doc in self.documents_mut() {
             doc.remove_view(id);
         }
         self.tree.remove(id);
+        if let Some(host) = &mut self.hosted {
+            if host.active == Some(id) {
+                host.active = None;
+            }
+        }
+        self.record_hosted(HostedEffect::SlotRemoved {
+            slot: id,
+            document,
+            reason,
+        });
         self._refresh();
     }
 
@@ -2334,10 +2416,14 @@ impl Editor {
         for action in actions {
             match action {
                 Action::Close(view_id) => {
-                    self.close(view_id);
+                    self.close_editor_slot(view_id, SlotRemovalReason::DocumentClose);
                 }
                 Action::ReplaceDoc(view_id, doc_id) => {
-                    self.replace_document_in_view(view_id, doc_id);
+                    self.replace_document_in_view(
+                        view_id,
+                        doc_id,
+                        DocumentReplacementReason::DocumentClose,
+                    );
                 }
             }
         }
@@ -2347,7 +2433,7 @@ impl Editor {
         // If the document we removed was visible in all views, we will have no more views. We don't
         // want to close the editor just for a simple buffer close, so we need to create a new view
         // containing either an existing document, or a brand new document.
-        if self.tree.views().next().is_none() {
+        if !self.is_hosted() && self.tree.views().next().is_none() {
             let doc_id = self
                 .documents
                 .iter()
@@ -2368,6 +2454,7 @@ impl Editor {
 
         self._refresh();
 
+        self.record_hosted(HostedEffect::DocumentClosed { document: doc_id });
         helix_event::dispatch(DocumentDidClose { editor: self, doc });
 
         Ok(())
@@ -2422,7 +2509,17 @@ impl Editor {
     }
 
     pub fn focus(&mut self, view_id: ViewId) {
+        let had_hosted_focus = self.hosted_active_slot().is_some();
+        let reactivating = self.is_hosted() && self.hosted_active_slot() != Some(view_id);
+        self.activate_hosted(view_id);
         if self.tree.focus == view_id {
+            if reactivating {
+                let (view, doc) = current!(self);
+                view.sync_changes(doc);
+                doc.mark_as_focused();
+                self.ensure_cursor_in_view(view_id);
+                self.record_hosted(HostedEffect::Focused { slot: view_id });
+            }
             return;
         }
 
@@ -2441,10 +2538,13 @@ impl Editor {
         doc_mut!(self).mark_as_focused();
 
         let focus_lost = self.tree.get(prev_id).doc;
-        dispatch(DocumentFocusLost {
-            editor: self,
-            doc: focus_lost,
-        });
+        self.record_hosted(HostedEffect::Focused { slot: view_id });
+        if !self.is_hosted() || had_hosted_focus {
+            dispatch(DocumentFocusLost {
+                editor: self,
+                doc: focus_lost,
+            });
+        }
     }
 
     pub fn focus_next(&mut self) {
@@ -2471,7 +2571,7 @@ impl Editor {
     }
 
     pub fn should_close(&self) -> bool {
-        self.tree.is_empty()
+        !self.is_hosted() && self.tree.is_empty()
     }
 
     pub fn ensure_cursor_in_view(&mut self, id: ViewId) {
@@ -2771,7 +2871,7 @@ impl Editor {
                 let text = new_doc.text().slice(..);
                 selection = selection.map(transaction.changes()).ensure_invariants(text);
             }
-            self.replace_document_in_view(view_id, dest_doc_id);
+            self.replace_document_in_view(view_id, dest_doc_id, DocumentReplacementReason::Switch);
             dispatch(DocumentFocusLost {
                 editor: self,
                 doc: old_doc_id,

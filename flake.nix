@@ -707,16 +707,20 @@
         # development shell so optional developer tools cannot break CI startup.
         devShells.ci = pkgs.mkShell (
           {
-            packages = with pkgs; [
-              rustToolchain
-              zig_0_17_0
-              cargoZigbuild
-              clang
-              git
-              pkg-config
-              buildRemoteHelpers
-              makeLinuxPackage
-            ];
+            packages =
+              with pkgs;
+              [
+                rustToolchain
+                zig_0_17_0
+                cargoZigbuild
+                clang
+                git
+                pkg-config
+                python3
+                buildRemoteHelpers
+                makeLinuxPackage
+              ]
+              ++ lib.optionals stdenv.isDarwin [ darwin.cctools ];
             buildInputs = allBuildInputs;
             RUST_SRC_PATH = "${rustToolchain}/lib/rustlib/src/rust/library";
             HELIX_RUNTIME = "${helixRuntime}";

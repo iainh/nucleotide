@@ -25,6 +25,7 @@ pub struct OverlayView {
     remote_connection_manager_view:
         Option<Entity<crate::remote_connection_manager::RemoteConnectionManagerView>>,
     completion_view: Option<Entity<CompletionView>>,
+    next_continuation: Option<crate::application::editor_input::EditorContinuation>,
     focus: FocusHandle,
     core: gpui::WeakEntity<crate::Core>,
     handle: tokio::runtime::Handle,
@@ -386,6 +387,7 @@ impl OverlayView {
             regex_selection_preview: None,
             remote_connection_manager_view: None,
             completion_view: None,
+            next_continuation: None,
             focus: focus.clone(),
             core: core.downgrade(),
             handle,
@@ -686,7 +688,22 @@ impl OverlayView {
 
     pub fn handle_event(&mut self, ev: &crate::Update, cx: &mut Context<Self>) {
         match ev {
+            crate::Update::NativeUiContinuation(continuation) => {
+                self.next_continuation = *continuation;
+            }
+            crate::Update::CommandSubmitted(_)
+            | crate::Update::OpenFile(_)
+            | crate::Update::SemanticShortcut(_)
+            | crate::Update::ToggleFileTree
+            | crate::Update::ShowFilePicker
+            | crate::Update::ShowFilePickerAt(_)
+            | crate::Update::ShowCodeActions => {
+                // These binders accompany a submitted operation, not a future
+                // overlay. Its closure already owns the immutable UI token.
+                self.next_continuation = None;
+            }
             crate::Update::Prompt(_) | crate::Update::FileNamePrompt(_) => {
+                let continuation = self.next_continuation.take();
                 nucleotide_logging::trace!("DIAG: Overlay Update::Prompt received");
                 self.replace_prompt(cx);
                 self.replace_remote_connection_manager(cx);
@@ -927,7 +944,15 @@ impl OverlayView {
                         debug!(input = %input, input_len = input.len(), "Overlay on_submit received input");
                         // Emit appropriate event based on prompt type
                         if let Some(core) = core_weak_submit.upgrade() {
-                            core.update(cx, |_core, cx| {
+                            let accepted = core.update(cx, |_core, cx| {
+                                if let Some(continuation) = continuation {
+                                    let valid = if matches!(submit_action, PromptSubmitAction::Command) {
+                                        _core.editor_input.command_continuation_is_current(continuation.token, &_core.editor)
+                                    } else {
+                                        _core.editor_input.begin_command_completion(continuation.token, &mut _core.editor)
+                                    };
+                                    if !valid { return false; }
+                                }
                                 match submit_action {
                                     PromptSubmitAction::Callback => {
                                         if let Some(operation) = &file_operation {
@@ -999,7 +1024,7 @@ impl OverlayView {
                                                         state.phase =
                                                             RegexSelectionPreviewPhase::Dismissed;
                                                     }
-                                                    return;
+                                                    return false;
                                                 }
                                                 Err(error) => {
                                                     if let Some(state) = &regex_selection_preview
@@ -1021,30 +1046,40 @@ impl OverlayView {
                                     }
                                     PromptSubmitAction::Command => {
                                         debug!(command = %input, "Emitting CommandSubmitted event");
+                                        cx.emit(crate::Update::NativeUiContinuation(continuation));
                                         cx.emit(crate::Update::CommandSubmitted(input.to_string()));
                                     }
                                 }
+                                true
                             });
+                            if !accepted { return; }
                         }
 
                         // Also call the original callback
                         (on_submit)(input);
+                        if !matches!(submit_action, PromptSubmitAction::Command)
+                            && let Some(continuation) = continuation
+                            && let Some(core) = core_weak_submit.upgrade()
+                        {
+                            core.update(cx, |_, cx| cx.emit(crate::Update::ContinueCommand(continuation.token)));
+                        }
 
                         // Dismiss the prompt after submission
                         cx.emit(DismissEvent);
                     });
 
-                    // Set up the cancel callback if provided
-                    if let Some(cancel_fn) = on_cancel {
-                        view = view.on_cancel(move |cx| {
-                            (cancel_fn)();
-                            cx.emit(DismissEvent);
-                        });
-                    } else {
-                        view = view.on_cancel(move |cx| {
-                            cx.emit(DismissEvent);
-                        });
-                    }
+                    let core_weak_cancel = self.core.clone();
+                    view = view.on_cancel(move |cx| {
+                        if let Some(core) = core_weak_cancel.upgrade() {
+                            core.update(cx, |core, _| {
+                                if let Some(continuation) = continuation {
+                                    core.editor_input.cancel_command_continuation(continuation.token, &mut core.editor);
+                                }
+                            });
+                        }
+                        if let Some(cancel_fn) = &on_cancel { (cancel_fn)(); }
+                        cx.emit(DismissEvent);
+                    });
 
                     view
                 });
@@ -1158,6 +1193,7 @@ impl OverlayView {
                 cx.notify();
             }
             crate::Update::Picker(picker) => {
+                let continuation = self.next_continuation.take();
                 nucleotide_logging::trace!("DIAG: Overlay Update::Picker received");
                 // Clean up any existing picker before creating a new one
                 self.replace_picker(cx);
@@ -1658,6 +1694,28 @@ impl OverlayView {
                             // Set up the selection callback
                             let core_for_on_select = core_weak.clone();
                             view = view.on_select(move |selected_item: &PickerItem, picker_cx| {
+                                let opens_file = selected_item.data.is::<std::path::PathBuf>();
+                                if let Some(continuation) = continuation {
+                                    let Some(core) = core_for_on_select.upgrade() else {
+                                        return;
+                                    };
+                                    let valid = core.update(picker_cx, |core, _| {
+                                        if opens_file {
+                                            core.editor_input.command_continuation_is_current(
+                                                continuation.token,
+                                                &core.editor,
+                                            )
+                                        } else {
+                                            core.editor_input.begin_command_completion(
+                                                continuation.token,
+                                                &mut core.editor,
+                                            )
+                                        }
+                                    });
+                                    if !valid {
+                                        return;
+                                    }
+                                }
                                 // Find the index of the selected item
                                 if let Some(index) = items_for_callback
                                     .iter()
@@ -1838,6 +1896,9 @@ impl OverlayView {
                                         // Emit OpenFile event to actually open the file
                                         if let Some(core) = core_for_on_select.upgrade() {
                                             core.update(picker_cx, |_core, core_cx| {
+                                                core_cx.emit(crate::Update::NativeUiContinuation(
+                                                    continuation,
+                                                ));
                                                 core_cx.emit(crate::Update::OpenFile(path.clone()));
                                             });
                                         }
@@ -1857,12 +1918,29 @@ impl OverlayView {
                                             });
                                         }
                                     }
+                                if !opens_file
+                                    && let Some(continuation) = continuation
+                                    && let Some(core) = core_for_on_select.upgrade()
+                                {
+                                    core.update(picker_cx, |_, cx| {
+                                        cx.emit(crate::Update::ContinueCommand(continuation.token))
+                                    });
+                                }
                                 // (Picker was already dismissed above)
                             });
 
-                            // Set up the cancel callback
+                            let core_weak_cancel = self.core.clone();
                             view = view.on_cancel(move |cx| {
-                                // The PickerView will handle its own dismissal
+                                if let Some(core) = core_weak_cancel.upgrade() {
+                                    core.update(cx, |core, _| {
+                                        if let Some(continuation) = continuation {
+                                            core.editor_input.cancel_command_continuation(
+                                                continuation.token,
+                                                &mut core.editor,
+                                            );
+                                        }
+                                    });
+                                }
                                 cx.emit(DismissEvent);
                             });
 

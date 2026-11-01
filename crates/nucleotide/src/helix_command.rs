@@ -28,13 +28,13 @@ pub(crate) fn execute_command_line(
 }
 
 #[derive(Debug)]
-enum CommandLookup {
+pub(crate) enum CommandLookup {
     Empty,
     Found(MappableCommand),
     Unknown(String),
 }
 
-fn command_lookup(command: &str) -> CommandLookup {
+pub(crate) fn command_lookup(command: &str) -> CommandLookup {
     let (cmd_name, args, _) = helix_core::command_line::split(command);
     if cmd_name.is_empty() {
         return CommandLookup::Empty;

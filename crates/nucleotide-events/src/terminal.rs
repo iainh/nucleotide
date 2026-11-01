@@ -56,7 +56,16 @@ pub enum Event {
     /// Input bytes sent to the terminal (raw)
     Input { id: TerminalId, bytes: Vec<u8> },
 
-    /// Terminal process exited
+    /// Explicit user/workspace request to close a session, including a pending spawn.
+    TerminateRequested { id: TerminalId },
+
+    /// A process was registered successfully. This is a fact, not a spawn request.
+    Spawned { id: TerminalId },
+
+    /// Launch failed; the session's diagnostic output remains until explicit close.
+    SpawnFailed { id: TerminalId, error: String },
+
+    /// Observed process completion. Never interpreted as a termination request.
     Exited {
         id: TerminalId,
         code: Option<i32>,

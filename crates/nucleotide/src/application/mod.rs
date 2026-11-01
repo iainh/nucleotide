@@ -896,7 +896,7 @@ use nucleotide_logging::{PerfTimer, debug, error, info, instrument, timed, trace
 use nucleotide_lsp::lsp_state::DiagnosticInfo;
 
 use crate::types::Update;
-use editor_input::EditorInputBridge;
+use editor_input::{EditorCommandToken, EditorContinuation, EditorInputBridge};
 use gpui::EventEmitter;
 use project_lsp::{
     ProjectLspCoordinator, canonical_project_lsp_root, commands_to_probe_for_servers,
@@ -994,6 +994,7 @@ pub struct Application {
     pub workspace_file_ops: WorkspaceFileOpHandler,
     pending_lsp_workspace_edits: VecDeque<PendingLspWorkspaceEdit>,
     pub terminal_runtime: TerminalRuntimeHandle,
+    pending_terminal_events: Arc<std::sync::Mutex<Vec<nucleotide_events::terminal::Event>>>,
     maintenance_wake: Option<MaintenanceWake>,
 }
 
@@ -1020,6 +1021,13 @@ impl InputKeyEvent {
 pub enum InputEvent {
     Key(InputKeyEvent),
     Semantic(editor_input::EditorSemanticAction),
+    ResumeWorkspace,
+    ResumeCommand(EditorCommandToken),
+    SubmitCommand {
+        token: EditorCommandToken,
+        command: String,
+    },
+    CommandLine(String),
 }
 
 impl InputEvent {
@@ -1068,6 +1076,18 @@ fn is_navigation_repeat_key(key: &KeyEvent, mode: Mode) -> bool {
 
 impl Application {
     pub fn set_maintenance_wake(&mut self, wake: MaintenanceWake) {
+        #[cfg(feature = "terminal-emulator-core")]
+        {
+            let pending = self.pending_terminal_events.clone();
+            let terminal_wake = wake.clone();
+            self.terminal_runtime.set_event_sink(Arc::new(move |event| {
+                pending
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(event);
+                terminal_wake.notify();
+            }));
+        }
         self.maintenance_wake = Some(wake);
     }
 
@@ -3410,259 +3430,388 @@ impl Application {
                     &mut self.editor,
                     &mut self.jobs,
                 );
-                if outcome.selection_changed
-                    && let Some(doc_id) = outcome.focused_doc_id
-                {
-                    cx.emit(crate::Update::SelectionChanged {
-                        doc_id,
-                        view_id: outcome.focused_view_id,
-                    });
-                }
-                if let Some(request) = outcome.prompt_requested {
-                    cx.emit(crate::Update::Prompt(Self::create_native_prompt(request)));
-                }
-                self.emit_overlays(cx);
-                cx.emit(crate::Update::Redraw);
+                self.dispatch_editor_input_outcome(outcome, false, &handle, cx);
             }
-            InputEvent::Key(input) => {
-                let key = input.key;
+            event => {
                 let mode_before = self.editor.mode();
-                let is_navigation_repeat =
-                    input.is_held && is_navigation_repeat_key(&key, mode_before);
-                let _timer = PerfTimer::new(if input.is_held {
-                    "application_handle_held_key"
-                } else {
-                    "application_handle_key"
-                })
-                .with_warn_threshold(std::time::Duration::from_millis(8));
-                nucleotide_logging::trace!(
-                    key = ?key,
-                    is_held = input.is_held,
-                    is_navigation_repeat,
-                    "Handling key event in Application"
-                );
-
-                let outcome = self.editor_input.handle_key(
-                    key,
-                    &mut self.compositor,
-                    &mut self.editor,
-                    &mut self.jobs,
-                );
-                let has_explicit_ui_request = outcome.completion_requested.is_some()
-                    || outcome.picker_requested.is_some()
-                    || outcome.prompt_requested.is_some()
-                    || outcome.lsp_navigation_requested.is_some()
-                    || outcome.workspace_requested.is_some()
-                    || outcome.semantic_shortcut_requested.is_some();
-                let selection_or_viewport_updated = outcome.selection_changed
-                    || outcome.viewport_scroll_requested.is_some()
-                    || outcome.viewport_cursor_requested.is_some();
-
-                if outcome.reset_diff_change_executed {
-                    self.reconcile_vcs_after_diff_reset(cx, &handle);
-                }
-
-                if outcome.selection_changed
-                    && let Some(doc_id) = outcome.focused_doc_id
-                {
-                    cx.emit(crate::Update::SelectionChanged {
-                        doc_id,
-                        view_id: outcome.focused_view_id,
-                    });
-                }
-
-                if let Some(request) = outcome.completion_requested {
-                    if let Some(doc) = self.editor.document(request.doc_id) {
-                        let cursor = doc
-                            .selection(request.view_id)
-                            .primary()
-                            .cursor(doc.text().slice(..));
-                        cx.emit(crate::Update::CompletionEvent(
-                            helix_view::handlers::completion::CompletionEvent::ManualTrigger {
-                                cursor,
-                                doc: request.doc_id,
-                                view: request.view_id,
-                            },
-                        ));
-                    } else {
-                        nucleotide_logging::warn!(
-                            doc_id = ?request.doc_id,
-                            view_id = ?request.view_id,
-                            "Document not found for native completion request"
-                        );
+                let is_navigation_repeat = matches!(&event, InputEvent::Key(input)
+                    if input.is_held && is_navigation_repeat_key(&input.key, mode_before));
+                let _timer = PerfTimer::new("application_handle_input")
+                    .with_warn_threshold(std::time::Duration::from_millis(8));
+                let active_slot = self.editor.hosted_active_slot();
+                let outcome = match event {
+                    InputEvent::Key(input) if self.editor.is_hosted() => {
+                        self.editor_input.handle_hosted_key(
+                            input.key,
+                            active_slot,
+                            &mut self.compositor,
+                            &mut self.editor,
+                            &mut self.jobs,
+                        )
                     }
-                }
-
-                if let Some(request) = outcome.lsp_navigation_requested {
-                    self.trigger_lsp_navigation(request, cx);
-                }
-
-                if let Some(request) = outcome.workspace_requested {
-                    match request {
-                        editor_input::NativeWorkspaceRequest::ToggleFileTree => {
-                            cx.emit(crate::Update::ToggleFileTree);
-                        }
-                        editor_input::NativeWorkspaceRequest::OpenFiles { paths, action } => {
-                            for path in paths {
-                                self.handle_native_open_file_request(
-                                    path,
-                                    action.into(),
-                                    handle.clone(),
-                                    cx,
-                                );
-                            }
-                        }
+                    InputEvent::Key(input) => self.editor_input.handle_key(
+                        input.key,
+                        &mut self.compositor,
+                        &mut self.editor,
+                        &mut self.jobs,
+                    ),
+                    InputEvent::ResumeWorkspace => self.editor_input.resume_workspace_commands(
+                        active_slot,
+                        &mut self.compositor,
+                        &mut self.editor,
+                        &mut self.jobs,
+                    ),
+                    InputEvent::ResumeCommand(token) => {
+                        let Some(outcome) = self.editor_input.resume_command_continuation(
+                            token,
+                            active_slot,
+                            &mut self.compositor,
+                            &mut self.editor,
+                            &mut self.jobs,
+                        ) else {
+                            return;
+                        };
+                        outcome
                     }
-                }
-
-                if let Some(request) = outcome.semantic_shortcut_requested {
-                    cx.emit(crate::Update::SemanticShortcut(request));
-                }
-
-                if let Some(request) = outcome.viewport_scroll_requested {
-                    cx.emit(crate::Update::ViewportScroll {
-                        view_id: outcome.focused_view_id,
-                        request,
-                    });
-                }
-
-                if let Some(request) = outcome.viewport_cursor_requested {
-                    cx.emit(crate::Update::ViewportCursor {
-                        view_id: outcome.focused_view_id,
-                        request,
-                    });
-                }
-
-                if let Some(request) = outcome.prompt_requested {
-                    cx.emit(crate::Update::Prompt(Self::create_native_prompt(request)));
-                }
-
-                if let Some(request) = outcome.picker_requested {
-                    match request {
-                        editor_input::NativePickerRequest::File => {
-                            cx.emit(crate::Update::ShowFilePicker);
-                        }
-                        editor_input::NativePickerRequest::FileAt(path) => {
-                            let workspace_backend = self.workspace_backend.clone();
-                            let workspace_identity = workspace_backend.identity();
-                            if should_stat_picker_root_with_backend(&workspace_identity) {
-                                self.editor.set_status(format!(
-                                    "Checking file picker path: {}",
-                                    path.display()
-                                ));
-                                let runtime_handle = handle.clone();
-                                cx.spawn(async move |core, cx| {
-                                    let path_for_stat = path.clone();
-                                    let path_exists = match runtime_handle
-                                        .spawn(async move {
-                                            workspace_backend.stat(&path_for_stat).await.is_ok()
-                                        })
-                                        .await
-                                    {
-                                        Ok(path_exists) => path_exists,
-                                        Err(error) => {
-                                            warn!(
-                                                error = %error,
-                                                "File picker path stat task failed"
-                                            );
-                                            false
-                                        }
-                                    };
-
-                                    if let Some(core) = core.upgrade() {
-                                        core.update(cx, |core, cx| {
-                                            if path_exists {
-                                                cx.emit(crate::Update::ShowFilePickerAt(path));
-                                            } else {
-                                                core.editor.set_error(format!(
-                                                    "File picker path does not exist: {}",
-                                                    path.display()
-                                                ));
-                                            }
-                                        });
-                                    }
-                                })
-                                .detach();
-                                return;
-                            }
-
-                            if path.exists() {
-                                cx.emit(crate::Update::ShowFilePickerAt(path));
-                            } else {
-                                self.editor.set_error(format!(
-                                    "File picker path does not exist: {}",
-                                    path.display()
-                                ));
-                            }
-                        }
-                        editor_input::NativePickerRequest::FileCurrentDirectory => {
-                            let cwd = helix_stdx::env::current_working_dir();
-                            let workspace_identity = self.workspace_backend.identity();
-                            if let Some(directory) = file_picker_current_directory(
-                                &workspace_identity,
-                                self.project_directory.as_deref(),
-                                cwd,
-                            ) {
-                                cx.emit(crate::Update::ShowFilePickerAt(directory));
-                            } else {
-                                self.editor
-                                    .set_error("Current working directory does not exist");
-                            }
-                        }
-                        editor_input::NativePickerRequest::FileCurrentBufferDirectory => {
-                            let current_buffer_directory = self
-                                .editor
-                                .tree
-                                .try_get(self.editor.tree.focus)
-                                .and_then(|view| self.editor.document(view.doc))
-                                .and_then(|doc| doc.path())
-                                .and_then(|path| path.parent())
-                                .map(Path::to_path_buf);
-
-                            if let Some(path) = current_buffer_directory {
-                                cx.emit(crate::Update::ShowFilePickerAt(path));
-                            } else {
-                                self.editor
-                                    .set_error("current buffer has no path or parent");
-                            }
-                        }
-                        editor_input::NativePickerRequest::Buffer => {
-                            cx.emit(crate::Update::ShowBufferPicker);
-                        }
-                        editor_input::NativePickerRequest::JumpList => {
-                            if let Some(picker) = self.create_jumplist_picker() {
-                                cx.emit(crate::Update::Picker(picker));
-                            } else {
-                                self.editor.set_status("Jumplist is empty");
-                            }
-                        }
-                        editor_input::NativePickerRequest::Symbols { workspace } => {
-                            self.trigger_lsp_symbol_picker(workspace, cx);
-                        }
-                        editor_input::NativePickerRequest::Diagnostics { workspace } => {
-                            self.emit_diagnostics_picker(workspace, cx);
-                        }
-                        editor_input::NativePickerRequest::CodeActions => {
-                            cx.emit(crate::Update::ShowCodeActions);
-                        }
-                        editor_input::NativePickerRequest::HoverDocs => {
-                            cx.emit(crate::Update::ShowHoverDocs);
-                        }
+                    InputEvent::SubmitCommand { token, command } => {
+                        let Some(outcome) = self.editor_input.submit_command_continuation(
+                            token,
+                            &command,
+                            active_slot,
+                            &mut self.compositor,
+                            &mut self.editor,
+                            &mut self.jobs,
+                        ) else {
+                            return;
+                        };
+                        outcome
                     }
-                }
-
-                if !is_navigation_repeat || has_explicit_ui_request {
-                    self.emit_overlays(cx);
-                }
-
-                if !is_navigation_repeat || !selection_or_viewport_updated {
-                    cx.emit(crate::Update::Redraw);
-                }
+                    InputEvent::CommandLine(command) => {
+                        self.editor_input.execute_hosted_command_line(
+                            &command,
+                            active_slot,
+                            &mut self.compositor,
+                            &mut self.editor,
+                            &mut self.jobs,
+                        )
+                    }
+                    InputEvent::Semantic(_) => unreachable!(),
+                };
+                self.dispatch_editor_input_outcome(outcome, is_navigation_repeat, &handle, cx);
             }
         }
     }
 
+    fn emit_native_ui_update(
+        &mut self,
+        update: Update,
+        continuation: Option<EditorContinuation>,
+        cx: &mut gpui::Context<crate::Core>,
+    ) {
+        if let Some(continuation) = continuation
+            && !self
+                .editor_input
+                .command_continuation_is_current(continuation.token, &self.editor)
+        {
+            self.editor_input
+                .cancel_command_continuation(continuation.token, &mut self.editor);
+            return;
+        }
+        cx.emit(Update::NativeUiContinuation(continuation));
+        cx.emit(update);
+    }
+
+    fn fail_native_command(&mut self, continuation: Option<EditorContinuation>, message: String) {
+        if let Some(continuation) = continuation {
+            let current = self
+                .editor_input
+                .command_continuation_is_current(continuation.token, &self.editor);
+            self.editor_input
+                .cancel_command_continuation(continuation.token, &mut self.editor);
+            if !current {
+                return;
+            }
+        }
+        self.editor.set_error(message);
+    }
+
+    fn dispatch_editor_input_outcome(
+        &mut self,
+        outcome: editor_input::EditorInputOutcome,
+        is_navigation_repeat: bool,
+        handle: &tokio::runtime::Handle,
+        cx: &mut gpui::Context<crate::Core>,
+    ) {
+        let continuation = outcome.continuation;
+        let has_explicit_ui_request = outcome.completion_requested.is_some()
+            || outcome.picker_requested.is_some()
+            || outcome.prompt_requested.is_some()
+            || outcome.lsp_navigation_requested.is_some()
+            || outcome.workspace_requested.is_some()
+            || outcome.semantic_shortcut_requested.is_some();
+        let selection_or_viewport_updated = outcome.selection_changed
+            || outcome.viewport_scroll_requested.is_some()
+            || outcome.viewport_cursor_requested.is_some();
+
+        if outcome.reset_diff_change_executed {
+            self.reconcile_vcs_after_diff_reset(cx, handle);
+        }
+
+        if outcome.selection_changed
+            && let Some(doc_id) = outcome.focused_doc_id
+        {
+            cx.emit(crate::Update::SelectionChanged {
+                doc_id,
+                view_id: outcome.focused_view_id,
+            });
+        }
+
+        if let Some(request) = outcome.completion_requested {
+            if let Some(doc) = self.editor.document(request.doc_id) {
+                let cursor = doc
+                    .selection(request.view_id)
+                    .primary()
+                    .cursor(doc.text().slice(..));
+                self.emit_native_ui_update(
+                    crate::Update::CompletionEvent(
+                        helix_view::handlers::completion::CompletionEvent::ManualTrigger {
+                            cursor,
+                            doc: request.doc_id,
+                            view: request.view_id,
+                        },
+                    ),
+                    continuation,
+                    cx,
+                );
+            } else {
+                nucleotide_logging::warn!(
+                    doc_id = ?request.doc_id,
+                    view_id = ?request.view_id,
+                    "Document not found for native completion request"
+                );
+            }
+        }
+
+        if let Some(request) = outcome.lsp_navigation_requested {
+            self.trigger_lsp_navigation_with_remote_startup(request, continuation, true, cx);
+        }
+
+        if let Some(request) = outcome.workspace_requested {
+            match request {
+                editor_input::NativeWorkspaceRequest::Command(request) => {
+                    cx.emit(crate::Update::WorkspaceCommand {
+                        request,
+                        continuation,
+                    });
+                }
+                editor_input::NativeWorkspaceRequest::ToggleFileTree => {
+                    self.emit_native_ui_update(crate::Update::ToggleFileTree, continuation, cx);
+                }
+                editor_input::NativeWorkspaceRequest::OpenFiles { paths, action } => {
+                    cx.emit(crate::Update::WorkspaceCommand {
+                        request: editor_input::workspace_commands::WorkspaceCommandRequest {
+                            command: editor_input::workspace_commands::WorkspaceCommand::Open {
+                                paths: paths
+                                    .into_iter()
+                                    .map(|path| path.to_string_lossy().into_owned())
+                                    .collect(),
+                                action,
+                            },
+                            count: 1,
+                        },
+                        continuation,
+                    });
+                }
+            }
+        }
+
+        if let Some(request) = outcome.semantic_shortcut_requested {
+            self.emit_native_ui_update(crate::Update::SemanticShortcut(request), continuation, cx);
+        }
+
+        if let Some(request) = outcome.viewport_scroll_requested {
+            cx.emit(crate::Update::ViewportScroll {
+                view_id: outcome.focused_view_id,
+                request,
+                continuation,
+            });
+        }
+
+        if let Some(request) = outcome.viewport_cursor_requested {
+            cx.emit(crate::Update::ViewportCursor {
+                view_id: outcome.focused_view_id,
+                request,
+                continuation,
+            });
+        }
+
+        if let Some(request) = outcome.prompt_requested {
+            self.emit_native_ui_update(
+                crate::Update::Prompt(Self::create_native_prompt(request)),
+                continuation,
+                cx,
+            );
+        }
+
+        if let Some(request) = outcome.picker_requested {
+            match request {
+                editor_input::NativePickerRequest::File => {
+                    self.emit_native_ui_update(crate::Update::ShowFilePicker, continuation, cx);
+                }
+                editor_input::NativePickerRequest::FileAt(path) => {
+                    let workspace_backend = self.workspace_backend.clone();
+                    let workspace_identity = workspace_backend.identity();
+                    if should_stat_picker_root_with_backend(&workspace_identity) {
+                        self.editor
+                            .set_status(format!("Checking file picker path: {}", path.display()));
+                        let runtime_handle = handle.clone();
+                        cx.spawn(async move |core, cx| {
+                            let path_for_stat = path.clone();
+                            let path_exists = match runtime_handle
+                                .spawn(async move {
+                                    workspace_backend.stat(&path_for_stat).await.is_ok()
+                                })
+                                .await
+                            {
+                                Ok(path_exists) => path_exists,
+                                Err(error) => {
+                                    warn!(
+                                        error = %error,
+                                        "File picker path stat task failed"
+                                    );
+                                    false
+                                }
+                            };
+
+                            if let Some(core) = core.upgrade() {
+                                core.update(cx, |core, cx| {
+                                    if path_exists {
+                                        core.emit_native_ui_update(
+                                            crate::Update::ShowFilePickerAt(path),
+                                            continuation,
+                                            cx,
+                                        );
+                                    } else {
+                                        core.fail_native_command(
+                                            continuation,
+                                            format!(
+                                                "File picker path does not exist: {}",
+                                                path.display()
+                                            ),
+                                        );
+                                    }
+                                });
+                            }
+                        })
+                        .detach();
+                        return;
+                    }
+
+                    if path.exists() {
+                        self.emit_native_ui_update(
+                            crate::Update::ShowFilePickerAt(path),
+                            continuation,
+                            cx,
+                        );
+                    } else {
+                        self.fail_native_command(
+                            continuation,
+                            format!("File picker path does not exist: {}", path.display()),
+                        );
+                    }
+                }
+                editor_input::NativePickerRequest::FileCurrentDirectory => {
+                    let cwd = helix_stdx::env::current_working_dir();
+                    let workspace_identity = self.workspace_backend.identity();
+                    if let Some(directory) = file_picker_current_directory(
+                        &workspace_identity,
+                        self.project_directory.as_deref(),
+                        cwd,
+                    ) {
+                        self.emit_native_ui_update(
+                            crate::Update::ShowFilePickerAt(directory),
+                            continuation,
+                            cx,
+                        );
+                    } else {
+                        self.fail_native_command(
+                            continuation,
+                            "Current working directory does not exist".into(),
+                        );
+                    }
+                }
+                editor_input::NativePickerRequest::FileCurrentBufferDirectory => {
+                    let current_buffer_directory = self
+                        .editor
+                        .tree
+                        .try_get(self.editor.tree.focus)
+                        .and_then(|view| self.editor.document(view.doc))
+                        .and_then(|doc| doc.path())
+                        .and_then(|path| path.parent())
+                        .map(Path::to_path_buf);
+
+                    if let Some(path) = current_buffer_directory {
+                        self.emit_native_ui_update(
+                            crate::Update::ShowFilePickerAt(path),
+                            continuation,
+                            cx,
+                        );
+                    } else {
+                        self.fail_native_command(
+                            continuation,
+                            "current buffer has no path or parent".into(),
+                        );
+                    }
+                }
+                editor_input::NativePickerRequest::Buffer => {
+                    self.emit_native_ui_update(crate::Update::ShowBufferPicker, continuation, cx);
+                }
+                editor_input::NativePickerRequest::JumpList => {
+                    if let Some(picker) = self.create_jumplist_picker() {
+                        self.emit_native_ui_update(crate::Update::Picker(picker), continuation, cx);
+                    } else {
+                        if let Some(continuation) = continuation {
+                            self.editor_input
+                                .cancel_command_continuation(continuation.token, &mut self.editor);
+                        }
+                        self.editor.set_status("Jumplist is empty");
+                    }
+                }
+                editor_input::NativePickerRequest::Symbols { workspace } => {
+                    self.trigger_lsp_symbol_picker_with_continuation(workspace, continuation, cx);
+                }
+                editor_input::NativePickerRequest::Diagnostics { workspace } => {
+                    self.emit_diagnostics_picker_with_continuation(workspace, continuation, cx);
+                }
+                editor_input::NativePickerRequest::CodeActions => {
+                    self.emit_native_ui_update(crate::Update::ShowCodeActions, continuation, cx);
+                }
+                editor_input::NativePickerRequest::HoverDocs => {
+                    self.emit_native_ui_update(crate::Update::ShowHoverDocs, continuation, cx);
+                }
+            }
+        }
+
+        if !is_navigation_repeat || has_explicit_ui_request {
+            self.emit_overlays(cx);
+        }
+
+        if !is_navigation_repeat || !selection_or_viewport_updated {
+            cx.emit(crate::Update::Redraw);
+        }
+    }
+
+    #[cfg(test)]
     fn emit_diagnostics_picker(&mut self, workspace: bool, cx: &mut gpui::Context<crate::Core>) {
+        self.emit_diagnostics_picker_with_continuation(workspace, None, cx);
+    }
+
+    fn emit_diagnostics_picker_with_continuation(
+        &mut self,
+        workspace: bool,
+        continuation: Option<EditorContinuation>,
+        cx: &mut gpui::Context<crate::Core>,
+    ) {
         debug!(workspace = workspace, "DIAG: Diagnostics picker requested");
 
         let focused_doc_id = self
@@ -3726,6 +3875,10 @@ impl Application {
         }
 
         if items.is_empty() {
+            if let Some(continuation) = continuation {
+                self.editor_input
+                    .cancel_command_continuation(continuation.token, &mut self.editor);
+            }
             self.editor.set_status(if workspace {
                 "No workspace diagnostics"
             } else {
@@ -3740,7 +3893,7 @@ impl Application {
             let picker = crate::picker::Picker::native(title, items, |_index| {
                 // Selection is handled by OverlayView via DiagnosticLocation payloads.
             });
-            cx.emit(crate::Update::Picker(picker));
+            self.emit_native_ui_update(crate::Update::Picker(picker), continuation, cx);
         }
     }
 
@@ -3943,6 +4096,17 @@ impl Application {
         let mut iterations = 0usize;
         let mut yielded_for_budget = false;
 
+        let terminal_events = std::mem::take(
+            &mut *self
+                .pending_terminal_events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        for event in terminal_events {
+            cx.emit(crate::Update::Terminal(event));
+            made_progress = true;
+        }
+
         loop {
             iterations += 1;
             let _iteration_timer =
@@ -4026,7 +4190,9 @@ impl Application {
             wake.notify();
         }
 
-        self.editor.tree.views().count() > 0
+        // Hosted workspaces can contain only images/terminals, or one empty pane.
+        // Keep jobs and editor events alive until the workspace explicitly quits.
+        !self.editor.should_close()
     }
 
     fn handle_editor_event_sync(
@@ -4058,7 +4224,7 @@ impl Application {
                 self.editor.clear_idle_timer();
             }
             EditorEvent::Redraw => {
-                if self.editor.tree.views().count() == 0 {
+                if self.editor.should_close() {
                     cx.emit(crate::Update::ShouldQuit);
                     return false;
                 }
@@ -4988,15 +5154,25 @@ impl Application {
         request: editor_input::NativeLspNavigationRequest,
         cx: &mut gpui::Context<crate::Core>,
     ) {
-        self.trigger_lsp_navigation_with_remote_startup(request, true, cx);
+        self.trigger_lsp_navigation_with_remote_startup(request, None, true, cx);
     }
 
     fn trigger_lsp_navigation_with_remote_startup(
         &mut self,
         request: editor_input::NativeLspNavigationRequest,
+        continuation: Option<EditorContinuation>,
         allow_remote_startup: bool,
         cx: &mut gpui::Context<crate::Core>,
     ) {
+        if let Some(continuation) = continuation
+            && !self
+                .editor_input
+                .command_continuation_is_current(continuation.token, &self.editor)
+        {
+            self.editor_input
+                .cancel_command_continuation(continuation.token, &mut self.editor);
+            return;
+        }
         let feature = request.language_server_feature();
         let include_declaration = self.editor.config().lsp.goto_reference_include_declaration;
         let mut futures: FuturesOrdered<LspLocationFuture> = FuturesOrdered::new();
@@ -5004,7 +5180,7 @@ impl Application {
 
         {
             let Some(view) = self.editor.tree.try_get(self.editor.tree.focus) else {
-                self.editor.set_error("No active view for LSP navigation");
+                self.fail_native_command(continuation, "No active view for LSP navigation".into());
                 return;
             };
             let view_id = view.id;
@@ -5013,17 +5189,21 @@ impl Application {
                 self.ensure_document_tracked_by_running_servers(doc_id);
             }
             let Some(view) = self.editor.tree.try_get(view_id) else {
-                self.editor.set_error("No active view for LSP navigation");
+                self.fail_native_command(continuation, "No active view for LSP navigation".into());
                 return;
             };
             let Some(doc) = self.editor.document(view.doc) else {
-                self.editor
-                    .set_error("No active document for LSP navigation");
+                self.fail_native_command(
+                    continuation,
+                    "No active document for LSP navigation".into(),
+                );
                 return;
             };
             let Some(identifier) = document_lsp_identifier(doc) else {
-                self.editor
-                    .set_error("LSP navigation requires a file-backed document");
+                self.fail_native_command(
+                    continuation,
+                    "LSP navigation requires a file-backed document".into(),
+                );
                 return;
             };
 
@@ -5123,10 +5303,12 @@ impl Application {
         }
 
         if futures.is_empty() {
-            if allow_remote_startup && self.trigger_remote_lsp_navigation_startup(request, cx) {
+            if allow_remote_startup
+                && self.trigger_remote_lsp_navigation_startup(request, continuation, cx)
+            {
                 return;
             }
-            self.editor.set_error(request.unsupported_message());
+            self.fail_native_command(continuation, request.unsupported_message().into());
             return;
         }
 
@@ -5143,7 +5325,7 @@ impl Application {
 
             if let Some(core) = core.upgrade() {
                 core.update(cx, move |core, cx| {
-                    core.finish_lsp_navigation(title, empty_message, locations, cx);
+                    core.finish_lsp_navigation(title, empty_message, locations, continuation, cx);
                 });
             }
         })
@@ -5232,6 +5414,7 @@ impl Application {
     fn trigger_remote_lsp_navigation_startup(
         &mut self,
         request: editor_input::NativeLspNavigationRequest,
+        continuation: Option<EditorContinuation>,
         cx: &mut gpui::Context<crate::Core>,
     ) -> bool {
         let workspace_identity = self.workspace_backend.identity();
@@ -5296,15 +5479,22 @@ impl Application {
                     let mut ready_for_retry = false;
 
                     loop {
-                        let ready = core.update(cx, |core, _cx| {
+                        let readiness = core.update(cx, |core, _cx| {
+                            if let Some(continuation) = continuation
+                                && !core.editor_input.command_continuation_is_current(continuation.token, &core.editor)
+                            {
+                                core.editor_input.cancel_command_continuation(continuation.token, &mut core.editor);
+                                return None;
+                            }
                             let (ready, state) =
                                 core.active_document_lsp_navigation_readiness(request);
                             readiness_state = state;
                             if !ready {
                                 core.request_event_driven_maintenance();
                             }
-                            ready
+                            Some(ready)
                         });
+                        let Some(ready) = readiness else { return; };
                         if ready {
                             ready_for_retry = true;
                             break;
@@ -5325,11 +5515,11 @@ impl Application {
 
                     if ready_for_retry {
                         core.update(cx, move |core, cx| {
-                            core.trigger_lsp_navigation_with_remote_startup(request, false, cx);
+                            core.trigger_lsp_navigation_with_remote_startup(request, continuation, false, cx);
                         });
                     } else {
                         core.update(cx, move |core, _cx| {
-                            core.editor.set_error(format!(
+                            core.fail_native_command(continuation, format!(
                                 "Remote language server did not become ready for {}",
                                 request.picker_title().to_ascii_lowercase()
                             ));
@@ -5338,20 +5528,17 @@ impl Application {
                 }
                 Ok(Ok(Err(error))) => {
                     core.update(cx, move |core, _cx| {
-                        core.editor
-                            .set_error(format!("Remote language server startup failed: {error}"));
+                        core.fail_native_command(continuation, format!("Remote language server startup failed: {error}"));
                     });
                 }
                 Ok(Err(_)) => {
                     core.update(cx, |core, _cx| {
-                        core.editor
-                            .set_error("Remote language server startup was cancelled");
+                        core.fail_native_command(continuation, "Remote language server startup was cancelled".into());
                     });
                 }
                 Err(_) => {
                     core.update(cx, |core, _cx| {
-                        core.editor
-                            .set_error("Remote language server startup timed out");
+                        core.fail_native_command(continuation, "Remote language server startup timed out".into());
                     });
                 }
             }
@@ -5366,20 +5553,50 @@ impl Application {
         title: String,
         empty_message: String,
         locations: Vec<crate::types::LspLocation>,
+        continuation: Option<EditorContinuation>,
         cx: &mut gpui::Context<crate::Core>,
     ) {
+        if locations.is_empty() {
+            self.fail_native_command(continuation, empty_message);
+            cx.emit(crate::Update::Redraw);
+            return;
+        }
+        if let Some(continuation) = continuation
+            && !self
+                .editor_input
+                .begin_command_completion(continuation.token, &mut self.editor)
+        {
+            return;
+        }
         match locations.as_slice() {
-            [] => self.editor.set_error(empty_message),
+            [] => unreachable!(),
             [location] => match self.jump_to_lsp_location(location) {
                 Ok((doc_id, view_id)) => {
                     cx.emit(crate::Update::SelectionChanged { doc_id, view_id });
+                    if let Some(continuation) = continuation {
+                        cx.emit(crate::Update::ContinueCommand(continuation.token));
+                    }
                 }
-                Err(err) => self.editor.set_error(err.to_string()),
+                Err(err) => {
+                    if let Some(continuation) = continuation {
+                        self.editor_input
+                            .cancel_command_continuation(continuation.token, &mut self.editor);
+                    }
+                    self.editor.set_error(err.to_string());
+                }
             },
             _ => {
                 let picker =
                     lsp_locations_picker(&title, locations, self.project_directory.as_deref());
-                cx.emit(crate::Update::Picker(picker));
+                let ui_continuation = match continuation {
+                    Some(continuation) => self.editor_input.acknowledge_command_ui(
+                        continuation.token,
+                        self.editor.hosted_active_slot(),
+                        &self.editor,
+                    ),
+                    None => None,
+                };
+                self.emit_native_ui_update(crate::Update::Picker(picker), ui_continuation, cx);
             }
         }
 
@@ -6201,6 +6418,7 @@ pub fn init_editor(
         workspace_file_ops,
         pending_lsp_workspace_edits: VecDeque::new(),
         terminal_runtime,
+        pending_terminal_events: Arc::default(),
         maintenance_wake: None,
     })
 }
@@ -6494,12 +6712,12 @@ fn set_remote_document_lsp_url(doc: &mut Document, display_path: &Path) {
     }
 }
 
-enum NativeOpenFileOutcome {
+pub(crate) enum NativeOpenFileOutcome {
     Directory(PathBuf),
     Document(WorkspaceDocumentRead),
 }
 
-async fn native_open_file_with_backend(
+pub(crate) async fn native_open_file_with_backend(
     workspace_backend: WorkspaceBackendHandle,
     path: PathBuf,
 ) -> Result<NativeOpenFileOutcome, Error> {
@@ -6518,75 +6736,6 @@ async fn native_open_file_with_backend(
 }
 
 impl Application {
-    fn handle_native_open_file_request(
-        &mut self,
-        path: PathBuf,
-        action: helix_view::editor::Action,
-        handle: tokio::runtime::Handle,
-        cx: &mut gpui::Context<crate::Core>,
-    ) {
-        let workspace_backend = self.workspace_backend.clone();
-        let workspace_identity = workspace_backend.identity();
-
-        if matches!(workspace_identity, WorkspaceIdentity::Local) {
-            if path.is_dir() {
-                cx.emit(crate::Update::ShowFilePickerAt(path));
-                return;
-            }
-
-            if let Err(error) =
-                open_workspace_document(&mut self.editor, &workspace_backend, &path, action)
-            {
-                self.editor
-                    .set_error(format!("Open file failed: {error:?}"));
-            }
-            return;
-        }
-
-        self.editor
-            .set_status(format!("Opening workspace file: {}", path.display()));
-        cx.spawn(async move |core, cx| {
-            let result = match handle
-                .spawn(native_open_file_with_backend(
-                    workspace_backend,
-                    path.clone(),
-                ))
-                .await
-            {
-                Ok(result) => result,
-                Err(error) => Err(anyhow::anyhow!("workspace open task failed: {error}")),
-            };
-
-            if let Some(core) = core.upgrade() {
-                core.update(cx, |core, cx| match result {
-                    Ok(NativeOpenFileOutcome::Directory(path)) => {
-                        cx.emit(crate::Update::ShowFilePickerAt(path));
-                    }
-                    Ok(NativeOpenFileOutcome::Document(document_read)) => {
-                        match open_workspace_document_from_read(
-                            &mut core.editor,
-                            document_read,
-                            action,
-                        ) {
-                            Ok(doc_id) => {
-                                core.attach_or_start_remote_document_servers(doc_id, &handle, cx);
-                            }
-                            Err(error) => {
-                                core.editor
-                                    .set_error(format!("Open remote file failed: {error:?}"));
-                            }
-                        }
-                    }
-                    Err(error) => {
-                        core.editor
-                            .set_error(format!("Open remote file failed: {error:?}"));
-                    }
-                });
-            }
-        })
-        .detach();
-    }
-
     fn handle_job_callback(&mut self, callback: helix_term::job::Callback) {
         use helix_term::job::Callback;
 
