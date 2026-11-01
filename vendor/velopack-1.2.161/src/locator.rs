@@ -305,6 +305,18 @@ impl VelopackLocator {
         Some(self.manifest.shortcut_aumid.clone())
     }
 
+    /// Returns the release notes (markdown) of the current app, as provided to `vpk pack --releaseNotes`.
+    /// Returns None if the release was packed without release notes.
+    pub fn get_manifest_release_notes(&self) -> Option<String> {
+        non_empty_trimmed(&self.manifest.release_notes)
+    }
+
+    /// Returns the release notes (rendered HTML) of the current app, as provided to `vpk pack --releaseNotes`.
+    /// Returns None if the release was packed without release notes.
+    pub fn get_manifest_release_notes_html(&self) -> Option<String> {
+        non_empty_trimmed(&self.manifest.release_notes_html)
+    }
+
     /// Returns the Application User Model ID for this app.
     /// If a custom AUMID was specified during packaging, it will be returned.
     /// Otherwise, falls back to "velopack.{AppId}".
@@ -647,6 +659,17 @@ pub fn find_local_full_packages(packages_dir: &Path) -> Vec<(PathBuf, Manifest)>
         }
     }
     results
+}
+
+/// Trims `value` and returns it, or None if nothing but whitespace remains. The nuspec writer wraps
+/// release notes in a CDATA section padded with newlines, so the raw manifest text is never clean.
+fn non_empty_trimmed(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
 }
 
 /// Returns the path and manifest of the latest full package in the given directory.

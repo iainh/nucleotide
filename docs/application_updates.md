@@ -39,13 +39,23 @@ The Rust client and release CLI are pinned to Velopack `1.2.161`, published on 2
 
 Nucleotide retains `ureq`'s `platform-verifier` feature and explicitly selects `RootCerts::PlatformVerifier` for feed and package requests. Upstream's release does not select this configuration. This preserves system certificate trust, including enterprise roots; a configuration assertion or successful public HTTPS request does not prove that a particular enterprise certificate works on macOS or Windows.
 
-The vendor includes these post-release fixes from upstream main audited at [301077f4](https://github.com/velopack/velopack/commit/301077f4792250d5ff4eff1ff4f22021421a506b):
+The vendor includes these post-release changes from upstream `develop`, audited through [4419cd4f](https://github.com/velopack/velopack/commit/4419cd4fe7eb5717b7dc24a79a67f494354831ae) on 2026-11-01:
 
 - [Safe feed filenames](https://github.com/velopack/velopack/commit/de48f5349ea256e51eaff1b3b5d20d0d844b8d8e): store full, base and delta packages by their sanitized basename, and resolve the same basename when applying. Remote subpaths and URLs remain unchanged. Nucleotide also rejects empty and dot-only local names, including Windows trailing-space/dot aliases, because the upstream sanitizer alone retains `..`.
 - [Delta download progress](https://github.com/velopack/velopack/commit/5852e3758a6bbad0f39aa4c247a4b05bf75509c3) and the [detached forwarder correction](https://github.com/velopack/velopack/commit/abb2622e56c691017e1259a9154b1d47a43d85dc): report progress during downloads without waiting indefinitely if a source retains a progress sender. Forwarded values can arrive after later direct progress values.
 - [Actual `sq.version` write errors](https://github.com/velopack/velopack/commit/bbde968cf55b4145a29658b7e2f2387399bf8691): distinguish a missing manifest from a Windows filesystem or ZIP error.
+- [Installed-version release notes](https://github.com/velopack/velopack/commit/f73e272ea2f4cb9954a6fc0d4ae138e3286aac22): expose markdown and HTML notes from the installed manifest through the locator and update manager. The getters trim packaging whitespace and return `None` for absent or whitespace-only notes.
+- [Remove `derivative`](https://github.com/velopack/velopack/commit/c4e4af36b9da773e61b5927d34ca57021a721ee2): use handwritten `Default` implementations without changing manifest or package-name defaults. The unmaintained dependency and its advisory exception are no longer needed.
 
-The application and packaged smoke test still supply explicit `AutoSource` instances. They do not opt into the new default Velopack Flow source. No application adaptation to `HttpOptions` is needed.
+The [ZIP 9 upgrade](https://github.com/velopack/velopack/commit/ae2e8818973aa18ac63732a5c7ef9895116592f9) and fallible ZIP filename handling were already incorporated locally. The standalone vendor lockfile is synchronized to ZIP `9.2.0`, matching the workspace lockfile; it previously still selected ZIP 8 despite the updated manifest.
+
+The standalone lockfile also includes upstream's [Rustls security update](https://github.com/velopack/velopack/commit/63e9be0c0e64cb7ef9c4b1753e42c10c40b8dbce) to `0.23.46` for RUSTSEC-2026-0346–0349. Its `rustls-webpki` (`0.103.16`), `webpki-root-certs` and `webpki-roots` (`1.0.11`) selections now match the workspace's existing patched versions. These lockfile updates do not change the explicit platform certificate verifier.
+
+At the audit date, crates.io, NuGet's `vpk` feed and GitHub releases still list `1.2.161` as the latest stable release. The newer `1.3.39-g8d2844f` release is a prerelease, based on [8d2844f3](https://github.com/velopack/velopack/commit/8d2844f324a69bd848719ef465b1ae12c5060524). Keep the client and release CLI on the matching stable pins rather than moving the production release pipeline to a prerelease.
+
+That prerelease includes Windows 7 support and a fix for delta creation in non-ASCII Windows paths; those CLI and updater-binary changes are not part of this Rust-client backport. Until a stable CLI includes the latter fix, use ASCII-only build and package paths on Windows. Upstream's later ICO fixes affect DIB frames without an AND mask; all five frames in Nucleotide's packaged icon are PNGs. Linux ARM packaging and changes to other language bindings and their dependencies are outside Nucleotide's managed-update platforms and Rust client.
+
+The application and packaged smoke test still supply explicit `AutoSource` instances. They do not opt into the new default Velopack Flow source. No application adaptation to `HttpOptions` or the additive installed-version note getters is needed: the update UI continues to show notes for the available update from its feed asset, not notes for the currently installed version.
 
 ## Build a release
 
@@ -102,9 +112,9 @@ cargo test -p nucleotide updates::
 Run the vendored client's unit, source, manager and documentation tests separately. Its upstream integration tests require `public-utils`:
 
 ```bash
-cargo test --manifest-path vendor/velopack-1.2.161/Cargo.toml --features public-utils
+cargo test --manifest-path vendor/velopack-1.2.161/Cargo.toml --features public-utils --locked
 ```
 
-Manager tests exercise subfolder, absolute URL, traversal and invalid names through download and apply APIs. On Unix, a stand-in patch executable verifies base/delta path handling and a source retaining progress senders verifies download completion. Windows tests cover filename aliases and `sq.version` write failures; run them on Windows for runtime coverage. Two upstream download tests use public HTTPS endpoints.
+Manager tests exercise subfolder, absolute URL, traversal and invalid names through download and apply APIs. They also read installed notes through the update manager, covering CDATA, HTML entities, absent notes, whitespace-only notes and independent markdown/HTML values. On Unix, a stand-in patch executable verifies base/delta path handling and a source retaining progress senders verifies download completion. Windows tests cover filename aliases and `sq.version` write failures; run them on Windows for runtime coverage. Two upstream download tests use public HTTPS endpoints.
 
 For packaging commands, see `scripts/package-velopack.sh`, `scripts/package-velopack.ps1` and `docs/windows_install.md`.
