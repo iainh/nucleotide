@@ -746,12 +746,11 @@ impl RenderOnce for Tab {
                     }),
             )
             .when(!disabled, |tab| {
-                tab.on_mouse_down(MouseButton::Left, {
+                tab.on_click({
                     let on_click = self.on_click.clone();
                     move |event, window, cx| {
-                        let click_event = click_event_from_mouse_down(event);
                         window.prevent_default();
-                        on_click(&click_event, window, cx);
+                        on_click(event, window, cx);
                     }
                 })
             })

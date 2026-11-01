@@ -65,6 +65,8 @@ The workspace reconciles tab membership after both GUI actions and Helix command
 - A new split starts with the document displayed in that split. Other tabs stay
   in their original pane.
 - Selecting a tab or using a tab-bar control targets that bar's pane.
+- Tabs activate on mouse release, not on press. Dragging a background tab leaves
+  the source pane's active tab unchanged until the drop is committed.
 - Drag a tab onto another tab to insert it before that tab, or onto empty bar
   space to append it. A theme-coloured insertion line marks the destination,
   including the end of each strip in separate pinned-tab rows. The same gestures
