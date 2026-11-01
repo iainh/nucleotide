@@ -215,7 +215,7 @@ pub struct TabBar {
     end_children: Vec<AnyElement>,
     /// Documents whose contents are still being loaded
     loading_documents: HashSet<TabId>,
-    pane_drag_drop: Option<(helix_view::ViewId, TabDropHandler)>,
+    pane_drag_drop: Option<(crate::workspace::pane_layout::PaneId, TabDropHandler)>,
 }
 
 impl TabBar {
@@ -272,7 +272,7 @@ impl TabBar {
 
     pub(crate) fn with_pane_drag_drop(
         mut self,
-        pane: helix_view::ViewId,
+        pane: crate::workspace::pane_layout::PaneId,
         on_drop: impl Fn(&DraggedTab, Option<TabId>, &mut Window, &mut App) + 'static,
     ) -> Self {
         self.pane_drag_drop = Some((pane, Arc::new(on_drop)));
@@ -412,6 +412,9 @@ impl TabBar {
     }
 
     fn base_document_label(&self, doc_info: &DocumentInfo) -> String {
+        if let TabId::Terminal(id) = doc_info.id {
+            return format!("Terminal {}", id.0);
+        }
         if let Some(path) = &doc_info.path {
             path.file_name()
                 .and_then(|name| name.to_str())

@@ -14,7 +14,7 @@ use helix_view::{DocumentId, document::from_reader};
 use nucleotide_logging::{debug, warn};
 use nucleotide_workspace::WorkspaceIdentity;
 
-use super::{Application, document_lsp_identifier, lsp_location_from_location};
+use super::{Application, EditorContinuation, document_lsp_identifier, lsp_location_from_location};
 
 type SymbolItemFuture = BoxFuture<'static, anyhow::Result<Vec<NativeSymbolItem>>>;
 
@@ -441,6 +441,15 @@ impl Application {
         workspace: bool,
         cx: &mut gpui::Context<crate::Core>,
     ) {
+        self.trigger_lsp_symbol_picker_with_continuation(workspace, None, cx);
+    }
+
+    pub(super) fn trigger_lsp_symbol_picker_with_continuation(
+        &mut self,
+        workspace: bool,
+        continuation: Option<EditorContinuation>,
+        cx: &mut gpui::Context<crate::Core>,
+    ) {
         let feature = if workspace {
             syntax::config::LanguageServerFeature::WorkspaceSymbols
         } else {
@@ -451,12 +460,14 @@ impl Application {
 
         {
             let Some(view) = self.editor.tree.try_get(self.editor.tree.focus) else {
-                self.editor.set_error("No active view for symbol picker");
+                self.fail_native_command(continuation, "No active view for symbol picker".into());
                 return;
             };
             let Some(doc) = self.editor.document(view.doc) else {
-                self.editor
-                    .set_error("No active document for symbol picker");
+                self.fail_native_command(
+                    continuation,
+                    "No active document for symbol picker".into(),
+                );
                 return;
             };
             if !workspace && doc.syntax().is_some() {
@@ -506,12 +517,14 @@ impl Application {
 
         if futures.is_empty() {
             if workspace {
-                self.trigger_workspace_syntax_symbol_picker(cx);
+                self.trigger_workspace_syntax_symbol_picker(continuation, cx);
             } else if let Some(symbols) = syntax_fallback_symbols {
-                self.finish_native_symbol_picker("Document Symbols", symbols, cx);
+                self.finish_native_symbol_picker("Document Symbols", symbols, continuation, cx);
             } else {
-                self.editor.set_error(
-                    "No language server supporting document symbols or syntax info available",
+                self.fail_native_command(
+                    continuation,
+                    "No language server supporting document symbols or syntax info available"
+                        .into(),
                 );
             }
             return;
@@ -535,22 +548,30 @@ impl Application {
 
             if let Some(core) = core.upgrade() {
                 core.update(cx, move |core, cx| {
-                    core.finish_native_symbol_picker(&title, symbols, cx);
+                    core.finish_native_symbol_picker(&title, symbols, continuation, cx);
                 });
             }
         })
         .detach();
     }
 
-    fn trigger_workspace_syntax_symbol_picker(&mut self, cx: &mut gpui::Context<crate::Core>) {
+    fn trigger_workspace_syntax_symbol_picker(
+        &mut self,
+        continuation: Option<EditorContinuation>,
+        cx: &mut gpui::Context<crate::Core>,
+    ) {
         let Some(view) = self.editor.tree.try_get(self.editor.tree.focus) else {
-            self.editor
-                .set_error("No active view for workspace symbol picker");
+            self.fail_native_command(
+                continuation,
+                "No active view for workspace symbol picker".into(),
+            );
             return;
         };
         let Some(active_doc) = self.editor.document(view.doc) else {
-            self.editor
-                .set_error("No active document for workspace symbol picker");
+            self.fail_native_command(
+                continuation,
+                "No active document for workspace symbol picker".into(),
+            );
             return;
         };
 
@@ -573,10 +594,17 @@ impl Application {
 
         if !should_use_workspace_syntax_symbol_fallback(&self.workspace_backend.identity()) {
             if open_symbols.is_empty() {
-                self.editor
-                    .set_error(REMOTE_WORKSPACE_SYMBOL_FALLBACK_UNAVAILABLE);
+                self.fail_native_command(
+                    continuation,
+                    REMOTE_WORKSPACE_SYMBOL_FALLBACK_UNAVAILABLE.into(),
+                );
             } else {
-                self.finish_native_symbol_picker("Workspace Symbols", open_symbols, cx);
+                self.finish_native_symbol_picker(
+                    "Workspace Symbols",
+                    open_symbols,
+                    continuation,
+                    cx,
+                );
             }
             return;
         }
@@ -601,15 +629,25 @@ impl Application {
                     match workspace_symbols {
                         Ok(mut workspace_symbols) => {
                             symbols.append(&mut workspace_symbols);
-                            core.finish_native_symbol_picker("Workspace Symbols", symbols, cx);
+                            core.finish_native_symbol_picker(
+                                "Workspace Symbols",
+                                symbols,
+                                continuation,
+                                cx,
+                            );
                         }
                         Err(err) if symbols.is_empty() => {
-                            core.editor.set_error(err.to_string());
+                            core.fail_native_command(continuation, err.to_string());
                             cx.emit(crate::Update::Redraw);
                         }
                         Err(err) => {
                             warn!(error = %err, "Workspace syntax symbol scan failed");
-                            core.finish_native_symbol_picker("Workspace Symbols", symbols, cx);
+                            core.finish_native_symbol_picker(
+                                "Workspace Symbols",
+                                symbols,
+                                continuation,
+                                cx,
+                            );
                         }
                     }
                 });
@@ -622,13 +660,27 @@ impl Application {
         &mut self,
         title: &str,
         symbols: Vec<NativeSymbolItem>,
+        continuation: Option<EditorContinuation>,
         cx: &mut gpui::Context<crate::Core>,
     ) {
+        if let Some(continuation) = continuation
+            && !self
+                .editor_input
+                .command_continuation_is_current(continuation.token, &self.editor)
+        {
+            self.editor_input
+                .cancel_command_continuation(continuation.token, &mut self.editor);
+            return;
+        }
         if symbols.is_empty() {
+            if let Some(continuation) = continuation {
+                self.editor_input
+                    .cancel_command_continuation(continuation.token, &mut self.editor);
+            }
             self.editor.set_status("No symbols found");
         } else {
             let picker = lsp_symbol_picker(title, symbols, self.project_directory.as_deref());
-            cx.emit(crate::Update::Picker(picker));
+            self.emit_native_ui_update(crate::Update::Picker(picker), continuation, cx);
         }
         cx.emit(crate::Update::Redraw);
     }

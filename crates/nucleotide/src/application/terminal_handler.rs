@@ -2,7 +2,7 @@
 
 use nucleotide_events::terminal::{Event as TerminalEvent, TerminalId};
 use nucleotide_logging::{error, info};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{
@@ -143,6 +143,16 @@ impl BlockingCompletion {
     }
 }
 impl ExternalTerminalCompletion for BlockingCompletion {
+    fn poll_exit(&mut self) -> std::io::Result<Option<Option<i32>>> {
+        self.result
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map(|result| result.clone().map_err(std::io::Error::other))
+            .transpose()
+    }
+
     fn try_exit_code(&mut self) -> std::io::Result<Option<i32>> {
         let result = self
             .result
@@ -176,6 +186,21 @@ impl ExternalTerminalCompletion for BlockingCompletion {
 /// event queue and write keystrokes directly to the PTY background writer.
 pub type TerminalInputSenders = Arc<Mutex<HashMap<TerminalId, std::sync::mpsc::Sender<Vec<u8>>>>>;
 
+/// Connect this to the application's typed Update::Terminal queue and maintenance wake.
+/// Called from workers, never with the runtime mutex held. Must not access GPUI directly.
+pub type TerminalEventSink = Arc<dyn Fn(TerminalEvent) + Send + Sync>;
+type SharedEventSink = Arc<Mutex<Option<TerminalEventSink>>>;
+
+fn publish(sink: &SharedEventSink, event: TerminalEvent) {
+    let callback = sink
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    if let Some(callback) = callback {
+        callback(event);
+    }
+}
+
 #[derive(Clone)]
 pub struct TerminalRuntimeHandle {
     inner: Arc<Mutex<TerminalRuntimeHandler>>,
@@ -194,8 +219,64 @@ impl TerminalRuntimeHandle {
         }
     }
 
+    pub fn set_event_sink(&self, sink: TerminalEventSink) {
+        let handler = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *handler
+            .event_sink
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(sink);
+    }
+
+    /// Reserve the model before resolving project environment or remote commands.
+    /// IDs must be unique for the lifetime of this runtime, including across workspaces.
+    pub fn prepare(&self, id: TerminalId) -> Option<Arc<Mutex<TerminalViewModel>>> {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .prepare(id)
+    }
+
     pub fn dispatch(&self, event: &TerminalEvent) {
-        let service_spawn = match event {
+        let spawn = match event {
+            TerminalEvent::SpawnRequested {
+                id,
+                cwd,
+                shell,
+                env,
+            } => Some((
+                *id,
+                TerminalSessionCfg {
+                    cwd: cwd.clone(),
+                    shell: shell.clone(),
+                    env: env.clone(),
+                    cols: Some(80),
+                    rows: Some(24),
+                    ..Default::default()
+                },
+                None,
+            )),
+            TerminalEvent::CommandSpawnRequested {
+                id,
+                cwd,
+                program,
+                args,
+                env,
+            } => Some((
+                *id,
+                TerminalSessionCfg {
+                    cwd: cwd.clone(),
+                    program: Some(program.clone()),
+                    args: args.clone(),
+                    env: env.clone(),
+                    cols: Some(80),
+                    rows: Some(24),
+                    ..Default::default()
+                },
+                None,
+            )),
             TerminalEvent::ServiceSpawnRequested {
                 id,
                 cwd,
@@ -203,11 +284,15 @@ impl TerminalRuntimeHandle {
                 env,
             } => Some((
                 *id,
-                cwd.as_path(),
-                nucleotide_remote::PtySessionCommand::LoginShell {
+                TerminalSessionCfg {
+                    cwd: Some(cwd.clone()),
                     shell: shell.clone(),
+                    env: env.clone(),
+                    ..Default::default()
                 },
-                env.as_slice(),
+                Some(nucleotide_remote::PtySessionCommand::LoginShell {
+                    shell: shell.clone(),
+                }),
             )),
             TerminalEvent::ServiceCommandSpawnRequested {
                 id,
@@ -217,27 +302,61 @@ impl TerminalRuntimeHandle {
                 env,
             } => Some((
                 *id,
-                cwd.as_path(),
-                nucleotide_remote::PtySessionCommand::Command {
+                TerminalSessionCfg {
+                    cwd: Some(cwd.clone()),
+                    program: Some(program.clone()),
+                    args: args.clone(),
+                    env: env.clone(),
+                    ..Default::default()
+                },
+                Some(nucleotide_remote::PtySessionCommand::Command {
                     program: program.clone(),
                     args: args.clone(),
-                },
-                env.as_slice(),
+                }),
             )),
             _ => None,
         };
-        if let Some((id, cwd, command, env)) = service_spawn {
+        if let Some((id, cfg, service_command)) = spawn {
+            {
+                let mut handler = self
+                    .inner
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if handler.prepare(id).is_none() || !handler.started.insert(id) {
+                    return;
+                }
+            }
             let provider = self
                 .remote_provider
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone();
-            match self.inner.lock() {
-                Ok(mut handler) => handler.handle_service_spawn(id, cwd, command, env, provider),
-                Err(poisoned) => poisoned
-                    .into_inner()
-                    .handle_service_spawn(id, cwd, command, env, provider),
-            }
+            let runtime = self.clone();
+            let executor = tokio::runtime::Handle::try_current();
+            std::thread::spawn(move || {
+                // Launch without holding the runtime lock: close and other terminals stay responsive.
+                let result = if let Ok(executor) = executor {
+                    let _entered = executor.enter();
+                    if let Some(command) = service_command {
+                        provider
+                            .ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "The connected workspace does not provide service-owned PTYs"
+                                )
+                            })
+                            .and_then(|provider| {
+                                provider.launch(id, cfg.cwd.as_deref().unwrap(), command, &cfg.env)
+                            })
+                    } else {
+                        futures_executor::block_on(TerminalSession::spawn(id.0, cfg.clone()))
+                    }
+                } else {
+                    Err(anyhow::anyhow!(
+                        "Terminal launch requires the application's Tokio executor"
+                    ))
+                };
+                runtime.finish_spawn(id, cfg, result);
+            });
             return;
         }
         match self.inner.lock() {
@@ -249,12 +368,61 @@ impl TerminalRuntimeHandle {
         }
     }
 
+    fn finish_spawn(
+        &self,
+        id: TerminalId,
+        cfg: TerminalSessionCfg,
+        result: anyhow::Result<(
+            TerminalSession,
+            tokio::sync::mpsc::Receiver<nucleotide_terminal::frame::FramePayload>,
+        )>,
+    ) {
+        let mut handler = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if handler.closed.contains(&id) {
+            drop(handler);
+            if let Ok((mut session, _rx)) = result {
+                let _ = futures_executor::block_on(session.kill());
+                let _ = session.wait_exit_code();
+            }
+            return;
+        }
+        let sink = handler.event_sink.clone();
+        let (event, ready) = match result {
+            Ok((session, rx)) => {
+                let ready = handler.register_session(id, cfg, session, rx);
+                (TerminalEvent::Spawned { id }, Some(ready))
+            }
+            Err(error) => {
+                let message = format!("{error:#}");
+                handler.pending_input.remove(&id);
+                handler.register_spawn_failure(id, &cfg, error);
+                (TerminalEvent::SpawnFailed { id, error: message }, None)
+            }
+        };
+        drop(handler);
+        publish(&sink, event);
+        if let Some(ready) = ready {
+            ready.wait();
+        }
+    }
+
     pub fn send_input(&self, id: TerminalId, bytes: Vec<u8>) -> bool {
-        self.input_senders
+        let sent = self
+            .input_senders
             .lock()
             .ok()
             .and_then(|senders| senders.get(&id).cloned())
-            .is_some_and(|sender| sender.send(bytes).is_ok())
+            .is_some_and(|sender| sender.send(bytes.clone()).is_ok());
+        if sent {
+            return true;
+        }
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .queue_input(id, bytes)
     }
 
     pub fn set_remote_provider(&self, provider: Option<RemoteTerminalSessionProvider>) {
@@ -291,6 +459,11 @@ impl Default for TerminalRuntimeHandle {
 pub struct TerminalRuntimeHandler {
     sessions: HashMap<TerminalId, SessionEntry>,
     pending_resizes: HashMap<TerminalId, PendingTerminalResize>,
+    models: HashMap<TerminalId, Arc<Mutex<TerminalViewModel>>>,
+    started: HashSet<TerminalId>,
+    closed: HashSet<TerminalId>,
+    pending_input: HashMap<TerminalId, Vec<Vec<u8>>>,
+    event_sink: SharedEventSink,
     /// Shared sender map so callers outside the event loop can write input directly
     input_senders: TerminalInputSenders,
 }
@@ -304,8 +477,6 @@ struct PendingTerminalResize {
 }
 
 struct SessionEntry {
-    // Protect session so we can use it from background IO workers without blocking the UI thread
-    session: Arc<Mutex<TerminalSession>>,
     #[allow(dead_code)]
     rx_task: std::thread::JoinHandle<()>,
     #[allow(dead_code)]
@@ -315,10 +486,16 @@ struct SessionEntry {
     input_tx: std::sync::mpsc::Sender<Vec<u8>>,
     #[allow(dead_code)]
     input_task: std::thread::JoinHandle<()>,
+    control_tx: std::sync::mpsc::Sender<SessionControl>,
     view: Arc<Mutex<TerminalViewModel>>,
     last_size: Option<(u16, u16)>,
     #[cfg(feature = "terminal-emulator-core")]
     last_bounds: Option<TerminalBounds>,
+}
+
+enum SessionControl {
+    Resize(PendingTerminalResize),
+    Terminate,
 }
 
 #[cfg(feature = "terminal-emulator-core")]
@@ -435,6 +612,11 @@ impl TerminalRuntimeHandler {
         Self {
             sessions: HashMap::new(),
             pending_resizes: HashMap::new(),
+            models: HashMap::new(),
+            started: HashSet::new(),
+            closed: HashSet::new(),
+            pending_input: HashMap::new(),
+            event_sink: Arc::new(Mutex::new(None)),
             input_senders: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -449,16 +631,40 @@ impl TerminalRuntimeHandler {
         &self,
         id: TerminalId,
     ) -> Option<std::sync::Arc<std::sync::Mutex<TerminalViewModel>>> {
-        self.sessions.get(&id).map(|e| e.view.clone())
+        self.models.get(&id).cloned()
     }
 
-    #[allow(clippy::await_holding_lock)]
-    fn handle_spawn(&mut self, id: TerminalId, cfg: &TerminalSessionCfg) {
-        let cfg = cfg.clone();
-        match futures_executor::block_on(TerminalSession::spawn(id.0, cfg.clone())) {
-            Ok((session, rx)) => self.register_session(id, cfg, session, rx),
-            Err(error) => self.register_spawn_failure(id, &cfg, error),
+    fn prepare(&mut self, id: TerminalId) -> Option<Arc<Mutex<TerminalViewModel>>> {
+        if self.closed.contains(&id) {
+            return None;
         }
+        Some(
+            self.models
+                .entry(id)
+                .or_insert_with(|| {
+                    let view = Arc::new(Mutex::new(TerminalViewModel::new(id)));
+                    register_view_model(id, view.clone());
+                    view
+                })
+                .clone(),
+        )
+    }
+
+    fn queue_input(&mut self, id: TerminalId, bytes: Vec<u8>) -> bool {
+        if self.closed.contains(&id) {
+            return false;
+        }
+        if let Some(entry) = self.sessions.get(&id) {
+            return !entry.exit_reported.load(Ordering::SeqCst)
+                && entry.input_tx.send(bytes).is_ok();
+        }
+        if let Some(model) = self.models.get(&id)
+            && !lock_view_model(model, id, "queue_input").has_exited()
+        {
+            self.pending_input.entry(id).or_default().push(bytes);
+            return true;
+        }
+        false
     }
 
     fn register_spawn_failure(
@@ -467,8 +673,7 @@ impl TerminalRuntimeHandler {
         cfg: &TerminalSessionCfg,
         error: anyhow::Error,
     ) {
-        let view = Arc::new(Mutex::new(TerminalViewModel::new(id)));
-        register_view_model(id, view.clone());
+        let view = self.models.get(&id).expect("spawn reserves a model");
         let details = terminal_spawn_failure_details(cfg, &error);
         lock_view_model(view.as_ref(), id, "set_spawn_failure")
             .set_spawn_failure("Terminal session failed to start", details);
@@ -481,9 +686,12 @@ impl TerminalRuntimeHandler {
         _cfg: TerminalSessionCfg,
         session: TerminalSession,
         mut rx: tokio::sync::mpsc::Receiver<nucleotide_terminal::frame::FramePayload>,
-    ) {
-        let view = Arc::new(Mutex::new(TerminalViewModel::new(id)));
-        register_view_model(id, view.clone());
+    ) -> Arc<std::sync::Barrier> {
+        let view = self
+            .models
+            .get(&id)
+            .expect("spawn reserves a model")
+            .clone();
 
         #[cfg(feature = "terminal-emulator-core")]
         {
@@ -495,41 +703,60 @@ impl TerminalRuntimeHandler {
         // Wrap session for cross-thread access and create a non-blocking input queue
         let session_arc = Arc::new(Mutex::new(session));
 
-        // Spawn a blocking thread to consume frames, coalescing bursts to the latest
-        let session_for_exit = Arc::clone(&session_arc);
+        // Apply every incremental frame, even while no surface is mounted.
         let exit_reported = Arc::new(AtomicBool::new(false));
-        let rx_exit_reported = Arc::clone(&exit_reported);
+        let frames_drained = Arc::new(AtomicBool::new(false));
+        let rx_drained = frames_drained.clone();
         let handle = std::thread::spawn(move || {
-            while let Some(mut frame) = futures_executor::block_on(rx.recv()) {
-                // Drain any queued frames to coalesce updates
-                while let Ok(next) = rx.try_recv() {
-                    frame = next;
-                }
+            while let Some(frame) = futures_executor::block_on(rx.recv()) {
                 let mut guard = lock_view_model(view_clone.as_ref(), id, "apply_frame");
                 guard.apply_frame(frame);
             }
-            // Channel closed: reap the shell and mark the shared view model exited.
-            lock_view_model(view_clone.as_ref(), id, "set_exited").set_exited();
-            let _ = session_for_exit
-                .lock()
-                .ok()
-                .and_then(|mut session| session.wait_exit_code());
-            rx_exit_reported.store(true, Ordering::SeqCst);
+            rx_drained.store(true, Ordering::SeqCst);
         });
 
         let exit_view = Arc::clone(&view);
         let session_for_monitor = Arc::clone(&session_arc);
         let monitor_exit_reported = Arc::clone(&exit_reported);
+        let event_sink = self.event_sink.clone();
+        let input_senders = self.input_senders.clone();
+        let ready = Arc::new(std::sync::Barrier::new(2));
+        let monitor_ready = ready.clone();
         let exit_task = std::thread::spawn(move || {
+            monitor_ready.wait(); // Spawned must precede Exited, even for a very short command.
             while !monitor_exit_reported.load(Ordering::SeqCst) {
-                let code = session_for_monitor
+                let completion = session_for_monitor
                     .lock()
-                    .ok()
-                    .and_then(|mut session| session.try_exit_code());
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .poll_exit();
 
-                if code.is_some() {
-                    lock_view_model(exit_view.as_ref(), id, "set_exited").set_exited();
-                    monitor_exit_reported.store(true, Ordering::SeqCst);
+                let completion = match completion {
+                    Ok(completion) => completion,
+                    Err(error) => {
+                        error!(terminal_id=?id, %error, "Terminal completion failed; status unknown");
+                        Some(None)
+                    }
+                };
+                if let Some(code) = completion.filter(|_| frames_drained.load(Ordering::SeqCst)) {
+                    let mut view = lock_view_model(exit_view.as_ref(), id, "set_exited");
+                    view.set_exited();
+                    #[cfg(feature = "terminal-emulator-core")]
+                    view.clear_input_sender();
+                    drop(view);
+                    input_senders
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .remove(&id);
+                    if !monitor_exit_reported.swap(true, Ordering::SeqCst) {
+                        publish(
+                            &event_sink,
+                            TerminalEvent::Exited {
+                                id,
+                                code,
+                                signal: None,
+                            },
+                        );
+                    }
                     break;
                 }
 
@@ -546,12 +773,54 @@ impl TerminalRuntimeHandler {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .input_handle();
+        let input_exited = exit_reported.clone();
         let input_task = std::thread::spawn(move || {
-            while let Ok(bytes) = rx_input.recv() {
-                // Best-effort synchronous write; no block_on overhead
-                let _ = input_handle.write_sync(&bytes);
+            while !input_exited.load(Ordering::SeqCst) {
+                match rx_input.recv_timeout(Duration::from_millis(100)) {
+                    Ok(bytes) => {
+                        let _ = input_handle.write_sync(&bytes);
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                }
             }
         });
+
+        // Serialize PTY resize/cancel away from GPUI. Hidden hosts send no resize.
+        let (control_tx, control_rx) = std::sync::mpsc::channel();
+        let control_session = session_arc.clone();
+        let control_exited = exit_reported.clone();
+        std::thread::spawn(move || {
+            while !control_exited.load(Ordering::SeqCst) {
+                let command = match control_rx.recv_timeout(Duration::from_millis(100)) {
+                    Ok(command) => command,
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                };
+                let mut session = control_session
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                match command {
+                    SessionControl::Resize(size) => {
+                        #[cfg(feature = "terminal-emulator-core")]
+                        let _ = session.control_sender().send(ControlMsg::Resize {
+                            cols: size.cols,
+                            rows: size.rows,
+                            cell_width: size.cell_width,
+                            cell_height: size.cell_height,
+                        });
+                        let _ = futures_executor::block_on(session.resize(size.cols, size.rows));
+                    }
+                    SessionControl::Terminate => {
+                        let _ = futures_executor::block_on(session.kill());
+                        break;
+                    }
+                }
+            }
+        });
+        for bytes in self.pending_input.remove(&id).unwrap_or_default() {
+            let _ = tx.send(bytes);
+        }
 
         // Register sender in shared map so UI thread can bypass the event queue
         if let Ok(mut senders) = self.input_senders.lock() {
@@ -561,12 +830,12 @@ impl TerminalRuntimeHandler {
         self.sessions.insert(
             id,
             SessionEntry {
-                session: session_arc,
                 rx_task: handle,
                 exit_task,
                 exit_reported,
                 input_tx: tx,
                 input_task,
+                control_tx,
                 view,
                 last_size: None,
                 #[cfg(feature = "terminal-emulator-core")]
@@ -575,33 +844,7 @@ impl TerminalRuntimeHandler {
         );
         self.apply_pending_resize(id);
         info!(terminal_id=?id, "Terminal session spawned and consumer started");
-    }
-
-    fn handle_service_spawn(
-        &mut self,
-        id: TerminalId,
-        cwd: &Path,
-        command: nucleotide_remote::PtySessionCommand,
-        env: &[(String, String)],
-        provider: Option<RemoteTerminalSessionProvider>,
-    ) {
-        let cfg = TerminalSessionCfg {
-            cwd: Some(cwd.to_path_buf()),
-            ..Default::default()
-        };
-        let Some(provider) = provider else {
-            let view = Arc::new(Mutex::new(TerminalViewModel::new(id)));
-            register_view_model(id, view.clone());
-            lock_view_model(&view, id, "set_spawn_failure").set_spawn_failure(
-                "Terminal session failed to start",
-                vec!["The connected workspace does not provide service-owned PTYs".into()],
-            );
-            return;
-        };
-        match provider.launch(id, cwd, command, env) {
-            Ok((session, rx)) => self.register_session(id, cfg, session, rx),
-            Err(error) => self.register_spawn_failure(id, &cfg, error),
-        }
+        ready
     }
 
     fn handle_resize(
@@ -612,6 +855,16 @@ impl TerminalRuntimeHandler {
         cell_width: f32,
         cell_height: f32,
     ) {
+        if self.closed.contains(&id)
+            || cols == 0
+            || rows == 0
+            || !cell_width.is_finite()
+            || cell_width <= 0.0
+            || !cell_height.is_finite()
+            || cell_height <= 0.0
+        {
+            return;
+        }
         if self.sessions.contains_key(&id) {
             self.apply_resize(id, cols, rows, cell_width, cell_height);
         } else {
@@ -658,17 +911,14 @@ impl TerminalRuntimeHandler {
             let new_bounds = TerminalBounds::from_cells(cell_width, cell_height, cols, rows);
 
             if let Some(new_bounds) = metrics_resize_bounds(entry.last_bounds, new_bounds) {
-                if let Ok(session) = entry.session.lock() {
-                    // Push control message to engine so emulator redraws with new metrics
-                    let _ = session.control_sender().send(ControlMsg::Resize {
+                let _ = entry
+                    .control_tx
+                    .send(SessionControl::Resize(PendingTerminalResize {
                         cols,
                         rows,
                         cell_width,
                         cell_height,
-                    });
-                    // Also resize PTY to maintain app expectations
-                    let _ = futures_executor::block_on(session.resize(cols, rows));
-                }
+                    }));
                 if let Ok(mut view) = entry.view.lock() {
                     view.resize_grid(cols, rows, Some(new_bounds.cell_size()));
                 }
@@ -685,9 +935,14 @@ impl TerminalRuntimeHandler {
                 .unwrap_or(true);
 
             if size_changed {
-                if let Ok(session) = entry.session.lock() {
-                    let _ = futures_executor::block_on(session.resize(cols, rows));
-                }
+                let _ = entry
+                    .control_tx
+                    .send(SessionControl::Resize(PendingTerminalResize {
+                        cols,
+                        rows,
+                        cell_width,
+                        cell_height,
+                    }));
                 entry.last_size = Some((cols, rows));
             }
         }
@@ -695,42 +950,9 @@ impl TerminalRuntimeHandler {
 
     fn handle_event(&mut self, event: &TerminalEvent) {
         match event {
-            TerminalEvent::SpawnRequested {
-                id,
-                cwd,
-                shell,
-                env,
-            } => {
-                let cfg = TerminalSessionCfg {
-                    cwd: cwd.clone(),
-                    shell: shell.clone(),
-                    program: None,
-                    args: Vec::new(),
-                    env: env.clone(),
-                    cols: Some(80),
-                    rows: Some(24),
-                };
-                self.handle_spawn(*id, &cfg);
-            }
-            TerminalEvent::CommandSpawnRequested {
-                id,
-                cwd,
-                program,
-                args,
-                env,
-            } => {
-                let cfg = TerminalSessionCfg {
-                    cwd: cwd.clone(),
-                    shell: None,
-                    program: Some(program.clone()),
-                    args: args.clone(),
-                    env: env.clone(),
-                    cols: Some(80),
-                    rows: Some(24),
-                };
-                self.handle_spawn(*id, &cfg);
-            }
-            TerminalEvent::ServiceSpawnRequested { .. }
+            TerminalEvent::SpawnRequested { .. }
+            | TerminalEvent::CommandSpawnRequested { .. }
+            | TerminalEvent::ServiceSpawnRequested { .. }
             | TerminalEvent::ServiceCommandSpawnRequested { .. } => {
                 unreachable!("service terminal events are intercepted by TerminalRuntimeHandle")
             }
@@ -744,27 +966,31 @@ impl TerminalRuntimeHandler {
                 self.handle_resize(*id, *cols, *rows, *cell_width, *cell_height);
             }
             TerminalEvent::Input { id, bytes } => {
-                if let Some(entry) = self.sessions.get(id) {
-                    let _ = entry.input_tx.send(bytes.clone());
-                }
+                self.queue_input(*id, bytes.clone());
             }
-            TerminalEvent::Exited { id, .. } => {
+            TerminalEvent::TerminateRequested { id } => {
+                self.closed.insert(*id);
                 if let Ok(mut senders) = self.input_senders.lock() {
                     senders.remove(id);
                 }
                 self.pending_resizes.remove(id);
+                self.pending_input.remove(id);
+                self.models.remove(id);
+                nucleotide_terminal_view::unregister_view_model(*id);
                 if let Some(entry) = self.sessions.remove(id) {
-                    entry.exit_reported.store(true, Ordering::SeqCst);
                     #[cfg(feature = "terminal-emulator-core")]
                     if let Ok(mut view) = entry.view.lock() {
                         view.clear_input_sender();
                     }
                     drop(entry.input_tx);
-                    if let Ok(mut session) = entry.session.lock() {
-                        let _ = futures_executor::block_on(session.kill());
+                    if !entry.exit_reported.load(Ordering::SeqCst) {
+                        let _ = entry.control_tx.send(SessionControl::Terminate);
                     }
                 }
             }
+            TerminalEvent::Spawned { .. }
+            | TerminalEvent::SpawnFailed { .. }
+            | TerminalEvent::Exited { .. } => {}
         }
     }
 }
@@ -773,6 +999,23 @@ impl Default for TerminalRuntimeHandler {
         Self::new()
     }
 }
+
+impl Drop for TerminalRuntimeHandler {
+    fn drop(&mut self) {
+        for entry in self.sessions.values() {
+            if !entry.exit_reported.load(Ordering::SeqCst) {
+                let _ = entry.control_tx.send(SessionControl::Terminate);
+            }
+        }
+        for id in self.models.keys() {
+            nucleotide_terminal_view::unregister_view_model(*id);
+        }
+    }
+}
+
+#[cfg(all(test, feature = "terminal-emulator-core"))]
+#[path = "terminal_handler_tests.rs"]
+mod lifecycle_tests;
 
 #[cfg(all(test, feature = "terminal-emulator-core"))]
 mod tests {

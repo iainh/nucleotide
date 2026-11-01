@@ -1,5 +1,6 @@
-//! Image tab lifecycle, remote image caching, dimensions, and rendering.
+//! Shared image resources and pane-local presentation, caching, and rendering.
 
+use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 
@@ -15,6 +16,7 @@ use nucleotide_ui::{Button, ButtonSize, ButtonVariant, Tooltipped};
 use nucleotide_workspace::{ReadOptions, WorkspaceBackendHandle, WorkspaceIdentity};
 
 use super::Workspace;
+use super::pane_layout::PaneId;
 use crate::tab::TabId;
 
 const IMAGE_ZOOM_STEP: f32 = 0.25;
@@ -27,17 +29,125 @@ const IMAGE_TRANSPARENCY_GRID_SIZE: f32 = 12.0;
 
 const REMOTE_IMAGE_READ_LIMIT_BYTES: u64 = 128 * 1024 * 1024;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ImageId(pub(crate) u64);
+
 #[derive(Clone)]
 pub(super) struct ImageTab {
-    pub(super) id: u64,
+    pub(super) id: ImageId,
     pub(super) path: PathBuf,
     pub(super) render_path: PathBuf,
     pub(super) dimensions: Option<(u32, u32)>,
     pub(super) focused_at: std::time::Instant,
+}
+
+pub(super) struct ImagePresentation {
     pub(super) zoom: f32,
     pub(super) scroll_handle: ScrollHandle,
     pub(super) vertical_scrollbar_state: ScrollbarState,
     pub(super) horizontal_scrollbar_state: ScrollbarState,
+}
+
+impl Default for ImagePresentation {
+    fn default() -> Self {
+        let scroll_handle = ScrollHandle::new();
+        Self {
+            zoom: 1.0,
+            vertical_scrollbar_state: ScrollbarState::new(scroll_handle.clone()),
+            horizontal_scrollbar_state: ScrollbarState::new(scroll_handle.clone()),
+            scroll_handle,
+        }
+    }
+}
+
+impl ImagePresentation {
+    pub(super) fn set_zoom(&mut self, zoom: f32) {
+        self.zoom = zoom.clamp(IMAGE_ZOOM_MIN, IMAGE_ZOOM_MAX);
+    }
+}
+
+/// Placement state only. The host pane layout, not this potentially lazy cache,
+/// decides when the last reference to an image resource has been closed.
+#[derive(Default)]
+pub(super) struct ImagePresentations {
+    placements: HashMap<(PaneId, ImageId), ImagePresentation>,
+}
+
+impl ImagePresentations {
+    pub(super) fn ensure(&mut self, pane: PaneId, image: ImageId) -> &mut ImagePresentation {
+        self.placements.entry((pane, image)).or_default()
+    }
+
+    pub(super) fn get(&self, pane: PaneId, image: ImageId) -> Option<&ImagePresentation> {
+        self.placements.get(&(pane, image))
+    }
+
+    pub(super) fn get_mut(
+        &mut self,
+        pane: PaneId,
+        image: ImageId,
+    ) -> Option<&mut ImagePresentation> {
+        self.placements.get_mut(&(pane, image))
+    }
+
+    pub(super) fn remove(&mut self, pane: PaneId, image: ImageId) {
+        self.placements.remove(&(pane, image));
+    }
+
+    /// A move retains scroll/zoom. Merging into an existing placement keeps the
+    /// destination's state, and moving within the same pane changes nothing.
+    pub(super) fn transfer(&mut self, source: PaneId, target: PaneId, image: ImageId) {
+        if source != target
+            && let Some(presentation) = self.placements.remove(&(source, image))
+        {
+            self.placements
+                .entry((target, image))
+                .or_insert(presentation);
+        }
+    }
+
+    /// Reconcile before ensuring new placements so defaults cannot mask moves.
+    /// Existing targets win; otherwise reuse orphan state in source-key order.
+    /// A split with a surviving source gets independent default state. Hidden
+    /// dock placements remain live, and resources are never evicted here.
+    pub(super) fn reconcile(&mut self, layout: &super::pane_layout::PaneLayout) {
+        let placements: Vec<_> = layout
+            .panes()
+            .into_iter()
+            .flat_map(|pane| {
+                layout.pane(pane).into_iter().flat_map(move |state| {
+                    state.tabs().iter().filter_map(move |tab| match tab {
+                        TabId::Image(image) => Some((pane, *image)),
+                        _ => None,
+                    })
+                })
+            })
+            .collect();
+        let mut orphans: Vec<_> = self
+            .placements
+            .keys()
+            .copied()
+            .filter(|key| !placements.contains(key))
+            .collect();
+        orphans.sort_unstable_by_key(|(pane, image)| (image.0, pane.key()));
+
+        for &(pane, image) in &placements {
+            if self.placements.contains_key(&(pane, image)) {
+                continue;
+            }
+            let presentation = orphans
+                .iter()
+                .position(|(_, orphan_image)| *orphan_image == image)
+                .and_then(|index| self.placements.remove(&orphans.remove(index)))
+                .unwrap_or_default();
+            self.placements.insert((pane, image), presentation);
+        }
+        self.placements.retain(|key, _| placements.contains(key));
+    }
+
+    pub(super) fn clear(&mut self) {
+        self.placements.clear();
+    }
 }
 
 fn is_image_file_path(path: &Path) -> bool {
@@ -221,12 +331,12 @@ fn image_file_dimensions(path: &Path) -> Option<(u32, u32)> {
 }
 
 impl Workspace {
-    fn image_tab_mut(&mut self, image_id: u64) -> Option<&mut ImageTab> {
+    fn image_tab_mut(&mut self, image_id: ImageId) -> Option<&mut ImageTab> {
         self.image_tabs.iter_mut().find(|tab| tab.id == image_id)
     }
 
-    fn next_image_tab_id(&mut self) -> u64 {
-        let id = self.next_image_tab_index;
+    fn next_image_tab_id(&mut self) -> ImageId {
+        let id = ImageId(self.next_image_tab_index);
         self.next_image_tab_index = self.next_image_tab_index.saturating_add(1);
         id
     }
@@ -247,33 +357,39 @@ impl Workspace {
         should_focus: bool,
         cx: &mut Context<Self>,
     ) {
+        self.open_image_file_in_pane(self.focused_pane_id(), path, render_path, should_focus, cx);
+    }
+
+    /// Remote opens retain their request's target pane across asynchronous reads.
+    /// The host must check that the target pane still exists before completing.
+    pub(super) fn open_image_file_in_pane(
+        &mut self,
+        pane: PaneId,
+        path: &std::path::Path,
+        render_path: &std::path::Path,
+        should_focus: bool,
+        cx: &mut Context<Self>,
+    ) {
         let path = path.to_path_buf();
-        if let Some(tab) = self.image_tabs.iter_mut().find(|tab| tab.path == path) {
+        let image_id = if let Some(tab) = self.image_tabs.iter_mut().find(|tab| tab.path == path) {
             tab.focused_at = std::time::Instant::now();
-            self.active_image_tab_id = Some(tab.id);
+            tab.id
         } else {
             let render_path = render_path.to_path_buf();
-            let scroll_handle = ScrollHandle::new();
-            let vertical_scrollbar_state = ScrollbarState::new(scroll_handle.clone());
-            let horizontal_scrollbar_state = ScrollbarState::new(scroll_handle.clone());
             let tab = ImageTab {
                 id: self.next_image_tab_id(),
                 path: path.clone(),
                 dimensions: image_file_dimensions(&render_path),
                 render_path,
                 focused_at: std::time::Instant::now(),
-                zoom: 1.0,
-                scroll_handle,
-                vertical_scrollbar_state,
-                horizontal_scrollbar_state,
             };
-            self.active_image_tab_id = Some(tab.id);
+            let id = tab.id;
             self.image_tabs.push(tab);
-        }
+            id
+        };
 
-        self.invalidate_tab_bar_documents();
-        self.allow_tab_bar_auto_scroll();
-        self.sync_pane_tabs(cx);
+        self.image_presentations.ensure(pane, image_id);
+        self.activate_image_in_pane(pane, image_id, should_focus, cx);
 
         if let Some(file_tree) = &self.file_tree {
             file_tree.update(cx, |tree, cx| {
@@ -281,70 +397,60 @@ impl Workspace {
             });
         }
 
-        if should_focus {
-            self.defer_focus_editor(cx);
-        }
-
         cx.notify();
     }
 
-    pub(super) fn switch_to_image_tab(&mut self, image_id: u64, cx: &mut Context<Self>) {
+    pub(super) fn switch_to_image_tab(&mut self, image_id: ImageId, cx: &mut Context<Self>) {
         if let Some(tab) = self.image_tab_mut(image_id) {
             tab.focused_at = std::time::Instant::now();
-            self.active_image_tab_id = Some(image_id);
-            self.invalidate_tab_bar_documents();
-            self.allow_tab_bar_auto_scroll();
-            self.sync_pane_tabs(cx);
+            let pane = self.focused_pane_id();
+            self.image_presentations.ensure(pane, image_id);
+            self.activate_image_in_pane(pane, image_id, true, cx);
             cx.notify();
         }
     }
 
-    fn set_image_tab_zoom(&mut self, image_id: u64, zoom: f32, cx: &mut Context<Self>) {
-        if let Some(tab) = self.image_tab_mut(image_id) {
-            tab.zoom = zoom.clamp(IMAGE_ZOOM_MIN, IMAGE_ZOOM_MAX);
+    fn set_image_tab_zoom(
+        &mut self,
+        pane: PaneId,
+        image_id: ImageId,
+        zoom: f32,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(presentation) = self.image_presentations.get_mut(pane, image_id) {
+            presentation.set_zoom(zoom);
             cx.notify();
         }
     }
 
     pub(super) fn close_image_tab(
         &mut self,
-        image_id: u64,
+        image_id: ImageId,
         activation_target: Option<TabId>,
         cx: &mut Context<Self>,
     ) {
-        let pane = self.core.read(cx).editor.tree.focus;
-        if self.detach_shared_pane_tab(pane, TabId::Image(image_id), activation_target, cx) {
-            return;
-        }
-        let Some(index) = self.image_tabs.iter().position(|tab| tab.id == image_id) else {
-            return;
-        };
+        self.close_image_in_pane(self.focused_pane_id(), image_id, activation_target, cx);
+    }
 
-        self.image_tabs.remove(index);
-        self.pinned_documents.remove(&TabId::Image(image_id));
-        self.invalidate_tab_bar_documents();
-
-        if self.active_image_tab_id == Some(image_id) {
-            self.active_image_tab_id = None;
-            if let Some(target_id) = activation_target {
-                match target_id {
-                    TabId::Image(image_id) => self.switch_to_image_tab(image_id, cx),
-                    TabId::Document(doc_id) => self.switch_to_tab_document(doc_id, cx),
-                }
-            }
-        }
-
-        cx.notify();
+    /// Called by the host only after its layout has no remaining placements.
+    /// Cached remote bytes are shared independently and are not deleted here.
+    pub(super) fn forget_image_resource(&mut self, image_id: ImageId) {
+        self.image_tabs.retain(|tab| tab.id != image_id);
     }
 
     pub(super) fn render_image_viewer(
         &self,
+        pane: PaneId,
         tab: ImageTab,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
+        let presentation = self
+            .image_presentations
+            .get(pane, tab.id)
+            .expect("host must register an image presentation before rendering its placement");
         let tokens = &cx.theme().tokens;
         let tab_id = tab.id;
-        let zoom = tab.zoom;
+        let zoom = presentation.zoom;
         let image_path = tab.render_path.clone();
         let (grid_base, grid_alternate) = image_transparency_grid_colors(tokens.editor.background);
         let (image_element, image_size) = if let Some((width, height)) = tab.dimensions {
@@ -410,7 +516,7 @@ impl Workspace {
         };
 
         div()
-            .id(format!("image-viewer-{tab_id:?}"))
+            .id(format!("image-viewer-{pane:?}-{tab_id:?}"))
             .flex()
             .flex_col()
             .size_full()
@@ -439,6 +545,7 @@ impl Workspace {
                                 move |_event, _window, cx| {
                                     workspace.update(cx, |workspace, cx| {
                                         workspace.set_image_tab_zoom(
+                                            pane,
                                             tab_id,
                                             zoom - IMAGE_ZOOM_STEP,
                                             cx,
@@ -459,7 +566,7 @@ impl Workspace {
                                 let workspace = cx.entity().clone();
                                 move |_event, _window, cx| {
                                     workspace.update(cx, |workspace, cx| {
-                                        workspace.set_image_tab_zoom(tab_id, 1.0, cx);
+                                        workspace.set_image_tab_zoom(pane, tab_id, 1.0, cx);
                                     });
                                     cx.stop_propagation();
                                 }
@@ -477,6 +584,7 @@ impl Workspace {
                                 move |_event, _window, cx| {
                                     workspace.update(cx, |workspace, cx| {
                                         workspace.set_image_tab_zoom(
+                                            pane,
                                             tab_id,
                                             zoom + IMAGE_ZOOM_STEP,
                                             cx,
@@ -501,7 +609,7 @@ impl Workspace {
                     .min_w(px(0.0))
                     .min_h(px(0.0))
                     .overflow_scroll()
-                    .track_scroll(&tab.scroll_handle)
+                    .track_scroll(&presentation.scroll_handle)
                     .p(tokens.sizes.space_4)
                     .child(image_scroll_body);
 
@@ -514,7 +622,7 @@ impl Workspace {
                     .overflow_hidden()
                     .child(scroll_content)
                     .when_some(
-                        Scrollbar::vertical(tab.vertical_scrollbar_state.clone()),
+                        Scrollbar::vertical(presentation.vertical_scrollbar_state.clone()),
                         |container, scrollbar| {
                             container.child(
                                 div()
@@ -529,7 +637,7 @@ impl Workspace {
                         },
                     )
                     .when_some(
-                        Scrollbar::horizontal(tab.horizontal_scrollbar_state.clone()),
+                        Scrollbar::horizontal(presentation.horizontal_scrollbar_state.clone()),
                         |container, scrollbar| {
                             container.child(
                                 div()
@@ -547,3 +655,7 @@ impl Workspace {
             .into_any_element()
     }
 }
+
+#[cfg(test)]
+#[path = "image_viewer_tests.rs"]
+mod tests;

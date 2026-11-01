@@ -15,6 +15,8 @@ pub struct Tree {
 
     // used for traversals
     stack: Vec<(ViewId, Rect)>,
+    // Hosted views receive geometry only from their workspace, never from this tree.
+    hosted: bool,
 }
 
 #[derive(Debug)]
@@ -75,6 +77,19 @@ impl Container {
             area: Rect::default(),
         }
     }
+
+    pub fn layout(&self) -> Layout {
+        self.layout
+    }
+
+    pub fn children(&self) -> &[ViewId] {
+        &self.children
+    }
+
+    /// Last standalone layout area, not authoritative after hosted projection.
+    pub fn area(&self) -> Rect {
+        self.area
+    }
 }
 
 impl Default for Container {
@@ -100,7 +115,21 @@ impl Tree {
             area,
             nodes,
             stack: Vec::new(),
+            hosted: false,
         }
+    }
+
+    pub(crate) fn enable_hosted(&mut self) {
+        self.hosted = true;
+    }
+
+    /// Read-only topology for a host's one-time import before enabling hosting.
+    pub fn root(&self) -> ViewId {
+        self.root
+    }
+
+    pub fn content(&self, index: ViewId) -> Option<&Content> {
+        self.nodes.get(index).map(|node| &node.content)
     }
 
     pub fn insert(&mut self, view: View) -> ViewId {
@@ -373,6 +402,10 @@ impl Tree {
             return;
         }
 
+        if self.hosted {
+            return;
+        }
+
         self.stack.push((self.root, self.area));
 
         // take the area
@@ -610,6 +643,10 @@ impl Tree {
     }
 
     pub fn swap_split_in_direction(&mut self, direction: Direction) -> Option<()> {
+        // Spatial rearrangement belongs to the host; do not swap projected view areas.
+        if self.hosted {
+            return None;
+        }
         let focus = self.focus;
         let target = self.find_split_in_direction(focus, direction)?;
         let focus_parent = self.nodes[focus].parent;

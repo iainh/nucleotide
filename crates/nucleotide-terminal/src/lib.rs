@@ -138,6 +138,11 @@ pub mod session {
     pub trait ExternalTerminalCompletion: Send {
         fn try_exit_code(&mut self) -> std::io::Result<Option<i32>>;
         fn wait_exit_code(&mut self) -> std::io::Result<Option<i32>>;
+
+        /// None means pending; Some(None) means completed without a status code.
+        fn poll_exit(&mut self) -> std::io::Result<Option<Option<i32>>> {
+            self.try_exit_code().map(|code| code.map(Some))
+        }
     }
 
     /// The independent pieces of an external (for example remote) terminal transport.
@@ -152,7 +157,7 @@ pub mod session {
 
     enum SessionBackend {
         Local {
-            master: Box<dyn portable_pty::MasterPty + Send>,
+            master: Option<Box<dyn portable_pty::MasterPty + Send>>,
             child: Box<dyn portable_pty::Child + Send>,
         },
         External {
@@ -234,7 +239,7 @@ pub mod session {
             let session = Self {
                 id,
                 backend: SessionBackend::Local {
-                    master: pair.master,
+                    master: Some(pair.master),
                     child,
                 },
                 writer,
@@ -297,6 +302,9 @@ pub mod session {
             };
             match &self.backend {
                 SessionBackend::Local { master, .. } => {
+                    let master = master.as_ref().ok_or_else(|| {
+                        std::io::Error::new(std::io::ErrorKind::BrokenPipe, "terminal PTY closed")
+                    })?;
                     master.resize(size).map_err(std::io::Error::other)
                 }
                 SessionBackend::External { control, .. } => control.resize(cols, rows),
@@ -365,6 +373,31 @@ pub mod session {
                     }
                     completion.try_exit_code().ok().flatten()
                 }
+            }
+        }
+
+        /// Non-blocking completion, including an unknown exit status. Wait for parsed
+        /// output EOF before reporting completion, so retained output is complete.
+        pub fn poll_exit(&mut self) -> std::io::Result<Option<Option<i32>>> {
+            #[cfg(windows)]
+            if let SessionBackend::Local { master, child } = &mut self.backend {
+                if master.is_some() && child.try_wait()?.is_some() {
+                    // ConPTY keeps its output pipe open until ClosePseudoConsole.
+                    // Closing can block while output drains, so leave the reader/parser
+                    // running and release the console away from the runtime monitor.
+                    if let Some(master) = master.take() {
+                        std::thread::spawn(move || drop(master));
+                    }
+                }
+            }
+            if !self.output_eof.0.lock().map(|eof| *eof).unwrap_or(false) {
+                return Ok(None);
+            }
+            match &mut self.backend {
+                SessionBackend::Local { child, .. } => child
+                    .try_wait()
+                    .map(|status| status.map(|status| i32::try_from(status.exit_code()).ok())),
+                SessionBackend::External { completion, .. } => completion.poll_exit(),
             }
         }
     }
@@ -1492,6 +1525,47 @@ mod tests {
         }
 
         assert_eq!(code, Some(7));
+    }
+
+    #[cfg(all(windows, feature = "emulator"))]
+    #[tokio::test]
+    async fn windows_completion_retains_final_output_without_dropping_session() {
+        let cfg = TerminalSessionCfg {
+            program: Some("cmd.exe".into()),
+            args: vec![
+                "/D".into(),
+                "/C".into(),
+                "echo FINAL-OUTPUT & exit /b 13".into(),
+            ],
+            ..TerminalSessionCfg::default()
+        };
+        let (mut session, mut rx) = TerminalSession::spawn(44, cfg).await.unwrap();
+        let mut output = String::new();
+        let completed = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                while let Ok(frame) = rx.try_recv() {
+                    if let FramePayload::Full(snapshot) = frame {
+                        output.extend(snapshot.rows.iter().flatten().map(|cell| cell.ch));
+                    }
+                }
+                if let Some(code) = session.poll_exit().unwrap() {
+                    // Parsed output is queued before EOF; consume the retained final frame.
+                    while let Some(frame) = rx.recv().await {
+                        if let FramePayload::Full(snapshot) = frame {
+                            output.extend(snapshot.rows.iter().flatten().map(|cell| cell.ch));
+                        }
+                    }
+                    break code;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        assert_eq!(completed, Ok(Some(13)));
+        assert!(
+            output.contains("FINAL-OUTPUT"),
+            "missing final output: {output:?}"
+        );
     }
 
     #[cfg(all(windows, feature = "emulator"))]
