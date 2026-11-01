@@ -2318,6 +2318,10 @@ fn split_tabs_transfer_through_drag_and_drop(cx: &mut gpui::TestAppContext) {
     cx.update(|window, cx| {
         window.draw(cx).clear();
     });
+    core.read_with(cx, |core, _| {
+        assert_eq!(core.editor.tree.focus, right);
+        assert_eq!(core.editor.tree.get(left).doc, alpha);
+    });
     cx.simulate_mouse_move(
         start + point(px(20.0), px(0.0)),
         MouseButton::Left,
@@ -2325,6 +2329,10 @@ fn split_tabs_transfer_through_drag_and_drop(cx: &mut gpui::TestAppContext) {
     );
     cx.update(|window, cx| {
         window.draw(cx).clear();
+    });
+    core.read_with(cx, |core, _| {
+        assert_eq!(core.editor.tree.focus, right);
+        assert_eq!(core.editor.tree.get(left).doc, alpha);
     });
     cx.simulate_mouse_move(end, MouseButton::Left, Modifiers::none());
     cx.update(|window, cx| {
@@ -2344,9 +2352,24 @@ fn split_tabs_transfer_through_drag_and_drop(cx: &mut gpui::TestAppContext) {
     assert!(cx.debug_bounds(beta_right).is_some());
     assert!(cx.debug_bounds(alpha_right).is_some());
 
-    // A click in the unfocused pane targets that pane, not the destination.
+    // A background tab stays inactive until a click is released on it.
+    let position = cx.debug_bounds(alpha_right).unwrap().center();
+    cx.simulate_mouse_move(position, None, Modifiers::none());
+    cx.simulate_mouse_down(position, MouseButton::Left, Modifiers::none());
+    core.read_with(cx, |core, _| {
+        assert_eq!(core.editor.tree.get(right).doc, beta)
+    });
+    cx.simulate_mouse_up(position, MouseButton::Left, Modifiers::none());
+    core.read_with(cx, |core, _| {
+        assert_eq!(core.editor.tree.get(right).doc, alpha)
+    });
+
+    // A click in the unfocused pane activates it only on release.
     let position = cx.debug_bounds(alpha_left).unwrap().center();
-    cx.simulate_click(position, Modifiers::none());
+    cx.simulate_mouse_move(position, None, Modifiers::none());
+    cx.simulate_mouse_down(position, MouseButton::Left, Modifiers::none());
+    core.read_with(cx, |core, _| assert_eq!(core.editor.tree.focus, right));
+    cx.simulate_mouse_up(position, MouseButton::Left, Modifiers::none());
     core.read_with(cx, |core, _| assert_eq!(core.editor.tree.focus, left));
 
     // Moving its last tab onto an existing copy closes only the empty pane.
