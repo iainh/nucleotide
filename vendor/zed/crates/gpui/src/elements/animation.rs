@@ -138,12 +138,12 @@ impl<E: IntoElement + 'static> Element for AnimationElement<E> {
     ) -> (crate::LayoutId, Self::RequestLayoutState) {
         window.with_element_state(global_id.unwrap(), |state, window| {
             let mut state = state.unwrap_or_else(|| AnimationState {
-                start: Instant::now(),
+                start: cx.background_executor().now(),
                 animation_ix: 0,
             });
             let animation_ix = state.animation_ix;
 
-            let mut delta = state.start.elapsed().as_secs_f32()
+            let mut delta = (cx.background_executor().now() - state.start).as_secs_f32()
                 / self.animations[animation_ix].duration.as_secs_f32();
 
             let mut done = false;
@@ -152,7 +152,7 @@ impl<E: IntoElement + 'static> Element for AnimationElement<E> {
                     if animation_ix >= self.animations.len() - 1 {
                         done = true;
                     } else {
-                        state.start = Instant::now();
+                        state.start = cx.background_executor().now();
                         state.animation_ix += 1;
                     }
                     delta = 1.0;
@@ -257,5 +257,45 @@ mod easing {
 
             min + (normalized_alpha * range)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Context, Render, TestAppContext, div, prelude::*};
+    use std::cell::Cell;
+
+    #[gpui::test]
+    fn animation_uses_executor_time(cx: &mut TestAppContext) {
+        struct Animated(Rc<Cell<f32>>);
+        impl Render for Animated {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let progress = self.0.clone();
+                div().with_animation(
+                    "clock",
+                    Animation::new(Duration::from_secs(2)),
+                    move |element, delta| {
+                        progress.set(delta);
+                        element
+                    },
+                )
+            }
+        }
+        let progress = Rc::new(Cell::new(-1.));
+        let window = cx.add_window(|_, _| Animated(progress.clone()));
+        let draw = |cx: &mut TestAppContext| {
+            cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear())
+                .unwrap();
+        };
+        draw(cx);
+        assert_eq!(progress.get(), 0.);
+        cx.background_executor
+            .advance_clock(Duration::from_millis(500));
+        draw(cx);
+        assert_eq!(progress.get(), 0.25);
+        cx.background_executor.advance_clock(Duration::from_secs(2));
+        draw(cx);
+        assert_eq!(progress.get(), 1.);
     }
 }

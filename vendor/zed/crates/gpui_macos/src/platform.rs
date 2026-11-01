@@ -734,6 +734,10 @@ impl Platform for MacPlatform {
             .spawn(async move {
                 unsafe {
                     let panel = NSOpenPanel::openPanel(nil);
+                    if panel.is_null() {
+                        _ = done_tx.send(Err(anyhow!("macOS could not create the open dialog")));
+                        return;
+                    }
                     panel.setCanChooseDirectories_(options.directories.to_objc());
                     panel.setCanChooseFiles_(options.files.to_objc());
                     panel.setAllowsMultipleSelection_(options.multiple.to_objc());
@@ -787,6 +791,10 @@ impl Platform for MacPlatform {
             .spawn(async move {
                 unsafe {
                     let panel = NSSavePanel::savePanel(nil);
+                    if panel.is_null() {
+                        _ = done_tx.send(Err(anyhow!("macOS could not create the save dialog")));
+                        return;
+                    }
                     let path = ns_string(directory.to_string_lossy().as_ref());
                     let url = NSURL::fileURLWithPath_isDirectory_(nil, path, true.to_objc());
                     panel.setDirectoryURL(url);

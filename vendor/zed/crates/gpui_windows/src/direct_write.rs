@@ -12,6 +12,7 @@ use anyhow::{Context, Result};
 use collections::HashMap;
 use gpui_util::{ResultExt, maybe};
 use parking_lot::{RwLock, RwLockUpgradableReadGuard};
+use smallvec::SmallVec;
 use windows::{
     Win32::{
         Foundation::*,
@@ -875,6 +876,73 @@ impl DirectWriteState {
     }
 
     fn layout_line(
+        &mut self,
+        components: &DirectWriteComponents,
+        text: &str,
+        font_size: Pixels,
+        font_runs: &[FontRun],
+    ) -> Result<LineLayout> {
+        if !text.contains(is_line_separator) {
+            return self.layout_line_without_separators(components, text, font_size, font_runs);
+        }
+
+        // DirectWrite honors mandatory breaks even without wrapping. Keep each
+        // separator at a segment's end so no subsequent text moves to a new baseline.
+        let mut layout = LineLayout {
+            font_size,
+            len: text.len(),
+            ..Default::default()
+        };
+        let mut remaining_runs = font_runs;
+        let mut run_offset = 0;
+        let mut text_offset = 0;
+        let mut segment_runs = SmallVec::<[FontRun; 4]>::new();
+        for segment in text.split_inclusive(is_line_separator) {
+            segment_runs.clear();
+            let mut remaining_bytes = segment.len();
+            while remaining_bytes > 0 {
+                let Some(run) = remaining_runs.first() else {
+                    break;
+                };
+                let len = remaining_bytes.min(run.len - run_offset);
+                if len > 0 {
+                    segment_runs.push(FontRun {
+                        len,
+                        font_id: run.font_id,
+                    });
+                }
+                remaining_bytes -= len;
+                run_offset += len;
+                if run_offset == run.len {
+                    remaining_runs = &remaining_runs[1..];
+                    run_offset = 0;
+                }
+            }
+
+            let segment_layout =
+                self.layout_line_without_separators(components, segment, font_size, &segment_runs)?;
+            for mut run in segment_layout.runs {
+                for glyph in &mut run.glyphs {
+                    glyph.index += text_offset;
+                    glyph.position.x += layout.width;
+                }
+                if let Some(last) = layout.runs.last_mut()
+                    && last.font_id == run.font_id
+                {
+                    last.glyphs.append(&mut run.glyphs);
+                } else {
+                    layout.runs.push(run);
+                }
+            }
+            layout.width += segment_layout.width;
+            layout.ascent = layout.ascent.max(segment_layout.ascent);
+            layout.descent = layout.descent.max(segment_layout.descent);
+            text_offset += segment.len();
+        }
+        Ok(layout)
+    }
+
+    fn layout_line_without_separators(
         &mut self,
         components: &DirectWriteComponents,
         text: &str,
@@ -2369,12 +2437,98 @@ fn is_color_glyph(
 
 const DEFAULT_LOCALE_NAME: PCWSTR = windows::core::w!("en-US");
 
+fn is_line_separator(character: char) -> bool {
+    matches!(character, '\u{2028}' | '\u{2029}')
+}
+
 #[cfg(test)]
 mod tests {
     use crate::direct_write::{ClusterAnalyzer, WindowsFontSmoothing, WindowsFontSmoothingMode};
     use windows::Win32::UI::WindowsAndMessaging::{
         FE_FONTSMOOTHINGCLEARTYPE, FE_FONTSMOOTHINGSTANDARD,
     };
+
+    #[test]
+    fn unicode_separators_preserve_shaped_line_cursor() -> anyhow::Result<()> {
+        use gpui::{Font, FontWeight, TextRun, TextSystem, WindowTextSystem, px};
+        use std::sync::Arc;
+
+        let devices = crate::directx_devices::DirectXDevices::new()?;
+        let platform = Arc::new(super::DirectWriteTextSystem::new(&devices)?);
+        let text_system = WindowTextSystem::new(Arc::new(TextSystem::new(platform)));
+        let font = Font {
+            family: "Segoe UI".into(),
+            ..Default::default()
+        };
+        for separator in ['\u{2028}', '\u{2029}'] {
+            for text in [
+                format!("ab{separator}cd{separator}ef"),
+                format!("{separator}é{separator}{separator}𐐀{separator}z{separator}"),
+                format!("{separator}{separator}{separator}"),
+            ] {
+                let first_len = text.chars().next().unwrap().len_utf8();
+                let mut bold = font.clone();
+                bold.weight = FontWeight::BOLD;
+                let runs = [
+                    TextRun {
+                        len: first_len,
+                        font: font.clone(),
+                        ..Default::default()
+                    },
+                    TextRun {
+                        len: text.len() - first_len,
+                        font: bold,
+                        ..Default::default()
+                    },
+                ];
+                let shaped = text_system.shape_line(text.clone().into(), px(14.), &runs, None);
+                let mut reference_runs = runs.clone();
+                let mut offset = 0;
+                for run in &mut reference_runs {
+                    let end = offset + run.len;
+                    run.len = text[offset..end]
+                        .chars()
+                        .filter(|c| *c != separator)
+                        .map(char::len_utf8)
+                        .sum();
+                    offset = end;
+                }
+                let reference: String = text.chars().filter(|c| *c != separator).collect();
+                let reference =
+                    text_system.shape_line(reference.into(), px(14.), &reference_runs, None);
+                assert!(
+                    (shaped.width - reference.width).abs() < px(0.001),
+                    "{text:?}"
+                );
+                for run in &shaped.runs {
+                    for glyph in &run.glyphs {
+                        if !text[glyph.index..].starts_with(separator) {
+                            assert!(glyph.position.y.abs() < px(0.001), "{text:?}");
+                        }
+                    }
+                }
+                for (index, character) in text.char_indices() {
+                    let reference_index: usize = text[..index]
+                        .chars()
+                        .filter(|c| *c != separator)
+                        .map(char::len_utf8)
+                        .sum();
+                    assert!(
+                        (shaped.x_for_index(index) - reference.x_for_index(reference_index)).abs()
+                            < px(0.001),
+                        "{text:?}, index {index}"
+                    );
+                    if character == separator {
+                        assert_eq!(
+                            shaped.x_for_index(index),
+                            shaped.x_for_index(index + character.len_utf8())
+                        );
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
 
     #[test]
     fn windows_font_smoothing_preserves_all_system_modes() {
