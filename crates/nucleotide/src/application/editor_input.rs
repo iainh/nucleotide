@@ -257,12 +257,22 @@ impl EditorInputBridge {
     /// Keep this in sync with every host focus/tab change, including clicks and
     /// menu actions, so IME and semantic editing cannot target a hidden slot.
     pub fn set_hosted_active_slot(&mut self, active_slot: Option<ViewId>) {
-        if self.native_commands.active_slot != active_slot {
-            // Helix callbacks may capture a document/view, not just a key.
-            self.native_commands.on_next_key = None;
-            self.native_commands.focus_generation += 1;
-        }
-        self.native_commands.active_slot = active_slot;
+        let document = (self.native_commands.active_slot == active_slot)
+            .then_some(self.native_commands.active_document)
+            .flatten();
+        self.set_hosted_active_context(active_slot, document);
+    }
+
+    /// Project both identities on every tab activation, even when ViewId is
+    /// reused. Recording each transition rejects an unclaimed A -> B -> A result.
+    /// A claimed operation can still project its own result before resuming.
+    pub fn set_hosted_active_context(
+        &mut self,
+        active_slot: Option<ViewId>,
+        active_document: Option<DocumentId>,
+    ) {
+        self.native_commands
+            .set_active_context(active_slot, active_document);
     }
 
     /// Cancel the suspended mapping after a failed/rejected host operation.
@@ -518,11 +528,16 @@ impl EditorInputBridge {
             crate::helix_command::execute_command_line(editor, jobs, command);
             return self.handle_input(None, compositor, editor, jobs);
         }
-        if self.native_commands.awaiting_host {
+        self.set_hosted_active_context(
+            active_slot,
+            active_slot.and_then(|slot| editor.tree.try_get(slot).map(|view| view.doc)),
+        );
+        // A fresh command cancels abandoned UI/async work. Matching prompt
+        // submission has already claimed and removed its continuation instead.
+        if !self.native_commands.prepare_new_input(editor) {
             editor.set_error("Workspace command is awaiting host completion");
             return self.handle_input(None, compositor, editor, jobs);
         }
-        self.native_commands.continuation = None;
         match crate::helix_command::command_lookup(command) {
             crate::helix_command::CommandLookup::Empty => {}
             crate::helix_command::CommandLookup::Unknown(name) => {
@@ -597,6 +612,11 @@ impl EditorInputBridge {
     ) -> EditorInputOutcome {
         let _timer = PerfTimer::new("EditorInputBridge::handle_key")
             .with_warn_threshold(Duration::from_millis(4));
+        let slot = self.native_commands.active_slot;
+        self.set_hosted_active_context(
+            slot,
+            slot.and_then(|slot| editor.tree.try_get(slot).map(|view| view.doc)),
+        );
         if let Some(key) = key
             && (!self.native_commands.hosted || self.native_commands.has_active_slot(editor))
         {
@@ -825,6 +845,7 @@ struct NativeCommandInput {
     reset_diff_change_executed: bool,
     hosted: bool,
     active_slot: Option<ViewId>,
+    active_document: Option<DocumentId>,
     pending_commands: VecDeque<PendingCommand>,
     processing_queue: bool,
     awaiting_host: bool,
@@ -1033,6 +1054,7 @@ impl NativeCommandInput {
             reset_diff_change_executed: false,
             hosted: false,
             active_slot: None,
+            active_document: None,
             pending_commands: VecDeque::new(),
             processing_queue: false,
             awaiting_host: false,
@@ -1277,6 +1299,17 @@ impl NativeCommandInput {
         }
     }
 
+    fn set_active_context(&mut self, slot: Option<ViewId>, document: Option<DocumentId>) {
+        if (self.active_slot, self.active_document) != (slot, document) {
+            // Callbacks may capture a document in a reused slot. Keep a history
+            // generation rather than accepting equality restored by an ABA visit.
+            self.on_next_key = None;
+            self.focus_generation += 1;
+        }
+        self.active_slot = slot;
+        self.active_document = document;
+    }
+
     fn has_active_slot(&self, editor: &Editor) -> bool {
         self.active_slot.is_some_and(|slot| {
             editor.tree.focus == slot
@@ -1286,6 +1319,11 @@ impl NativeCommandInput {
     }
 
     fn suspend(&mut self, kind: EditorContinuationKind, editor: &Editor) -> EditorContinuation {
+        self.set_active_context(
+            self.active_slot,
+            self.active_slot
+                .and_then(|slot| editor.tree.try_get(slot).map(|view| view.doc)),
+        );
         self.next_token += 1;
         let continuation = EditorContinuation {
             token: EditorCommandToken(self.next_token),
@@ -1310,6 +1348,11 @@ impl NativeCommandInput {
         if self.processing_queue {
             return true;
         }
+        self.set_active_context(
+            self.active_slot,
+            self.active_slot
+                .and_then(|slot| editor.tree.try_get(slot).map(|view| view.doc)),
+        );
         if let Some(pending) = &self.continuation {
             let document = self
                 .active_slot
@@ -3889,13 +3932,18 @@ mod tests {
                 Some(key.parse().unwrap())
             );
         }
-        workspace_command(bridge.execute_hosted_command_line(
-            "vs",
-            Some(first_slot),
-            &mut compositor,
-            &mut editor,
-            &mut jobs,
-        ));
+        workspace_command(
+            bridge
+                .submit_command_continuation(
+                    prompt.continuation.unwrap().token,
+                    "vs",
+                    Some(first_slot),
+                    &mut compositor,
+                    &mut editor,
+                    &mut jobs,
+                )
+                .unwrap(),
+        );
         assert!(bridge.awaiting_workspace_command());
         assert!(bridge.take_suspended_replay_key().is_none());
         editor.focus(second_slot);
@@ -4074,6 +4122,131 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn hosted_fresh_command_discards_abandoned_ui_tail_but_matching_submit_keeps_it() {
+        for matching_submit in [false, true] {
+            let mut editor = test_editor_with_text("alpha");
+            let slot = editor.tree.focus;
+            set_test_cursor(&mut editor, 0);
+            let mut bridge = hosted_test_bridge(&[
+                if matching_submit {
+                    "command_mode"
+                } else {
+                    "search"
+                },
+                "delete_selection",
+            ]);
+            let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));
+            let mut jobs = Jobs::new();
+            let prompt = bridge.handle_hosted_key(
+                "F12".parse().unwrap(),
+                Some(slot),
+                &mut compositor,
+                &mut editor,
+                &mut jobs,
+            );
+            let token = prompt.continuation.unwrap().token;
+            if matching_submit {
+                bridge
+                    .submit_command_continuation(
+                        token,
+                        "move_char_right",
+                        Some(slot),
+                        &mut compositor,
+                        &mut editor,
+                        &mut jobs,
+                    )
+                    .unwrap();
+            } else {
+                // A global command prompt replaces the unsubmitted search.
+                // Its tokenless submission must not adopt the search's tail.
+                bridge.execute_hosted_command_line(
+                    "move_char_right",
+                    Some(slot),
+                    &mut compositor,
+                    &mut editor,
+                    &mut jobs,
+                );
+            }
+            assert_eq!(
+                focused_document_text(&editor),
+                if matching_submit { "apha\n" } else { "alpha\n" }
+            );
+            assert!(!bridge.begin_command_completion(token, &mut editor));
+        }
+    }
+
+    #[tokio::test]
+    async fn hosted_document_context_rejects_aba_but_allows_claimed_result_projection() {
+        for case in [0, 1, 2] {
+            let mut editor = test_editor_with_text("alpha");
+            let slot = editor.tree.focus;
+            let document_a = editor.tree.get(slot).doc;
+            let document_b = editor.new_file(Action::Replace);
+            let doc = editor.document_mut(document_b).unwrap();
+            doc.apply(
+                &Transaction::change(doc.text(), [(0, 0, Some("BRAVO".into()))].into_iter()),
+                slot,
+            );
+            editor.switch(document_a, Action::Replace);
+            set_test_cursor(&mut editor, 0);
+            let mut bridge = hosted_test_bridge(&["goto_definition", "delete_selection"]);
+            bridge.set_hosted_active_context(Some(slot), Some(document_a));
+            let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));
+            let mut jobs = Jobs::new();
+            let token = bridge
+                .handle_hosted_key(
+                    "F12".parse().unwrap(),
+                    Some(slot),
+                    &mut compositor,
+                    &mut editor,
+                    &mut jobs,
+                )
+                .continuation
+                .unwrap()
+                .token;
+            // Reprojecting the unchanged origin must not invalidate it.
+            bridge.set_hosted_active_context(Some(slot), Some(document_a));
+            if case == 2 {
+                assert!(bridge.begin_command_completion(token, &mut editor));
+            }
+            if case != 0 {
+                editor.switch(document_b, Action::Replace);
+                bridge.set_hosted_active_context(Some(slot), Some(document_b));
+                if case == 1 {
+                    // No editor key occurs between the two tab activations.
+                    editor.switch(document_a, Action::Replace);
+                    bridge.set_hosted_active_context(Some(slot), Some(document_a));
+                } else {
+                    // A claimed navigation applies and projects its own result.
+                    set_test_cursor(&mut editor, 0);
+                }
+            }
+            if case != 2 {
+                assert_eq!(
+                    bridge.begin_command_completion(token, &mut editor),
+                    case == 0
+                );
+            }
+            let resumed = bridge.resume_command_continuation(
+                token,
+                Some(slot),
+                &mut compositor,
+                &mut editor,
+                &mut jobs,
+            );
+            assert_eq!(resumed.is_some(), case != 1);
+            assert_eq!(
+                editor.document(document_a).unwrap().text().to_string(),
+                if case == 0 { "lpha\n" } else { "alpha\n" }
+            );
+            assert_eq!(
+                editor.document(document_b).unwrap().text().to_string(),
+                if case == 2 { "RAVO\n" } else { "BRAVO\n" }
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn hosted_tokens_reject_stale_results_and_rotate_ui_handoffs() {
         let mut editor = test_editor_with_text("alpha");
         let slot = editor.tree.focus;
@@ -4207,13 +4380,18 @@ mod tests {
                     Some(key.parse().unwrap())
                 );
             }
-            let open = workspace_command(bridge.execute_hosted_command_line(
-                "open .",
-                Some(first_slot),
-                &mut compositor,
-                &mut editor,
-                &mut jobs,
-            ));
+            let open = workspace_command(
+                bridge
+                    .submit_command_continuation(
+                        prompt.continuation.unwrap().token,
+                        "open .",
+                        Some(first_slot),
+                        &mut compositor,
+                        &mut editor,
+                        &mut jobs,
+                    )
+                    .unwrap(),
+            );
             assert_eq!(
                 open.command,
                 workspace_commands::WorkspaceCommand::Open {
@@ -4924,7 +5102,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn native_commits_replay_as_text_not_insert_keymaps() {
-        let mut editor = test_editor_with_text("Z");
+        let mut editor = test_editor_with_text_and_config("Z", Config::default());
         set_test_cursor(&mut editor, 0);
         let mut bridge = EditorInputBridge::new(disposition_test_keymaps(Mode::Insert));
         let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));

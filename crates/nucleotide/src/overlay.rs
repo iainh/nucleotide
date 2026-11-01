@@ -1748,102 +1748,15 @@ impl OverlayView {
                                     });
                                 }
                                 // Check if it's a buffer picker item (DocumentId, Option<PathBuf>)
+                                let mut navigation_succeeded = true;
                                 if let Some(location) = selected_item
                                         .data
                                         .downcast_ref::<crate::types::LspLocation>(
                                     ) {
                                         if let Some(core) = core_for_on_select.upgrade() {
-                                            core.update(picker_cx, |core, core_cx| {
-                                                match core.jump_to_lsp_location(location) {
-                                                    Ok((doc_id, view_id)) => {
-                                                        core_cx.emit(
-                                                            crate::Update::SelectionChanged {
-                                                                doc_id,
-                                                                view_id,
-                                                            },
-                                                        );
-                                                        core_cx.emit(crate::Update::Redraw);
-                                                    }
-                                                    Err(err) => {
-                                                        core.editor.set_error(err.to_string())
-                                                    }
-                                                }
-                                            });
-                                        }
-                                    } else if let Some(location) = selected_item
-                                        .data
-                                        .downcast_ref::<crate::types::JumpLocation>(
-                                    ) {
-                                        if let Some(core) = core_for_on_select.upgrade() {
-                                            core.update(picker_cx, |core, core_cx| {
-                                                match core.jump_to_jumplist_location(location) {
-                                                    Ok((doc_id, view_id)) => {
-                                                        core_cx.emit(
-                                                            crate::Update::SelectionChanged {
-                                                                doc_id,
-                                                                view_id,
-                                                            },
-                                                        );
-                                                        core_cx.emit(crate::Update::Redraw);
-                                                    }
-                                                    Err(err) => {
-                                                        core.editor.set_error(err.to_string())
-                                                    }
-                                                }
-                                            });
-                                        }
-                                    } else if let Some(location) = selected_item
-                                        .data
-                                        .downcast_ref::<crate::types::DiagnosticLocation>(
-                                    ) {
-                                        if let Some(core) = core_for_on_select.upgrade() {
-                                            core.update(picker_cx, |core, core_cx| {
-                                                match core.jump_to_diagnostic_location(location) {
-                                                    Ok((doc_id, view_id)) => {
-                                                        core_cx.emit(
-                                                            crate::Update::SelectionChanged {
-                                                                doc_id,
-                                                                view_id,
-                                                            },
-                                                        );
-                                                        core_cx.emit(crate::Update::Redraw);
-                                                    }
-                                                    Err(err) => {
-                                                        core.editor.set_error(err.to_string())
-                                                    }
-                                                }
-                                            });
-                                        }
-                                    } else if let Some(location) = selected_item
-                                        .data
-                                        .downcast_ref::<crate::types::SyntaxFileLocation>(
-                                    ) {
-                                        if let Some(core) = core_for_on_select.upgrade() {
-                                            core.update(picker_cx, |core, core_cx| {
-                                                match core.jump_to_syntax_file_location(location) {
-                                                    Ok((doc_id, view_id)) => {
-                                                        core_cx.emit(
-                                                            crate::Update::SelectionChanged {
-                                                                doc_id,
-                                                                view_id,
-                                                            },
-                                                        );
-                                                        core_cx.emit(crate::Update::Redraw);
-                                                    }
-                                                    Err(err) => {
-                                                        core.editor.set_error(err.to_string())
-                                                    }
-                                                }
-                                            });
-                                        }
-                                    } else if let Some(location) =
-                                        selected_item
-                                            .data
-                                            .downcast_ref::<crate::types::GlobalSearchLocation>()
-                                    {
-                                        if let Some(core) = core_for_on_select.upgrade() {
-                                            core.update(picker_cx, |core, core_cx| {
-                                                match core.jump_to_global_search_location(location)
+                                            navigation_succeeded =
+                                                core.update(picker_cx, |core, core_cx| match core
+                                                    .jump_to_lsp_location(location)
                                                 {
                                                     Ok((doc_id, view_id)) => {
                                                         core_cx.emit(
@@ -1853,12 +1766,114 @@ impl OverlayView {
                                                             },
                                                         );
                                                         core_cx.emit(crate::Update::Redraw);
+                                                        true
                                                     }
                                                     Err(err) => {
-                                                        core.editor.set_error(err.to_string())
+                                                        core.editor.set_error(err.to_string());
+                                                        false
                                                     }
-                                                }
-                                            });
+                                                });
+                                        }
+                                    } else if let Some(location) = selected_item
+                                        .data
+                                        .downcast_ref::<crate::types::JumpLocation>(
+                                    ) {
+                                        if let Some(core) = core_for_on_select.upgrade() {
+                                            navigation_succeeded =
+                                                core.update(picker_cx, |core, core_cx| match core
+                                                    .jump_to_jumplist_location(location)
+                                                {
+                                                    Ok((doc_id, view_id)) => {
+                                                        core_cx.emit(
+                                                            crate::Update::SelectionChanged {
+                                                                doc_id,
+                                                                view_id,
+                                                            },
+                                                        );
+                                                        core_cx.emit(crate::Update::Redraw);
+                                                        true
+                                                    }
+                                                    Err(err) => {
+                                                        core.editor.set_error(err.to_string());
+                                                        false
+                                                    }
+                                                });
+                                        }
+                                    } else if let Some(location) = selected_item
+                                        .data
+                                        .downcast_ref::<crate::types::DiagnosticLocation>(
+                                    ) {
+                                        if let Some(core) = core_for_on_select.upgrade() {
+                                            navigation_succeeded =
+                                                core.update(picker_cx, |core, core_cx| match core
+                                                    .jump_to_diagnostic_location(location)
+                                                {
+                                                    Ok((doc_id, view_id)) => {
+                                                        core_cx.emit(
+                                                            crate::Update::SelectionChanged {
+                                                                doc_id,
+                                                                view_id,
+                                                            },
+                                                        );
+                                                        core_cx.emit(crate::Update::Redraw);
+                                                        true
+                                                    }
+                                                    Err(err) => {
+                                                        core.editor.set_error(err.to_string());
+                                                        false
+                                                    }
+                                                });
+                                        }
+                                    } else if let Some(location) = selected_item
+                                        .data
+                                        .downcast_ref::<crate::types::SyntaxFileLocation>(
+                                    ) {
+                                        if let Some(core) = core_for_on_select.upgrade() {
+                                            navigation_succeeded =
+                                                core.update(picker_cx, |core, core_cx| match core
+                                                    .jump_to_syntax_file_location(location)
+                                                {
+                                                    Ok((doc_id, view_id)) => {
+                                                        core_cx.emit(
+                                                            crate::Update::SelectionChanged {
+                                                                doc_id,
+                                                                view_id,
+                                                            },
+                                                        );
+                                                        core_cx.emit(crate::Update::Redraw);
+                                                        true
+                                                    }
+                                                    Err(err) => {
+                                                        core.editor.set_error(err.to_string());
+                                                        false
+                                                    }
+                                                });
+                                        }
+                                    } else if let Some(location) =
+                                        selected_item
+                                            .data
+                                            .downcast_ref::<crate::types::GlobalSearchLocation>()
+                                    {
+                                        if let Some(core) = core_for_on_select.upgrade() {
+                                            navigation_succeeded =
+                                                core.update(picker_cx, |core, core_cx| match core
+                                                    .jump_to_global_search_location(location)
+                                                {
+                                                    Ok((doc_id, view_id)) => {
+                                                        core_cx.emit(
+                                                            crate::Update::SelectionChanged {
+                                                                doc_id,
+                                                                view_id,
+                                                            },
+                                                        );
+                                                        core_cx.emit(crate::Update::Redraw);
+                                                        true
+                                                    }
+                                                    Err(err) => {
+                                                        core.editor.set_error(err.to_string());
+                                                        false
+                                                    }
+                                                });
                                         }
                                     }
                                     // Check if it's a buffer picker item (DocumentId, Option<PathBuf>)
@@ -1918,12 +1933,21 @@ impl OverlayView {
                                             });
                                         }
                                     }
-                                if !opens_file
-                                    && let Some(continuation) = continuation
-                                    && let Some(core) = core_for_on_select.upgrade()
-                                {
-                                    core.update(picker_cx, |_, cx| {
-                                        cx.emit(crate::Update::ContinueCommand(continuation.token))
+                                if !opens_file && let Some(core) = core_for_on_select.upgrade() {
+                                    core.update(picker_cx, |core, cx| {
+                                        if !navigation_succeeded {
+                                            if let Some(continuation) = continuation {
+                                                core.editor_input.cancel_command_continuation(
+                                                    continuation.token,
+                                                    &mut core.editor,
+                                                );
+                                            }
+                                            cx.emit(crate::Update::Redraw);
+                                        } else if let Some(continuation) = continuation {
+                                            cx.emit(crate::Update::ContinueCommand(
+                                                continuation.token,
+                                            ));
+                                        }
                                     });
                                 }
                                 // (Picker was already dismissed above)
