@@ -1452,12 +1452,22 @@ impl Window {
 
         platform_window.on_close(Box::new({
             let window_id = handle.window_id();
-            let mut cx = cx.to_async();
+            let cx = cx.to_async();
             move || {
-                let _ = handle.update(&mut cx, |_, window, _| window.remove_window());
-                let _ = cx.update(|cx| {
-                    SystemWindowTabController::remove_tab(cx, window_id);
-                });
+                // Native destruction can re-enter while the app is borrowed.
+                // Schedule both operations without borrowing the app here.
+                cx.spawn(async move |cx| {
+                    cx.update(|cx| {
+                        // App-driven closure may already have removed the window.
+                        if cx.windows.contains_key(window_id) {
+                            handle
+                                .update(cx, |_, window, _| window.remove_window())
+                                .log_err();
+                        }
+                        SystemWindowTabController::remove_tab(cx, window_id);
+                    });
+                })
+                .detach();
             }
         }));
         platform_window.on_request_frame(Box::new({
@@ -4813,8 +4823,10 @@ impl Window {
                     accepts
                 });
 
-            currently_pending.needs_timeout |=
-                match_result.pending_has_binding || text_input_requires_timeout;
+            let standalone_modifier = matches!(currently_pending.keystrokes.as_slice(), [keystroke] if keystroke.is_modifier_key());
+            currently_pending.needs_timeout |= match_result.pending_has_binding
+                || text_input_requires_timeout
+                || standalone_modifier;
 
             if currently_pending.needs_timeout {
                 currently_pending.timer = Some(self.spawn(cx, async move |cx| {
@@ -6312,5 +6324,165 @@ pub fn outline(
         border_widths: (1.).into(),
         border_color: border_color.into(),
         border_style,
+    }
+}
+
+#[cfg(test)]
+mod backport_tests {
+    use super::*;
+    use crate::{EmptyView, KeyBinding, TestAppContext, div, prelude::*};
+
+    #[gpui::test]
+    fn native_close_defers_app_access(cx: &mut TestAppContext) {
+        let window = cx.add_window(|_, _| EmptyView);
+        let platform_window = cx.test_window(window.into());
+        {
+            let app = cx.app.borrow_mut();
+            platform_window.simulate_close();
+            assert!(app.windows.contains_key(window.window_id()));
+        }
+        cx.run_until_parked();
+        assert!(!cx.app.borrow().windows.contains_key(window.window_id()));
+    }
+
+    actions!(backport_test, [StandaloneModifierAction]);
+
+    struct StandaloneModifierView {
+        focus_handle: FocusHandle,
+        action_count: usize,
+    }
+
+    impl Render for StandaloneModifierView {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .key_context("StandaloneModifier")
+                .track_focus(&self.focus_handle)
+                .on_action(cx.listener(|this, _: &StandaloneModifierAction, _, _| {
+                    this.action_count += 1;
+                }))
+        }
+    }
+
+    #[gpui::test]
+    fn standalone_modifier_sequence_times_out_and_recovers(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            cx.bind_keys([KeyBinding::new(
+                "shift shift",
+                StandaloneModifierAction,
+                Some("StandaloneModifier"),
+            )]);
+        });
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let focus_handle = cx.focus_handle();
+            window.focus(&focus_handle, cx);
+            StandaloneModifierView {
+                focus_handle,
+                action_count: 0,
+            }
+        });
+        let shift = Modifiers {
+            shift: true,
+            ..Modifiers::default()
+        };
+        cx.simulate_modifiers_change(shift);
+        cx.simulate_modifiers_change(Modifiers::default());
+        cx.update(|window, _| assert!(window.has_pending_keystrokes()));
+        cx.background_executor.advance_clock(Duration::from_secs(2));
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            assert!(!window.has_pending_keystrokes());
+            assert_eq!(view.read(cx).action_count, 0);
+        });
+
+        cx.simulate_modifiers_change(shift);
+        cx.simulate_modifiers_change(Modifiers::default());
+        cx.background_executor
+            .advance_clock(Duration::from_millis(500));
+        cx.update(|window, cx| {
+            assert!(window.has_pending_keystrokes());
+            assert_eq!(view.read(cx).action_count, 0);
+        });
+        cx.simulate_modifiers_change(shift);
+        cx.simulate_modifiers_change(Modifiers::default());
+        cx.update(|window, cx| {
+            assert!(!window.has_pending_keystrokes());
+            assert_eq!(view.read(cx).action_count, 1);
+        });
+    }
+
+    #[gpui::test]
+    fn cached_view_follows_inherited_opacity(cx: &mut TestAppContext) {
+        struct Child;
+        impl Render for Child {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().size_full().bg(crate::rgb(0xff0000))
+            }
+        }
+        struct Root {
+            opacity: f32,
+            width: Pixels,
+            child: Entity<Child>,
+        }
+        impl Render for Root {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div()
+                    .id("opacity-wrapper")
+                    .w(self.width)
+                    .h(px(200.))
+                    .opacity(self.opacity)
+                    .hover(|style| style.opacity(1.))
+                    .child(
+                        AnyView::from(self.child.clone())
+                            .cached(crate::StyleRefinement::default().size(px(100.))),
+                    )
+            }
+        }
+        let child = cx.new(|_| Child);
+        let window = cx.add_window(|_, _| Root {
+            opacity: 1.,
+            width: px(200.),
+            child,
+        });
+        let mut draw = |opacity, width, mouse| {
+            window
+                .update(cx, |root, window, cx| {
+                    root.opacity = opacity;
+                    root.width = width;
+                    window.simulate_mouse_move(mouse, cx);
+                    cx.notify();
+                })
+                .unwrap();
+            // Deliver requested frame callbacks between draws, just as the
+            // platform loop does, so their notifications flush before prepaint.
+            for _ in 0..3 {
+                let (alpha, callbacks) = cx
+                    .update_window(window.into(), |_, window, cx| {
+                        window.draw(cx).clear();
+                        let quads = &window.rendered_frame.scene.quads;
+                        assert_eq!(quads.len(), 1);
+                        let alpha = quads[0].background.solid.a;
+                        let callbacks = window.next_frame_callbacks.take();
+                        let count = callbacks.len();
+                        for callback in callbacks {
+                            callback(window, cx);
+                        }
+                        (alpha, count)
+                    })
+                    .unwrap();
+                if callbacks == 0 {
+                    return alpha;
+                }
+            }
+            panic!("cached view kept requesting frames");
+        };
+        let outside = point(px(500.), px(500.));
+        let inside = point(px(50.), px(50.));
+        let beside = point(px(250.), px(50.));
+        assert_eq!(draw(1., px(200.), outside), 1.);
+        assert_eq!(draw(0.5, px(200.), outside), 0.5);
+        assert_eq!(draw(0.5, px(200.), outside), 0.5);
+        assert_eq!(draw(0.5, px(200.), inside), 1.);
+        assert_eq!(draw(0.5, px(200.), beside), 0.5);
+        assert_eq!(draw(0.5, px(300.), beside), 1.);
     }
 }
