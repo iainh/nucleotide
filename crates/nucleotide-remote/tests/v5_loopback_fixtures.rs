@@ -35,8 +35,14 @@ async fn dropped_watches_release_subscriptions_on_a_retained_connection() {
 
 async fn check_watch_lifetime_on_a_retained_connection(stop_explicitly: bool) {
     let temp = tempfile::tempdir().unwrap();
+    // macOS temp directories use /var, but FSEvents reports /private/var.
+    // Exercise watch ownership with the same native root spelling on all paths.
+    #[cfg(target_os = "macos")]
+    let native_root = temp.path().canonicalize().unwrap();
+    #[cfg(not(target_os = "macos"))]
+    let native_root = temp.path().to_path_buf();
     let connection = connect_workspace_backend_for_location(
-        classify_workspace_location(temp.path()),
+        classify_workspace_location(&native_root),
         &RemoteWorkspaceBackendOptions {
             use_local_service: true,
             local_helper_path: Some(env!("CARGO_BIN_EXE_nucleotide-remote").into()),
@@ -47,13 +53,13 @@ async fn check_watch_lifetime_on_a_retained_connection(stop_explicitly: bool) {
     // Disposal must propagate through the display/native adapter used by WSL
     // and SSH, even when no more filesystem events arrive.
     let root = if stop_explicitly {
-        temp.path().to_path_buf()
+        native_root.clone()
     } else {
-        temp.path().join("display-workspace")
+        native_root.join("display-workspace")
     };
     let backend = path_mapped_workspace_backend(
         connection.backend.clone(),
-        WorkspacePathMapping::new(&root, temp.path()),
+        WorkspacePathMapping::new(&root, &native_root),
     );
     tokio::time::timeout(Duration::from_secs(30), async {
         #[cfg(windows)]
@@ -78,8 +84,8 @@ async fn check_watch_lifetime_on_a_retained_connection(stop_explicitly: bool) {
             .launch(RemotePipedProcessSessionRequest {
                 program: program.into(),
                 args: args.into_iter().map(String::from).collect(),
-                cwd: temp.path().into(),
-                environment_anchor: temp.path().into(),
+                cwd: native_root.clone(),
+                environment_anchor: native_root.clone(),
                 env_overrides: BTreeMap::new(),
             })
             .unwrap();
