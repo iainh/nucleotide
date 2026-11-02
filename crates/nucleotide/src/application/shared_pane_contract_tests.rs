@@ -961,10 +961,7 @@ fn definition_continuation_scenario(cx: &mut gpui::TestAppContext, scenario: &st
         cx.run_until_parked();
         core.read_with(cx, |core, _| {
             let selected = core.editor.tree.get(core.editor.tree.focus).doc;
-            assert_eq!(
-                core.editor.documents[&selected].path(),
-                Some(target.as_path())
-            );
+            assert_same_path(core.editor.documents[&selected].path().unwrap(), &target);
             assert_eq!(
                 core.editor.documents[&selected].text().to_string(),
                 " symbol\n"

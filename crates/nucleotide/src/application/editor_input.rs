@@ -3969,16 +3969,17 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn hosted_buffer_close_yields_before_replacement_document_edit() {
         let temp = tempfile::tempdir().unwrap();
+        let root = helix_stdx::path::canonicalize(temp.path());
         let mut editor = test_editor_with_text("BRAVO");
         let slot = editor.tree.focus;
         let document_b = editor.tree.get(slot).doc;
         editor
             .document_mut(document_b)
             .unwrap()
-            .set_path(Some(&temp.path().join("B")));
+            .set_path(Some(&root.join("B")));
         set_test_cursor(&mut editor, 0);
         let document_a = editor.new_file(Action::Replace);
-        let path_a = temp.path().join("A");
+        let path_a = root.join("A");
         editor
             .document_mut(document_a)
             .unwrap()
