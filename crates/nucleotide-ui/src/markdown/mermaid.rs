@@ -28,8 +28,10 @@ use std::{
 
 // These budgets also apply to Markdown supplied by language servers.
 const MAX_SOURCE_BYTES: usize = 64 * 1024;
-const MAX_RASTER_PIXELS: f64 = 4_194_304.0;
-const MAX_RASTER_EDGE: f64 = 4096.0;
+// Include GPUI's 2× supersampling: allow 4096 logical pixels per edge,
+// while keeping each decoded RGBA image within 64 MiB.
+const MAX_RASTER_PIXELS: f64 = 16_777_216.0;
+const MAX_RASTER_EDGE: f64 = 8192.0;
 static RENDER_SLOTS: LazyLock<Arc<tokio::sync::Semaphore>> =
     LazyLock::new(|| Arc::new(tokio::sync::Semaphore::new(2)));
 
