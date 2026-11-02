@@ -156,7 +156,14 @@ and size logs alongside targeted screenshots.
    keyboard receiver must remain active: type immediately, without a body click,
    and verify only the original document changes.
 4. Drag terminals between panes and dock. Compare child IDs/start markers before
-   and after; moving must not restart a process.
+   and after; moving must not restart a process. Moving the last tab out of the
+   dock must collapse the empty bottom area and reclaim its space. Moving one of
+   several tabs must leave the dock visible; reopening it must work on the first
+   new-terminal action and retain its remembered height.
+   The terminal button, View → New Terminal and the terminal shortcut each create
+   and focus a new bottom-dock terminal on every invocation, even with the dock
+   already visible. Terminals moved elsewhere must remain untouched. Close tabs
+   with their X buttons rather than using a show/hide toggle.
 5. Resize nested unequal splits and the native window. Query dimensions inside
    each child; verify document cursor/pointer alignment and overlay anchors.
 6. Use editor pane commands to focus terminal and image panes.

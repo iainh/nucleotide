@@ -965,7 +965,7 @@ fn app_menus() -> Vec<Menu> {
         Menu::new("View").items([
             MenuItem::action("Toggle File Tree", ToggleFileTree),
             MenuItem::action("Toggle Documentation", ToggleDocumentation),
-            MenuItem::action("Toggle Terminal", ToggleTerminal),
+            MenuItem::action("New Terminal", ToggleTerminal),
             MenuItem::separator(),
             MenuItem::submenu(Menu::new("Editor Layout").items([
                 MenuItem::action("Split Right", SplitPaneRight),

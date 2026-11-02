@@ -537,7 +537,6 @@ pub struct Workspace {
     terminal_sessions: terminal_sessions::TerminalSessions,
     terminal_generation: u64,
     terminal_activities: HashMap<TerminalId, (RunId, BackgroundActivityId)>,
-    last_dock_pane: Option<PaneId>,
     terminal_close_confirm: Option<(PaneId, TerminalId)>,
     next_run_id: u64,
     last_run_task: Option<ResolvedTask>,
@@ -1740,14 +1739,6 @@ impl Workspace {
     }
 
     fn hide_terminal_panel(&mut self, cx: &mut Context<Self>) {
-        self.last_dock_pane = self
-            .pane_host
-            .layout
-            .dock()
-            .filter(|dock| dock.visible())
-            .map(|_| self.focused_pane_id())
-            .filter(|pane| !self.pane_host.layout.main_panes().contains(pane))
-            .or(self.last_dock_pane);
         self.pane_host.layout.set_dock_visible(false);
         self.terminal_panel_visible = false;
         self.project_panes(cx);
@@ -1854,38 +1845,6 @@ impl Workspace {
             }
         })
         .detach();
-    }
-
-    fn toggle_terminal_panel(&mut self, cx: &mut Context<Self>) {
-        if self.terminal_panel_visible {
-            self.hide_terminal_panel(cx);
-            cx.notify();
-            return;
-        }
-        let first = self
-            .pane_host
-            .layout
-            .ensure_dock(self.basic_terminal_height)
-            .unwrap();
-        let pane = self
-            .last_dock_pane
-            .filter(|pane| self.pane_host.layout.pane(*pane).is_some())
-            .unwrap_or(first);
-        if self.pane_host.layout.pane(pane).unwrap().tabs().is_empty() {
-            let cwd = Self::terminal_spawn_cwd(self.current_project_root.as_deref());
-            let id = self.spawn_terminal_session(cwd, cx);
-            self.pane_host.layout.set_dock_visible(true);
-            self.mount_terminal(id, pane, cx);
-        } else {
-            self.pane_host.layout.set_dock_visible(true);
-            let _ = self.pane_host.layout.activate_pane(pane);
-        }
-        self.terminal_panel_visible = true;
-        self.last_dock_pane = Some(pane);
-        self.project_panes(cx);
-        self.register_terminal_focus(cx);
-        self.defer_focus_terminal(cx);
-        cx.notify();
     }
 
     fn focused_runnable_document(
@@ -2398,6 +2357,11 @@ impl Workspace {
     }
 
     fn project_panes(&mut self, cx: &mut Context<Self>) {
+        self.terminal_panel_visible = self
+            .pane_host
+            .layout
+            .dock()
+            .is_some_and(|dock| dock.visible());
         let handle = self.handle.clone();
         self.core.update(cx, |core, _| {
             let _guard = handle.enter();
@@ -3927,7 +3891,6 @@ impl Workspace {
             terminal_sessions: terminal_sessions::TerminalSessions::new(0),
             terminal_generation: 0,
             terminal_activities: HashMap::new(),
-            last_dock_pane: None,
             terminal_close_confirm: None,
             next_run_id: 1,
             last_run_task: None,
@@ -4927,7 +4890,7 @@ impl Workspace {
                 )
             )
         ) {
-            self.toggle_terminal_panel(cx);
+            self.tab_bar_action_new_terminal(cx);
             cx.stop_propagation();
             return;
         }
@@ -5109,7 +5072,7 @@ impl Workspace {
                 self.show_file_tree = !self.show_file_tree;
                 cx.notify();
             }
-            Intent::ToggleTerminal => self.toggle_terminal_panel(cx),
+            Intent::ToggleTerminal => self.tab_bar_action_new_terminal(cx),
         }
     }
 
@@ -12307,8 +12270,8 @@ impl Render for Workspace {
 
         workspace_div = workspace_div.on_action(cx.listener(
             move |workspace, _: &crate::actions::workspace::ToggleTerminal, _window, cx| {
-                info!("ToggleTerminal action triggered from menu");
-                workspace.toggle_terminal_panel(cx);
+                info!("New terminal action triggered from menu");
+                workspace.tab_bar_action_new_terminal(cx);
             },
         ));
 

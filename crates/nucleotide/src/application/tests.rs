@@ -2957,15 +2957,35 @@ fn workspace_focus_follows_splits_and_overlay_dismissal_without_stealing_tree_fo
                 .is_focused(window)
         );
     });
+    let first_terminal_focus =
+        cx.update(|_, cx| cx.global::<FocusCoordinator>().terminal_focus().unwrap());
+    // A repeated terminal action opens another shell instead of hiding the dock.
     cx.dispatch_action(crate::actions::workspace::ToggleTerminal);
     cx.update(|window, cx| {
         window.draw(cx).clear();
     });
     cx.run_until_parked();
     cx.update(|window, cx| {
+        assert!(!first_terminal_focus.is_focused(window));
         assert!(
             cx.global::<FocusCoordinator>()
-                .editor_focus()
+                .terminal_focus()
+                .unwrap()
+                .is_focused(window)
+        );
+    });
+    let second_terminal_focus =
+        cx.update(|_, cx| cx.global::<FocusCoordinator>().terminal_focus().unwrap());
+    cx.simulate_keystrokes("ctrl-`");
+    cx.update(|window, cx| {
+        window.draw(cx).clear();
+    });
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        assert!(!second_terminal_focus.is_focused(window));
+        assert!(
+            cx.global::<FocusCoordinator>()
+                .terminal_focus()
                 .unwrap()
                 .is_focused(window)
         );
