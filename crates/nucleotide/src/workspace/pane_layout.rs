@@ -546,7 +546,8 @@ impl PaneLayout {
     /// Merge tabs into `destination`, preserving its order and active tab.
     /// Without a destination choose the next, then previous pane in this region.
     /// Closing the sole pane without a destination is rejected, not destructive.
-    /// A sole main/dock pane moved to another region remains as an empty root.
+    /// A sole main/dock pane moved to another region remains as an empty root;
+    /// an empty dock root is hidden until reopened.
     pub fn close_pane(
         &mut self,
         source: PaneId,
@@ -633,6 +634,13 @@ impl PaneLayout {
             return;
         }
         let Some((parent, index)) = self.parent(Node::Pane(pane)) else {
+            if self
+                .dock
+                .as_ref()
+                .is_some_and(|dock| dock.root == Node::Pane(pane))
+            {
+                self.set_dock_visible(false);
+            }
             return;
         };
         self.panes.remove(pane);

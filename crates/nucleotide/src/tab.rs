@@ -866,6 +866,7 @@ impl Tab {
     }
 
     fn build_icon(
+        doc_id: TabId,
         file_path: Option<std::path::PathBuf>,
         git_status: Option<VcsStatus>,
         diagnostic_severity: Option<DiagnosticSeverity>,
@@ -873,6 +874,14 @@ impl Tab {
         cx: &mut App,
     ) -> gpui::AnyElement {
         let icon_color = Tab::content_icon_color(tokens);
+        if matches!(doc_id, TabId::Terminal(_)) {
+            return svg()
+                .path("icons/terminal.svg")
+                .size(px(TAB_SLOT_ICON_SIZE))
+                .flex_none()
+                .text_color(icon_color)
+                .into_any_element();
+        }
         let vcs_status = Tab::icon_vcs_status(git_status, diagnostic_severity);
         let icon = if let Some(ref path) = file_path {
             // Document tabs are files; do not probe the filesystem during rendering.
@@ -1269,6 +1278,7 @@ impl Tab {
             .when(!is_loading, |row| {
                 row.when_some(content_icon, |row, content_icon| match content_icon {
                     TabContentIcon::File => row.child(Tab::build_icon(
+                        doc_id,
                         file_path,
                         git_status,
                         diagnostic_severity,

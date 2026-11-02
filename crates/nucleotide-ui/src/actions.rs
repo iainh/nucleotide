@@ -158,6 +158,7 @@ pub mod workspace {
             ShowCodeActions,
             ToggleFileTree,
             ToggleDocumentation,
+            // Retained action name for existing bindings; opens a new dock terminal.
             ToggleTerminal,
             ShowFileFinder,
             NewFile,

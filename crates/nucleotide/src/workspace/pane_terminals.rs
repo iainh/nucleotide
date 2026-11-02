@@ -94,8 +94,8 @@ impl Workspace {
             .unwrap();
         self.pane_host.layout.set_dock_visible(true);
         self.terminal_panel_visible = true;
-        self.last_dock_pane = Some(pane);
         self.mount_terminal(id, pane, cx);
+        self.register_terminal_focus(cx);
     }
 
     pub(super) fn sync_terminal_hosts(&mut self) {
@@ -291,14 +291,12 @@ impl Workspace {
         }
         let _ = force;
         let _ = self.pane_host.layout.close_tab(pane, TabId::Terminal(id));
-        let layout = &self.pane_host.layout;
-        let main = layout.main_panes();
-        if layout.dock().is_some_and(|dock| dock.visible())
-            && layout
-                .panes()
-                .into_iter()
-                .filter(|id| !main.contains(id))
-                .all(|id| layout.pane(id).unwrap().tabs().is_empty())
+        if self.terminal_panel_visible
+            && !self
+                .pane_host
+                .layout
+                .dock()
+                .is_some_and(|dock| dock.visible())
         {
             self.hide_terminal_panel(cx);
         } else {

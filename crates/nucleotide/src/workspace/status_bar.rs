@@ -982,13 +982,13 @@ impl Workspace {
         let terminal_button = Button::icon_only("terminal-toggle", "icons/terminal.svg")
             .variant(ButtonVariant::Ghost)
             .size(ButtonSize::ExtraSmall)
-            .tooltip("Toggle Terminal")
-            .aria_label("Toggle terminal panel")
+            .tooltip("New Terminal")
+            .aria_label("New terminal")
             .focus_handle(self.statusbar_terminal_focus.clone())
             .activate_on_mouse_down()
             .on_click(move |_event, _window, app_cx| {
                 workspace_entity.update(app_cx, |workspace, cx| {
-                    workspace.toggle_terminal_panel(cx);
+                    workspace.tab_bar_action_new_terminal(cx);
                 });
             });
 

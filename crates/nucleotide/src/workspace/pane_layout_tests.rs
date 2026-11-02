@@ -1,4 +1,5 @@
 use super::*;
+use nucleotide_events::terminal::TerminalId;
 
 fn image(id: u64) -> TabId {
     TabId::Image(crate::workspace::ImageId(id))
@@ -431,7 +432,58 @@ fn hidden_dock_retains_identity_tabs_topology_and_remembered_size() {
     layout.close_tab(dock, image(3)).unwrap();
     layout.close_tab(dock, image(2)).unwrap();
     assert_eq!(layout.dock().unwrap().root(), Node::Pane(dock));
+    assert!(!layout.dock().unwrap().visible());
+    assert_eq!(layout.active_pane(), main);
+    assert_eq!(rect(&layout, main), bounds());
     layout.validate().unwrap();
+}
+
+#[test]
+fn moving_the_final_dock_tab_hides_the_dock_and_reclaims_its_space() {
+    let first = TabId::Terminal(TerminalId(1));
+    let last = TabId::Terminal(TerminalId(2));
+    for split in [false, true] {
+        let mut layout = PaneLayout::new(vec![document()]);
+        let main = layout.active_pane();
+        let dock = layout.ensure_dock(170.0).unwrap();
+        layout.open_tab(dock, first, false).unwrap();
+        layout.open_tab(dock, last, false).unwrap();
+        layout.set_dock_visible(true);
+
+        layout.transfer_tab(dock, first, main, 0).unwrap();
+        assert!(layout.dock().unwrap().visible());
+        assert_eq!(layout.pane(dock).unwrap().tabs(), &[last]);
+        near(rect(&layout, main).height, 430.0);
+
+        let target = if split {
+            layout.split_tab(dock, last, main, Edge::Right).unwrap()
+        } else {
+            layout.transfer_tab(dock, last, main, 0).unwrap();
+            main
+        };
+        assert!(!layout.dock().unwrap().visible());
+        assert_eq!(layout.active_pane(), target);
+        assert_eq!(layout.pane(target).unwrap().active_tab(), Some(last));
+        assert!(layout.pane(main).unwrap().tabs().contains(&first));
+        assert!(layout.pane(dock).unwrap().tabs().is_empty());
+        let geometry = layout.layout(bounds(), PaneSize::default()).unwrap();
+        assert_eq!(geometry.len(), if split { 2 } else { 1 });
+        for pane in geometry {
+            near(pane.rect.y, bounds().y);
+            near(pane.rect.height, bounds().height);
+        }
+
+        // Collapsing the visible dock must not discard its remembered size
+        // or prevent a later terminal from reopening the bottom area.
+        assert_eq!(layout.ensure_dock(999.0).unwrap(), dock);
+        near(layout.dock().unwrap().size(), 170.0);
+        layout
+            .open_tab(dock, TabId::Terminal(TerminalId(3)), false)
+            .unwrap();
+        layout.set_dock_visible(true);
+        near(rect(&layout, dock).height, 170.0);
+        layout.validate().unwrap();
+    }
 }
 
 #[test]
