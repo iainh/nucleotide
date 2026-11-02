@@ -750,7 +750,12 @@ impl RenderOnce for Tab {
                     }),
             )
             .when(!disabled, |tab| {
-                tab.on_click({
+                // Keep the current keyboard receiver if this press becomes a
+                // cancelled drag. Activation and focus change only on click/drop.
+                tab.on_mouse_down(MouseButton::Left, |_, window, _| {
+                    window.prevent_default();
+                })
+                .on_click({
                     let on_click = self.on_click.clone();
                     move |event, window, cx| {
                         window.prevent_default();

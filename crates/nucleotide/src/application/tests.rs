@@ -2377,6 +2377,46 @@ fn split_tabs_transfer_through_drag_and_drop(cx: &mut gpui::TestAppContext) {
     cx.simulate_mouse_up(position, MouseButton::Left, Modifiers::none());
     core.read_with(cx, |core, _| assert_eq!(core.editor.tree.focus, left));
 
+    // Cancelling a background tab drag must preserve the original keyboard
+    // receiver, even when the dragged tab belongs to the unfocused pane.
+    for escape in [false, true] {
+        let start = cx.debug_bounds(beta_right).unwrap().center();
+        let outside = point(px(8.0), px(200.0));
+        cx.simulate_mouse_move(start, None, Modifiers::none());
+        cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::none());
+        cx.simulate_mouse_move(
+            start + point(px(20.0), px(0.0)),
+            MouseButton::Left,
+            Modifiers::none(),
+        );
+        cx.update(|window, cx| window.draw(cx).clear());
+        cx.simulate_mouse_move(outside, MouseButton::Left, Modifiers::none());
+        if escape {
+            cx.simulate_keystrokes("escape");
+        }
+        cx.simulate_mouse_up(outside, MouseButton::Left, Modifiers::none());
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear());
+
+        cx.simulate_keystrokes("i");
+        cx.simulate_input("kept");
+        cx.simulate_keystrokes("escape");
+        core.read_with(cx, |core, _| {
+            assert_eq!(core.editor.tree.views().count(), 2);
+            assert_eq!(core.editor.tree.focus, left);
+            assert_eq!(core.editor.tree.get(left).doc, alpha);
+            assert_eq!(
+                core.editor.documents[&alpha].text().to_string(),
+                "keptalpha\n",
+                "keyboard input after cancelling a tab drag (escape={escape})"
+            );
+            assert_eq!(core.editor.documents[&beta].text().to_string(), "beta\n");
+        });
+        assert!(cx.debug_bounds(beta_left).is_none());
+        assert!(cx.debug_bounds(beta_right).is_some());
+        cx.simulate_keystrokes("u");
+    }
+
     // Moving its last tab onto an existing copy closes only the empty pane.
     let start = cx.debug_bounds(alpha_left).unwrap().center();
     let end = cx.debug_bounds(alpha_right).unwrap().center();

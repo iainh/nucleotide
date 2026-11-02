@@ -151,7 +151,10 @@ and size logs alongside targeted screenshots.
 1. Open two different documents and an image.
 2. Start two terminals with identifiable long-lived child processes.
 3. Tile all content kinds. Reorder an inactive tab; activation occurs only on
-   release, not mouse-down or drag start.
+   release, not mouse-down or drag start. Cancel a background-tab drag by
+   dropping over the sidebar and by pressing Escape. The original pane and
+   keyboard receiver must remain active: type immediately, without a body click,
+   and verify only the original document changes.
 4. Drag terminals between panes and dock. Compare child IDs/start markers before
    and after; moving must not restart a process.
 5. Resize nested unequal splits and the native window. Query dimensions inside
