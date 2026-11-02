@@ -5672,6 +5672,25 @@ plain"#,
                 );
             }
         }
+
+        let mut source = String::from("```mermaid\nflowchart TD\n");
+        for index in 0..30 {
+            source.push_str(&format!("N{index}[Step {index}] --> N{}\n", index + 1));
+        }
+        source.push_str("```\n");
+        view.update(cx, |view, cx| {
+            view.source = source.into();
+            view.style = MarkdownStyle::preview_from_tokens(&DesignTokens::dark());
+            view.width = 600.0;
+            cx.notify();
+        });
+        cx.run_until_parked();
+        let bounds = cx
+            .debug_bounds("markdown-code-block-0-diagram")
+            .expect("a 31-node flowchart should render instead of showing the size diagnostic");
+        assert!(bounds.size.height > px(2048.0));
+        assert!(bounds.size.width > px(0.0) && bounds.size.width <= px(600.0));
+        assert!(cx.debug_bounds("markdown-code-block-0-fallback").is_none());
     }
 
     #[gpui::test]
@@ -5704,6 +5723,13 @@ plain"#,
             format!(
                 "```mermaid\nflowchart LR\n%% {}\nA-->B\n```",
                 "x".repeat(65_536)
+            ),
+            format!(
+                "```mermaid\nflowchart TD\n{}\n```",
+                (0..100)
+                    .map(|index| format!("N{index} --> N{}", index + 1))
+                    .collect::<Vec<_>>()
+                    .join("\n")
             ),
         ] {
             view.update(cx, |view, cx| {

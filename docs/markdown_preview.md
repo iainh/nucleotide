@@ -122,8 +122,10 @@ copies in document order.
 
 Preview limits are 64 KiB of Mermaid source, 1,000 model items, 2 MiB of generated
 SVG, a five-second cooperative rendering deadline and two concurrent renders.
-Raster images are limited to 4,194,304 pixels and 4,096 pixels per edge, including
-GPUI's 2× supersampling. Split very large diagrams into smaller blocks.
+Raster images are limited to 16,777,216 pixels and 8,192 pixels per edge, including
+GPUI's 2× supersampling. This allows up to 4,096 logical pixels per edge, subject
+to the total pixel budget, and caps each decoded RGBA image at 64 MiB. Split very
+large diagrams into smaller blocks.
 
 ## Implementation
 
