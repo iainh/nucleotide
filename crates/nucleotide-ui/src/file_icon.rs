@@ -1,7 +1,8 @@
 // ABOUTME: Shared file icon component using SVG assets for consistent UI
 // ABOUTME: Provides type-aware icons for files and folders across the application
 
-use gpui::{Hsla, IntoElement, Styled, Svg, svg};
+use crate::{Icon, icon as svg};
+use gpui::{Hsla, IntoElement, Styled};
 use std::path::Path;
 
 use crate::tokens::STANDARD_ICON_SIZE;
@@ -165,13 +166,13 @@ impl FileIcon {
     }
 
     /// Get the appropriate SVG for this file type.
-    fn get_svg(&self) -> Svg {
+    fn get_svg(&self) -> Icon {
         svg().path(self.icon_path())
     }
 }
 
 impl IntoElement for FileIcon {
-    type Element = Svg;
+    type Element = <Icon as IntoElement>::Element;
 
     fn into_element(self) -> Self::Element {
         let mut svg = self.get_svg().size(gpui::px(self.size)).flex_shrink_0(); // Don't shrink the icon
@@ -180,7 +181,7 @@ impl IntoElement for FileIcon {
             svg = svg.text_color(color);
         }
 
-        svg
+        svg.into_element()
     }
 }
 

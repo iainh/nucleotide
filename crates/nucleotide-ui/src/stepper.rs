@@ -4,10 +4,10 @@
 use gpui::prelude::FluentBuilder;
 use gpui::{
     App, ElementId, FontWeight, InteractiveElement, IntoElement, ParentElement, RenderOnce,
-    SharedString, StatefulInteractiveElement, Styled, Window, div, px, svg,
+    SharedString, StatefulInteractiveElement, Styled, Window, div, px,
 };
 
-use crate::ThemedContext;
+use crate::{ThemedContext, icon as svg};
 
 /// An informational stepper. Selection is zero-based and controlled by its owner.
 #[derive(IntoElement)]

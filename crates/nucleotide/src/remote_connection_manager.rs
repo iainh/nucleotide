@@ -13,7 +13,7 @@ use gpui::{
     Anchor, App, AppContext as _, Context, DismissEvent, Entity, EventEmitter, FocusHandle,
     Focusable, InteractiveElement, IntoElement, KeyBinding, MouseButton, MouseDownEvent,
     ParentElement, Render, ScrollHandle, StatefulInteractiveElement, Styled, Subscription, Window,
-    anchored, deferred, div, point, px, svg,
+    anchored, deferred, div, point, px,
 };
 use nucleotide_core::{EditorStatus, Severity};
 use nucleotide_types::scrollbar::SCROLLBAR_THICKNESS;
@@ -23,6 +23,7 @@ use nucleotide_ui::actions::remote_connection_manager::{
     ExpandSelected as ExpandSelectedRemoteDirectory, SelectNext as SelectNextRemoteItem,
     SelectPrevious as SelectPreviousRemoteItem, ToggleProtocol as ToggleRemoteProtocol,
 };
+use nucleotide_ui::icon as svg;
 use nucleotide_ui::scrollbar::{Scrollbar, ScrollbarState};
 use nucleotide_ui::{
     Button, ButtonSize, ButtonVariant, Checkbox, CheckboxSize, FileIcon, IconPosition, ListItem,

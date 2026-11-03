@@ -5,10 +5,10 @@ use std::path::{Path, PathBuf};
 use gpui::prelude::FluentBuilder;
 use gpui::{
     Context, FontWeight, IntoElement, ParentElement, Pixels, SharedString, Styled, Window, div, px,
-    svg,
 };
 use nucleotide_lsp::{LspStatusKind, LspStatusSummary};
 use nucleotide_ui::ThemedContext as UIThemedContext;
+use nucleotide_ui::icon as svg;
 use nucleotide_ui::notification::{StatusBarNotification, StatusBarNotificationSeverity};
 use nucleotide_ui::{
     Button, ButtonSize, ButtonVariant, IndeterminateProgressIndicator, StatusBar, Tooltipped,

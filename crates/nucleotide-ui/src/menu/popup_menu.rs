@@ -7,11 +7,11 @@ use gpui::{
     EventEmitter, FocusHandle, Focusable, InteractiveElement, IntoElement, MouseButton,
     MouseDownEvent, OwnedMenuItem, ParentElement, Pixels, Point, Render, ScrollHandle,
     SharedString, Stateful, StatefulInteractiveElement, Styled, Subscription, WeakEntity, Window,
-    anchored, div, px, svg,
+    anchored, div, px,
 };
 
-use crate::ThemedContext;
 use crate::actions::menu;
+use crate::{ThemedContext, icon as svg};
 use menu::{Cancel, Confirm, SelectDown, SelectLeft, SelectRight, SelectUp};
 
 use super::POPUP_MENU_CONTEXT;

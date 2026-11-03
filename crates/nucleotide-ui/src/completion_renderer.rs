@@ -4,10 +4,11 @@
 use gpui::prelude::FluentBuilder;
 use gpui::{
     AnyElement, Context, HighlightStyle, Hsla, InteractiveElement, IntoElement, ParentElement,
-    SharedString, StatefulInteractiveElement, Styled, StyledText, Svg, UniformListScrollHandle,
-    div, px, relative,
+    SharedString, StatefulInteractiveElement, Styled, StyledText, UniformListScrollHandle, div, px,
+    relative,
 };
 
+use crate::Icon as Svg;
 use crate::completion_icons::{create_themed_completion_icon, get_completion_icon_color};
 use crate::completion_v2::{CompletionItem, CompletionItemKind, StringMatch};
 
@@ -138,7 +139,7 @@ impl CompletionItemElement {
             )
         } else {
             (
-                gpui::svg().path("icons/file-text.svg"),
+                crate::icon().path("icons/file-text.svg"),
                 crate::styling::ColorTheory::ensure_contrast(
                     icon_background,
                     icon_tokens.generic_color,

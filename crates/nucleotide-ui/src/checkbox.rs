@@ -1,11 +1,12 @@
 // ABOUTME: Token-integrated checkbox component for binary UI settings.
 // ABOUTME: Renders Phosphor-duotone-backed checked and unchecked states with GPUI focus handling.
 
+use crate::icon as svg;
 use crate::tokens::CheckboxTokens;
 use gpui::{
     App, ClickEvent, ElementId, FocusHandle, InteractiveElement, IntoElement, MouseButton,
     ParentElement, Pixels, RenderOnce, SharedString, StatefulInteractiveElement, Styled, Window,
-    div, relative, svg,
+    div, relative,
 };
 use std::sync::Arc;
 

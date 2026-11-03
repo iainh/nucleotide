@@ -22,6 +22,7 @@ pub mod context_menu;
 pub mod debouncer;
 pub mod file_icon;
 pub mod focus;
+pub mod icon;
 pub mod info_box;
 pub mod input;
 pub mod key_hint_view;
@@ -103,6 +104,7 @@ pub use confirm_dialog::{
 pub use context_menu::ContextMenuController;
 pub use file_icon::FileIcon;
 pub use focus::{FOCUS_TRAVERSAL_CONTEXT, FocusCoordinator, FocusRole, FocusTraversal};
+pub use icon::{Icon, icon};
 pub use input::{InputSize, InputVariant};
 pub use layout::{
     AppShell, BottomPanel, EditorPaneGrid, Panel, PanelLayout, PanelVariant, StatusBar, Toolbar,

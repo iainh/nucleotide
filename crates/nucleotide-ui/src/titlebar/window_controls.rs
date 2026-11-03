@@ -3,9 +3,10 @@
 
 use gpui::{
     App, AppContext, Context, Hsla, InteractiveElement, IntoElement, MouseButton, ParentElement,
-    Render, RenderOnce, Rgba, StatefulInteractiveElement, Styled, Window, WindowControlArea, svg,
+    Render, RenderOnce, Rgba, StatefulInteractiveElement, Styled, Window, WindowControlArea,
 };
 
+use crate::icon as svg;
 use crate::styling::{ColorTheory, StyleSize, StyleState, StyleVariant, compute_component_style};
 use crate::titlebar::platform_titlebar::PlatformStyle;
 use crate::tokens::TitleBarTokens;
@@ -26,15 +27,6 @@ impl WindowControlType {
             WindowControlType::Restore => "icons/window-restore.svg",
             WindowControlType::Maximize => "icons/window-maximize.svg",
             WindowControlType::Close => "icons/close.svg",
-        }
-    }
-
-    pub fn windows_caption_icon(&self) -> &'static str {
-        match self {
-            WindowControlType::Minimize => "\u{e921}",
-            WindowControlType::Restore => "\u{e923}",
-            WindowControlType::Maximize => "\u{e922}",
-            WindowControlType::Close => "\u{e8bb}",
         }
     }
 
@@ -390,8 +382,6 @@ impl RenderOnce for WindowsCaptionButton {
             .items_center()
             .w(gpui::px(WINDOWS_CAPTION_BUTTON_WIDTH))
             .h_full()
-            .font_family("Segoe MDL2 Assets")
-            .text_size(gpui::px(WINDOWS_CAPTION_ICON_SIZE))
             .text_color(self.titlebar_tokens.foreground)
             .hover(|button| button.bg(hover_bg).text_color(hover_fg))
             .active(|button| button.bg(active_bg).text_color(active_fg))
@@ -406,7 +396,11 @@ impl RenderOnce for WindowsCaptionButton {
                 cx.stop_propagation();
                 activate_window_control(control_type, window, cx);
             })
-            .child(control_type.windows_caption_icon())
+            .child(
+                crate::icon()
+                    .path(control_type.asset_icon_path())
+                    .size(gpui::px(WINDOWS_CAPTION_ICON_SIZE)),
+            )
     }
 }
 
