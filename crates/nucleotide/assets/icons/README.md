@@ -1,6 +1,36 @@
 # Icons
 
-All UI assets in this directory are official [Phosphor Icons core](https://github.com/phosphor-icons/core)
+## Platform rendering
+
+Use `nucleotide_ui::icon().path("icons/plus.svg")` for application icons,
+or the shared `FileIcon` component for files and folders. The path is a stable
+semantic identifier; it no longer requires SVG rendering on every platform.
+
+- **Windows:** installed Segoe Fluent Icons glyphs, with Segoe MDL2 Assets as
+  the Windows 10 fallback. GPUI renders them through DirectWrite at 80% of the
+  icon slot size, rounded to a logical pixel and centred without changing layout
+  or click targets. Icons inherit the control's colour, including hover and
+  disabled states.
+- **macOS:** runtime SF Symbols through AppKit, rasterized at the display scale
+  with the requested tint. A bounded cache retains only owned image pixels,
+  never native objects. Native traffic lights remain managed by macOS.
+- **Linux:** the bundled artwork below.
+
+The resolver lives in `crates/nucleotide-ui/src/icon/`. Add native equivalents
+in `symbols.rs`, not in individual controls. Unmapped names, unavailable symbols
+or fonts, and transformed artwork use the bundled SVG. Specialised completion
+badges, VCS imagery and the animated spinner deliberately retain their artwork.
+Code-file extensions share the platform's code symbol rather than lettered
+extension badges. These are semantic system symbols, not Explorer/Finder file
+association icons or thumbnails; rendering never queries file associations.
+
+Keep `gpui::svg()` for actual SVG documents and diagrams, not UI icons. Do not
+bundle either platform's icon font or export SF Symbols as replacement assets.
+Native rendering applies in both system and theme UI looks.
+
+## Bundled fallbacks
+
+All assets in this directory are official [Phosphor Icons core](https://github.com/phosphor-icons/core)
 icons. Most use the duotone weight, while compact action icons use the regular
 weight for clarity. They are renamed locally where necessary to preserve the
 stable `icons/*.svg` paths used by existing call sites. See the [Phosphor Icons

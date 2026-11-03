@@ -259,7 +259,7 @@ impl ComponentGallery {
                         ListItemSpacing::Compact
                     })
                     .selected(self.selected_list_index == index)
-                    .start_slot(gpui::svg().path(icon).size(tokens.sizes.text_md))
+                    .start_slot(crate::icon().path(icon).size(tokens.sizes.text_md))
                     .end_slot(
                         div()
                             .text_size(tokens.sizes.text_xs)

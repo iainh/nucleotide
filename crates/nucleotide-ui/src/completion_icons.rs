@@ -3,7 +3,8 @@
 
 use crate::completion_v2::CompletionItemKind;
 use crate::styling::{ColorTheory, ContrastRatios};
-use gpui::{Hsla, Styled, Svg, svg};
+use crate::{Icon as Svg, icon as svg};
+use gpui::{Hsla, Styled};
 
 /// Icon configuration for completion items
 #[derive(Debug, Clone)]

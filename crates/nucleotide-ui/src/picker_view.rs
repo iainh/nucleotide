@@ -2,18 +2,18 @@
 // ABOUTME: Uses proper GPUI uniform_list for scrollable content like Zed
 
 #![allow(clippy::type_complexity)]
-use crate::VcsIcon;
 use crate::actions::picker::{
     ConfirmSelection, DismissPicker, SelectFirst, SelectLast, SelectNext, SelectPrev, TogglePreview,
 };
 use crate::common::{FocusableModal, ModalStyle};
 use crate::{InputSize, InputVariant, StateView, TextInput, TextInputEvent};
+use crate::{VcsIcon, icon as svg};
 use gpui::prelude::FluentBuilder;
 use gpui::{
     App, AppContext as _, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable, Hsla,
     InteractiveElement, IntoElement, KeyBinding, ListAlignment, ListOffset, ListState, MouseButton,
     ParentElement, Pixels, Render, Result, SharedString, Size, StatefulInteractiveElement, Styled,
-    Task, UniformListScrollHandle, div, list, px, svg, uniform_list,
+    Task, UniformListScrollHandle, div, list, px, uniform_list,
 };
 use gpui::{Context, ScrollStrategy, Window};
 use helix_view::DocumentId;

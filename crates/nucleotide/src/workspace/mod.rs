@@ -47,7 +47,7 @@ use gpui::{
     FocusHandle, Focusable, InteractiveElement, IntoElement, KeyDownEvent, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point, Render,
     ScrollHandle, SharedString, Size, StatefulInteractiveElement, Styled, Subscription, TextStyle,
-    Window, WindowAppearance, div, point, px, relative, svg,
+    Window, WindowAppearance, div, point, px, relative,
 };
 use gpui::{FontFeatures, FontWeight};
 use helix_core::{Position, Rope, RopeSlice, Selection, pos_at_coords};
@@ -57,6 +57,7 @@ use helix_view::keyboard::{KeyCode, KeyModifiers};
 use helix_view::{DocumentId, ViewId, graphics::Rect as HelixRect};
 use nucleotide_logging::{debug, error, info, instrument, trace, warn};
 use nucleotide_ui::ThemedContext as UIThemedContext;
+use nucleotide_ui::icon as svg;
 
 // ViewManager already imported above via pub use
 use nucleotide_ui::scrollbar::ScrollbarState;

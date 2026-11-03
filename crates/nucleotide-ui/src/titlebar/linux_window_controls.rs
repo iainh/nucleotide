@@ -3,9 +3,10 @@
 
 use gpui::{
     App, Hsla, InteractiveElement, IntoElement, MouseButton, ParentElement, RenderOnce,
-    StatefulInteractiveElement, Styled, Window, div, svg,
+    StatefulInteractiveElement, Styled, Window, div,
 };
 
+use crate::icon as svg;
 use crate::styling::ColorTheory;
 use crate::titlebar::linux_platform_detector::{
     DesktopEnvironment, LinuxPlatformInfo, WindowButtonLayout, get_platform_info,

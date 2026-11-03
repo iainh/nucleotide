@@ -4,10 +4,10 @@
 use gpui::prelude::FluentBuilder;
 use gpui::{
     AnyElement, App, ElementId, FontWeight, InteractiveElement, IntoElement, ParentElement,
-    RenderOnce, SharedString, Styled, div, px, svg,
+    RenderOnce, SharedString, Styled, div, px,
 };
 
-use crate::{IndeterminateProgressIndicator, Theme};
+use crate::{IndeterminateProgressIndicator, Theme, icon as svg};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum StateViewTone {

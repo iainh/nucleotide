@@ -1,7 +1,7 @@
 // ABOUTME: File-tree navigation icons that are not file-type specific
 // ABOUTME: File and folder imagery is owned by nucleotide-ui FileIcon
 
-use gpui::{Svg, svg};
+use nucleotide_ui::{Icon as Svg, icon as svg};
 
 /// Create a chevron icon
 pub fn chevron_icon(direction: &str) -> Svg {

@@ -7,17 +7,17 @@ use gpui::prelude::FluentBuilder;
 use gpui::{
     App, AppContext, ClickEvent, Context, CursorStyle, Div, ElementId, InteractiveElement,
     IntoElement, MouseButton, MouseDownEvent, ParentElement, Render, RenderOnce, SharedString,
-    Stateful, StatefulInteractiveElement, Styled, Window, div, px, svg,
+    Stateful, StatefulInteractiveElement, Styled, Window, div, px,
 };
 use helix_core::diagnostic::Severity as DiagnosticSeverity;
 use helix_view::DocumentId;
 use nucleotide_types::VcsStatus;
-use nucleotide_ui::ThemedContext;
 use nucleotide_ui::{
     Component, ComponentFactory, ComponentState, IndeterminateProgressIndicator, Interactive,
     StyleVariant, Styled as UIStyled, Tooltipped, VcsIcon, click_event_from_mouse_down,
     compute_component_state,
 };
+use nucleotide_ui::{ThemedContext, icon as svg};
 use std::cmp::Ordering;
 use std::sync::Arc;
 

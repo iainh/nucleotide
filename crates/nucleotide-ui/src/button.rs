@@ -1,6 +1,7 @@
 // ABOUTME: Button component following Zed's design patterns
 // ABOUTME: Provides consistent button styling and behavior
 
+use crate::icon as svg;
 use crate::{
     ComponentFactory, Composable, Interactive, Slotted, StyleSize, StyleState, StyleVariant,
     Styled as UIStyled, ThemedContext, Tooltipped,
@@ -13,7 +14,7 @@ use gpui::{
     App, AppContext, Background, ClickEvent, Context, ElementId, FocusHandle, FontWeight, Hsla,
     InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels, Render, RenderOnce,
     SharedString, StatefulInteractiveElement, Styled, Window, div, linear_color_stop,
-    linear_gradient, relative, svg,
+    linear_gradient, relative,
 };
 use std::sync::Arc;
 use std::time::Duration;

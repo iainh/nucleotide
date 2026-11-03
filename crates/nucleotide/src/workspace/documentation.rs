@@ -5,13 +5,14 @@ use std::collections::HashSet;
 use gpui::prelude::FluentBuilder;
 use gpui::{
     App, Context, Entity, FontWeight, InteractiveElement, IntoElement, MouseButton, ParentElement,
-    SharedString, StatefulInteractiveElement, Styled, div, px, svg,
+    SharedString, StatefulInteractiveElement, Styled, div, px,
 };
 use helix_core::syntax::config::LanguageServerFeature;
 use helix_lsp::lsp;
 use nucleotide_logging::{debug, warn};
 use nucleotide_types::scrollbar::SCROLLBAR_THICKNESS;
 use nucleotide_ui::ThemedContext as UIThemedContext;
+use nucleotide_ui::icon as svg;
 use nucleotide_ui::scrollbar::Scrollbar;
 use nucleotide_ui::{
     Button, ButtonSize, ButtonVariant, MarkdownStyle, StateView, Toolbar, Tooltipped,

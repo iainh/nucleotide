@@ -3,12 +3,12 @@
 
 use crate::actions::prompt::{AcceptCompletion, Cancel, Confirm, NextCompletion, PrevCompletion};
 use crate::common::ModalStyle;
-use crate::{InputSize, InputVariant, TextInput, TextInputEvent};
+use crate::{InputSize, InputVariant, TextInput, TextInputEvent, icon as svg};
 use gpui::prelude::FluentBuilder;
 use gpui::{
     App, AppContext as _, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable,
     Hsla, InteractiveElement, IntoElement, KeyBinding, ParentElement, Render, SharedString, Styled,
-    Task, Window, div, px, svg,
+    Task, Window, div, px,
 };
 
 pub(crate) const PROMPT_CONTEXT: &str = "PromptView";
