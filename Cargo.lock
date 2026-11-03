@@ -5596,6 +5596,7 @@ name = "nucleotide-appearance"
 version = "0.15.0"
 dependencies = [
  "gpui",
+ "objc2-app-kit 0.3.2",
  "raw-window-handle",
  "windows-sys 0.61.2",
 ]

@@ -18,7 +18,7 @@ use nucleotide_ui::{
     markdown_extended,
 };
 
-use super::{Workspace, file_tree_tokens_for_gui_config};
+use super::Workspace;
 use crate::Core;
 use crate::types::HoverDocEntry;
 
@@ -173,8 +173,7 @@ fn hover_contents_to_markdown(contents: lsp::HoverContents) -> String {
 impl Workspace {
     pub(super) fn render_documentation_sidebar(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let tokens = &cx.theme().tokens;
-        let gui_config = &self.core.read(cx).config.gui;
-        let file_tree_tokens = file_tree_tokens_for_gui_config(tokens, gui_config);
+        let file_tree_tokens = tokens.file_tree_tokens();
         let mut markdown_style = MarkdownStyle::from_tokens(tokens);
         markdown_style.body_font_size = tokens.sizes.text_base;
 

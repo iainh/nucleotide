@@ -29,8 +29,8 @@ pub use linux_titlebar::LinuxTitlebar;
 pub use linux_window_controls::LinuxWindowControls;
 
 use gpui::{
-    AnyView, AppContext, Context, Entity, Hsla, IntoElement, ParentElement, Pixels, Render, Styled,
-    Window, div, px,
+    AnyView, AppContext, Context, Entity, IntoElement, ParentElement, Render, Styled, Window, div,
+    px,
 };
 #[cfg(target_os = "windows")]
 use gpui::{InteractiveElement, WindowControlArea};
@@ -67,7 +67,6 @@ fn windows_titlebar_content_width(viewport_width: f32) -> f32 {
 pub struct TitleBar {
     platform_titlebar: Entity<PlatformTitleBar>,
     filename: String,
-    leading_sidebar_background: Option<platform_titlebar::TitleBarLeadingSidebarBackground>,
     trailing_view: Option<AnyView>,
     #[cfg(not(target_os = "macos"))]
     application_menu: Option<Entity<application_menu::ApplicationMenu>>,
@@ -93,7 +92,6 @@ impl TitleBar {
         Self {
             platform_titlebar,
             filename: "Nucleotide".to_string(),
-            leading_sidebar_background: None,
             trailing_view: None,
             #[cfg(not(target_os = "macos"))]
             application_menu,
@@ -105,34 +103,6 @@ impl TitleBar {
             return false;
         }
         self.filename = filename;
-        true
-    }
-
-    pub fn set_leading_sidebar_background(
-        &mut self,
-        width: Pixels,
-        background: Hsla,
-        separator: Hsla,
-    ) -> bool {
-        let next = Some(platform_titlebar::TitleBarLeadingSidebarBackground {
-            width,
-            background,
-            separator,
-        });
-        if self.leading_sidebar_background == next {
-            return false;
-        }
-
-        self.leading_sidebar_background = next;
-        true
-    }
-
-    pub fn clear_leading_sidebar_background(&mut self) -> bool {
-        if self.leading_sidebar_background.is_none() {
-            return false;
-        }
-
-        self.leading_sidebar_background = None;
         true
     }
 
@@ -162,10 +132,8 @@ impl Render for TitleBar {
         let _ = window;
 
         // Update platform titlebar with content
-        let leading_sidebar_background = self.leading_sidebar_background;
         self.platform_titlebar.update(cx, |titlebar, _cx| {
             titlebar.set_title(self.filename.clone());
-            titlebar.set_leading_sidebar_background(leading_sidebar_background);
             #[cfg(any(target_os = "linux", target_os = "windows"))]
             titlebar.set_show_title(false);
         });

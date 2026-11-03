@@ -15,10 +15,8 @@ use nucleotide_ui::{
 };
 use nucleotide_vcs::VcsServiceHandle;
 
+use super::Workspace;
 use super::image_viewer::image_zoom_percent;
-use super::{
-    Workspace, macos_system_sidebar_enabled, should_extend_translucent_sidebar_into_status_bar,
-};
 
 const STATUSBAR_NOTIFICATION_MESSAGE_MAX_CHARS: usize = 64;
 
@@ -62,7 +60,6 @@ impl StatusBarDensity {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct StatusBarGeometry {
-    pub(super) sidebar_width: Pixels,
     pub(super) density: StatusBarDensity,
     pub(super) mode_width: Pixels,
     pub(super) position_width: Pixels,
@@ -71,18 +68,10 @@ pub(super) struct StatusBarGeometry {
 }
 
 impl StatusBarGeometry {
-    pub(super) fn new(
-        viewport_width: f32,
-        show_file_tree: bool,
-        file_tree_width: f32,
-        sizes: &nucleotide_ui::tokens::SizeTokens,
-    ) -> Self {
-        let sidebar_width = if show_file_tree { file_tree_width } else { 0.0 };
-        let available_width =
-            (viewport_width - sidebar_width - f32::from(sizes.statusbar_utility_width)).max(0.0);
+    pub(super) fn new(viewport_width: f32, sizes: &nucleotide_ui::tokens::SizeTokens) -> Self {
+        let available_width = (viewport_width - f32::from(sizes.statusbar_utility_width)).max(0.0);
         let density = StatusBarDensity::for_available_width(available_width);
         Self {
-            sidebar_width: px(sidebar_width),
             density,
             mode_width: sizes.statusbar_mode_width,
             position_width: sizes.statusbar_position_width,
@@ -928,47 +917,24 @@ impl Workspace {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let (status_bar_tokens, translucent_file_tree_tokens, sizes) = {
+        let (status_bar_tokens, sizes) = {
             let ui_theme = cx.global::<nucleotide_ui::Theme>();
-            (
-                ui_theme.tokens.status_bar_tokens(),
-                ui_theme.tokens.file_tree_tokens().translucent_sidebar(),
-                ui_theme.tokens.sizes,
-            )
+            (ui_theme.tokens.status_bar_tokens(), ui_theme.tokens.sizes)
         };
         let viewport_width = f32::from(window.viewport_size().width);
         let (shell_margin, _) = self.content_island_insets(cx);
         let quiet_shell = shell_margin > px(0.0);
-        let native_sidebar_enabled = macos_system_sidebar_enabled(&self.core.read(cx).config.gui);
-        let geometry = StatusBarGeometry::new(
-            viewport_width - f32::from(shell_margin * 2.0),
-            self.show_file_tree && native_sidebar_enabled,
-            self.file_tree_width,
-            &sizes,
-        );
+        let geometry =
+            StatusBarGeometry::new(viewport_width - f32::from(shell_margin * 2.0), &sizes);
         let model = self.statusbar_model(geometry.density, cx);
         let chrome_metrics =
             nucleotide_ui::DensityMetrics::for_density(nucleotide_ui::ControlDensity::Comfortable);
-        let divider_color = status_bar_tokens.border;
-        let extend_sidebar_into_status_bar = should_extend_translucent_sidebar_into_status_bar(
-            self.show_file_tree,
-            self.file_tree_width,
-            native_sidebar_enabled,
-        );
-        let sidebar_background = if extend_sidebar_into_status_bar {
-            translucent_file_tree_tokens.background
-        } else {
-            status_bar_tokens.background_active
-        };
-
-        let leading = div().size_full().bg(sidebar_background);
-
-        let content = div()
-            .size_full()
-            .when(extend_sidebar_into_status_bar, |content| {
-                content.border_t_1().border_color(divider_color)
-            })
-            .child(self.statusbar_main_content(&model, geometry, &status_bar_tokens, cx));
+        let content = div().size_full().child(self.statusbar_main_content(
+            &model,
+            geometry,
+            &status_bar_tokens,
+            cx,
+        ));
 
         let workspace_entity = cx.entity().clone();
         let file_tree_button = Button::icon_only("file-tree-toggle", "icons/folder-tree.svg")
@@ -1005,9 +971,6 @@ impl Workspace {
             .flex()
             .flex_row()
             .items_center()
-            .when(extend_sidebar_into_status_bar, |utilities| {
-                utilities.border_t_1().border_color(divider_color)
-            })
             .child(
                 div()
                     .w(chrome_metrics.row_height)
@@ -1028,9 +991,8 @@ impl Workspace {
             );
 
         StatusBar::new("workspace-status-bar")
-            .top_border(!quiet_shell && !extend_sidebar_into_status_bar)
+            .top_border(!quiet_shell)
             .when(quiet_shell, |bar| bar.px(shell_margin))
-            .leading(geometry.sidebar_width, leading)
             .content(content)
             .trailing(utilities)
     }

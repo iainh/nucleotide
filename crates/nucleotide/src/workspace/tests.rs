@@ -715,22 +715,12 @@ fn lsp_restart_plan_uses_project_root_and_counts_only_running_planned_servers() 
 }
 
 #[test]
-fn statusbar_mode_offset_tracks_editor_edge() {
-    let sizes = nucleotide_ui::tokens::DesignTokens::light().sizes;
-    let open = StatusBarGeometry::new(1_200.0, true, 280.0, &sizes);
-    let closed = StatusBarGeometry::new(1_200.0, false, 280.0, &sizes);
-
-    assert_eq!(open.sidebar_width, px(280.0));
-    assert_eq!(closed.sidebar_width, px(0.0));
-}
-
-#[test]
 fn statusbar_lsp_width_is_stable_within_each_breakpoint() {
     let sizes = nucleotide_ui::tokens::DesignTokens::light().sizes;
-    let wide_idle = StatusBarGeometry::new(1_200.0, true, 240.0, &sizes);
-    let wide_working = StatusBarGeometry::new(1_500.0, false, 0.0, &sizes);
-    let medium = StatusBarGeometry::new(900.0, true, 320.0, &sizes);
-    let compact = StatusBarGeometry::new(700.0, true, 300.0, &sizes);
+    let wide_idle = StatusBarGeometry::new(1_200.0, &sizes);
+    let wide_working = StatusBarGeometry::new(1_500.0, &sizes);
+    let medium = StatusBarGeometry::new(580.0, &sizes);
+    let compact = StatusBarGeometry::new(400.0, &sizes);
 
     assert_eq!(wide_idle.density, StatusBarDensity::Wide);
     assert_eq!(medium.density, StatusBarDensity::Medium);
@@ -761,52 +751,6 @@ fn statusbar_breakpoints_follow_research_priority() {
         StatusBarDensity::for_available_width(399.0),
         StatusBarDensity::Compact
     );
-}
-
-#[test]
-fn statusbar_density_accounts_for_resized_sidebar() {
-    let sizes = nucleotide_ui::tokens::DesignTokens::light().sizes;
-
-    let narrow_editor = StatusBarGeometry::new(1_200.0, true, 1_000.0, &sizes);
-    let minimum_window = StatusBarGeometry::new(400.0, true, 240.0, &sizes);
-
-    assert_eq!(narrow_editor.density, StatusBarDensity::Compact);
-    assert_eq!(minimum_window.density, StatusBarDensity::Compact);
-    assert_eq!(narrow_editor.lsp_width, sizes.statusbar_lsp_width_compact);
-}
-
-#[test]
-fn app_titlebar_remains_visible_with_translucent_sidebar() {
-    assert!(should_render_app_titlebar(true, false, 240.0, true));
-    assert!(should_render_app_titlebar(true, true, 240.0, false));
-    assert!(should_render_app_titlebar(true, true, 0.0, true));
-    assert!(should_render_app_titlebar(true, true, 240.0, true));
-    assert!(!should_render_app_titlebar(false, true, 240.0, true));
-}
-
-#[test]
-fn file_tree_content_inset_clears_macos_traffic_lights() {
-    assert_eq!(f32::from(file_tree_content_top_inset(false)), 0.0);
-    assert_eq!(
-        f32::from(file_tree_content_top_inset(true)),
-        MACOS_TRAFFIC_LIGHT_TREE_TOP_INSET_PX
-    );
-}
-
-#[test]
-fn translucent_sidebar_extends_into_status_bar_only_when_visible() {
-    assert!(should_extend_translucent_sidebar_into_status_bar(
-        true, 240.0, true
-    ));
-    assert!(!should_extend_translucent_sidebar_into_status_bar(
-        false, 240.0, true
-    ));
-    assert!(!should_extend_translucent_sidebar_into_status_bar(
-        true, 0.0, true
-    ));
-    assert!(!should_extend_translucent_sidebar_into_status_bar(
-        true, 240.0, false
-    ));
 }
 
 #[test]
@@ -1878,10 +1822,7 @@ fn file_tree_config_from_gui_uses_configured_file_tree_options() {
         crate::file_tree::FileTreeDisplayDensity::Relaxed
     );
     assert!(!file_tree_config.flatten_empty_directories);
-    assert_eq!(
-        file_tree_config.translucent_background,
-        cfg!(target_os = "macos")
-    );
+    assert!(!file_tree_config.translucent_background);
 }
 
 #[test]
