@@ -119,6 +119,7 @@ struct TabEndButtonProps {
     doc_id: TabId,
     is_pinned: bool,
     disabled: bool,
+    size: gpui::Pixels,
     text_color: gpui::Hsla,
     tab_hover_group: SharedString,
     close_button_visibility: TabCloseButtonVisibility,
@@ -133,6 +134,15 @@ const ACTIVE_TAB_HIGHLIGHT_HEIGHT: f32 = 2.0;
 
 pub(crate) fn tab_container_height(tokens: nucleotide_ui::tokens::DesignTokens) -> gpui::Pixels {
     tokens.sizes.button_height_md
+}
+
+pub(crate) fn fluent_tabs_enabled(cx: &App) -> bool {
+    cfg!(target_os = "windows")
+        && cx
+            .try_global::<crate::ThemeManager>()
+            .is_some_and(|manager| {
+                manager.ui_chrome_style() == nucleotide_appearance::UiChromeStyle::System
+            })
 }
 
 /// Tab variant for different tab states
@@ -636,6 +646,7 @@ impl RenderOnce for Tab {
 
         // Use TabBarTokens for consistent hybrid color theming
         let tab_tokens = tokens.tab_bar_tokens();
+        let fluent_tabs = fluent_tabs_enabled(cx);
         let inactive_bg = Tab::inactive_background_color(tab_tokens);
         let inactive_hover_bg = Tab::inactive_hover_background_color(tab_tokens);
         let (bg_color, text_color, hover_bg) = match component_state {
@@ -660,6 +671,11 @@ impl RenderOnce for Tab {
         };
         let min_width = px(TAB_MIN_WIDTH);
         let max_width = px(TAB_MAX_WIDTH);
+        let height = if fluent_tabs {
+            height - tokens.sizes.space_1
+        } else {
+            height
+        };
         let content_height = height - px(2.0);
 
         // Build the tab container using design tokens and delegate inner content
@@ -676,7 +692,16 @@ impl RenderOnce for Tab {
         let is_preview = self.is_preview;
         let is_loading = self.is_loading;
         let deemphasized = self.deemphasized;
-        let close_button_visibility = self.close_button_visibility;
+        // WinUI's OnPointerOver mode keeps the selected tab's close affordance
+        // visible. An explicit Hidden preference still wins.
+        let close_button_visibility = if fluent_tabs
+            && is_active
+            && self.close_button_visibility == TabCloseButtonVisibility::Hover
+        {
+            TabCloseButtonVisibility::Always
+        } else {
+            self.close_button_visibility
+        };
         let close_position = self.close_position;
         let show_file_icons = self.show_file_icons;
         let disabled = self.disabled;
@@ -726,29 +751,55 @@ impl RenderOnce for Tab {
             .max_w(max_width)
             .bg(bg_color)
             .when(!disabled, |tab| tab.hover(|style| style.bg(hover_bg)))
-            .when(!disabled, |tab| tab.cursor(CursorStyle::PointingHand))
-            .border_color(nucleotide_ui::tokens::with_alpha(
-                tab_tokens.tab_separator,
-                0.5,
-            ))
-            .border_r_1()
-            .child(
-                div()
-                    .absolute()
-                    .bottom_0()
-                    .left_0()
-                    .right_0()
-                    .h(px(if is_active {
-                        ACTIVE_TAB_HIGHLIGHT_HEIGHT
-                    } else {
-                        1.0
-                    }))
-                    .bg(if is_active {
-                        tokens.chrome.border_focus
-                    } else {
-                        tab_tokens.tab_separator
-                    }),
-            )
+            .when(!disabled && !fluent_tabs, |tab| {
+                tab.cursor(CursorStyle::PointingHand)
+            })
+            .when(fluent_tabs, |tab| {
+                tab.mt(tokens.sizes.space_1)
+                    .rounded_tl(tokens.sizes.radius_md)
+                    .rounded_tr(tokens.sizes.radius_md)
+                    .when(is_active, |tab| {
+                        tab.border_t_1()
+                            .border_l_1()
+                            .border_r_1()
+                            .border_color(tokens.chrome.border_default)
+                    })
+                    .when(!is_active, |tab| {
+                        tab.child(
+                            div()
+                                .absolute()
+                                .right_0()
+                                .top(tokens.sizes.space_3)
+                                .bottom(tokens.sizes.space_3)
+                                .w(px(1.0))
+                                .bg(tokens.chrome.border_muted),
+                        )
+                    })
+            })
+            .when(!fluent_tabs, |tab| {
+                tab.border_color(nucleotide_ui::tokens::with_alpha(
+                    tab_tokens.tab_separator,
+                    0.5,
+                ))
+                .border_r_1()
+                .child(
+                    div()
+                        .absolute()
+                        .bottom_0()
+                        .left_0()
+                        .right_0()
+                        .h(px(if is_active {
+                            ACTIVE_TAB_HIGHLIGHT_HEIGHT
+                        } else {
+                            1.0
+                        }))
+                        .bg(if is_active {
+                            tokens.chrome.border_focus
+                        } else {
+                            tab_tokens.tab_separator
+                        }),
+                )
+            })
             .when(!disabled, |tab| {
                 // Keep the current keyboard receiver if this press becomes a
                 // cancelled drag. Activation and focus change only on click/drop.
@@ -1095,7 +1146,7 @@ impl Tab {
             let tooltip = SharedString::from(Self::end_button_tooltip(true));
             let button = div()
                 .id(format!("tab-unpin-{}", props.doc_id))
-                .size(px(END_TAB_SLOT_SIZE))
+                .size(props.size)
                 .flex()
                 .items_center()
                 .justify_center()
@@ -1143,16 +1194,13 @@ impl Tab {
             .into_any_element()
         } else {
             if props.close_button_visibility == TabCloseButtonVisibility::Hidden {
-                return div()
-                    .size(px(END_TAB_SLOT_SIZE))
-                    .flex_none()
-                    .into_any_element();
+                return div().size(props.size).flex_none().into_any_element();
             }
 
             let tooltip = SharedString::from(Self::end_button_tooltip(false));
             div()
                 .id(format!("tab-close-{}", props.doc_id))
-                .size(px(END_TAB_SLOT_SIZE))
+                .size(props.size)
                 .flex()
                 .items_center()
                 .justify_center()
@@ -1190,7 +1238,7 @@ impl Tab {
         };
 
         div()
-            .size(px(END_TAB_SLOT_SIZE))
+            .size(props.size)
             .flex_none()
             .flex()
             .items_center()
@@ -1244,6 +1292,11 @@ impl Tab {
                 doc_id,
                 is_pinned,
                 disabled,
+                size: if fluent_tabs_enabled(cx) {
+                    tokens.sizes.space_7
+                } else {
+                    px(END_TAB_SLOT_SIZE)
+                },
                 text_color,
                 tab_hover_group,
                 close_button_visibility,

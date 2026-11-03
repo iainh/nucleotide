@@ -100,6 +100,8 @@ appearance_follows_theme = true
 # System look keeps the native palette, accent and materials, but follows the
 # active editor theme's light/dark appearance, including runtime theme changes.
 # On Windows, "system" uses a Fluent palette and the Mica window backdrop.
+# Document tabs use rounded Fluent styling with the selected tab joining the
+# editor surface, neutral hover states and the configured UI font.
 # On macOS, "system" uses a native palette and window vibrancy.
 # The file tree and editor sit in compact rounded islands, with native material
 # in the surrounding margins and resize gutter. Island content stays opaque.
@@ -190,6 +192,7 @@ show_diagnostics = "off"
 
 # Show close buttons on unpinned tabs.
 # Options: "always", "hover", "hidden". Default: "always".
+# Windows system look also shows the selected tab's close button in "hover" mode.
 show_close_button = "always"
 
 # Position the close or pin button on each tab.

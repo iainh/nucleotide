@@ -1929,6 +1929,73 @@ fn native_islands_keep_editor_bounds_in_sync_when_resized_or_sidebar_hidden(
     }
 }
 
+#[cfg(target_os = "windows")]
+#[gpui::test]
+fn fluent_selected_tab_close_target_respects_hover_and_hidden_preferences(
+    cx: &mut gpui::TestAppContext,
+) {
+    use crate::config::TabCloseButtonVisibility;
+    use gpui::{Modifiers, MouseButton, point, px, size};
+
+    let _runtime = TEST_RUNTIME.enter();
+    let root = tempdir().unwrap();
+    let path = root.path().join("close.txt");
+    fs::write(&path, "close target\n").unwrap();
+    let (core, workspace, cx) = new_test_workspace(cx, &path);
+    cx.update(|_, cx| {
+        cx.global_mut::<crate::ThemeManager>()
+            .set_ui_chrome_style(nucleotide_appearance::UiChromeStyle::System);
+        let theme = cx.global::<crate::ThemeManager>().ui_theme().clone();
+        cx.set_global(theme);
+    });
+    let (slot, doc) = core.update(cx, |core, cx| {
+        core.config.gui.ui.look = crate::config::UiLook::System;
+        let mut config = (**core.helix_config_arc.load()).clone();
+        config.editor.bufferline = helix_view::editor::BufferLine::Always;
+        core.helix_config_arc.store(Arc::new(config));
+        let view = core.editor.tree.get(core.editor.tree.focus);
+        let result = (view.id, view.doc);
+        cx.emit(crate::Update::Redraw);
+        result
+    });
+    let pane = workspace.read_with(cx, |workspace, _| workspace.pane_id_for_slot(slot).unwrap());
+    let selector = Box::leak(format!("pane-tab-{pane:?}-{doc}").into_boxed_str());
+    cx.simulate_resize(size(px(900.0), px(600.0)));
+
+    for visibility in [
+        TabCloseButtonVisibility::Hidden,
+        TabCloseButtonVisibility::Hover,
+    ] {
+        core.update(cx, |core, cx| {
+            core.config.gui.tabs.show_close_button = visibility;
+            cx.emit(crate::Update::Redraw);
+        });
+        // The selected close button must work without first hovering the tab.
+        cx.simulate_mouse_move(
+            point(px(0.0), px(0.0)),
+            MouseButton::Left,
+            Modifiers::none(),
+        );
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.draw(cx).clear();
+        });
+        let bounds = cx.debug_bounds(selector).expect("selected tab rendered");
+        // Inside the 24 px close target, to the left of the old 16 px hit area:
+        // right border 1 + content padding 8 + target width 24 - inset 3.
+        let position = point(bounds.right() - px(30.0), bounds.center().y);
+        cx.simulate_mouse_down(position, MouseButton::Left, Modifiers::none());
+        cx.simulate_mouse_up(position, MouseButton::Left, Modifiers::none());
+        cx.run_until_parked();
+        core.read_with(cx, |core, _| {
+            assert_eq!(
+                core.editor.documents.contains_key(&doc),
+                visibility == TabCloseButtonVisibility::Hidden
+            );
+        });
+    }
+}
+
 #[gpui::test]
 fn external_file_drop_opens_files_only_on_submit(cx: &mut gpui::TestAppContext) {
     use gpui::{ExternalPaths, FileDropEvent};

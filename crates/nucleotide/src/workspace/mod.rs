@@ -11524,7 +11524,41 @@ impl Render for Workspace {
             .unwrap_or_default();
         let dividers = self.render_pane_dividers(&geometry, cx);
         let show_focus_indicator = geometry.len() > 1;
+        let fluent_tabs = crate::tab::fluent_tabs_enabled(cx);
+        let mut tab_strip_backgrounds = Vec::new();
         for pane in geometry {
+            let tab_height = self.pane_tab_bar_height(pane.pane, cx);
+            if fluent_tabs && tab_height > px(0.0) {
+                // Carry each strip through the island's safe content inset.
+                // Only the outer top corners need rounding; split-pane bands
+                // also extend to the island's left/right edges when adjacent.
+                let at_left = pane.rect.x == 0.0;
+                let at_top = pane.rect.y == 0.0;
+                let at_right = (pane.rect.x + pane.rect.width - right_content_w_px).abs() < 1.0;
+                let left_inset = if at_left { island_radius } else { px(0.0) };
+                let top_inset = if at_top { island_radius } else { px(0.0) };
+                let right_inset = if at_right { island_radius } else { px(0.0) };
+                tab_strip_backgrounds.push(
+                    div()
+                        .absolute()
+                        .left(px(pane.rect.x) + island_radius - left_inset)
+                        .top(px(pane.rect.y) + island_radius - top_inset)
+                        .w(px(pane.rect.width) + left_inset + right_inset)
+                        .h(tab_height + top_inset)
+                        .bg(cx
+                            .theme()
+                            .tokens
+                            .tab_bar_tokens()
+                            .container_background
+                            .alpha(1.0))
+                        .when(at_top && at_left, |band| {
+                            band.rounded_tl(island_radius - px(1.0))
+                        })
+                        .when(at_top && at_right, |band| {
+                            band.rounded_tr(island_radius - px(1.0))
+                        }),
+                );
+            }
             if let Some(element) =
                 self.render_document_view_layout(pane, show_focus_indicator, window, cx)
             {
@@ -12477,9 +12511,16 @@ impl Render for Workspace {
                         Panel::new("editor-island")
                             .size_full()
                             .rounded(island_radius)
-                            .padding(island_radius)
+                            .padding(if fluent_tabs { px(0.0) } else { island_radius })
+                            .when(fluent_tabs, |panel| panel.relative())
                             .bg(cx.theme().tokens.editor.background.alpha(1.0))
-                            .child(div().size_full().overflow_hidden().child(right)),
+                            .children(tab_strip_backgrounds)
+                            .child(
+                                div()
+                                    .size_full()
+                                    .when(fluent_tabs, |content| content.p(island_radius))
+                                    .child(div().size_full().overflow_hidden().child(right)),
+                            ),
                     )
                     .into_any_element()
             } else {
