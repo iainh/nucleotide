@@ -424,6 +424,14 @@ impl ThemeManager {
             chrome.statusline_active.a = 0.0;
             chrome.statusline_inactive.a = 0.0;
         }
+        if cfg!(target_os = "windows") && self.ui_chrome_style == UiChromeStyle::System {
+            // Fluent's selected tab joins the editor surface. Inactive tabs
+            // share the neutral strip instead of stacking translucent fills.
+            chrome.bufferline_background = chrome.file_tree_background;
+            chrome.bufferline_active = self.ui_theme.tokens.editor.background;
+            chrome.bufferline_active_foreground = self.ui_theme.tokens.editor.text_primary;
+            chrome.bufferline_inactive.a = 0.0;
+        }
         for background in [
             &mut chrome.window_background,
             &mut chrome.titlebar_background,
@@ -1236,6 +1244,11 @@ mod surface_extraction_tests {
                     assert_eq!(tokens.chrome.window_background.l < 0.5, expected_dark);
                 } else {
                     assert_eq!(tokens.chrome.window_background.a, 0.0);
+                    let tabs = tokens.tab_bar_tokens();
+                    assert_eq!(tabs.tab_active_background, tokens.editor.background);
+                    assert_eq!(tabs.tab_text_active, tokens.editor.text_primary);
+                    assert_eq!(tabs.tab_inactive_background.a, 0.0);
+                    assert_ne!(tabs.container_background, tabs.tab_active_background);
                 }
             }
         }

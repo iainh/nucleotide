@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::config::{TabCloseButtonVisibility, TabClosePosition, TabDiagnosticsVisibility};
-use crate::tab::{DraggedTab, Tab, TabId, TabPosition, tab_container_height};
+use crate::tab::{DraggedTab, Tab, TabId, TabPosition, fluent_tabs_enabled, tab_container_height};
 
 /// Type alias for tab event handlers
 type TabEventHandler = Arc<dyn Fn(TabId, &mut Window, &mut App) + 'static>;
@@ -503,7 +503,17 @@ impl RenderOnce for TabBar {
 
         let theme = cx.theme();
         let tokens = &theme.tokens;
-        let tab_bar_tokens = tokens.tab_bar_tokens();
+        let mut tab_bar_tokens = tokens.tab_bar_tokens();
+        let fluent_tabs = fluent_tabs_enabled(cx);
+        if fluent_tabs {
+            // Attached tabs supply their own outline; do not box the toolbar
+            // or draw a baseline through the selected tab/editor connection.
+            tab_bar_tokens.tab_separator = gpui::transparent_black();
+        }
+        let ui_font = cx
+            .try_global::<crate::types::UiFontConfig>()
+            .filter(|_| fluent_tabs)
+            .map(|font| font.family.clone());
 
         let pinned_count = documents.iter().take_while(|doc| doc.is_pinned).count();
         let pinned_tabs = self.build_tabs(&documents[..pinned_count], &labels[..pinned_count], 0);
@@ -524,6 +534,7 @@ impl RenderOnce for TabBar {
             .id("pane-tab-drop-target")
             .w_full()
             .flex_none()
+            .when_some(ui_font, |bar, family| bar.font_family(family))
             .when_some(pane_drag_drop, |bar, (_, on_drop)| {
                 bar.drag_over::<DraggedTab>(|style, _, _, cx| {
                     style.bg(cx.theme().tokens.chrome.surface_hover)
