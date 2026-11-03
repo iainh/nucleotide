@@ -231,6 +231,11 @@ impl Render for TitleBar {
                 )));
                 let titlebar_tokens = cx.global::<crate::Theme>().tokens.titlebar_tokens();
                 let tokens = cx.global::<crate::Theme>().tokens;
+                let quiet_shell = cx
+                    .try_global::<crate::theme_manager::ThemeManager>()
+                    .is_some_and(|manager| {
+                        manager.ui_chrome_style() == nucleotide_appearance::UiChromeStyle::System
+                    });
 
                 return div()
                     .relative()
@@ -259,6 +264,7 @@ impl Render for TitleBar {
                                     .min_w_0()
                                     .h_full()
                                     .items_center()
+                                    .when(quiet_shell, |title| title.justify_center())
                                     .window_control_area(WindowControlArea::Drag)
                                     .px_2()
                                     .overflow_hidden()
@@ -267,7 +273,14 @@ impl Render for TitleBar {
                                     .font_family(WINDOWS_UI_FONT_FAMILY)
                                     .text_size(tokens.sizes.text_sm)
                                     .text_color(tokens.chrome.text_chrome_secondary)
-                                    .child(self.filename.clone()),
+                                    .child(
+                                        div()
+                                            .min_w_0()
+                                            .overflow_hidden()
+                                            .whitespace_nowrap()
+                                            .text_ellipsis()
+                                            .child(self.filename.clone()),
+                                    ),
                             ),
                     )
                     .when_some(self.trailing_view.clone(), |titlebar, trailing_view| {
@@ -284,15 +297,17 @@ impl Render for TitleBar {
                                 .child(trailing_view),
                         )
                     })
-                    .child(
-                        div()
-                            .absolute()
-                            .left_0()
-                            .right_0()
-                            .bottom_0()
-                            .h(px(1.0))
-                            .bg(titlebar_tokens.border),
-                    )
+                    .when(!quiet_shell, |titlebar| {
+                        titlebar.child(
+                            div()
+                                .absolute()
+                                .left_0()
+                                .right_0()
+                                .bottom_0()
+                                .h(px(1.0))
+                                .bg(titlebar_tokens.border),
+                        )
+                    })
                     .into_any_element();
             }
         }

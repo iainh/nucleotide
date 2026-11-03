@@ -1854,6 +1854,65 @@ fn new_test_workspace_with_runtime<'a>(
     (core, workspace, cx)
 }
 
+#[cfg(target_os = "windows")]
+#[gpui::test]
+fn mica_islands_keep_editor_bounds_in_sync_when_resized_or_sidebar_hidden(
+    cx: &mut gpui::TestAppContext,
+) {
+    use gpui::{point, px, size};
+
+    let _runtime = TEST_RUNTIME.enter();
+    let root = tempdir().unwrap();
+    let path = root.path().join("islands.txt");
+    fs::write(&path, "island viewport\n").unwrap();
+    let (core, workspace, cx) = new_test_workspace(cx, &path);
+    let slot = core.update(cx, |core, cx| {
+        core.config.gui.ui.look = crate::config::UiLook::System;
+        cx.emit(crate::Update::Redraw);
+        core.editor.tree.focus
+    });
+    let pane = workspace.read_with(cx, |workspace, _| workspace.pane_id_for_slot(slot).unwrap());
+    let selector = Box::leak(format!("editor-pane-{pane:?}").into_boxed_str());
+
+    for (width, height, sidebar_width) in [
+        (900.0, 600.0, 240.0),
+        (400.0, 300.0, 184.0),
+        (900.0, 600.0, 0.0),
+    ] {
+        if sidebar_width == 0.0 {
+            cx.dispatch_action(crate::actions::workspace::ToggleFileTree);
+        }
+        cx.simulate_resize(size(px(width), px(height)));
+        cx.run_until_parked();
+        let status_height = cx.update(|window, cx| {
+            window.draw(cx).clear();
+            cx.global::<nucleotide_ui::Theme>()
+                .tokens
+                .sizes
+                .statusbar_height
+        });
+        let bounds = cx.debug_bounds(selector).expect("editor pane rendered");
+        let half_gutter = if sidebar_width > 0.0 { 4.0 } else { 0.0 };
+        // Shell margin 8 + border 1 + safe corner padding 8.
+        assert_eq!(
+            bounds.origin,
+            point(px(sidebar_width + 17.0 + half_gutter), px(17.0))
+        );
+        assert_eq!(
+            bounds.size,
+            size(
+                px(width - sidebar_width - 34.0 - half_gutter),
+                px(height - 34.0) - status_height
+            )
+        );
+        let offset = cx.update(|_, cx| {
+            cx.global::<crate::overlay::WorkspaceLayoutInfo>()
+                .content_offset
+        });
+        assert_eq!(offset, point(px(17.0 + half_gutter), px(17.0)));
+    }
+}
+
 #[gpui::test]
 fn external_file_drop_opens_files_only_on_submit(cx: &mut gpui::TestAppContext) {
     use gpui::{ExternalPaths, FileDropEvent};

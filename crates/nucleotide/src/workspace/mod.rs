@@ -62,7 +62,7 @@ use nucleotide_ui::ThemedContext as UIThemedContext;
 use nucleotide_ui::scrollbar::ScrollbarState;
 use nucleotide_ui::{
     AboutWindow, Button, ButtonSize, ButtonVariant, ConfirmDialog, ConfirmDialogEvent,
-    ConfirmDialogView, ContextMenuController, EditorPaneGrid, ModalLayer, PopupMenu,
+    ConfirmDialogView, ContextMenuController, EditorPaneGrid, ModalLayer, Panel, PopupMenu,
     PopupMenuSurface, Tooltipped, completion_menu_action_for_key,
 };
 
@@ -5090,7 +5090,15 @@ impl Workspace {
             return;
         };
 
-        let filename = titlebar_filename(filename);
+        let filename = if self.content_island_insets(cx).0 > px(0.0) {
+            self.current_project_root
+                .as_deref()
+                .and_then(Path::file_name)
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| titlebar_filename(filename))
+        } else {
+            titlebar_filename(filename)
+        };
         titlebar.update(cx, |titlebar, cx| {
             if titlebar.set_filename(filename) && notify {
                 cx.notify();
@@ -5422,6 +5430,9 @@ impl Workspace {
 
         // Mark theme colors as dirty so they get recomputed on next render
         self.colors_dirty = true;
+        // GPUI reapplies the OS frame appearance on system changes. Restore
+        // this window's theme-specific Mica/frame tint on the next render.
+        self.schedule_window_appearance_update(cx);
 
         // Emit SystemAppearanceChanged event for event-driven handling
         let event_appearance = match system_appearance {
@@ -5484,6 +5495,11 @@ impl Workspace {
 
         let theme_manager = cx.global::<crate::ThemeManager>();
         let is_dark = theme_manager.is_dark_chrome();
+
+        #[cfg(target_os = "windows")]
+        if let Err(error) = nucleotide_appearance::set_windows_window_theme(window, is_dark) {
+            warn!(%error, "Failed to match native window appearance to theme");
+        }
 
         let appearance = config.window_background_appearance(is_dark);
 
@@ -5585,6 +5601,7 @@ impl Workspace {
 
             // Switch theme directly through the core editor (no window needed)
             self.switch_theme_by_name_no_window(&theme_name, cx);
+            self.schedule_window_appearance_update(cx);
         } else {
             nucleotide_logging::debug!(
                 theme_mode = ?config.gui.theme.mode,
@@ -11198,6 +11215,21 @@ impl Workspace {
         }
     }
 
+    /// Shell spacing and the safe rectangular content inset inside rounded islands.
+    fn content_island_insets(&self, cx: &Context<Self>) -> (Pixels, Pixels) {
+        if cfg!(target_os = "windows")
+            && self.core.read(cx).config.ui_chrome_style()
+                == nucleotide_appearance::UiChromeStyle::System
+        {
+            let sizes = &cx.theme().tokens.sizes;
+            // GPUI only clips descendants to rectangles. Padding by the radius
+            // plus the border keeps their opaque backgrounds out of the corners.
+            (sizes.space_3, sizes.radius_lg + px(1.0))
+        } else {
+            (px(0.0), px(0.0))
+        }
+    }
+
     fn visible_tab_bar_height(&self, cx: &Context<Self>) -> Pixels {
         self.pane_tab_bar_height(self.focused_pane_id(), cx)
     }
@@ -11234,6 +11266,7 @@ impl Workspace {
 
         let tab_bar_height = self.visible_tab_bar_height(cx);
         let title_bar_height = self.rendered_titlebar_height(window, cx);
+        let (island_margin, island_inset) = self.content_island_insets(cx);
 
         // Get actual file tree width (user may have resized it)
         let file_tree_width = if self.show_file_tree {
@@ -11251,6 +11284,16 @@ impl Workspace {
             gutter_width,
             tab_bar_height,
             title_bar_height,
+            content_offset: point(
+                island_margin
+                    + island_inset
+                    + if self.show_file_tree {
+                        island_margin * 0.5
+                    } else {
+                        px(0.0)
+                    },
+                island_margin + island_inset,
+            ),
             line_height,
             char_width,
             cursor_position,
@@ -11388,7 +11431,10 @@ impl Render for Workspace {
             self.needs_file_tree_refresh = false;
         }
 
-        self.sync_file_tree_width_for_viewport(f32::from(window.viewport_size().width));
+        let (island_margin, _) = self.content_island_insets(cx);
+        self.sync_file_tree_width_for_viewport(f32::from(
+            window.viewport_size().width - island_margin * 2.0,
+        ));
 
         // Update global workspace layout information for completion positioning
         self.update_workspace_layout_info(window, cx);
@@ -11482,13 +11528,22 @@ impl Render for Workspace {
         // so split panes use the current tree layout in this render pass.
         let ui_theme = cx.global::<nucleotide_ui::Theme>();
         let status_bar_height = ui_theme.tokens.sizes.statusbar_height;
+        let island_radius = ui_theme.tokens.sizes.radius_lg;
+        let (island_margin, island_inset) = self.content_island_insets(cx);
+        let mica_islands = island_margin > px(0.0);
+        let island_gutter_half = if self.show_file_tree {
+            island_margin * 0.5
+        } else {
+            px(0.0)
+        };
         let titlebar_height = self.rendered_titlebar_height(window, cx);
         let tab_bar_height = self.visible_tab_bar_height(cx);
         let viewport_h = window.viewport_size().height;
         let available_h =
             (f32::from(viewport_h) - f32::from(status_bar_height) - f32::from(titlebar_height))
                 .max(0.0);
-        let content_max_h = px(available_h);
+        let content_max_h = px((available_h - f32::from(island_margin * 2.0)).max(0.0));
+        let island_content_h = (content_max_h - island_inset * 2.0).max(px(0.0));
 
         let min_term = 80.0f32;
         let max_term = (available_h - f32::from(tab_bar_height) - 80.0).max(min_term);
@@ -11506,7 +11561,10 @@ impl Render for Workspace {
         } else {
             0.0
         };
-        let right_content_w_px = (viewport_w_px - file_tree_w_px).max(1.0);
+        let right_content_w_px = (viewport_w_px
+            - file_tree_w_px
+            - f32::from(island_margin * 2.0 + island_gutter_half + island_inset * 2.0))
+        .max(1.0);
         self.sync_documentation_sidebar_width_for_viewport(right_content_w_px);
         let doc_sidebar_w_px = if self.doc_sidebar_visible {
             self.doc_sidebar_width
@@ -11515,7 +11573,7 @@ impl Render for Workspace {
         };
         let editor_content_w_px = (right_content_w_px - doc_sidebar_w_px).max(1.0);
 
-        let editor_h = available_h;
+        let editor_h = f32::from(island_content_h);
         // Each pane reserves its own chrome inside its split bounds.
         let editor_content_h_px = editor_h.max(1.0);
 
@@ -12463,7 +12521,7 @@ impl Render for Workspace {
                 let editor_stack = div()
                     .relative()
                     .w_full()
-                    .h(content_max_h)
+                    .h(island_content_h)
                     .min_h(px(0.0))
                     .bg(bg_color)
                     .child(main_content);
@@ -12486,7 +12544,7 @@ impl Render for Workspace {
                     div()
                         .relative()
                         .w_full()
-                        .h(content_max_h)
+                        .h(island_content_h)
                         .min_h(px(0.0))
                         .child(nucleotide_ui::right_sidebar_split(
                             self.doc_sidebar_width,
@@ -12504,8 +12562,25 @@ impl Render for Workspace {
                 }
             };
 
+            let right = if mica_islands {
+                div()
+                    .size_full()
+                    .pl(island_gutter_half)
+                    .child(
+                        Panel::new("editor-island")
+                            .size_full()
+                            .rounded(island_radius)
+                            .padding(island_radius)
+                            .bg(cx.theme().tokens.editor.background.alpha(1.0))
+                            .child(div().size_full().overflow_hidden().child(right)),
+                    )
+                    .into_any_element()
+            } else {
+                right
+            };
+
             if self.show_file_tree {
-                let viewport_w = f32::from(window.viewport_size().width);
+                let viewport_w = f32::from(window.viewport_size().width - island_margin * 2.0);
                 let max_left = Self::max_file_tree_width(viewport_w);
                 let default_width = Self::clamped_file_tree_default_width(viewport_w);
                 let on_change_file_tree_width = {
@@ -12547,8 +12622,9 @@ impl Render for Workspace {
                     .w_full()
                     .h_full()
                     .min_h(px(0.0))
-                    .border_r_1()
-                    .border_color(file_tree_tokens.border);
+                    .when(!mica_islands, |tree| {
+                        tree.border_r_1().border_color(file_tree_tokens.border)
+                    });
                 if let Some(file_tree) = &self.file_tree {
                     file_tree_container = file_tree_container.child(
                         div()
@@ -12626,6 +12702,28 @@ impl Render for Workspace {
                     );
                 }
 
+                let file_tree_container = if mica_islands {
+                    div()
+                        .size_full()
+                        .pr(island_gutter_half)
+                        .child(
+                            Panel::new("file-tree-island")
+                                .size_full()
+                                .rounded(island_radius)
+                                .padding(island_radius)
+                                .bg(file_tree_background.alpha(1.0))
+                                .child(
+                                    div()
+                                        .size_full()
+                                        .overflow_hidden()
+                                        .child(file_tree_container),
+                                ),
+                        )
+                        .into_any_element()
+                } else {
+                    file_tree_container.into_any_element()
+                };
+
                 container = container.child(nucleotide_ui::sidebar_split(
                     self.file_tree_width,
                     FILE_TREE_MIN_WIDTH,
@@ -12683,6 +12781,7 @@ impl Render for Workspace {
                             .flex_1()
                             .w_full()
                             .min_h(px(0.0)) // allow vertical shrink in flex column
+                            .p(island_margin)
                             .child(content_area),
                     )
                     .child(self.render_unified_status_bar(window, cx)), // Unified bottom status bar pinned at bottom

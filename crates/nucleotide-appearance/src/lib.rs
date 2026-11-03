@@ -105,7 +105,7 @@ pub enum UiChromeStyle {
     /// Derive chrome surfaces from the active Helix theme.
     #[default]
     Theme,
-    /// Derive chrome surfaces from the current platform appearance.
+    /// Use the platform palette with light/dark surfaces matching the editor theme.
     System,
 }
 
@@ -345,6 +345,35 @@ pub fn window_background_appearance(
 /// Whether system chrome should use the macOS native sidebar/vibrancy treatment.
 pub fn macos_native_chrome_enabled(ui_chrome_style: UiChromeStyle) -> bool {
     cfg!(target_os = "macos") && ui_chrome_style == UiChromeStyle::System
+}
+
+/// Match this window's native frame and Mica tint to the application theme.
+/// This does not change Windows settings or GPUI's observed OS appearance.
+#[cfg(target_os = "windows")]
+pub fn set_windows_window_theme(window: &gpui::Window, is_dark: bool) -> Result<(), String> {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use windows_sys::Win32::Graphics::Dwm::{DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWindowAttribute};
+
+    let handle = HasWindowHandle::window_handle(window).map_err(|error| error.to_string())?;
+    let RawWindowHandle::Win32(handle) = handle.as_raw() else {
+        return Err("Window does not have a Win32 handle".into());
+    };
+    let dark_mode = i32::from(is_dark);
+    // SAFETY: The HWND is borrowed from the live window; DWM reads a BOOL
+    // whose storage remains valid for the duration of this synchronous call.
+    let result = unsafe {
+        DwmSetWindowAttribute(
+            handle.hwnd.get() as _,
+            DWMWA_USE_IMMERSIVE_DARK_MODE as _,
+            &dark_mode as *const _ as _,
+            std::mem::size_of_val(&dark_mode) as u32,
+        )
+    };
+    if result < 0 {
+        Err(format!("DWM window theme update failed: {result:#x}"))
+    } else {
+        Ok(())
+    }
 }
 
 #[cfg(target_os = "windows")]

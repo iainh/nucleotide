@@ -5596,6 +5596,7 @@ name = "nucleotide-appearance"
 version = "0.15.0"
 dependencies = [
  "gpui",
+ "raw-window-handle",
  "windows-sys 0.61.2",
 ]
 

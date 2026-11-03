@@ -53,14 +53,16 @@ impl ThemeManager {
             system_appearance,
             ui_chrome_style,
         );
-        Self {
+        let mut manager = Self {
             helix_theme,
             ui_theme,
             system_appearance,
             ui_chrome_style,
             ui_font_size: None,
             chrome_opacity: 1.0,
-        }
+        };
+        manager.apply_ui_preferences();
+        manager
     }
 
     /// Update the theme
@@ -414,6 +416,14 @@ impl ThemeManager {
             self.ui_theme.tokens.set_ui_font_size(ui_font_size);
         }
         let chrome = &mut self.ui_theme.tokens.chrome;
+        if cfg!(target_os = "windows") && self.ui_chrome_style == UiChromeStyle::System {
+            // The quiet shell exposes Mica directly, without stacking translucent
+            // titlebar/menu/footer fills over the native window backdrop.
+            chrome.titlebar_background.a = 0.0;
+            chrome.footer_background.a = 0.0;
+            chrome.statusline_active.a = 0.0;
+            chrome.statusline_inactive.a = 0.0;
+        }
         for background in [
             &mut chrome.titlebar_background,
             &mut chrome.footer_background,
@@ -1005,7 +1015,11 @@ impl ThemeManager {
             UiChromeStyle::System => crate::DesignTokens::from_helix_and_native_chrome(
                 theme_colors,
                 background,
-                NativeChromePalette::current(system_appearance),
+                NativeChromePalette::current(if is_dark_theme {
+                    SystemAppearance::Dark
+                } else {
+                    SystemAppearance::Light
+                }),
             ),
         };
 
@@ -1107,7 +1121,10 @@ fn hsla_to_rgb(h: f32, s: f32, l: f32) -> (f32, f32, f32) {
 mod surface_extraction_tests {
     use super::*;
 
+    static THEME_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn with_env_var<T>(key: &str, value: &str, f: impl FnOnce() -> T) -> T {
+        let _guard = THEME_ENV_LOCK.lock().unwrap();
         let prev = std::env::var(key).ok();
         unsafe { std::env::set_var(key, value) };
         let out = f();
@@ -1183,24 +1200,41 @@ mod surface_extraction_tests {
     }
 
     #[test]
-    fn system_chrome_style_follows_system_appearance() {
-        let helix_theme = helix_view::Theme::default();
-        let mut tm = ThemeManager::new_with_chrome_style(helix_theme, UiChromeStyle::System);
+    fn system_chrome_style_follows_theme_even_when_os_appearance_differs() {
+        let _guard = THEME_ENV_LOCK.lock().unwrap();
+        let light: HelixTheme = serde_json::from_value(serde_json::json!({
+            "ui.background": { "bg": "#faf7f1", "fg": "#202020" }
+        }))
+        .unwrap();
+        let dark: HelixTheme = serde_json::from_value(serde_json::json!({
+            "ui.background": { "bg": "#18202a", "fg": "#eeeeee" }
+        }))
+        .unwrap();
+        let mut tm = ThemeManager::new_with_chrome_style(dark.clone(), UiChromeStyle::System);
+        assert!(tm.is_dark_chrome(), "initial dark theme on a light OS");
 
-        tm.set_system_appearance(SystemAppearance::Light);
-        let light_surface = tm.ui_theme().tokens.chrome.surface;
-        assert_eq!(tm.ui_chrome_style(), UiChromeStyle::System);
-        assert!(!tm.is_dark_chrome());
-
-        tm.set_system_appearance(SystemAppearance::Dark);
-        let dark_surface = tm.ui_theme().tokens.chrome.surface;
-
-        assert!(tm.is_dark_chrome());
-        assert!(light_surface.l > dark_surface.l);
+        for (theme, os_appearance, expected_dark) in [
+            (light, SystemAppearance::Dark, false),
+            (dark, SystemAppearance::Light, true),
+        ] {
+            tm.set_theme(theme);
+            tm.set_system_appearance(os_appearance);
+            assert_eq!(tm.ui_chrome_style(), UiChromeStyle::System);
+            assert_eq!(tm.is_dark_chrome(), expected_dark);
+            assert_eq!(tm.is_dark_theme(), expected_dark);
+            if cfg!(target_os = "windows") {
+                let tokens = tm.ui_theme().tokens;
+                assert_eq!(tokens.titlebar_tokens().background.a, 0.0);
+                assert_eq!(tokens.status_bar_tokens().background_active.a, 0.0);
+                assert_eq!(tokens.status_bar_tokens().background_inactive.a, 0.0);
+                assert!(tokens.chrome.file_tree_background.a > 0.0);
+            }
+        }
     }
 
     #[test]
     fn chrome_opacity_survives_theme_changes_without_fading_content() {
+        let _guard = THEME_ENV_LOCK.lock().unwrap();
         let helix_theme = helix_view::Theme::default();
         let mut manager = ThemeManager::new(helix_theme.clone());
         let original = manager.ui_theme().tokens;

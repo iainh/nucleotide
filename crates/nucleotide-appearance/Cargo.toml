@@ -14,4 +14,5 @@ rust-version.workspace = true
 gpui.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Graphics_Gdi"] }
+raw-window-handle = "0.6"
+windows-sys = { version = "0.61", features = ["Win32_Graphics_Gdi", "Win32_Graphics_Dwm"] }
