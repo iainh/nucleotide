@@ -416,8 +416,8 @@ impl ThemeManager {
             self.ui_theme.tokens.set_ui_font_size(ui_font_size);
         }
         let chrome = &mut self.ui_theme.tokens.chrome;
-        if cfg!(target_os = "windows") && self.ui_chrome_style == UiChromeStyle::System {
-            // The quiet shell exposes Mica directly, without stacking translucent
+        if nucleotide_appearance::content_islands_enabled(self.ui_chrome_style) {
+            // The quiet shell exposes native material without stacking translucent
             // titlebar/menu/footer fills over the native window backdrop.
             chrome.titlebar_background.a = 0.0;
             chrome.footer_background.a = 0.0;
@@ -425,6 +425,7 @@ impl ThemeManager {
             chrome.statusline_inactive.a = 0.0;
         }
         for background in [
+            &mut chrome.window_background,
             &mut chrome.titlebar_background,
             &mut chrome.footer_background,
             &mut chrome.file_tree_background,
@@ -1222,12 +1223,20 @@ mod surface_extraction_tests {
             assert_eq!(tm.ui_chrome_style(), UiChromeStyle::System);
             assert_eq!(tm.is_dark_chrome(), expected_dark);
             assert_eq!(tm.is_dark_theme(), expected_dark);
-            if cfg!(target_os = "windows") {
+            if nucleotide_appearance::content_islands_enabled(UiChromeStyle::System) {
                 let tokens = tm.ui_theme().tokens;
                 assert_eq!(tokens.titlebar_tokens().background.a, 0.0);
                 assert_eq!(tokens.status_bar_tokens().background_active.a, 0.0);
                 assert_eq!(tokens.status_bar_tokens().background_inactive.a, 0.0);
                 assert!(tokens.chrome.file_tree_background.a > 0.0);
+                if cfg!(target_os = "macos") {
+                    // GPUI strips AppKit's material tint. Apply it once across
+                    // the whole shell so chrome stays legible over wallpaper.
+                    assert!(tokens.chrome.window_background.a > 0.8);
+                    assert_eq!(tokens.chrome.window_background.l < 0.5, expected_dark);
+                } else {
+                    assert_eq!(tokens.chrome.window_background.a, 0.0);
+                }
             }
         }
     }

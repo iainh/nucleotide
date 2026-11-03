@@ -342,15 +342,16 @@ pub fn window_background_appearance(
     }
 }
 
-/// Whether system chrome should use the macOS native sidebar/vibrancy treatment.
-pub fn macos_native_chrome_enabled(ui_chrome_style: UiChromeStyle) -> bool {
-    cfg!(target_os = "macos") && ui_chrome_style == UiChromeStyle::System
+/// Whether the native window material surrounds rounded content islands.
+pub fn content_islands_enabled(ui_chrome_style: UiChromeStyle) -> bool {
+    cfg!(any(target_os = "windows", target_os = "macos"))
+        && ui_chrome_style == UiChromeStyle::System
 }
 
 /// Match this window's native frame and Mica tint to the application theme.
 /// This does not change Windows settings or GPUI's observed OS appearance.
 #[cfg(target_os = "windows")]
-pub fn set_windows_window_theme(window: &gpui::Window, is_dark: bool) -> Result<(), String> {
+pub fn set_native_window_theme(window: &gpui::Window, is_dark: bool) -> Result<(), String> {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     use windows_sys::Win32::Graphics::Dwm::{DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWindowAttribute};
 
@@ -374,6 +375,58 @@ pub fn set_windows_window_theme(window: &gpui::Window, is_dark: bool) -> Result<
     } else {
         Ok(())
     }
+}
+
+/// Match this window's native controls and vibrancy to the application theme.
+/// Call on the UI thread; this does not change the app-wide or OS appearance.
+#[cfg(target_os = "macos")]
+pub fn set_native_window_theme(window: &gpui::Window, is_dark: bool) -> Result<(), String> {
+    use objc2_app_kit::{
+        NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua,
+        NSView, NSVisualEffectView, NSWindowButton,
+    };
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let handle = HasWindowHandle::window_handle(window).map_err(|error| error.to_string())?;
+    let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
+        return Err("Window does not have an AppKit handle".into());
+    };
+    // SAFETY: GPUI lends the live NSView on its UI thread. Its window and
+    // appearance are retained by AppKit throughout this synchronous update.
+    let native_view = unsafe { handle.ns_view.cast::<NSView>().as_ref() };
+    let native_window = native_view
+        .window()
+        .ok_or("AppKit view is not attached to a window")?;
+    let name = unsafe {
+        if is_dark {
+            NSAppearanceNameDarkAqua
+        } else {
+            NSAppearanceNameAqua
+        }
+    };
+    let appearance = NSAppearance::appearanceNamed(name).ok_or("AppKit appearance unavailable")?;
+    // Leave the NSWindow and GPUI view inheriting the OS appearance so GPUI's
+    // existing observer still receives actual system light/dark changes.
+    // The material and raw-handle GPUIView are siblings in the content view.
+    for view in native_window
+        .contentView()
+        .ok_or("AppKit window has no content view")?
+        .subviews()
+    {
+        if let Some(effect) = view.downcast_ref::<NSVisualEffectView>() {
+            effect.setAppearance(Some(&appearance));
+        }
+    }
+    for button in [
+        NSWindowButton::CloseButton,
+        NSWindowButton::MiniaturizeButton,
+        NSWindowButton::ZoomButton,
+    ] {
+        if let Some(button) = native_window.standardWindowButton(button) {
+            button.setAppearance(Some(&appearance));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "windows")]
@@ -519,11 +572,11 @@ mod tests {
     }
 
     #[test]
-    fn macos_native_chrome_requires_system_look_on_macos() {
-        assert!(!macos_native_chrome_enabled(UiChromeStyle::Theme));
+    fn content_islands_require_system_look_and_native_material() {
+        assert!(!content_islands_enabled(UiChromeStyle::Theme));
         assert_eq!(
-            macos_native_chrome_enabled(UiChromeStyle::System),
-            cfg!(target_os = "macos")
+            content_islands_enabled(UiChromeStyle::System),
+            cfg!(any(target_os = "windows", target_os = "macos"))
         );
     }
 

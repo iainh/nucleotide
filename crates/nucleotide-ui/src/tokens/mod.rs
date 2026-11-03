@@ -439,6 +439,7 @@ impl ShadowToken {
 #[derive(Debug, Clone, Copy)]
 pub struct ChromeTokens {
     // Computed chrome backgrounds
+    pub window_background: Hsla,
     pub titlebar_background: Hsla,
     pub footer_background: Hsla,
     pub file_tree_background: Hsla,
@@ -851,6 +852,7 @@ impl ChromeTokens {
 
         Self {
             // Computed chrome backgrounds from color theory
+            window_background: base_surface,
             titlebar_background: chrome_colors.titlebar_background,
             footer_background: chrome_colors.footer_background,
             file_tree_background: chrome_colors.file_tree_background,
@@ -1016,6 +1018,7 @@ impl ChromeTokens {
             };
 
         Self {
+            window_background: mica,
             titlebar_background: mica,
             footer_background: mica,
             file_tree_background: dense_text_layer,

@@ -44,7 +44,7 @@ use std::sync::Arc;
 use gpui::prelude::FluentBuilder;
 use gpui::{
     Anchor, App, AppContext, BorrowAppContext, Bounds, Context, DismissEvent, Entity, EventEmitter,
-    FocusHandle, Focusable, Hsla, InteractiveElement, IntoElement, KeyDownEvent, MouseButton,
+    FocusHandle, Focusable, InteractiveElement, IntoElement, KeyDownEvent, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point, Render,
     ScrollHandle, SharedString, Size, StatefulInteractiveElement, Styled, Subscription, TextStyle,
     Window, WindowAppearance, div, point, px, relative, svg,
@@ -267,31 +267,6 @@ fn delete_confirmation_message(
             format!("Delete '{name}' permanently?")
         }
     }
-}
-
-fn should_render_app_titlebar(
-    has_titlebar: bool,
-    _show_file_tree: bool,
-    _file_tree_width: f32,
-    _translucent_sidebar_enabled: bool,
-) -> bool {
-    has_titlebar
-}
-
-fn file_tree_content_top_inset(translucent_sidebar_enabled: bool) -> Pixels {
-    if translucent_sidebar_enabled {
-        px(MACOS_TRAFFIC_LIGHT_TREE_TOP_INSET_PX)
-    } else {
-        px(0.0)
-    }
-}
-
-fn should_extend_translucent_sidebar_into_status_bar(
-    show_file_tree: bool,
-    file_tree_width: f32,
-    translucent_sidebar_enabled: bool,
-) -> bool {
-    translucent_sidebar_enabled && show_file_tree && file_tree_width > 0.0
 }
 
 fn native_window_title(filename: Option<&str>) -> String {
@@ -822,30 +797,12 @@ fn context_menu_target_parent_path(clicked: &Path, is_directory: bool) -> PathBu
 const FILE_TREE_MIN_WIDTH: f32 = 96.0;
 const FILE_TREE_DEFAULT_WIDTH: f32 = 240.0;
 const FILE_TREE_MIN_EDITOR_WIDTH: f32 = 200.0;
-const MACOS_TRAFFIC_LIGHT_TREE_TOP_INSET_PX: f32 = 36.0;
 
 fn file_tree_config_from_gui(config: &crate::config::GuiConfig) -> FileTreeConfig {
     FileTreeConfig {
         density: config.file_tree.density,
         flatten_empty_directories: config.file_tree.flatten_empty_directories,
-        translucent_background: macos_system_sidebar_enabled(config),
         ..FileTreeConfig::default()
-    }
-}
-
-fn macos_system_sidebar_enabled(config: &crate::config::GuiConfig) -> bool {
-    nucleotide_appearance::macos_native_chrome_enabled(config.ui.look.to_ui_chrome_style())
-}
-
-fn file_tree_tokens_for_gui_config(
-    tokens: &nucleotide_ui::DesignTokens,
-    config: &crate::config::GuiConfig,
-) -> nucleotide_ui::tokens::FileTreeTokens {
-    let file_tree_tokens = tokens.file_tree_tokens();
-    if macos_system_sidebar_enabled(config) {
-        file_tree_tokens.translucent_sidebar()
-    } else {
-        file_tree_tokens
     }
 }
 
@@ -5106,24 +5063,6 @@ impl Workspace {
         });
     }
 
-    fn update_titlebar_leading_sidebar_background(
-        &mut self,
-        background: Option<(Pixels, Hsla, Hsla)>,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(titlebar) = &self.titlebar else {
-            return;
-        };
-
-        titlebar.update(cx, |titlebar, _cx| {
-            if let Some((width, background, separator)) = background {
-                titlebar.set_leading_sidebar_background(width, background, separator);
-            } else {
-                titlebar.clear_leading_sidebar_background();
-            }
-        });
-    }
-
     fn focused_native_window_metadata(
         &self,
         cx: &Context<Self>,
@@ -5496,11 +5435,6 @@ impl Workspace {
         let theme_manager = cx.global::<crate::ThemeManager>();
         let is_dark = theme_manager.is_dark_chrome();
 
-        #[cfg(target_os = "windows")]
-        if let Err(error) = nucleotide_appearance::set_windows_window_theme(window, is_dark) {
-            warn!(%error, "Failed to match native window appearance to theme");
-        }
-
         let appearance = config.window_background_appearance(is_dark);
 
         let theme_name = self.core.read(cx).editor.theme.name();
@@ -5514,23 +5448,28 @@ impl Workspace {
         );
 
         window.set_background_appearance(appearance);
+        #[cfg(any(target_os = "windows", target_os = "macos"))]
+        if let Err(error) = nucleotide_appearance::set_native_window_theme(window, is_dark) {
+            warn!(%error, "Failed to match native window appearance to theme");
+        }
     }
 
     /// Recompute cached theme-derived colors
     fn recompute_theme_colors(&mut self, cx: &mut Context<Self>) {
         let tokens = cx.theme().tokens;
 
-        let uses_windows_material_backdrop = cfg!(target_os = "windows")
-            && cx
-                .try_global::<crate::ThemeManager>()
-                .map(|theme_manager| {
-                    theme_manager.ui_chrome_style() == nucleotide_appearance::UiChromeStyle::System
-                })
-                .unwrap_or(false);
+        let uses_native_material_backdrop = cx
+            .try_global::<crate::ThemeManager>()
+            .map(|theme_manager| {
+                nucleotide_appearance::content_islands_enabled(theme_manager.ui_chrome_style())
+            })
+            .unwrap_or(false);
 
-        self.cached_bg_color = if uses_windows_material_backdrop
-            || self.core.read(cx).config.gui.window.chrome_opacity < 1.0
-        {
+        self.cached_bg_color = if uses_native_material_backdrop {
+            // Windows Mica needs no fill. macOS GPUI removes AppKit's tint,
+            // so the native palette supplies one continuous translucent shell.
+            tokens.chrome.window_background
+        } else if self.core.read(cx).config.gui.window.chrome_opacity < 1.0 {
             gpui::hsla(0.0, 0.0, 0.0, 0.0)
         } else {
             tokens.editor.background
@@ -11197,18 +11136,8 @@ impl Workspace {
         focused_file_name
     }
 
-    fn renders_app_titlebar(&self, cx: &Context<Self>) -> bool {
-        let gui_config = &self.core.read(cx).config.gui;
-        should_render_app_titlebar(
-            self.titlebar.is_some(),
-            self.show_file_tree,
-            self.file_tree_width,
-            macos_system_sidebar_enabled(gui_config),
-        )
-    }
-
     fn rendered_titlebar_height(&self, window: &Window, cx: &Context<Self>) -> Pixels {
-        if self.renders_app_titlebar(cx) {
+        if self.titlebar.is_some() {
             nucleotide_ui::titlebar::TitleBar::height(window, cx)
         } else {
             px(0.0)
@@ -11217,10 +11146,9 @@ impl Workspace {
 
     /// Shell spacing and the safe rectangular content inset inside rounded islands.
     fn content_island_insets(&self, cx: &Context<Self>) -> (Pixels, Pixels) {
-        if cfg!(target_os = "windows")
-            && self.core.read(cx).config.ui_chrome_style()
-                == nucleotide_appearance::UiChromeStyle::System
-        {
+        if nucleotide_appearance::content_islands_enabled(
+            self.core.read(cx).config.ui_chrome_style(),
+        ) {
             let sizes = &cx.theme().tokens.sizes;
             // GPUI only clips descendants to rectangles. Padding by the radius
             // plus the border keeps their opaque backgrounds out of the corners.
@@ -11455,7 +11383,7 @@ impl Render for Workspace {
 
             // Set up observer for future changes
             cx.observe_window_appearance(window, |workspace: &mut Workspace, window, cx| {
-                // Get the new appearance from the window
+                // Native material/control overrides leave this OS appearance intact.
                 let appearance = window.appearance();
                 nucleotide_logging::info!(
                     new_appearance = ?appearance,
@@ -11501,28 +11429,7 @@ impl Render for Workspace {
             self.recompute_theme_colors(cx);
         }
         let bg_color = self.cached_bg_color;
-        let native_sidebar_enabled = macos_system_sidebar_enabled(&self.core.read(cx).config.gui);
-        let rendered_titlebar = should_render_app_titlebar(
-            self.titlebar.is_some(),
-            self.show_file_tree,
-            self.file_tree_width,
-            native_sidebar_enabled,
-        )
-        .then(|| self.titlebar.clone())
-        .flatten();
-        let titlebar_visible = rendered_titlebar.is_some();
-        let titlebar_sidebar_background =
-            if native_sidebar_enabled && self.show_file_tree && self.file_tree_width > 0.0 {
-                let file_tree_tokens = cx.theme().tokens.file_tree_tokens().translucent_sidebar();
-                Some((
-                    px(self.file_tree_width),
-                    file_tree_tokens.background,
-                    file_tree_tokens.separator,
-                ))
-            } else {
-                None
-            };
-        self.update_titlebar_leading_sidebar_background(titlebar_sidebar_background, cx);
+        let rendered_titlebar = self.titlebar.clone();
 
         // Compute the editor content dimensions before reading Helix view areas,
         // so split panes use the current tree layout in this render pass.
@@ -11530,7 +11437,7 @@ impl Render for Workspace {
         let status_bar_height = ui_theme.tokens.sizes.statusbar_height;
         let island_radius = ui_theme.tokens.sizes.radius_lg;
         let (island_margin, island_inset) = self.content_island_insets(cx);
-        let mica_islands = island_margin > px(0.0);
+        let content_islands = island_margin > px(0.0);
         let island_gutter_half = if self.show_file_tree {
             island_margin * 0.5
         } else {
@@ -11751,7 +11658,7 @@ impl Render for Workspace {
             .w_full()
             .h_full()
             .relative() // Anchor for absolute-positioned resize hitboxes
-            .when(!native_sidebar_enabled, |root| root.bg(bg_color))
+            .bg(bg_color)
             .focusable()
             .capture_drop(
                 cx.listener(|workspace, paths: &gpui::ExternalPaths, window, cx| {
@@ -12562,7 +12469,7 @@ impl Render for Workspace {
                 }
             };
 
-            let right = if mica_islands {
+            let right = if content_islands {
                 div()
                     .size_full()
                     .pl(island_gutter_half)
@@ -12605,44 +12512,24 @@ impl Render for Workspace {
                 let mut container = div().relative().w_full().h(content_max_h).min_h(px(0.0));
 
                 // Left file tree content
-                let file_tree_top_inset =
-                    file_tree_content_top_inset(native_sidebar_enabled && !titlebar_visible);
-                let file_tree_tokens = {
-                    let tokens = cx.theme().tokens.file_tree_tokens();
-                    if native_sidebar_enabled {
-                        tokens.translucent_sidebar()
-                    } else {
-                        tokens
-                    }
-                };
+                let file_tree_tokens = cx.theme().tokens.file_tree_tokens();
                 let file_tree_background = file_tree_tokens.background;
-                let file_tree_top_inset_background =
-                    native_sidebar_enabled.then_some(file_tree_background);
                 let mut file_tree_container = div()
                     .w_full()
                     .h_full()
                     .min_h(px(0.0))
-                    .when(!mica_islands, |tree| {
+                    .when(!content_islands, |tree| {
                         tree.border_r_1().border_color(file_tree_tokens.border)
                     });
                 if let Some(file_tree) = &self.file_tree {
                     file_tree_container = file_tree_container.child(
-                        div()
-                            .size_full()
-                            .overflow_hidden()
-                            .flex()
-                            .flex_col()
-                            .child(div().w_full().h(file_tree_top_inset).flex_none().when_some(
-                                file_tree_top_inset_background,
-                                |container, background| container.bg(background),
-                            ))
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_h(px(0.0))
-                                    .overflow_hidden()
-                                    .child(file_tree.clone()),
-                            ),
+                        div().size_full().overflow_hidden().flex().flex_col().child(
+                            div()
+                                .flex_1()
+                                .min_h(px(0.0))
+                                .overflow_hidden()
+                                .child(file_tree.clone()),
+                        ),
                     );
                 } else {
                     // No directory open: offer local and remote workspace choices.
@@ -12675,7 +12562,6 @@ impl Render for Workspace {
                             .flex_col()
                             .size_full()
                             .bg(file_tree_background)
-                            .child(div().w_full().h(file_tree_top_inset).flex_none())
                             .child(
                                 div()
                                     .flex_1()
@@ -12702,7 +12588,7 @@ impl Render for Workspace {
                     );
                 }
 
-                let file_tree_container = if mica_islands {
+                let file_tree_container = if content_islands {
                     div()
                         .size_full()
                         .pr(island_gutter_half)
