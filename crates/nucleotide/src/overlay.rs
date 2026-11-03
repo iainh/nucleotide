@@ -2138,13 +2138,15 @@ impl OverlayView {
                             cursor_pos.row.saturating_sub(view_offset.vertical_offset);
 
                         // Account for UI layout: file tree + gutter + character position
-                        let cursor_x = layout_info.file_tree_width
+                        let cursor_x = layout_info.content_offset.x
+                            + layout_info.file_tree_width
                             + layout_info.gutter_width
                             + layout_info.char_width * (cursor_pos.col as f32);
 
                         // Account for UI layout: title bar + tab bar + line position within document area
-                        let document_area_y =
-                            layout_info.title_bar_height + layout_info.tab_bar_height;
+                        let document_area_y = layout_info.content_offset.y
+                            + layout_info.title_bar_height
+                            + layout_info.tab_bar_height;
                         let cursor_y =
                             document_area_y + layout_info.line_height * (relative_row as f32);
 
@@ -2155,8 +2157,14 @@ impl OverlayView {
         }
 
         // Final fallback positioning
-        let fallback_x = layout_info.file_tree_width + layout_info.gutter_width + px(10.0);
-        let fallback_y = layout_info.title_bar_height + layout_info.tab_bar_height + px(20.0);
+        let fallback_x = layout_info.content_offset.x
+            + layout_info.file_tree_width
+            + layout_info.gutter_width
+            + px(10.0);
+        let fallback_y = layout_info.content_offset.y
+            + layout_info.title_bar_height
+            + layout_info.tab_bar_height
+            + px(20.0);
         println!(
             "DEBUG: Final fallback position: x={:?}, y={:?} (file_tree_width={:?}, gutter_width={:?}, title_bar_height={:?}, tab_bar_height={:?})",
             fallback_x,
@@ -2184,10 +2192,11 @@ impl OverlayView {
             gutter_width: px(60.0),     // Line number gutter width
             tab_bar_height: px(40.0),   // Tab bar height
             title_bar_height: px(30.0), // Much smaller - just window controls
-            line_height: px(20.0),      // Default line height
-            char_width: px(12.0),       // Default character width
-            cursor_position: None,      // No exact cursor position available
-            cursor_size: None,          // No exact cursor size available
+            content_offset: gpui::Point::default(),
+            line_height: px(20.0), // Default line height
+            char_width: px(12.0),  // Default character width
+            cursor_position: None, // No exact cursor position available
+            cursor_size: None,     // No exact cursor size available
         }
     }
 }
@@ -2199,6 +2208,8 @@ pub struct WorkspaceLayoutInfo {
     pub gutter_width: gpui::Pixels,
     pub tab_bar_height: gpui::Pixels,
     pub title_bar_height: gpui::Pixels,
+    /// Extra window-space offset introduced by shell and content-island insets.
+    pub content_offset: gpui::Point<Pixels>,
     // Font metrics from the actual DocumentView
     pub line_height: gpui::Pixels,
     pub char_width: gpui::Pixels,

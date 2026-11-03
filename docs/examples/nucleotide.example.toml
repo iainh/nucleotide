@@ -59,6 +59,7 @@ blur_dark_themes = false
 # Chrome background opacity, from 0.0 to 1.0. Default: 1.0 (opaque).
 # Try 0.92 for subtle translucency in titlebar, file tree, tabs and status bar.
 # Text, code, terminal content and floating pickers/completion stay opaque.
+# Windows system-look content islands remain opaque regardless of this setting.
 # Desktop transparency needs compositor support; blur is platform-dependent.
 chrome_opacity = 1.0
 
@@ -96,7 +97,13 @@ appearance_follows_theme = true
 [ui]
 # Select how Nucleotide styles non-editor UI chrome.
 # Options: "theme", "system". Default: "theme".
+# System look keeps the native palette, accent and materials, but follows the
+# active editor theme's light/dark appearance, including runtime theme changes.
 # On Windows, "system" uses a Fluent palette and the Mica window backdrop.
+# The file tree and editor sit in compact rounded islands, with Mica visible
+# in the surrounding margins and resize gutter. Island content stays opaque.
+# The titlebar and footer sit directly on Mica without divider lines; the
+# footer uses an inset mode badge and editor tabs stay inside the editor island.
 # On macOS, "system" uses native vibrancy for chrome and the project sidebar.
 look = "theme"
 

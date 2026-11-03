@@ -552,7 +552,10 @@ impl Workspace {
         model: &StatusBarModel,
         geometry: StatusBarGeometry,
         status_bar_tokens: &nucleotide_ui::tokens::StatusBarTokens,
+        cx: &Context<Self>,
     ) -> gpui::AnyElement {
+        let quiet_shell = self.content_island_insets(cx).0 > px(0.0);
+        let sizes = &cx.theme().tokens.sizes;
         let (mode_color, mode_text) = match model.mode {
             helix_view::document::Mode::Normal => (
                 status_bar_tokens.mode_normal,
@@ -574,6 +577,7 @@ impl Workspace {
             .flex()
             .items_center()
             .justify_center()
+            .when(quiet_shell, |mode| mode.p(sizes.space_1))
             .child(
                 div()
                     .size_full()
@@ -584,6 +588,7 @@ impl Workspace {
                     .bg(mode_color)
                     .text_color(mode_text)
                     .font_weight(FontWeight::MEDIUM)
+                    .when(quiet_shell, |badge| badge.rounded(sizes.radius_sm))
                     .child(model.mode_label),
             )
             .into_any_element()
@@ -805,7 +810,7 @@ impl Workspace {
             .flex_row()
             .items_center()
             .h_full()
-            .child(self.statusbar_mode_item(model, geometry, status_bar_tokens))
+            .child(self.statusbar_mode_item(model, geometry, status_bar_tokens, cx))
             .when(model.density == StatusBarDensity::Wide, |content| {
                 content.when_some(model.vcs_ref.as_ref(), |content, vcs_ref| {
                     content.child(self.statusbar_vcs_item(vcs_ref, status_bar_tokens))
@@ -932,9 +937,11 @@ impl Workspace {
             )
         };
         let viewport_width = f32::from(window.viewport_size().width);
+        let (shell_margin, _) = self.content_island_insets(cx);
+        let quiet_shell = shell_margin > px(0.0);
         let native_sidebar_enabled = macos_system_sidebar_enabled(&self.core.read(cx).config.gui);
         let geometry = StatusBarGeometry::new(
-            viewport_width,
+            viewport_width - f32::from(shell_margin * 2.0),
             self.show_file_tree && native_sidebar_enabled,
             self.file_tree_width,
             &sizes,
@@ -1021,7 +1028,8 @@ impl Workspace {
             );
 
         StatusBar::new("workspace-status-bar")
-            .top_border(!extend_sidebar_into_status_bar)
+            .top_border(!quiet_shell && !extend_sidebar_into_status_bar)
+            .when(quiet_shell, |bar| bar.px(shell_margin))
             .leading(geometry.sidebar_width, leading)
             .content(content)
             .trailing(utilities)

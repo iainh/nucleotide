@@ -4,7 +4,7 @@
 use gpui::prelude::FluentBuilder;
 use gpui::{
     AnyElement, App, ElementId, Hsla, InteractiveElement, IntoElement, ParentElement, Pixels,
-    RenderOnce, SharedString, Styled, div, px,
+    Refineable, RenderOnce, SharedString, StyleRefinement, Styled, div, px,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -242,6 +242,7 @@ pub struct Panel {
     variant: PanelVariant,
     padding: Option<Pixels>,
     bordered: bool,
+    style: StyleRefinement,
     children: Vec<AnyElement>,
 }
 
@@ -252,6 +253,7 @@ impl Panel {
             variant: PanelVariant::Surface,
             padding: None,
             bordered: true,
+            style: StyleRefinement::default(),
             children: Vec::new(),
         }
     }
@@ -275,6 +277,12 @@ impl Panel {
 impl ParentElement for Panel {
     fn extend(&mut self, elements: impl IntoIterator<Item = AnyElement>) {
         self.children.extend(elements);
+    }
+}
+
+impl Styled for Panel {
+    fn style(&mut self) -> &mut StyleRefinement {
+        &mut self.style
     }
 }
 
@@ -303,6 +311,10 @@ impl RenderOnce for Panel {
                 this.shadow(vec![tokens.chrome.shadow_md.to_box_shadow(false)])
             })
             .p(self.padding.unwrap_or(tokens.sizes.space_3))
+            .map(|mut panel| {
+                panel.style().refine(&self.style);
+                panel
+            })
             .children(self.children)
     }
 }
@@ -445,6 +457,7 @@ pub struct StatusBar {
     id: ElementId,
     active: bool,
     top_border: bool,
+    style: StyleRefinement,
     leading: Option<(Pixels, AnyElement)>,
     content: Option<AnyElement>,
     trailing: Option<AnyElement>,
@@ -457,6 +470,7 @@ impl StatusBar {
             id: id.into(),
             active: true,
             top_border: true,
+            style: StyleRefinement::default(),
             leading: None,
             content: None,
             trailing: None,
@@ -498,6 +512,12 @@ impl StatusBar {
 impl ParentElement for StatusBar {
     fn extend(&mut self, elements: impl IntoIterator<Item = AnyElement>) {
         self.children.extend(elements);
+    }
+}
+
+impl Styled for StatusBar {
+    fn style(&mut self) -> &mut StyleRefinement {
+        &mut self.style
     }
 }
 
@@ -552,13 +572,18 @@ impl RenderOnce for StatusBar {
                 .children(self.children);
         }
 
+        bar.style().refine(&self.style);
         bar
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use gpui::{Context, IntoElement, ParentElement as _, Render, TestAppContext, div};
+    use std::{cell::Cell, rc::Rc};
+
+    use gpui::{
+        Bounds, Context, IntoElement, ParentElement as _, Render, TestAppContext, canvas, div,
+    };
 
     use super::*;
 
@@ -647,5 +672,34 @@ mod tests {
     fn semantic_layout_wrappers_render(cx: &mut TestAppContext) {
         init_layout_test(cx);
         let (_harness, _cx) = cx.add_window_view(|_window, _cx| LayoutHarness);
+    }
+
+    #[gpui::test]
+    fn styled_panel_preserves_content_bounds_inside_rounded_border(cx: &mut TestAppContext) {
+        struct IslandHarness(Rc<Cell<Option<Bounds<Pixels>>>>);
+
+        impl Render for IslandHarness {
+            fn render(&mut self, _: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
+                let sizes = &cx.global::<crate::Theme>().tokens.sizes;
+                let bounds = self.0.clone();
+                Panel::new("island")
+                    .w(px(260.0))
+                    .h(px(170.0))
+                    .rounded(sizes.radius_lg)
+                    .padding(sizes.radius_lg)
+                    .child(
+                        canvas(move |area, _, _| bounds.set(Some(area)), |_, _, _, _| {})
+                            .size_full(),
+                    )
+            }
+        }
+
+        init_layout_test(cx);
+        let bounds = Rc::new(Cell::new(None));
+        let (_harness, _cx) = cx.add_window_view(|_, _| IslandHarness(bounds.clone()));
+        let content = bounds.get().expect("panel content rendered");
+        // Eight pixels of padding plus the one-pixel border protect all corners.
+        assert_eq!(content.origin, gpui::point(px(9.0), px(9.0)));
+        assert_eq!(content.size, gpui::size(px(242.0), px(152.0)));
     }
 }
