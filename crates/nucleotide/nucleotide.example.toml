@@ -105,6 +105,7 @@ appearance_follows_theme = true
 # On macOS, "system" uses a native palette and window vibrancy.
 # The file tree and editor sit in compact rounded islands, with native material
 # in the surrounding margins and resize gutter. Island content stays opaque.
+# On both platforms, the tab strip fills the editor island's top and side insets.
 # The titlebar and footer sit directly on the material without divider lines; the
 # footer uses an inset mode badge and editor tabs stay inside the editor island.
 # macOS keeps native traffic lights and the system menu bar.

@@ -11525,11 +11525,10 @@ impl Render for Workspace {
             .unwrap_or_default();
         let dividers = self.render_pane_dividers(&geometry, cx);
         let show_focus_indicator = geometry.len() > 1;
-        let fluent_tabs = crate::tab::fluent_tabs_enabled(cx);
         let mut tab_strip_backgrounds = Vec::new();
         for pane in geometry {
             let tab_height = self.pane_tab_bar_height(pane.pane, cx);
-            if fluent_tabs && tab_height > px(0.0) {
+            if content_islands && tab_height > px(0.0) {
                 // Carry each strip through the island's safe content inset.
                 // Only the outer top corners need rounding; split-pane bands
                 // also extend to the island's left/right edges when adjacent.
@@ -12512,14 +12511,14 @@ impl Render for Workspace {
                         Panel::new("editor-island")
                             .size_full()
                             .rounded(island_radius)
-                            .padding(if fluent_tabs { px(0.0) } else { island_radius })
-                            .when(fluent_tabs, |panel| panel.relative())
+                            .padding(px(0.0))
+                            .relative()
                             .bg(cx.theme().tokens.editor.background.alpha(1.0))
                             .children(tab_strip_backgrounds)
                             .child(
                                 div()
                                     .size_full()
-                                    .when(fluent_tabs, |content| content.p(island_radius))
+                                    .p(island_radius)
                                     .child(div().size_full().overflow_hidden().child(right)),
                             ),
                     )
