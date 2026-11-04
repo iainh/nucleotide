@@ -381,6 +381,11 @@ impl TerminalViewModel {
 
     #[cfg(feature = "emulator")]
     fn set_snapshot(&mut self, snapshot: GridSnapshot) {
+        if self.input_mode.alternate_screen != snapshot.input_mode.alternate_screen {
+            self.selection = None;
+            self.selection_text = None;
+            self.mouse_selecting = false;
+        }
         self.viewport_top = snapshot.history_size as isize - snapshot.display_offset as isize;
         self.cols = snapshot.cols;
         self.rows = snapshot.rows_len;
@@ -1798,6 +1803,53 @@ mod tests {
                     Some(expected)
                 );
             }
+        }
+    }
+
+    #[gpui::test]
+    fn terminal_selection_clears_when_the_active_screen_changes(cx: &mut TestAppContext) {
+        use nucleotide_terminal::engine::Engine;
+        cx.update(install_test_globals);
+        let mut engine = Engine::new(8, 2, None);
+        engine.feed_bytes(b"primary");
+        let mut model = TerminalViewModel::new(TerminalId(22));
+        model.apply_frame(engine.take_frame().unwrap());
+        model.resize_grid(8, 2, Some((8.0, 20.0)));
+        let model = Arc::new(Mutex::new(model));
+        let (_, cx) =
+            cx.add_window_view(|_, cx| TerminalView::new(model.clone(), cx.focus_handle(), cx));
+        for (sequence, expected) in [
+            (&b"\x1b[?1049h\x1b[Hother"[..], "pri"),
+            (&b"\x1b[?1049l"[..], "oth"),
+        ] {
+            cx.simulate_mouse_down(
+                point(px(4.0), px(10.0)),
+                MouseButton::Left,
+                gpui::Modifiers::none(),
+            );
+            cx.simulate_mouse_move(
+                point(px(20.0), px(10.0)),
+                MouseButton::Left,
+                gpui::Modifiers::none(),
+            );
+            assert_eq!(
+                lock_or_recover(&model).selected_text().as_deref(),
+                Some(expected)
+            );
+            engine.feed_bytes(sequence);
+            lock_or_recover(&model).apply_frame(engine.take_frame().unwrap());
+            cx.refresh().unwrap();
+            cx.simulate_mouse_move(
+                point(px(28.0), px(10.0)),
+                MouseButton::Left,
+                gpui::Modifiers::none(),
+            );
+            assert!(lock_or_recover(&model).selected_text().is_none());
+            cx.simulate_mouse_up(
+                point(px(28.0), px(10.0)),
+                MouseButton::Left,
+                gpui::Modifiers::none(),
+            );
         }
     }
 
