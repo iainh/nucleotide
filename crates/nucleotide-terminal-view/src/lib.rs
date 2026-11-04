@@ -791,6 +791,36 @@ impl TerminalView {
             scrollbar_state,
         }
     }
+
+    #[cfg(feature = "emulator")]
+    fn copy(
+        &mut self,
+        _: &nucleotide_ui::actions::text_input::Copy,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(text) = lock_or_recover(&self.model).selected_text() {
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+        }
+    }
+
+    #[cfg(feature = "emulator")]
+    fn paste(
+        &mut self,
+        _: &nucleotide_ui::actions::text_input::Paste,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+            let mut model = lock_or_recover(&self.model);
+            if !model.has_exited()
+                && let Some(tx) = model.control_tx.clone()
+            {
+                model.scroll_to_bottom();
+                let _ = tx.send(nucleotide_terminal::session::ControlMsg::Paste(text));
+            }
+        }
+    }
 }
 
 impl gpui::Focusable for TerminalView {
@@ -986,6 +1016,28 @@ impl Render for TerminalView {
                 .overflow_hidden()
                 .bg(default_bg)
                 .track_focus(&self.focus)
+                .on_action(_cx.listener(Self::copy))
+                .on_action(_cx.listener(Self::paste))
+                .on_key_down(
+                    _cx.listener(|view, event: &gpui::KeyDownEvent, window, cx| {
+                        use nucleotide_ui::actions::text_input::{Copy, Paste};
+                        let key = &event.keystroke.key;
+                        let mods = event.keystroke.modifiers;
+                        let clipboard_modifier =
+                            !mods.alt && (mods.platform || (mods.control && mods.shift));
+                        if clipboard_modifier && key.eq_ignore_ascii_case("c") {
+                            view.copy(&Copy, window, cx);
+                        } else if (clipboard_modifier && key.eq_ignore_ascii_case("v"))
+                            || (mods.shift && !mods.control && !mods.alt && key == "insert")
+                        {
+                            view.paste(&Paste, window, cx);
+                        } else {
+                            // In particular, Ctrl+C must still reach the PTY.
+                            return;
+                        }
+                        cx.stop_propagation();
+                    }),
+                )
                 .on_children_prepainted({
                     let content_bounds = Rc::clone(&content_bounds);
                     move |bounds, _window, _cx| {
@@ -1262,6 +1314,80 @@ mod tests {
             3,
             "clearing the selection must repaint immediately"
         );
+    }
+
+    #[gpui::test]
+    fn terminal_clipboard_actions_and_shortcuts_target_the_focused_surface(
+        cx: &mut TestAppContext,
+    ) {
+        use nucleotide_terminal::session::ControlMsg;
+        use nucleotide_ui::actions::text_input::{Copy, Paste};
+        cx.update(install_test_globals);
+        let mut model = TerminalViewModel::new(TerminalId(20));
+        model.resize_grid(4, 1, Some((8.0, 20.0)));
+        for (cell, ch) in model.grid[0].iter_mut().zip("abcd".chars()) {
+            cell.ch = ch;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        model.set_control_sender(tx);
+        let model = Arc::new(Mutex::new(model));
+        let (view, cx) =
+            cx.add_window_view(|_, cx| TerminalView::new(model.clone(), cx.focus_handle(), cx));
+        cx.simulate_mouse_down(
+            point(px(12.0), px(10.0)),
+            MouseButton::Left,
+            gpui::Modifiers::none(),
+        );
+        cx.simulate_mouse_move(
+            point(px(28.0), px(10.0)),
+            MouseButton::Left,
+            gpui::Modifiers::none(),
+        );
+        cx.simulate_mouse_up(
+            point(px(28.0), px(10.0)),
+            MouseButton::Left,
+            gpui::Modifiers::none(),
+        );
+        cx.update(|window, cx| {
+            view.read(cx)
+                .focus
+                .clone()
+                .dispatch_action(&Copy, window, cx)
+        });
+        assert_eq!(
+            cx.read_from_clipboard()
+                .and_then(|item| item.text())
+                .as_deref(),
+            Some("bcd")
+        );
+        cx.update(|window, cx| {
+            view.read(cx)
+                .focus
+                .clone()
+                .dispatch_action(&Paste, window, cx)
+        });
+        assert!(matches!(rx.try_recv(), Ok(ControlMsg::Paste(text)) if text == "bcd"));
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string("changed".into()));
+        cx.simulate_keystrokes("ctrl-c");
+        assert_eq!(
+            cx.read_from_clipboard()
+                .and_then(|item| item.text())
+                .as_deref(),
+            Some("changed")
+        );
+        cx.simulate_keystrokes("ctrl-shift-c ctrl-shift-v shift-insert");
+        assert_eq!(
+            cx.read_from_clipboard()
+                .and_then(|item| item.text())
+                .as_deref(),
+            Some("bcd")
+        );
+        for _ in 0..2 {
+            assert!(matches!(rx.try_recv(), Ok(ControlMsg::Paste(text)) if text == "bcd"));
+        }
+        lock_or_recover(&model).set_exited();
+        cx.simulate_keystrokes("ctrl-shift-v");
+        assert!(rx.try_recv().is_err());
     }
 
     #[gpui::test]
