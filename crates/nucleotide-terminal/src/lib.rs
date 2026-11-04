@@ -43,6 +43,7 @@ pub mod frame {
         pub rows_len: u16,
         pub cursor_row: u16,
         pub cursor_col: u16,
+        pub cursor_visible: bool,
         pub title: Option<String>,
         pub history_size: usize,
         pub display_offset: usize,
@@ -64,6 +65,7 @@ pub mod frame {
         pub scrolled: Option<i32>,
         pub cursor_row: u16,
         pub cursor_col: u16,
+        pub cursor_visible: bool,
     }
 
     #[cfg(feature = "emulator")]
@@ -1262,6 +1264,7 @@ pub mod engine {
                 rows_len,
                 cursor_row: cursor.map(|cursor| cursor.y).unwrap_or(0),
                 cursor_col: cursor.map(|cursor| cursor.x).unwrap_or(0),
+                cursor_visible: cursor.is_some() && snapshot.cursor_visible().unwrap_or(false),
                 title,
                 history_size,
                 display_offset,
@@ -1499,6 +1502,27 @@ pub mod engine {
                 panic!("expected full snapshot");
             };
             assert_eq!(snapshot.title.as_deref(), Some("Nucleotide Shell"));
+        }
+
+        #[cfg(not(all(windows, target_arch = "aarch64")))]
+        #[test]
+        fn cursor_visibility_respects_dec_mode_and_scrollback() {
+            let mut engine = Engine::new(8, 2, None);
+            engine.feed_bytes(b"one\r\ntwo\r\nthree\r\nfour");
+            for (bytes, scroll, visible) in [
+                (&b""[..], 0, true),
+                (&b"\x1b[?25l"[..], 0, false),
+                (&b"\x1b[?25h"[..], 0, true),
+                (&b""[..], 2, false),
+                (&b""[..], -2, true),
+            ] {
+                engine.feed_bytes(bytes);
+                engine.scroll_display(scroll);
+                let Some(FramePayload::Full(frame)) = engine.take_frame() else {
+                    panic!("missing frame")
+                };
+                assert_eq!(frame.cursor_visible, visible);
+            }
         }
 
         #[cfg(not(all(windows, target_arch = "aarch64")))]

@@ -143,6 +143,8 @@ pub struct TerminalViewModel {
     #[cfg(feature = "emulator")]
     cursor_col: u16,
     #[cfg(feature = "emulator")]
+    cursor_visible: bool,
+    #[cfg(feature = "emulator")]
     dirty: DirtyFlags,
     #[cfg(feature = "emulator")]
     cell_width: f32,
@@ -192,6 +194,8 @@ impl TerminalViewModel {
             cursor_row: 0,
             #[cfg(feature = "emulator")]
             cursor_col: 0,
+            #[cfg(feature = "emulator")]
+            cursor_visible: true,
             #[cfg(feature = "emulator")]
             dirty: DirtyFlags::default(),
             #[cfg(feature = "emulator")]
@@ -383,6 +387,7 @@ impl TerminalViewModel {
         self.grid = snapshot.rows;
         self.cursor_row = snapshot.cursor_row;
         self.cursor_col = snapshot.cursor_col;
+        self.cursor_visible = snapshot.cursor_visible;
         self.history_size = snapshot.history_size;
         // Don't overwrite display_offset during scrollbar drag to avoid
         // race conditions where stale frames snap the scroll position back.
@@ -399,10 +404,11 @@ impl TerminalViewModel {
         if self.grid.is_empty() || self.cols == 0 || self.rows == 0 {
             return;
         }
-        let old_cursor = (self.cursor_row, self.cursor_col);
+        let old_cursor = (self.cursor_row, self.cursor_col, self.cursor_visible);
         self.cursor_row = diff.cursor_row.min(self.rows.saturating_sub(1));
         self.cursor_col = diff.cursor_col.min(self.cols.saturating_sub(1));
-        if old_cursor != (self.cursor_row, self.cursor_col) {
+        self.cursor_visible = diff.cursor_visible;
+        if old_cursor != (self.cursor_row, self.cursor_col, self.cursor_visible) {
             self.dirty.mark(old_cursor.0 as usize);
             self.dirty.mark(self.cursor_row as usize);
         }
@@ -1230,6 +1236,7 @@ mod tests {
             rows_len: 1,
             cursor_row: 0,
             cursor_col: 0,
+            cursor_visible: true,
             title: None,
             history_size: 0,
             display_offset: 0,
@@ -1584,6 +1591,7 @@ mod tests {
             scrolled: Some(1),
             cursor_row: 0,
             cursor_col: 0,
+            cursor_visible: true,
         }));
 
         assert_eq!(model.take_dirty_rows(), vec![0, 1, 2]);
@@ -1608,6 +1616,7 @@ mod tests {
                 scrolled: None,
                 cursor_row: row,
                 cursor_col: col,
+                cursor_visible: true,
             }));
             assert_eq!(
                 model.take_dirty_rows(),
@@ -1628,6 +1637,7 @@ mod tests {
             scrolled: Some(8),
             cursor_row: 0,
             cursor_col: 0,
+            cursor_visible: true,
         }));
 
         assert_eq!(model.grid.len(), 3);
@@ -1708,6 +1718,7 @@ mod tests {
                 rows_len: 3,
                 cursor_row: 2,
                 cursor_col: 2,
+                cursor_visible: true,
                 title: None,
                 history_size: 3,
                 display_offset: offset,
@@ -1791,7 +1802,7 @@ impl Render for TerminalRowView {
         let editor_font = cx.global::<nucleotide_types::EditorFontConfig>();
         let ansi_palette = TerminalAnsiPalette::from_tokens(tokens);
 
-        let (grid_row, cursor_row, cursor_col, cell_width, cell_height, selection, cols) = {
+        let (grid_row, cursor, cell_width, cell_height, selection, cols) = {
             let guard = lock_or_recover(self.model.as_ref());
             let row = if self.row_index < guard.grid.len() {
                 guard.grid[self.row_index].clone()
@@ -1800,8 +1811,9 @@ impl Render for TerminalRowView {
             };
             (
                 row,
-                guard.cursor_row as usize,
-                guard.cursor_col as usize,
+                guard
+                    .cursor_visible
+                    .then_some((guard.cursor_row as usize, guard.cursor_col as usize)),
                 guard.cell_width,
                 guard.cell_height,
                 guard.selection.map(|mut selection| {
@@ -1878,7 +1890,7 @@ impl Render for TerminalRowView {
                             style.background_color = Some(selection_bg);
                             style.color = selection_fg;
                         }
-                        let is_cursor = row_index == cursor_row && col == cursor_col;
+                        let is_cursor = cursor == Some((row_index, col));
                         if is_cursor {
                             style.background_color = Some(cursor_bg);
                             style.color = selection_fg;
