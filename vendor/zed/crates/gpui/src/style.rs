@@ -655,7 +655,7 @@ impl Style {
                     max.y -= self.border_widths.bottom.to_pixels(rem_size);
                 }
 
-                let bounds = match (
+                let clip_bounds = match (
                     self.overflow.x == Overflow::Visible,
                     self.overflow.y == Overflow::Visible,
                 ) {
@@ -675,7 +675,26 @@ impl Style {
                     (false, false) => Bounds::from_corners(min, max),
                 };
 
-                Some(ContentMask { bounds })
+                // A single-axis overflow mask retains its rectangular behaviour.
+                // Rounding it would additionally clip the visible axis.
+                if self.overflow.x == Overflow::Visible || self.overflow.y == Overflow::Visible {
+                    return Some(ContentMask::new(clip_bounds));
+                }
+                let outer_radii = self
+                    .corner_radii
+                    .to_pixels(rem_size)
+                    .clamp_radii_for_quad_size(bounds.size);
+                let left = min.x - bounds.left();
+                let top = min.y - bounds.top();
+                let right = bounds.right() - max.x;
+                let bottom = bounds.bottom() - max.y;
+                let inner_radii = Corners {
+                    top_left: outer_radii.top_left - left.max(top),
+                    top_right: outer_radii.top_right - right.max(top),
+                    bottom_right: outer_radii.bottom_right - right.max(bottom),
+                    bottom_left: outer_radii.bottom_left - left.max(bottom),
+                };
+                Some(ContentMask::rounded(clip_bounds, inner_radii))
             }
         }
     }
@@ -1331,6 +1350,35 @@ mod tests {
     use super::*;
 
     use util_macros::perf;
+
+    #[test]
+    fn overflow_rounding_is_opt_in_and_accounts_for_visible_borders() {
+        let bounds = Bounds::new(point(px(0.), px(0.)), crate::size(px(100.), px(100.)));
+        let mut style = Style {
+            corner_radii: Corners::all(px(20.)).map(|radius| (*radius).into()),
+            border_color: Some(red()),
+            border_widths: Edges::all(px(2.).into()),
+            ..Style::default()
+        };
+        assert!(style.overflow_mask(bounds, px(16.)).is_none());
+        style.overflow = point(Overflow::Hidden, Overflow::Visible);
+        assert!(
+            style
+                .overflow_mask(bounds, px(16.))
+                .unwrap()
+                .rounded_clips
+                .is_empty()
+        );
+        style.overflow = point(Overflow::Hidden, Overflow::Hidden);
+        let mask = style.overflow_mask(bounds, px(16.)).unwrap();
+        assert_eq!(mask.bounds.origin, point(px(2.), px(2.)));
+        assert_eq!(mask.rounded_clips[0].corner_radii, Corners::all(px(18.)));
+        assert!(!mask.contains(&point(px(3.), px(3.))));
+        style.border_color = None;
+        let mask = style.overflow_mask(bounds, px(16.)).unwrap();
+        assert_eq!(mask.bounds, bounds);
+        assert_eq!(mask.rounded_clips[0].corner_radii, Corners::all(px(20.)));
+    }
 
     #[perf]
     fn test_basic_highlight_style_combination() {

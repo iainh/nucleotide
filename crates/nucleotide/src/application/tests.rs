@@ -1877,7 +1877,7 @@ fn native_islands_keep_editor_bounds_in_sync_when_resized_or_sidebar_hidden(
         workspace.set_titlebar(cx.new(|cx| nucleotide_ui::titlebar::TitleBar::new("titlebar", cx)));
     });
     // macOS reserves its native traffic lights above the islands.
-    let titlebar_height = if cfg!(target_os = "macos") { 44.0 } else { 0.0 };
+    let titlebar_height = if cfg!(target_os = "macos") { 32.0 } else { 0.0 };
     let slot = core.update(cx, |core, cx| {
         core.config.gui.ui.look = crate::config::UiLook::System;
         cx.emit(crate::Update::Redraw);
@@ -1888,7 +1888,7 @@ fn native_islands_keep_editor_bounds_in_sync_when_resized_or_sidebar_hidden(
 
     for (width, height, sidebar_width) in [
         (900.0, 600.0, 240.0),
-        (400.0, 300.0, 184.0),
+        (400.0, 300.0, 192.0),
         (900.0, 600.0, 0.0),
     ] {
         if sidebar_width == 0.0 {
@@ -1904,27 +1904,27 @@ fn native_islands_keep_editor_bounds_in_sync_when_resized_or_sidebar_hidden(
                 .statusbar_height
         });
         let bounds = cx.debug_bounds(selector).expect("editor pane rendered");
-        let half_gutter = if sidebar_width > 0.0 { 4.0 } else { 0.0 };
-        // Shell margin 8 + border 1 + safe corner padding 8.
+        let half_gutter = if sidebar_width > 0.0 { 2.0 } else { 0.0 };
+        // Shell margin 4 + border 1, with no padding inside the clipped island.
         assert_eq!(
             bounds.origin,
             point(
-                px(sidebar_width + 17.0 + half_gutter),
-                px(titlebar_height + 17.0)
+                px(sidebar_width + 5.0 + half_gutter),
+                px(titlebar_height + 5.0)
             )
         );
         assert_eq!(
             bounds.size,
             size(
-                px(width - sidebar_width - 34.0 - half_gutter),
-                px(height - titlebar_height - 34.0) - status_height
+                px(width - sidebar_width - 10.0 - half_gutter),
+                px(height - titlebar_height - 10.0) - status_height
             )
         );
         let (offset, overlay_titlebar_height) = cx.update(|_, cx| {
             let layout = cx.global::<crate::overlay::WorkspaceLayoutInfo>();
             (layout.content_offset, layout.title_bar_height)
         });
-        assert_eq!(offset, point(px(17.0 + half_gutter), px(17.0)));
+        assert_eq!(offset, point(px(5.0 + half_gutter), px(5.0)));
         assert_eq!(overlay_titlebar_height, px(titlebar_height));
     }
 }

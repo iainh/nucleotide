@@ -7,9 +7,9 @@ use cocoa::{
     quartzcore::AutoresizingMask,
 };
 use gpui::{
-    AtlasTextureId, Background, Bounds, ContentMask, DevicePixels, MonochromeSprite, PaintSurface,
-    Path, Point, PolychromeSprite, PrimitiveBatch, Quad, ScaledPixels, Scene, Shadow, Size,
-    Surface, Underline, point, size,
+    AtlasTextureId, Background, Bounds, DevicePixels, GpuContentMask, MonochromeSprite,
+    PaintSurface, Path, Point, PolychromeSprite, PrimitiveBatch, Quad, ScaledPixels, Scene, Shadow,
+    Size, Surface, Underline, point, size,
 };
 #[cfg(any(test, feature = "test-support"))]
 use image::RgbaImage;
@@ -31,6 +31,11 @@ use std::{cell::Cell, ffi::c_void, mem, ptr, sync::Arc};
 
 // Exported to metal
 pub(crate) type PointF = gpui::Point<f32>;
+
+// Instantiate the generic clip geometry for cbindgen; unlike masks, clips are
+// uploaded separately and are not fields of an exported primitive.
+#[allow(non_camel_case_types, unused)]
+pub(crate) type RoundedClip_ScaledPixels = gpui::RoundedClip<ScaledPixels>;
 
 #[cfg(not(feature = "runtime_shaders"))]
 const SHADERS_METALLIB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shaders.metallib"));
@@ -145,6 +150,7 @@ pub struct PathRasterizationVertex {
     pub st_position: Point<f32>,
     pub color: Background,
     pub bounds: Bounds<ScaledPixels>,
+    pub content_mask: GpuContentMask<ScaledPixels>,
 }
 
 impl MetalRenderer {
@@ -836,6 +842,18 @@ impl MetalRenderer {
         let command_buffer = command_queue.new_command_buffer();
         let alpha = if self.opaque { 1. } else { 0. };
         let mut instance_offset = 0;
+        // One immutable clip buffer per submitted scene, shared by every pass.
+        // An empty scene still needs a valid binding, even though no shader reads it.
+        let rounded_clips = if scene.rounded_clips.is_empty() {
+            self.device
+                .new_buffer(32, MTLResourceOptions::StorageModeShared)
+        } else {
+            self.device.new_buffer_with_data(
+                scene.rounded_clips.as_ptr() as *const c_void,
+                mem::size_of_val(scene.rounded_clips.as_slice()) as u64,
+                MTLResourceOptions::StorageModeShared,
+            )
+        };
 
         let mut command_encoder = new_command_encoder_for_texture(
             command_buffer,
@@ -846,6 +864,7 @@ impl MetalRenderer {
                 color_attachment.set_clear_color(metal::MTLClearColor::new(0., 0., 0., alpha));
             },
         );
+        command_encoder.set_fragment_buffer(7, Some(&rounded_clips), 0);
 
         for batch in scene.batches() {
             let ok = match batch {
@@ -873,6 +892,7 @@ impl MetalRenderer {
                         &mut instance_offset,
                         viewport_size,
                         command_buffer,
+                        &rounded_clips,
                     );
 
                     command_encoder = new_command_encoder_for_texture(
@@ -883,6 +903,7 @@ impl MetalRenderer {
                             color_attachment.set_load_action(metal::MTLLoadAction::Load);
                         },
                     );
+                    command_encoder.set_fragment_buffer(7, Some(&rounded_clips), 0);
 
                     if did_draw {
                         self.draw_paths_from_intermediate(
@@ -965,6 +986,7 @@ impl MetalRenderer {
         instance_offset: &mut usize,
         viewport_size: Size<DevicePixels>,
         command_buffer: &metal::CommandBufferRef,
+        rounded_clips: &metal::BufferRef,
     ) -> bool {
         if paths.is_empty() {
             return true;
@@ -992,6 +1014,7 @@ impl MetalRenderer {
 
         let command_encoder = command_buffer.new_render_command_encoder(render_pass_descriptor);
         command_encoder.set_render_pipeline_state(&self.paths_rasterization_pipeline_state);
+        command_encoder.set_fragment_buffer(7, Some(rounded_clips), 0);
 
         align_offset(instance_offset);
         let mut vertices = Vec::new();
@@ -1001,6 +1024,7 @@ impl MetalRenderer {
                 st_position: v.st_position,
                 color: path.color,
                 bounds: path.bounds.intersect(&path.content_mask.bounds),
+                content_mask: path.content_mask,
             }));
         }
         let vertices_bytes_len = mem::size_of_val(vertices.as_slice());
@@ -1550,6 +1574,11 @@ impl MetalRenderer {
                 let texture = CVMetalTextureGetTexture(cb_cr_texture.as_concrete_TypeRef());
                 Some(metal::TextureRef::from_ptr(texture as *mut _))
             });
+            command_encoder.set_fragment_buffer(
+                SurfaceInputIndex::Surfaces as u64,
+                Some(&instance_buffer.metal_buffer),
+                *instance_offset as u64,
+            );
 
             unsafe {
                 let buffer_contents = (instance_buffer.metal_buffer.contents() as *mut u8)
@@ -1766,7 +1795,7 @@ pub struct PathSprite {
 #[repr(C)]
 pub struct SurfaceBounds {
     pub bounds: Bounds<ScaledPixels>,
-    pub content_mask: ContentMask<ScaledPixels>,
+    pub content_mask: GpuContentMask<ScaledPixels>,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -1799,5 +1828,208 @@ impl gpui::PlatformHeadlessRenderer for MetalHeadlessRenderer {
 
     fn sprite_atlas(&self) -> Arc<dyn gpui::PlatformAtlas> {
         self.renderer.sprite_atlas().clone()
+    }
+}
+
+#[cfg(test)]
+mod rounded_clip_tests {
+    use super::*;
+    use gpui::{
+        ContentMask, Corners, FontId, GlyphId, PlatformAtlas, RenderGlyphParams,
+        TransformationMatrix, px, rgba,
+    };
+    use std::borrow::Cow;
+
+    #[test]
+    fn rounded_clips_cover_every_metal_primitive_and_cached_replay() {
+        let mut renderer =
+            MetalRenderer::new_headless(Arc::new(Mutex::new(InstanceBufferPool::default())));
+        let bounds = Bounds::new(point(px(0.), px(0.)), size(px(64.), px(64.)));
+        let rounded = ContentMask::rounded(
+            Bounds::new(point(px(8.), px(8.)), size(px(48.), px(48.))),
+            Corners::all(px(16.)),
+        );
+        // Place the restrictive ancestor past common fixed-depth limits and
+        // repeat it to detect accidental multiplication of edge coverage.
+        let benign = ContentMask::rounded(bounds, Corners::all(px(1.)));
+        let mut clips = vec![benign.rounded_clips[0]; 64];
+        clips.extend([rounded.rounded_clips[0]; 2]);
+        let mask = ContentMask {
+            bounds: rounded.bounds,
+            rounded_clips: clips.into(),
+        }
+        .intersect(&ContentMask::new(bounds));
+        let red: gpui::Hsla = rgba(0xff0000ff).into();
+        for kind in [
+            "quad",
+            "path",
+            "monochrome",
+            "polychrome",
+            "shadow",
+            "underline",
+        ] {
+            let mut scene = Scene::default();
+            let content_mask = scene.register_content_mask(&mask.scale(1.));
+            let bounds = bounds.scale(1.);
+            match kind {
+                "quad" => scene.insert_primitive(Quad {
+                    bounds,
+                    content_mask,
+                    background: red.into(),
+                    ..Default::default()
+                }),
+                "path" => {
+                    let mut path = Path::new(point(px(0.), px(0.)));
+                    path.line_to(point(px(64.), px(0.)));
+                    path.line_to(point(px(64.), px(64.)));
+                    path.line_to(point(px(0.), px(64.)));
+                    let mut path = path.scale(1.);
+                    path.content_mask = content_mask;
+                    path.color = red.into();
+                    scene.insert_primitive(path);
+                }
+                "monochrome" | "polychrome" => {
+                    let polychrome = kind == "polychrome";
+                    let key = RenderGlyphParams {
+                        font_id: FontId(0),
+                        glyph_id: GlyphId(0),
+                        font_size: px(64.),
+                        display_id: None,
+                        text_rendering_generation: 0,
+                        subpixel_variant: point(0, 0),
+                        scale_factor: 1.,
+                        is_emoji: polychrome,
+                        subpixel_rendering: false,
+                        dilation: 0,
+                    }
+                    .into();
+                    let tile = renderer
+                        .sprite_atlas
+                        .get_or_insert_with(&key, &mut || {
+                            let bytes = if polychrome {
+                                // Metal's polychrome atlas consumes BGRA bytes.
+                                [0, 0, 255, 255].repeat(64 * 64)
+                            } else {
+                                vec![255; 64 * 64]
+                            };
+                            Ok(Some((
+                                size(DevicePixels(64), DevicePixels(64)),
+                                Cow::Owned(bytes),
+                            )))
+                        })
+                        .unwrap()
+                        .unwrap();
+                    if polychrome {
+                        scene.insert_primitive(PolychromeSprite {
+                            order: 0,
+                            pad: 0,
+                            grayscale: false,
+                            opacity: 1.,
+                            bounds,
+                            content_mask,
+                            corner_radii: Corners::default(),
+                            tile,
+                        });
+                    } else {
+                        scene.insert_primitive(MonochromeSprite {
+                            order: 0,
+                            pad: 0,
+                            bounds,
+                            content_mask,
+                            color: red,
+                            tile,
+                            transformation: TransformationMatrix::unit(),
+                        });
+                    }
+                }
+                "shadow" => scene.insert_primitive(Shadow {
+                    order: 0,
+                    blur_radius: ScaledPixels(0.),
+                    bounds,
+                    corner_radii: Corners::default(),
+                    content_mask,
+                    color: red,
+                    element_bounds: bounds,
+                    element_corner_radii: Corners::default(),
+                    inset: 0,
+                    pad: 0,
+                }),
+                "underline" => scene.insert_primitive(Underline {
+                    order: 0,
+                    pad: 0,
+                    bounds,
+                    content_mask,
+                    color: red,
+                    thickness: ScaledPixels(64.),
+                    wavy: 0,
+                }),
+                _ => unreachable!(),
+            }
+            // Force the replayed clip range to move, detecting stale scene indices.
+            let mut replayed = Scene::default();
+            replayed.register_content_mask(
+                &ContentMask::rounded(
+                    Bounds::new(point(px(0.), px(0.)), size(px(2.), px(2.))),
+                    Corners::all(px(1.)),
+                )
+                .scale(1.),
+            );
+            replayed.replay(0..scene.len(), &scene);
+            replayed.finish();
+            let image = renderer
+                .render_scene_to_image(&replayed, size(DevicePixels(64), DevicePixels(64)))
+                .unwrap();
+            for (x, y, expected) in [(9, 9, 0), (32, 32, 255), (8, 32, 255), (55, 32, 255)] {
+                assert_eq!(image.get_pixel(x, y).0[0], expected, "{kind} at ({x}, {y})");
+            }
+            // Pixel centre (12.5, 12.5) is 0.263 pixels outside the arc:
+            // 16 - sqrt(11.5² + 11.5²) + 0.5 ≈ 0.237 coverage, not 0.237².
+            let edge = image.get_pixel(12, 12).0[0];
+            assert!((50..=75).contains(&edge), "{kind} edge coverage: {edge}");
+        }
+    }
+
+    #[test]
+    fn overlapping_translucent_paths_keep_their_own_clips() {
+        let mut renderer =
+            MetalRenderer::new_headless(Arc::new(Mutex::new(InstanceBufferPool::default())));
+        let mut scene = Scene::default();
+        for (x, radius, color) in [
+            (8., 16., gpui::hsla(0., 1., 0.5, 0.6)),
+            (24., 12., gpui::hsla(2. / 3., 1., 0.5, 0.4)),
+        ] {
+            let mask = ContentMask::rounded(
+                Bounds::new(point(px(x), px(8.)), size(px(32.), px(48.))),
+                Corners::all(px(radius)),
+            );
+            let mut path = Path::new(point(px(0.), px(0.)));
+            path.line_to(point(px(64.), px(0.)));
+            path.line_to(point(px(64.), px(64.)));
+            path.line_to(point(px(0.), px(64.)));
+            let mut path = path.scale(1.);
+            path.content_mask = scene.register_content_mask(&mask.scale(1.));
+            path.color = color.into();
+            scene.insert_primitive(path);
+        }
+        scene.finish();
+        let image = renderer
+            .render_scene_to_image(&scene, size(DevicePixels(64), DevicePixels(64)))
+            .unwrap();
+        // Same path bounds, different clips: a mask on the merged intermediate
+        // cannot produce the red-only, blue-only and correctly blended regions.
+        for (x, y, expected) in [
+            (9, 9, [0, 0, 0]),
+            (25, 9, [153, 0, 0]),
+            (39, 9, [0, 0, 102]),
+            (32, 32, [92, 0, 102]),
+        ] {
+            let pixel = image.get_pixel(x, y);
+            for channel in 0..3 {
+                assert!(
+                    (i32::from(pixel[channel]) - expected[channel]).abs() <= 2,
+                    "({x}, {y}) expected {expected:?}, got {pixel:?}",
+                );
+            }
+        }
     }
 }

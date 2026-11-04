@@ -119,6 +119,9 @@ struct DirectXRenderPipelines {
 struct DirectXGlobalElements {
     global_params_buffer: Option<ID3D11Buffer>,
     sampler: Option<ID3D11SamplerState>,
+    rounded_clips_buffer: Option<ID3D11Buffer>,
+    rounded_clips_view: Option<ID3D11ShaderResourceView>,
+    rounded_clips_capacity: usize,
 }
 
 #[derive(Default)]
@@ -488,6 +491,12 @@ impl DirectXRenderer {
     fn upload_scene_buffers(&mut self, scene: &Scene) -> Result<()> {
         let devices = self.devices.as_ref().context("devices missing")?;
 
+        self.globals.upload_rounded_clips(
+            &devices.device,
+            &devices.device_context,
+            &scene.rounded_clips,
+        )?;
+
         if !scene.shadows.is_empty() {
             self.pipelines.shadow_pipeline.update_buffer(
                 &devices.device,
@@ -629,6 +638,7 @@ impl DirectXRenderer {
                     st_position: v.st_position,
                     color: path.color,
                     bounds: path.clipped_bounds(),
+                    content_mask: path.content_mask,
                 }));
             }
         }
@@ -1132,7 +1142,46 @@ impl DirectXGlobalElements {
         Ok(Self {
             global_params_buffer,
             sampler,
+            rounded_clips_buffer: None,
+            rounded_clips_view: None,
+            rounded_clips_capacity: 0,
         })
+    }
+
+    fn upload_rounded_clips(
+        &mut self,
+        device: &ID3D11Device,
+        device_context: &ID3D11DeviceContext,
+        clips: &[RoundedClip<ScaledPixels>],
+    ) -> Result<()> {
+        if !clips.is_empty() {
+            if clips.len() > self.rounded_clips_capacity {
+                let capacity = clips.len().next_power_of_two();
+                let buffer = create_buffer(
+                    device,
+                    std::mem::size_of::<RoundedClip<ScaledPixels>>(),
+                    capacity,
+                )?;
+                let view = create_buffer_view(device, &buffer)?;
+                self.rounded_clips_buffer = Some(buffer);
+                self.rounded_clips_view = view;
+                self.rounded_clips_capacity = capacity;
+            }
+            update_buffer(
+                device_context,
+                self.rounded_clips_buffer.as_ref().unwrap(),
+                clips,
+            )?;
+        }
+        // t0 is the atlas and t1 is the current primitive batch. Clip indices
+        // address this frame-wide buffer, independently of primitive range views.
+        let view = if clips.is_empty() {
+            None
+        } else {
+            self.rounded_clips_view.clone()
+        };
+        unsafe { device_context.PSSetShaderResources(2, Some(&[view])) };
+        Ok(())
     }
 }
 
@@ -1371,6 +1420,7 @@ struct PathRasterizationSprite {
     st_position: Point<f32>,
     color: Background,
     bounds: Bounds<ScaledPixels>,
+    content_mask: GpuContentMask<ScaledPixels>,
 }
 
 #[derive(Clone, Copy)]
@@ -1941,6 +1991,10 @@ fn report_live_objects(device: &ID3D11Device) -> Result<()> {
 }
 
 const BUFFER_COUNT: usize = 3;
+
+#[cfg(test)]
+#[path = "rounded_clip_tests.rs"]
+mod rounded_clip_tests;
 
 pub(crate) mod shader_resources {
     use anyhow::Result;

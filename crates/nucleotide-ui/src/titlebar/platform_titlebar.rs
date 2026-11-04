@@ -87,10 +87,13 @@ impl Render for PlatformTitleBar {
 
         let titlebar_tokens = cx.global::<crate::Theme>().tokens.titlebar_tokens();
 
-        const MAC_UNIFIED_TITLEBAR_MIN_HEIGHT: f32 = 44.0;
+        let quiet_shell = cx
+            .try_global::<crate::theme_manager::ThemeManager>()
+            .is_some_and(|manager| {
+                nucleotide_appearance::content_islands_enabled(manager.ui_chrome_style())
+            });
         let height = titlebar_tokens.height;
-        let native_macos_titlebar = self.platform_style == PlatformStyle::Mac
-            && f32::from(height) >= MAC_UNIFIED_TITLEBAR_MIN_HEIGHT;
+        let native_macos_titlebar = self.platform_style == PlatformStyle::Mac && quiet_shell;
         #[cfg(debug_assertions)]
         debug!("TITLEBAR RENDER: Final titlebar height: {:?}", height);
 
@@ -112,12 +115,6 @@ impl Render for PlatformTitleBar {
             "TITLEBAR RENDER: Applying styles - background={:?}, border={:?}",
             titlebar_tokens.background, titlebar_tokens.border
         );
-
-        let quiet_shell = cx
-            .try_global::<crate::theme_manager::ThemeManager>()
-            .is_some_and(|manager| {
-                nucleotide_appearance::content_islands_enabled(manager.ui_chrome_style())
-            });
 
         // Build the titlebar
         let title_bar = div()

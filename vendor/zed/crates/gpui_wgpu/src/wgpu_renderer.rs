@@ -1,9 +1,9 @@
 use crate::{CompositorGpuHint, WgpuAtlas, WgpuContext};
 use bytemuck::{Pod, Zeroable};
 use gpui::{
-    AtlasTextureId, Background, Bounds, DevicePixels, GpuSpecs, MonochromeSprite, Path, Point,
-    PolychromeSprite, PrimitiveBatch, Quad, ScaledPixels, Scene, Shadow, Size, SubpixelSprite,
-    Underline, get_gamma_correction_ratios,
+    AtlasTextureId, Background, Bounds, DevicePixels, GpuContentMask, GpuSpecs, MonochromeSprite,
+    Path, Point, PolychromeSprite, PrimitiveBatch, Quad, RoundedClip, ScaledPixels, Scene, Shadow,
+    Size, SubpixelSprite, Underline, get_gamma_correction_ratios,
 };
 use log::warn;
 #[cfg(not(target_family = "wasm"))]
@@ -12,6 +12,10 @@ use std::cell::RefCell;
 use std::num::NonZeroU64;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
+
+#[cfg(test)]
+#[path = "rounded_clip_tests.rs"]
+mod rounded_clip_tests;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -67,6 +71,7 @@ struct PathRasterizationVertex {
     st_position: Point<f32>,
     color: Background,
     bounds: Bounds<ScaledPixels>,
+    content_mask: GpuContentMask<ScaledPixels>,
 }
 
 pub struct WgpuSurfaceConfig {
@@ -115,6 +120,7 @@ struct WgpuResources {
     globals_buffer: wgpu::Buffer,
     globals_bind_group: wgpu::BindGroup,
     path_globals_bind_group: wgpu::BindGroup,
+    rounded_clips_buffer: wgpu::Buffer,
     instance_buffer: wgpu::Buffer,
     path_intermediate_texture: Option<wgpu::Texture>,
     path_intermediate_view: Option<wgpu::TextureView>,
@@ -391,6 +397,15 @@ impl WgpuRenderer {
             mapped_at_creation: false,
         });
 
+        // Runtime-sized storage arrays require at least one valid element, even
+        // when every mask takes the rectangular (zero rounded clips) fast path.
+        let rounded_clips_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("rounded_clips_buffer"),
+            size: std::mem::size_of::<RoundedClip<ScaledPixels>>() as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         let globals_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("globals_bind_group"),
             layout: &bind_group_layouts.globals,
@@ -410,6 +425,10 @@ impl WgpuRenderer {
                         offset: gamma_offset,
                         size: Some(NonZeroU64::new(gamma_size).unwrap()),
                     }),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: rounded_clips_buffer.as_entire_binding(),
                 },
             ],
         });
@@ -434,6 +453,10 @@ impl WgpuRenderer {
                         size: Some(NonZeroU64::new(gamma_size).unwrap()),
                     }),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: rounded_clips_buffer.as_entire_binding(),
+                },
             ],
         });
 
@@ -456,6 +479,7 @@ impl WgpuRenderer {
             globals_buffer,
             globals_bind_group,
             path_globals_bind_group,
+            rounded_clips_buffer,
             instance_buffer,
             // Defer intermediate texture creation to first draw call via ensure_intermediate_textures().
             // This avoids panics when the device/surface is in an invalid state during initialization.
@@ -517,6 +541,19 @@ impl WgpuRenderer {
                             min_binding_size: NonZeroU64::new(
                                 std::mem::size_of::<GammaParams>() as u64
                             ),
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: NonZeroU64::new(std::mem::size_of::<
+                                RoundedClip<ScaledPixels>,
+                            >()
+                                as u64),
                         },
                         count: None,
                     },
@@ -1166,6 +1203,8 @@ impl WgpuRenderer {
             ..globals
         };
 
+        self.upload_rounded_clips(scene);
+
         {
             let resources = self.resources();
             resources.queue.write_buffer(
@@ -1576,6 +1615,7 @@ impl WgpuRenderer {
                 st_position: v.st_position,
                 color: path.color,
                 bounds,
+                content_mask: path.content_mask,
             }));
         }
 
@@ -1635,6 +1675,57 @@ impl WgpuRenderer {
         }
 
         true
+    }
+
+    fn upload_rounded_clips(&mut self, scene: &Scene) {
+        let clip_data = unsafe { Self::instance_bytes(&scene.rounded_clips) };
+        let path_globals_offset = self.path_globals_offset;
+        let gamma_offset = self.gamma_offset;
+        let resources = self.resources_mut();
+        if clip_data.len() as u64 > resources.rounded_clips_buffer.size() {
+            resources.rounded_clips_buffer =
+                resources.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("rounded_clips_buffer"),
+                    size: clip_data.len() as u64,
+                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+            let bind_group = |offset| {
+                resources.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("globals_bind_group"),
+                    layout: &resources.bind_group_layouts.globals,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                                buffer: &resources.globals_buffer,
+                                offset,
+                                size: NonZeroU64::new(std::mem::size_of::<GlobalParams>() as u64),
+                            }),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                                buffer: &resources.globals_buffer,
+                                offset: gamma_offset,
+                                size: NonZeroU64::new(std::mem::size_of::<GammaParams>() as u64),
+                            }),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: resources.rounded_clips_buffer.as_entire_binding(),
+                        },
+                    ],
+                })
+            };
+            resources.globals_bind_group = bind_group(0);
+            resources.path_globals_bind_group = bind_group(path_globals_offset);
+        }
+        if !clip_data.is_empty() {
+            resources
+                .queue
+                .write_buffer(&resources.rounded_clips_buffer, 0, clip_data);
+        }
     }
 
     fn grow_instance_buffer(&mut self) {

@@ -921,15 +921,15 @@ pub fn paint_document_frame(
 ) -> Option<CursorOverlayPlan> {
     paint_document_cursorlines(window, &params);
     paint_visible_rulers(window, &params.frame.frameline_paint_plans);
-    let text_mask = ContentMask {
-        bounds: EditorSurfaceGeometry::new(
+    let text_mask = ContentMask::new(
+        EditorSurfaceGeometry::new(
             params.bounds,
             params.frame.gutter_width,
             params.layout.cell_width,
         )
         .text_bounds(),
-    };
-    window.with_content_mask(Some(text_mask), |window| {
+    );
+    window.with_content_mask(Some(text_mask.clone()), |window| {
         paint_visible_rulers(window, &params.frame.cursorcolumn_paint_plans);
         paint_visible_rulers(window, &params.frame.ruler_paint_plans);
     });
