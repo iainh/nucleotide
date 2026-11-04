@@ -11435,6 +11435,11 @@ impl Render for Workspace {
         let ui_theme = cx.global::<nucleotide_ui::Theme>();
         let status_bar_height = ui_theme.tokens.sizes.statusbar_height;
         let island_radius = ui_theme.tokens.sizes.radius_lg;
+        let island_border_color = ui_theme
+            .tokens
+            .chrome
+            .text_on_chrome
+            .alpha(if ui_theme.is_dark() { 0.12 } else { 0.14 });
         let (island_margin, island_inset) = self.content_island_insets(cx);
         let content_islands = island_margin > px(0.0);
         let island_gutter_half = if self.show_file_tree {
@@ -12477,6 +12482,8 @@ impl Render for Workspace {
                             .size_full()
                             .rounded(island_radius)
                             .padding(px(0.0))
+                            .border_1()
+                            .border_color(island_border_color)
                             .overflow_hidden()
                             .bg(cx.theme().tokens.editor.background.alpha(1.0))
                             .child(right),
@@ -12597,6 +12604,8 @@ impl Render for Workspace {
                                 .size_full()
                                 .rounded(island_radius)
                                 .padding(px(0.0))
+                                .border_1()
+                                .border_color(island_border_color)
                                 .overflow_hidden()
                                 .bg(file_tree_background.alpha(1.0))
                                 .child(file_tree_container),
