@@ -88,7 +88,7 @@ impl DirtyFlags {
 #[cfg(feature = "emulator")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct TerminalCellPosition {
-    row: usize,
+    row: isize,
     col: usize,
 }
 
@@ -110,9 +110,9 @@ impl TerminalSelection {
             return false;
         }
 
-        let anchor = self.anchor.row * cols + self.anchor.col;
-        let head = self.head.row * cols + self.head.col;
-        let position = position.row * cols + position.col;
+        let anchor = (self.anchor.row, self.anchor.col);
+        let head = (self.head.row, self.head.col);
+        let position = (position.row, position.col);
         let (start, end) = if anchor <= head {
             (anchor, head)
         } else {
@@ -164,6 +164,12 @@ pub struct TerminalViewModel {
     input_tx: Option<std::sync::mpsc::Sender<Vec<u8>>>,
     #[cfg(feature = "emulator")]
     selection: Option<TerminalSelection>,
+    /// Keep copied text available when the selected rows leave the viewport.
+    #[cfg(feature = "emulator")]
+    selection_text: Option<String>,
+    /// Buffer row at the top of the rendered grid, not the requested scroll offset.
+    #[cfg(feature = "emulator")]
+    viewport_top: isize,
     #[cfg(feature = "emulator")]
     mouse_selecting: bool,
     window_title: Option<String>,
@@ -209,6 +215,10 @@ impl TerminalViewModel {
             #[cfg(feature = "emulator")]
             selection: None,
             #[cfg(feature = "emulator")]
+            selection_text: None,
+            #[cfg(feature = "emulator")]
+            viewport_top: 0,
+            #[cfg(feature = "emulator")]
             mouse_selecting: false,
             window_title: None,
             spawn_failure: None,
@@ -252,23 +262,26 @@ impl TerminalViewModel {
         let y = (f32::from(position.y) - f32::from(bounds.origin.y)).max(0.0);
 
         Some(TerminalCellPosition {
-            row: ((y / cell_height).floor() as usize).min(rows - 1),
+            row: ((y / cell_height).floor() as usize).min(rows - 1) as isize,
             col: ((x / cell_width).floor() as usize).min(cols - 1),
         })
     }
 
     #[cfg(feature = "emulator")]
-    fn start_mouse_selection(&mut self, position: TerminalCellPosition) {
+    fn start_mouse_selection(&mut self, mut position: TerminalCellPosition) {
+        position.row += self.viewport_top;
         self.selection = Some(TerminalSelection {
             anchor: position,
             head: position,
         });
+        self.selection_text = None;
         self.mouse_selecting = true;
         self.dirty.mark_all();
     }
 
     #[cfg(feature = "emulator")]
-    fn extend_mouse_selection(&mut self, position: TerminalCellPosition) -> bool {
+    fn extend_mouse_selection(&mut self, mut position: TerminalCellPosition) -> bool {
+        position.row += self.viewport_top;
         let Some(selection) = self.selection.as_mut() else {
             return false;
         };
@@ -277,6 +290,7 @@ impl TerminalViewModel {
         }
 
         selection.head = position;
+        self.selection_text = self.visible_selected_text();
         self.dirty.mark_all();
         true
     }
@@ -288,33 +302,38 @@ impl TerminalViewModel {
 
     #[cfg(feature = "emulator")]
     pub fn selected_text(&self) -> Option<String> {
+        self.selection_text.clone()
+    }
+
+    #[cfg(feature = "emulator")]
+    fn visible_selected_text(&self) -> Option<String> {
         let selection = self.selection?;
         if !selection.is_active() || self.cols == 0 {
             return None;
         }
 
         let cols = self.cols as usize;
-        let anchor = selection.anchor.row * cols + selection.anchor.col;
-        let head = selection.head.row * cols + selection.head.col;
+        let anchor = (selection.anchor.row, selection.anchor.col);
+        let head = (selection.head.row, selection.head.col);
         let (start, end) = if anchor <= head {
             (anchor, head)
         } else {
             (head, anchor)
         };
         let start = TerminalCellPosition {
-            row: start / cols,
-            col: start % cols,
+            row: start.0 - self.viewport_top,
+            col: start.1,
         };
         let end = TerminalCellPosition {
-            row: end / cols,
-            col: end % cols,
+            row: end.0 - self.viewport_top,
+            col: end.1,
         };
 
         let mut text = String::new();
-        for row in start.row..=end.row.min(self.grid.len().saturating_sub(1)) {
+        for row in start.row.max(0)..=end.row.min(self.grid.len() as isize - 1) {
             let row_start = if row == start.row { start.col } else { 0 };
             let row_end = if row == end.row { end.col } else { cols - 1 };
-            let Some(cells) = self.grid.get(row) else {
+            let Some(cells) = self.grid.get(row as usize) else {
                 continue;
             };
 
@@ -358,6 +377,7 @@ impl TerminalViewModel {
 
     #[cfg(feature = "emulator")]
     fn set_snapshot(&mut self, snapshot: GridSnapshot) {
+        self.viewport_top = snapshot.history_size as isize - snapshot.display_offset as isize;
         self.cols = snapshot.cols;
         self.rows = snapshot.rows_len;
         self.grid = snapshot.rows;
@@ -387,6 +407,7 @@ impl TerminalViewModel {
             self.dirty.mark(self.cursor_row as usize);
         }
         if let Some(delta) = diff.scrolled {
+            self.viewport_top += delta as isize;
             let visible_rows = self.grid.len();
             if delta > 0 {
                 let d = (delta as usize).min(visible_rows);
@@ -625,13 +646,6 @@ fn blank_cell() -> Cell {
         underline: false,
         inverse: false,
     }
-}
-
-#[cfg(feature = "emulator")]
-fn terminal_render_text(text: &str) -> String {
-    text.chars()
-        .map(|ch| if ch == ' ' { '\u{00a0}' } else { ch })
-        .collect()
 }
 
 /// Bridges the terminal's line-based scrollback to the pixel-based `ScrollableHandle` trait.
@@ -1537,14 +1551,6 @@ mod tests {
     }
 
     #[test]
-    fn terminal_render_text_preserves_spaces_as_cells() {
-        assert_eq!(
-            terminal_render_text(" a  b "),
-            "\u{00a0}a\u{00a0}\u{00a0}b\u{00a0}"
-        );
-    }
-
-    #[test]
     fn terminal_mouse_selection_returns_text_across_rows() {
         let mut model = TerminalViewModel::new(TerminalId(1));
         model.resize_grid(3, 2, Some((8.0, 16.0)));
@@ -1560,6 +1566,65 @@ mod tests {
         model.finish_mouse_selection();
 
         assert_eq!(model.selected_text().as_deref(), Some("bc\nde"));
+    }
+
+    #[gpui::test]
+    fn terminal_selection_survives_scrollback_frames(cx: &mut TestAppContext) {
+        cx.update(install_test_globals);
+        let snapshot = |offset: usize| {
+            let lines = ["aaa", "bbb", "ccc", "def", "ghi", "jkl"];
+            FramePayload::Full(GridSnapshot {
+                rows: lines[3 - offset..6 - offset]
+                    .iter()
+                    .map(|line| line.chars().map(|ch| Cell { ch, ..blank_cell() }).collect())
+                    .collect(),
+                cols: 3,
+                rows_len: 3,
+                cursor_row: 2,
+                cursor_col: 2,
+                title: None,
+                history_size: 3,
+                display_offset: offset,
+                input_mode: TerminalInputMode::default(),
+            })
+        };
+        let mut model = TerminalViewModel::new(TerminalId(3));
+        model.apply_frame(snapshot(0));
+        model.resize_grid(3, 3, Some((8.0, 20.0)));
+        let model = Arc::new(Mutex::new(model));
+        let (_, cx) =
+            cx.add_window_view(|_, cx| TerminalView::new(model.clone(), cx.focus_handle(), cx));
+
+        for offset in [0, 1] {
+            lock_or_recover(&model).apply_frame(snapshot(offset));
+            cx.refresh().unwrap();
+            let start = point(px(12.0), px(10.0));
+            let end = point(px(12.0), px(30.0));
+            // Both drag directions must select the same asymmetric range.
+            let (start, end) = if offset == 0 {
+                (start, end)
+            } else {
+                (end, start)
+            };
+            cx.simulate_mouse_down(start, MouseButton::Left, gpui::Modifiers::none());
+            cx.simulate_mouse_move(end, MouseButton::Left, gpui::Modifiers::none());
+            cx.simulate_mouse_up(end, MouseButton::Left, gpui::Modifiers::none());
+            let expected = if offset == 0 { "ef\ngh" } else { "cc\nde" };
+            assert_eq!(
+                lock_or_recover(&model).selected_text().as_deref(),
+                Some(expected)
+            );
+
+            // Scroll fully out of view and back without copying unrelated rows.
+            for next_offset in [3, 0, 2, offset] {
+                lock_or_recover(&model).apply_frame(snapshot(next_offset));
+                cx.refresh().unwrap();
+                assert_eq!(
+                    lock_or_recover(&model).selected_text().as_deref(),
+                    Some(expected)
+                );
+            }
+        }
     }
 
     fn hue_distance(a: Hsla, b: Hsla) -> f32 {
@@ -1613,7 +1678,11 @@ impl Render for TerminalRowView {
                 guard.cursor_col as usize,
                 guard.cell_width,
                 guard.cell_height,
-                guard.selection,
+                guard.selection.map(|mut selection| {
+                    selection.anchor.row -= guard.viewport_top;
+                    selection.head.row -= guard.viewport_top;
+                    selection
+                }),
                 guard.cols as usize,
             )
         };
@@ -1632,7 +1701,7 @@ impl Render for TerminalRowView {
         };
         let line_height_px = gpui::px(applied_line_height);
 
-        let mut line = div()
+        let line = div()
             .flex()
             .flex_row()
             .w_full()
@@ -1645,154 +1714,111 @@ impl Render for TerminalRowView {
             .line_height(line_height_px)
             .font_family(editor_font.family.clone())
             .text_size(gpui::px(editor_font.size));
-        // Accumulate runs
-        let mut cur_fg = 0xffffffff; // sentinel to force first run
-        let mut cur_bg = 0xffffffff;
-        let mut cur_bold = false;
-        let mut cur_italic = false;
-        let mut cur_underline = false;
-        let mut cur_inverse = false;
-        let mut cur_selected = false;
-        let mut buf = String::new();
-
-        let flush_run = |line_in: gpui::Div,
-                         text: &mut String,
-                         fg: u32,
-                         bg: u32,
-                         bold: bool,
-                         italic: bool,
-                         underline: bool,
-                         inverse: bool,
-                         selected: bool| {
-            if text.is_empty() {
-                return line_in;
-            }
-            let (fg, bg) = if inverse { (bg, fg) } else { (fg, bg) };
-            let mapped_bg = ansi_palette.background_for_code(bg);
-            let mut contrast_bg = mapped_bg.unwrap_or(ansi_palette.default_background);
-            let mut mapped_fg = ColorTheory::ensure_contrast(
-                contrast_bg,
-                ansi_palette.foreground_for_code(fg),
-                ContrastRatios::AA_NORMAL,
-            );
-            if selected {
-                contrast_bg = tokens.editor.selection_primary;
-                mapped_fg = tokens.editor.text_on_primary;
-            }
-
-            let cell_count = text.chars().count().max(1);
-            let rendered_text = terminal_render_text(&std::mem::take(text));
-            let mut run = div()
-                .w(gpui::px(applied_cell_width * cell_count as f32))
-                .h(line_height_px)
-                .flex_shrink_0()
-                .overflow_hidden()
-                .child(rendered_text);
-            run = run.text_color(mapped_fg);
-            run = run.bg(contrast_bg);
-            if bold {
-                run = run.font_weight(FontWeight::BOLD);
-            }
-            if italic {
-                run = run.italic();
-            }
-            if underline {
-                run = run.underline();
-            }
-            line_in.child(run)
-        };
-
-        for (i, cell) in grid_row.iter().enumerate() {
-            let (fg, bg, bold, italic, underline, inverse) = (
-                cell.fg,
-                cell.bg,
-                cell.bold,
-                cell.italic,
-                cell.underline,
-                cell.inverse,
-            );
-            let selected = selection.is_some_and(|selection| {
-                selection.contains(
-                    TerminalCellPosition {
-                        row: self.row_index,
-                        col: i,
-                    },
-                    cols,
-                )
-            });
-            if fg != cur_fg
-                || bg != cur_bg
-                || bold != cur_bold
-                || italic != cur_italic
-                || underline != cur_underline
-                || inverse != cur_inverse
-                || selected != cur_selected
-            {
-                // flush previous run
-                line = flush_run(
-                    line,
-                    &mut buf,
-                    cur_fg,
-                    cur_bg,
-                    cur_bold,
-                    cur_italic,
-                    cur_underline,
-                    cur_inverse,
-                    cur_selected,
-                );
-                cur_fg = fg;
-                cur_bg = bg;
-                cur_bold = bold;
-                cur_italic = italic;
-                cur_underline = underline;
-                cur_inverse = inverse;
-                cur_selected = selected;
-            }
-            // Cursor rendering: render a block cursor at (cursor_row, cursor_col)
-            if self.row_index == cursor_row && i == cursor_col {
-                // Flush any accumulated text
-                line = flush_run(
-                    line,
-                    &mut buf,
-                    cur_fg,
-                    cur_bg,
-                    cur_bold,
-                    cur_italic,
-                    cur_underline,
-                    cur_inverse,
-                    cur_selected,
-                );
-                // Render the cursor cell as a block using theme tokens
-                let mut run = div()
-                    .w(gpui::px(applied_cell_width))
-                    .h(line_height_px)
-                    .flex_shrink_0()
-                    .overflow_hidden()
-                    .child(terminal_render_text(&cell.ch.to_string()));
-                run = run.bg(tokens.editor.cursor_normal);
-                run = run.text_color(tokens.editor.text_on_primary);
-                // Make cursor more prominent
-                run = run.font_weight(FontWeight::BOLD);
-                line = line.child(run);
-                // Do not push this char into the normal buffer
-                continue;
-            }
-            buf.push(cell.ch);
-        }
-        // flush last
-        line = flush_run(
-            line,
-            &mut buf,
-            cur_fg,
-            cur_bg,
-            cur_bold,
-            cur_italic,
-            cur_underline,
-            cur_inverse,
-            cur_selected,
-        );
-
-        line
+        let selection_bg = tokens.editor.selection_primary;
+        let selection_fg = tokens.editor.text_on_primary;
+        let cursor_bg = tokens.editor.cursor_normal;
+        let row_index = self.row_index;
+        line.child(
+            gpui::canvas(
+                move |_, window, _| {
+                    let base_style = window.text_style();
+                    let mut text = String::new();
+                    let mut runs = Vec::with_capacity(grid_row.len());
+                    for (col, cell) in grid_row.iter().enumerate() {
+                        let (fg, bg) = if cell.inverse {
+                            (cell.bg, cell.fg)
+                        } else {
+                            (cell.fg, cell.bg)
+                        };
+                        let mut style = base_style.clone();
+                        let bg = ansi_palette
+                            .background_for_code(bg)
+                            .unwrap_or(ansi_palette.default_background);
+                        style.background_color = Some(bg);
+                        style.color = ColorTheory::ensure_contrast(
+                            bg,
+                            ansi_palette.foreground_for_code(fg),
+                            ContrastRatios::AA_NORMAL,
+                        );
+                        if selection.is_some_and(|selection| {
+                            selection.contains(
+                                TerminalCellPosition {
+                                    row: row_index as isize,
+                                    col,
+                                },
+                                cols,
+                            )
+                        }) {
+                            style.background_color = Some(selection_bg);
+                            style.color = selection_fg;
+                        }
+                        let is_cursor = row_index == cursor_row && col == cursor_col;
+                        if is_cursor {
+                            style.background_color = Some(cursor_bg);
+                            style.color = selection_fg;
+                        }
+                        if cell.bold || is_cursor {
+                            style.font_weight = FontWeight::BOLD;
+                        }
+                        if cell.italic {
+                            style.font_style = gpui::FontStyle::Italic;
+                        }
+                        if cell.underline {
+                            style.underline = Some(gpui::UnderlineStyle {
+                                thickness: gpui::px(1.0),
+                                ..Default::default()
+                            });
+                        }
+                        text.push(cell.ch);
+                        runs.push(style.to_run(cell.ch.len_utf8()));
+                    }
+                    let text: gpui::SharedString = text.into();
+                    let mut shaped = window.text_system().shape_line(
+                        text.clone(),
+                        base_style.font_size.to_pixels(window.rem_size()),
+                        &runs,
+                        None,
+                    );
+                    // Keep one row origin: separate run boxes round fractional
+                    // widths independently and move text when selection splits them.
+                    let mut runs = shaped.runs.clone();
+                    for run in &mut runs {
+                        for glyph in &mut run.glyphs {
+                            let column = text[..glyph.index].chars().count();
+                            glyph.position.x = gpui::px(applied_cell_width * column as f32);
+                        }
+                    }
+                    *shaped = Arc::new(gpui::LineLayout {
+                        font_size: shaped.font_size,
+                        width: gpui::px(applied_cell_width * grid_row.len() as f32),
+                        ascent: shaped.ascent,
+                        descent: shaped.descent,
+                        runs,
+                        len: shaped.len(),
+                    });
+                    shaped
+                },
+                move |bounds, shaped, window, cx| {
+                    let _ = shaped.paint_background(
+                        bounds.origin,
+                        line_height_px,
+                        gpui::TextAlign::Left,
+                        None,
+                        window,
+                        cx,
+                    );
+                    let _ = shaped.paint(
+                        bounds.origin,
+                        line_height_px,
+                        gpui::TextAlign::Left,
+                        None,
+                        window,
+                        cx,
+                    );
+                },
+            )
+            .size_full(),
+        )
     }
 }
 
