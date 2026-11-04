@@ -109,6 +109,24 @@ pub mod session {
 
     use crate::frame::FramePayload;
 
+    #[cfg(feature = "emulator")]
+    pub use libghostty_vt::{
+        key::Mods as MouseModifiers,
+        mouse::{Action as MouseAction, Button as MouseButton},
+    };
+
+    #[cfg(feature = "emulator")]
+    #[derive(Debug, Clone)]
+    pub struct MouseInput {
+        pub action: MouseAction,
+        pub button: Option<MouseButton>,
+        pub modifiers: MouseModifiers,
+        /// Position relative to the rendered grid, in logical pixels.
+        pub position: (f32, f32),
+        pub cell_size: (f32, f32),
+        pub any_button_pressed: bool,
+    }
+
     /// Control messages for the emulator engine (only when emulator feature is enabled)
     #[cfg(feature = "emulator")]
     pub enum ControlMsg {
@@ -123,6 +141,7 @@ pub mod session {
             request_id: u64,
         },
         Paste(String),
+        Mouse(MouseInput),
         Shutdown,
     }
 
@@ -478,6 +497,7 @@ pub mod session {
                                 needs_frame = true;
                             }
                             ControlMsg::Paste(text) => engine.paste(&text),
+                            ControlMsg::Mouse(input) => engine.mouse_input(input),
                             ControlMsg::Shutdown => break 'parser,
                         }
                     }
@@ -1123,6 +1143,7 @@ pub mod engine {
         Cell, DEFAULT_BACKGROUND, DEFAULT_FOREGROUND, FramePayload, GridSnapshot,
         TerminalInputMode, ansi_color,
     };
+    use crate::session::MouseInput;
     use libghostty_vt::Terminal;
     use libghostty_vt::render::{CellIterator, RenderState, RowIterator};
     use libghostty_vt::screen::TrackedGridRef;
@@ -1196,12 +1217,65 @@ pub mod engine {
             });
             let mut data = text.as_bytes().to_vec();
             let mut encoded = vec![0; data.len() + 12];
-            if let Ok(len) = libghostty_vt::paste::encode(&mut data, bracketed, &mut encoded)
-                && let Some(writer) = &self.pty_writer
+            if let Ok(len) = libghostty_vt::paste::encode(&mut data, bracketed, &mut encoded) {
+                self.write_input(&encoded[..len]);
+            }
+        }
+
+        pub fn mouse_input(&mut self, input: MouseInput) {
+            use libghostty_vt::mouse;
+            let Some(terminal) = &self.terminal else {
+                return;
+            };
+            let (Ok(mut encoder), Ok(mut event)) = (mouse::Encoder::new(), mouse::Event::new())
+            else {
+                return;
+            };
+            let cell_width = input.cell_size.0.round().max(1.0) as u32;
+            let cell_height = input.cell_size.1.round().max(1.0) as u32;
+            let mut position = mouse::Position {
+                x: input.position.0,
+                y: input.position.1,
+            };
+            if !terminal
+                .mode(libghostty_vt::terminal::Mode::SGR_PIXELS_MOUSE)
+                .unwrap_or(false)
+            {
+                // The encoder's geometry is integral; preserve cell boundaries
+                // when the rendered font metrics have fractional widths.
+                position.x *= cell_width as f32 / input.cell_size.0.max(1.0);
+                position.y *= cell_height as f32 / input.cell_size.1.max(1.0);
+            }
+            encoder
+                .set_options_from_terminal(terminal)
+                .set_size(mouse::EncoderSize {
+                    screen_width: u32::from(self.cols) * cell_width,
+                    screen_height: u32::from(self.rows) * cell_height,
+                    cell_width,
+                    cell_height,
+                    padding_top: 0,
+                    padding_bottom: 0,
+                    padding_left: 0,
+                    padding_right: 0,
+                })
+                .set_any_button_pressed(input.any_button_pressed);
+            event
+                .set_action(input.action)
+                .set_button(input.button)
+                .set_mods(input.modifiers)
+                .set_position(position);
+            let mut encoded = Vec::new();
+            if encoder.encode_to_vec(&event, &mut encoded).is_ok() {
+                self.write_input(&encoded);
+            }
+        }
+
+        fn write_input(&self, bytes: &[u8]) {
+            if let Some(writer) = &self.pty_writer
                 && let Ok(mut writer) = writer.lock()
                 && let Some(writer) = writer.as_mut()
             {
-                let _ = writer.write_all(&encoded[..len]);
+                let _ = writer.write_all(bytes);
                 let _ = writer.flush();
             }
         }

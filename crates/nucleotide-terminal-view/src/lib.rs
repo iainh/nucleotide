@@ -17,6 +17,10 @@ use nucleotide_terminal::frame::{
     TerminalInputMode, ansi_color_index,
 };
 #[cfg(feature = "emulator")]
+use nucleotide_terminal::session::{
+    MouseAction, MouseButton as TerminalMouseButton, MouseInput, MouseModifiers,
+};
+#[cfg(feature = "emulator")]
 use nucleotide_types::scrollbar::SCROLLBAR_THICKNESS;
 use nucleotide_ui::ThemedContext;
 #[cfg(feature = "emulator")]
@@ -176,6 +180,10 @@ pub struct TerminalViewModel {
     viewport_top: isize,
     #[cfg(feature = "emulator")]
     mouse_selecting: bool,
+    #[cfg(feature = "emulator")]
+    reported_mouse_buttons: Vec<MouseButton>,
+    #[cfg(feature = "emulator")]
+    mouse_wheel_remainder: (f32, f32),
     window_title: Option<String>,
     spawn_failure: Option<TerminalSpawnFailure>,
     /// Set to true when the shell process has exited
@@ -228,6 +236,10 @@ impl TerminalViewModel {
             viewport_top: 0,
             #[cfg(feature = "emulator")]
             mouse_selecting: false,
+            #[cfg(feature = "emulator")]
+            reported_mouse_buttons: Vec::new(),
+            #[cfg(feature = "emulator")]
+            mouse_wheel_remainder: (0.0, 0.0),
             window_title: None,
             spawn_failure: None,
             exited: false,
@@ -306,6 +318,156 @@ impl TerminalViewModel {
     #[cfg(feature = "emulator")]
     fn finish_mouse_selection(&mut self) -> bool {
         std::mem::replace(&mut self.mouse_selecting, false)
+    }
+
+    #[cfg(feature = "emulator")]
+    fn report_mouse(
+        &self,
+        bounds: Bounds<Pixels>,
+        position: gpui::Point<Pixels>,
+        action: MouseAction,
+        button: Option<TerminalMouseButton>,
+        modifiers: gpui::Modifiers,
+    ) -> bool {
+        if self.has_exited() {
+            return false;
+        }
+        let mut mods = MouseModifiers::empty();
+        if modifiers.shift {
+            mods |= MouseModifiers::SHIFT;
+        }
+        if modifiers.alt {
+            mods |= MouseModifiers::ALT;
+        }
+        if modifiers.control {
+            mods |= MouseModifiers::CTRL;
+        }
+        if modifiers.platform {
+            mods |= MouseModifiers::SUPER;
+        }
+        self.control_tx.as_ref().is_some_and(|tx| {
+            tx.send(nucleotide_terminal::session::ControlMsg::Mouse(
+                MouseInput {
+                    action,
+                    button,
+                    modifiers: mods,
+                    position: (
+                        f32::from(position.x - bounds.origin.x),
+                        f32::from(position.y - bounds.origin.y),
+                    ),
+                    cell_size: (self.cell_width.max(1.0), self.cell_height.max(1.0)),
+                    any_button_pressed: !self.reported_mouse_buttons.is_empty(),
+                },
+            ))
+            .is_ok()
+        })
+    }
+
+    #[cfg(feature = "emulator")]
+    fn mouse_down(&mut self, bounds: Bounds<Pixels>, event: &MouseDownEvent) -> bool {
+        if self.input_mode.mouse_mode && !event.modifiers.shift && !self.has_exited() {
+            if let Some(button) = terminal_mouse_button(event.button) {
+                if !self.reported_mouse_buttons.contains(&event.button) {
+                    self.reported_mouse_buttons.push(event.button);
+                }
+                self.clear_selection();
+                self.report_mouse(
+                    bounds,
+                    event.position,
+                    MouseAction::Press,
+                    Some(button),
+                    event.modifiers,
+                );
+                return true;
+            }
+        } else if event.button == MouseButton::Left
+            && let Some(position) = self.cell_position_for_pointer(bounds, event.position)
+        {
+            self.start_mouse_selection(position);
+            return true;
+        }
+        false
+    }
+
+    #[cfg(feature = "emulator")]
+    fn mouse_move(&mut self, bounds: Bounds<Pixels>, event: &MouseMoveEvent) -> bool {
+        // Gesture ownership is fixed at mouse-down, not by changing modifiers.
+        if self.mouse_selecting {
+            return self
+                .cell_position_for_pointer(bounds, event.position)
+                .is_some_and(|position| self.extend_mouse_selection(position));
+        }
+        let owned_drag = event
+            .pressed_button
+            .is_some_and(|button| self.reported_mouse_buttons.contains(&button));
+        if owned_drag
+            || (self.input_mode.mouse_mode
+                && !event.modifiers.shift
+                && event.pressed_button.is_none())
+        {
+            self.report_mouse(
+                bounds,
+                event.position,
+                MouseAction::Motion,
+                event.pressed_button.and_then(terminal_mouse_button),
+                event.modifiers,
+            );
+            return true;
+        }
+        false
+    }
+
+    #[cfg(feature = "emulator")]
+    fn mouse_up(&mut self, bounds: Bounds<Pixels>, event: &MouseUpEvent) -> bool {
+        if let Some(index) = self
+            .reported_mouse_buttons
+            .iter()
+            .position(|button| *button == event.button)
+        {
+            self.reported_mouse_buttons.remove(index);
+            self.report_mouse(
+                bounds,
+                event.position,
+                MouseAction::Release,
+                terminal_mouse_button(event.button),
+                event.modifiers,
+            );
+            true
+        } else {
+            event.button == MouseButton::Left && self.finish_mouse_selection()
+        }
+    }
+
+    #[cfg(feature = "emulator")]
+    fn mouse_wheel(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        event: &gpui::ScrollWheelEvent,
+        delta: gpui::Point<Pixels>,
+    ) -> bool {
+        if !self.input_mode.mouse_mode || event.modifiers.shift || self.has_exited() {
+            self.mouse_wheel_remainder = (0.0, 0.0);
+            return self.scroll_wheel_by_pixel_delta(f32::from(delta.y));
+        }
+        let x = self.mouse_wheel_remainder.0 + f32::from(delta.x) / self.cell_width.max(1.0);
+        let y = self.mouse_wheel_remainder.1 + f32::from(delta.y) / self.cell_height.max(1.0);
+        self.mouse_wheel_remainder = (x.fract(), y.fract());
+        for (lines, positive, negative) in [
+            (y, TerminalMouseButton::Four, TerminalMouseButton::Five),
+            (x, TerminalMouseButton::Seven, TerminalMouseButton::Six),
+        ] {
+            for _ in 0..lines.trunc().abs() as usize {
+                self.report_mouse(
+                    bounds,
+                    event.position,
+                    MouseAction::Press,
+                    Some(if lines > 0.0 { positive } else { negative }),
+                    event.modifiers,
+                );
+            }
+        }
+        // Even protocol-filtered reports belong to the app, not scrollback.
+        false
     }
 
     #[cfg(feature = "emulator")]
@@ -684,6 +846,16 @@ fn blank_cell() -> Cell {
     }
 }
 
+#[cfg(feature = "emulator")]
+fn terminal_mouse_button(button: MouseButton) -> Option<TerminalMouseButton> {
+    match button {
+        MouseButton::Left => Some(TerminalMouseButton::Left),
+        MouseButton::Middle => Some(TerminalMouseButton::Middle),
+        MouseButton::Right => Some(TerminalMouseButton::Right),
+        _ => None,
+    }
+}
+
 /// Bridges the terminal's line-based scrollback to the pixel-based `ScrollableHandle` trait.
 #[cfg(feature = "emulator")]
 #[derive(Debug)]
@@ -966,13 +1138,20 @@ impl Render for TerminalView {
             // Add scroll wheel support (requires an id for interactive element)
             let scroll_model = self.model.clone();
             let content_bounds = Rc::new(LayoutCell::new(None::<Bounds<Pixels>>));
+            let scroll_bounds = content_bounds.clone();
             let interactive_content =
                 content
                     .id("terminal-content")
                     .on_scroll_wheel(move |event, window, cx| {
                         let mut guard = lock_or_recover(scroll_model.as_ref());
-                        let delta_y = f32::from(event.delta.pixel_delta(window.line_height()).y);
-                        if guard.scroll_wheel_by_pixel_delta(delta_y) {
+                        let Some(bounds) = scroll_bounds.get() else {
+                            return;
+                        };
+                        if guard.mouse_wheel(
+                            bounds,
+                            event,
+                            event.delta.pixel_delta(window.line_height()),
+                        ) {
                             window.refresh();
                         }
                         cx.stop_propagation();
@@ -981,37 +1160,14 @@ impl Render for TerminalView {
             let selection_model = self.model.clone();
             let mouse_down_bounds = Rc::clone(&content_bounds);
             let focus = self.focus.clone();
-            let interactive_content = interactive_content.on_mouse_down(
-                MouseButton::Left,
-                _cx.listener(move |_, event: &MouseDownEvent, window, cx| {
+            let interactive_content = interactive_content.on_any_mouse_down(_cx.listener(
+                move |_, event: &MouseDownEvent, window, cx| {
                     let Some(bounds) = mouse_down_bounds.get() else {
                         return;
                     };
                     focus.focus(window, cx);
                     let mut model = lock_or_recover(selection_model.as_ref());
-                    if let Some(position) = model.cell_position_for_pointer(bounds, event.position)
-                    {
-                        model.start_mouse_selection(position);
-                        cx.notify();
-                        cx.stop_propagation();
-                    }
-                }),
-            );
-
-            let selection_model = self.model.clone();
-            let mouse_move_bounds = Rc::clone(&content_bounds);
-            let interactive_content = interactive_content.on_mouse_move(_cx.listener(
-                move |_, event: &MouseMoveEvent, _window, cx| {
-                    if !event.dragging() {
-                        return;
-                    }
-                    let Some(bounds) = mouse_move_bounds.get() else {
-                        return;
-                    };
-                    let mut model = lock_or_recover(selection_model.as_ref());
-                    if let Some(position) = model.cell_position_for_pointer(bounds, event.position)
-                        && model.extend_mouse_selection(position)
-                    {
+                    if model.mouse_down(bounds, event) {
                         cx.notify();
                         cx.stop_propagation();
                     }
@@ -1019,24 +1175,36 @@ impl Render for TerminalView {
             ));
 
             let selection_model = self.model.clone();
-            let interactive_content = interactive_content.on_mouse_up(
-                MouseButton::Left,
-                move |_event: &MouseUpEvent, _window, cx| {
-                    if lock_or_recover(selection_model.as_ref()).finish_mouse_selection() {
+            let mouse_move_bounds = Rc::clone(&content_bounds);
+            let interactive_content = interactive_content.on_mouse_move(_cx.listener(
+                move |_, event: &MouseMoveEvent, _window, cx| {
+                    let Some(bounds) = mouse_move_bounds.get() else {
+                        return;
+                    };
+                    let mut model = lock_or_recover(selection_model.as_ref());
+                    if model.mouse_move(bounds, event) {
+                        cx.notify();
                         cx.stop_propagation();
                     }
                 },
-            );
+            ));
 
-            let selection_model = self.model.clone();
-            let interactive_content = interactive_content.on_mouse_up_out(
-                MouseButton::Left,
-                move |_event: &MouseUpEvent, _window, cx| {
-                    if lock_or_recover(selection_model.as_ref()).finish_mouse_selection() {
-                        cx.stop_propagation();
-                    }
-                },
-            );
+            let mut interactive_content = interactive_content;
+            for button in [MouseButton::Left, MouseButton::Middle, MouseButton::Right] {
+                let selection_model = self.model.clone();
+                let mouse_up_bounds = content_bounds.clone();
+                let release =
+                    move |event: &MouseUpEvent, _window: &mut Window, cx: &mut gpui::App| {
+                        if let Some(bounds) = mouse_up_bounds.get()
+                            && lock_or_recover(selection_model.as_ref()).mouse_up(bounds, event)
+                        {
+                            cx.stop_propagation();
+                        }
+                    };
+                interactive_content = interactive_content
+                    .on_mouse_up(button, release.clone())
+                    .on_mouse_up_out(button, release);
+            }
             div()
                 .relative()
                 .size_full()
@@ -1419,6 +1587,131 @@ mod tests {
         lock_or_recover(&model).set_exited();
         cx.simulate_keystrokes("ctrl-shift-v");
         assert!(rx.try_recv().is_err());
+    }
+
+    #[gpui::test]
+    fn terminal_mouse_tracking_reports_wire_input_and_preserves_local_override(
+        cx: &mut TestAppContext,
+    ) {
+        use nucleotide_terminal::{engine::Engine, session::ControlMsg};
+        use std::io::Write;
+        struct Capture(Arc<Mutex<Vec<u8>>>);
+        impl Write for Capture {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        cx.update(install_test_globals);
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let writer: Box<dyn Write + Send> = Box::new(Capture(output.clone()));
+        let mut engine = Engine::new(8, 2, Some(Arc::new(Mutex::new(Some(writer)))));
+        engine.feed_bytes(b"abcdef\r\nsecond\r\nthird\x1b[?1002h\x1b[?1006h");
+        let mut model = TerminalViewModel::new(TerminalId(24));
+        model.apply_frame(engine.take_frame().unwrap());
+        model.resize_grid(8, 2, Some((9.25, 20.0)));
+        let (tx, rx) = std::sync::mpsc::channel();
+        model.set_control_sender(tx);
+        let model = Arc::new(Mutex::new(model));
+        let (_, cx) =
+            cx.add_window_view(|_, cx| TerminalView::new(model.clone(), cx.focus_handle(), cx));
+        let drain = |engine: &mut Engine| {
+            for command in rx.try_iter() {
+                match command {
+                    ControlMsg::Mouse(input) => engine.mouse_input(input),
+                    ControlMsg::Scroll { delta, request_id } => {
+                        engine.scroll_display(delta, request_id)
+                    }
+                    _ => panic!("unexpected input"),
+                }
+            }
+            std::mem::take(&mut *output.lock().unwrap())
+        };
+        let start = point(px(12.0), px(10.0));
+        let end = point(px(28.0), px(30.0));
+        cx.simulate_mouse_down(start, MouseButton::Left, gpui::Modifiers::control());
+        cx.simulate_mouse_move(end, MouseButton::Left, gpui::Modifiers::shift());
+        cx.simulate_mouse_up(end, MouseButton::Left, gpui::Modifiers::shift());
+        assert_eq!(
+            drain(&mut engine),
+            b"\x1b[<16;2;1M\x1b[<36;4;2M\x1b[<4;4;2m"
+        );
+        assert!(lock_or_recover(&model).selected_text().is_none());
+        // Shift-started local selection stays local when Shift is released.
+        cx.simulate_mouse_down(start, MouseButton::Left, gpui::Modifiers::shift());
+        cx.simulate_mouse_move(
+            point(px(28.0), px(10.0)),
+            MouseButton::Left,
+            gpui::Modifiers::none(),
+        );
+        cx.simulate_mouse_up(end, MouseButton::Left, gpui::Modifiers::none());
+        assert_eq!(
+            lock_or_recover(&model).selected_text().as_deref(),
+            Some("eco")
+        );
+        assert!(drain(&mut engine).is_empty());
+        for button in [MouseButton::Middle, MouseButton::Right] {
+            cx.simulate_mouse_down(start, button, gpui::Modifiers::none());
+            cx.simulate_mouse_up(point(px(2000.0), px(10.0)), button, gpui::Modifiers::none());
+        }
+        assert_eq!(
+            drain(&mut engine),
+            b"\x1b[<1;2;1M\x1b[<1;8;1m\x1b[<2;2;1M\x1b[<2;8;1m"
+        );
+        cx.simulate_event(gpui::ScrollWheelEvent {
+            position: start,
+            delta: gpui::ScrollDelta::Pixels(point(px(-9.25), px(40.0))),
+            ..Default::default()
+        });
+        assert_eq!(
+            drain(&mut engine),
+            b"\x1b[<64;2;1M\x1b[<64;2;1M\x1b[<66;2;1M"
+        );
+        assert_eq!(lock_or_recover(&model).display_offset, 0);
+        for (mode, expected) in [
+            (&b"\x1b[?1002l\x1b[?1000h"[..], &b""[..]),
+            (&b"\x1b[?1003h"[..], &b"\x1b[<35;2;1M"[..]),
+        ] {
+            engine.feed_bytes(mode);
+            lock_or_recover(&model).apply_frame(engine.take_frame().unwrap());
+            cx.refresh().unwrap();
+            cx.simulate_mouse_move(start, None, gpui::Modifiers::none());
+            assert_eq!(drain(&mut engine), expected);
+        }
+        cx.simulate_event(gpui::ScrollWheelEvent {
+            position: start,
+            modifiers: gpui::Modifiers::shift(),
+            delta: gpui::ScrollDelta::Pixels(point(px(0.0), px(20.0))),
+            ..Default::default()
+        });
+        assert!(drain(&mut engine).is_empty());
+        assert_eq!(lock_or_recover(&model).display_offset, 1);
+        // Let the negotiated encoder choose legacy, UTF-8, URXVT, and pixel formats.
+        for (mode, expected) in [
+            (&b"\x1bc\x1b[?9h"[..], &b"\x1b[M \"!"[..]),
+            (
+                &b"\x1bc\x1b[?1000h\x1b[?1005h"[..],
+                &b"\x1b[M \"!\x1b[M#\"!"[..],
+            ),
+            (
+                &b"\x1bc\x1b[?1000h\x1b[?1015h"[..],
+                &b"\x1b[32;2;1M\x1b[35;2;1M"[..],
+            ),
+            (
+                &b"\x1bc\x1b[?1000h\x1b[?1016h"[..],
+                &b"\x1b[<0;12;10M\x1b[<0;12;10m"[..],
+            ),
+        ] {
+            engine.feed_bytes(mode);
+            lock_or_recover(&model).apply_frame(engine.take_frame().unwrap());
+            cx.refresh().unwrap();
+            cx.simulate_mouse_down(start, MouseButton::Left, gpui::Modifiers::none());
+            cx.simulate_mouse_up(start, MouseButton::Left, gpui::Modifiers::none());
+            assert_eq!(drain(&mut engine), expected);
+        }
     }
 
     #[gpui::test]
