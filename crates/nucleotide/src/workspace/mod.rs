@@ -7316,15 +7316,10 @@ impl Workspace {
 
         let placeholder = self.core.update(cx, |core, cx| {
             let _guard = self.handle.enter();
-            let action = if core.editor.tree.views().count() == 0 {
-                helix_view::editor::Action::VerticalSplit
-            } else {
-                helix_view::editor::Action::Replace
-            };
             let doc_id = crate::application::open_loading_workspace_document(
                 &mut core.editor,
                 &path,
-                action,
+                helix_view::editor::Action::Replace,
             )?;
             let view_id = core.editor.tree.focus;
             if let Some(doc) = core.editor.document_mut(doc_id) {
@@ -7582,14 +7577,9 @@ impl Workspace {
                 .values()
                 .any(|doc| doc.path().is_some_and(|doc_path| doc_path == path));
 
-            // Determine the right action based on whether we have views
-            let action = if core.editor.tree.views().count() == 0 {
-                debug!("No views exist, using VerticalSplit action");
-                helix_view::editor::Action::VerticalSplit
-            } else {
-                debug!("Views exist, using Replace action to show in current view");
-                helix_view::editor::Action::Replace
-            };
+            // Hosted Replace also creates a slot in an empty workspace pane.
+            // A split here would leave that pane empty beside the opened file.
+            let action = helix_view::editor::Action::Replace;
 
             // Now open the file
             debug!(

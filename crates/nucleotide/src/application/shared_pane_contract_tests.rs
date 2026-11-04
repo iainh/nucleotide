@@ -26,6 +26,87 @@ fn submit_command(cx: &mut gpui::VisualTestContext, command: &str) {
 }
 
 #[gpui::test]
+fn opening_after_last_scratch_close_reuses_the_full_editor_pane(cx: &mut gpui::TestAppContext) {
+    let _runtime = TEST_RUNTIME.enter();
+    let root = tempdir().unwrap();
+    let paths = ["first.txt", "second.txt"].map(|name| root.path().join(name));
+    for (index, path) in paths.iter().enumerate() {
+        fs::write(path, format!("document {index}\n")).unwrap();
+    }
+    let (core, workspace, cx) = new_test_workspace(cx, &paths[0]);
+    let slot = core.update(cx, |core, cx| {
+        let original = core.editor.tree.get(core.editor.tree.focus).doc;
+        core.editor.new_file(Action::Replace);
+        assert!(core.editor.close_document(original, false).is_ok());
+        cx.emit(crate::Update::Redraw);
+        core.editor.tree.focus
+    });
+    workspace.update_in(cx, |workspace, window, cx| {
+        workspace.focus_editor(window, cx)
+    });
+    cx.run_until_parked();
+    cx.update(|window, cx| window.draw(cx).clear());
+    let pane = workspace.read_with(cx, |workspace, _| workspace.pane_id_for_slot(slot).unwrap());
+    let selector = Box::leak(format!("editor-pane-{pane:?}").into_boxed_str());
+    let full_bounds = cx.debug_bounds(selector).unwrap();
+
+    // Cover both the only scratch buffer and the only file buffer being closed.
+    for (index, path) in paths.iter().enumerate() {
+        cx.dispatch_action(crate::actions::editor::CloseFile);
+        cx.run_until_parked();
+        core.read_with(cx, |core, _| {
+            assert!(core.editor.documents.is_empty());
+            assert_eq!(core.editor.tree.views().count(), 0);
+        });
+        core.update(cx, |_, cx| cx.emit(crate::Update::OpenFile(path.clone())));
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear());
+        core.read_with(cx, |core, _| {
+            assert_eq!(core.editor.documents.len(), 1);
+            assert_eq!(core.editor.tree.views().count(), 1);
+            let view = core.editor.tree.get(core.editor.tree.focus);
+            let document = &core.editor.documents[&view.doc];
+            assert_same_path(document.path().unwrap(), path);
+            assert_eq!(document.text().to_string(), format!("document {index}\n"));
+        });
+        assert_eq!(cx.debug_bounds(selector).unwrap(), full_bounds);
+    }
+
+    // A normal open with another document retained must still reuse the pane.
+    core.update(cx, |_, cx| {
+        cx.emit(crate::Update::OpenFile(paths[0].clone()))
+    });
+    cx.run_until_parked();
+    cx.update(|window, cx| window.draw(cx).clear());
+    core.read_with(cx, |core, _| {
+        assert_eq!(core.editor.documents.len(), 2);
+        assert_eq!(core.editor.tree.views().count(), 1);
+        let view = core.editor.tree.get(core.editor.tree.focus);
+        assert_same_path(core.editor.documents[&view.doc].path().unwrap(), &paths[0]);
+    });
+    assert_eq!(cx.debug_bounds(selector).unwrap(), full_bounds);
+
+    // Remote loading placeholders must reuse the empty pane before I/O completes.
+    for _ in 0..2 {
+        cx.dispatch_action(crate::actions::editor::CloseFile);
+        cx.run_until_parked();
+    }
+    core.update(cx, |core, cx| {
+        assert!(core.editor.documents.is_empty());
+        core.set_workspace_backend(std::sync::Arc::new(super::RemoteIdentityLocalBackend));
+        cx.emit(crate::Update::OpenFile(paths[0].clone()));
+    });
+    cx.run_until_parked();
+    cx.update(|window, cx| window.draw(cx).clear());
+    core.read_with(cx, |core, _| {
+        assert_eq!(core.editor.tree.views().count(), 1);
+        let view = core.editor.tree.get(core.editor.tree.focus);
+        assert_same_path(core.editor.documents[&view.doc].path().unwrap(), &paths[0]);
+    });
+    assert_eq!(cx.debug_bounds(selector).unwrap(), full_bounds);
+}
+
+#[gpui::test]
 fn split_aliases_preserve_file_arguments_and_source_document(cx: &mut gpui::TestAppContext) {
     let _runtime = TEST_RUNTIME.enter();
     let root = tempdir().unwrap();
