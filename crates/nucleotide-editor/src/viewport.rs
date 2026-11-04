@@ -2228,6 +2228,50 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn surface_layout_preserves_wheel_scroll_across_idle_frames() {
+        let text = (0..100)
+            .map(|line| format!("line {line}\n"))
+            .collect::<String>();
+        let (mut editor, doc_id, view_id) = test_editor_with_text(&text);
+        editor.enable_hosted();
+        editor
+            .document_mut(doc_id)
+            .unwrap()
+            .set_selection(view_id, Selection::point(0));
+        let mut viewport = EditorViewport::new(px(23.5));
+        let layout = EditorViewportSurfaceLayout {
+            theme: None,
+            bounds: Bounds::new(point(px(0.0), px(0.0)), size(px(800.0), px(600.0))),
+            cell_width: px(8.0),
+            line_height: px(23.5),
+            minimum_columns: 1,
+            extra_gutter_columns: 0,
+            scrolloff: Config::default().scrolloff,
+            cursor_reveal: None,
+        };
+        viewport
+            .sync_surface_layout(&mut editor, doc_id, view_id, layout)
+            .unwrap();
+
+        for expected_y in (1..=40)
+            .chain((0..40).rev())
+            .map(|step| px(step as f32 * 5.0))
+        {
+            let delta = viewport.scroll_position().y - expected_y;
+            viewport.scroll_by_delta(point(px(0.0), delta));
+            for _ in 0..3 {
+                editor
+                    .project_hosted_viewport(view_id, Rect::new(0, 0, 100, 26))
+                    .unwrap();
+                viewport
+                    .sync_surface_layout(&mut editor, doc_id, view_id, layout)
+                    .unwrap();
+                assert_eq!(viewport.scroll_position().y, expected_y);
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn surface_layout_roundtrips_scroll_to_trailing_newline_eof() {
         let (mut editor, doc_id, view_id) = test_editor_with_text("one\ntwo\n");
         let mut viewport = EditorViewport::new(px(20.0));

@@ -343,6 +343,11 @@ Workspace-local geometry such as `EditorPaneLayout` can stay close to the Helix
 view model while still exposing panes, resize handles, and visual divider lines
 as one tested contract.
 
+Hosted editor viewport projection updates cell dimensions without revealing the
+cursor. Workspace redraws may reapply those dimensions during wheel scrolling;
+revealing the cursor there would reset the native scroll position. Keep cursor
+reveal explicit through the editor viewport's reveal requests.
+
 ## Testing
 
 Add GPUI tests for interaction contracts when adding or changing wrappers:

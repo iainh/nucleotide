@@ -228,10 +228,11 @@ impl Editor {
 
     /// Cell geometry already derived from the host's logical-pixel content rect.
     /// Tree split/remove/resize/recalculate cannot overwrite this projection.
+    /// Projection does not reveal the cursor: the host owns scroll and reveal
+    /// requests, and may reapply this geometry on every frame while scrolling.
     pub fn project_hosted_viewport(&mut self, slot: ViewId, area: Rect) -> Result<(), HostedError> {
         self.validate_hosted_slot(slot)?;
         self.tree.get_mut(slot).area = area;
-        self.ensure_cursor_in_view(slot);
         Ok(())
     }
 }
