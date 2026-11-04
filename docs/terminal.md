@@ -3,6 +3,10 @@
 Terminal tabs retain their output after the command exits. You can still scroll
 through history and resize the terminal until you close the tab.
 
+Selections follow their text during scrolling. They clear when switching screen
+buffers, resizing the grid, resetting the terminal or discarding old history.
+This avoids highlighting unrelated text after coordinates change.
+
 ## Clipboard
 
 Select text with the pointer, then use Copy from the application menu or
