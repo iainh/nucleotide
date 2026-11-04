@@ -75,6 +75,13 @@ not mean pane-close or application quit. Empty nonroot panes may collapse under
 the ordinary layout policy. Final integration tests exercise this distinction
 through the GUI as well as the editor/host seam.
 
+Closing the only scratch or file buffer leaves a reusable empty workspace pane.
+A subsequent ordinary local or remote file open must reuse that pane at its full
+bounds, not create a split beside it. Explicit split commands retain their split
+behaviour. The `opening_after_last_scratch_close_reuses_the_full_editor_pane`
+regression covers local close/reopen cycles, opening with another file retained
+and remote loading placeholders through a local-backed remote-identity fixture.
+
 ## Automated acceptance matrix
 
 | Area | Required observations | Distinguishing inputs/failure cases |
