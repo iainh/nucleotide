@@ -48,6 +48,7 @@ pub mod frame {
         pub history_size: usize,
         pub display_offset: usize,
         pub scroll_request_id: u64,
+        pub selection_epoch: u64,
         pub input_mode: TerminalInputMode,
     }
 
@@ -67,6 +68,7 @@ pub mod frame {
         pub cursor_row: u16,
         pub cursor_col: u16,
         pub cursor_visible: bool,
+        pub selection_epoch: u64,
     }
 
     #[cfg(feature = "emulator")]
@@ -1123,7 +1125,9 @@ pub mod engine {
     };
     use libghostty_vt::Terminal;
     use libghostty_vt::render::{CellIterator, RenderState, RowIterator};
+    use libghostty_vt::screen::TrackedGridRef;
     use libghostty_vt::style::{PaletteIndex, RgbColor, Style, StyleColor, Underline};
+    use libghostty_vt::terminal::{Point, PointCoordinate, PointSpace};
     use std::io::Write;
     use std::sync::{Arc, Mutex};
 
@@ -1138,6 +1142,9 @@ pub mod engine {
         cell_height: f32,
         grid: Vec<Vec<Cell>>,
         scroll_request_id: u64,
+        selection_epoch: u64,
+        oldest_row: Option<TrackedGridRef>,
+        alternate_screen: bool,
         terminal: Option<Terminal<'static, 'static>>,
         render_state: Option<RenderState<'static>>,
         row_iter: Option<RowIterator<'static>>,
@@ -1160,6 +1167,9 @@ pub mod engine {
                 cell_height: DEFAULT_CELL_HEIGHT,
                 grid: blank_grid(cols, rows),
                 scroll_request_id: 0,
+                selection_epoch: 0,
+                oldest_row: None,
+                alternate_screen: false,
                 terminal: None,
                 render_state: None,
                 row_iter: None,
@@ -1209,6 +1219,30 @@ pub mod engine {
             let snapshot = render_state.update(terminal).ok()?;
             let cols = snapshot.cols().unwrap_or(self.cols).max(1);
             let rows_len = snapshot.rows().unwrap_or(self.rows).max(1);
+            let alternate_screen = terminal
+                .mode(libghostty_vt::terminal::Mode::ALT_SCREEN)
+                .unwrap_or(false)
+                || terminal
+                    .mode(libghostty_vt::terminal::Mode::ALT_SCREEN_LEGACY)
+                    .unwrap_or(false)
+                || terminal
+                    .mode(libghostty_vt::terminal::Mode::ALT_SCREEN_SAVE)
+                    .unwrap_or(false);
+            let origin = PointCoordinate { x: 0, y: 0 };
+            // History length alone misses pruning and growth in the same batch.
+            // A tracked oldest-row reference detects coordinate rebasing/reset.
+            if self.alternate_screen != alternate_screen
+                || cols != self.cols
+                || rows_len != self.rows
+                || !self.oldest_row.as_ref().is_some_and(|oldest| {
+                    oldest.has_value()
+                        && oldest.point(PointSpace::Screen).ok().flatten() == Some(origin)
+                })
+            {
+                self.selection_epoch += 1;
+                self.oldest_row = terminal.track_grid_ref(Point::Screen(origin)).ok();
+            }
+            self.alternate_screen = alternate_screen;
             let blank = blank_cell();
             let mut grid = vec![vec![blank; cols as usize]; rows_len as usize];
 
@@ -1273,19 +1307,12 @@ pub mod engine {
                 history_size,
                 display_offset,
                 scroll_request_id: self.scroll_request_id,
+                selection_epoch: self.selection_epoch,
                 input_mode: TerminalInputMode {
                     application_cursor: terminal
                         .mode(libghostty_vt::terminal::Mode::DECCKM)
                         .unwrap_or(false),
-                    alternate_screen: terminal
-                        .mode(libghostty_vt::terminal::Mode::ALT_SCREEN)
-                        .unwrap_or(false)
-                        || terminal
-                            .mode(libghostty_vt::terminal::Mode::ALT_SCREEN_LEGACY)
-                            .unwrap_or(false)
-                        || terminal
-                            .mode(libghostty_vt::terminal::Mode::ALT_SCREEN_SAVE)
-                            .unwrap_or(false),
+                    alternate_screen,
                     alternate_scroll: terminal
                         .mode(libghostty_vt::terminal::Mode::ALT_SCROLL)
                         .unwrap_or(false),
@@ -1301,6 +1328,9 @@ pub mod engine {
             cell_width: f32,
             cell_height: f32,
         ) {
+            if self.cols != cols.max(1) || self.rows != rows.max(1) {
+                self.selection_epoch += 1;
+            }
             self.cols = cols.max(1);
             self.rows = rows.max(1);
             self.cell_width = cell_width.max(1.0);

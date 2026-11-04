@@ -169,6 +169,8 @@ pub struct TerminalViewModel {
     /// Keep copied text available when the selected rows leave the viewport.
     #[cfg(feature = "emulator")]
     selection_text: Option<String>,
+    #[cfg(feature = "emulator")]
+    selection_epoch: u64,
     /// Buffer row at the top of the rendered grid, not the requested scroll offset.
     #[cfg(feature = "emulator")]
     viewport_top: isize,
@@ -220,6 +222,8 @@ impl TerminalViewModel {
             selection: None,
             #[cfg(feature = "emulator")]
             selection_text: None,
+            #[cfg(feature = "emulator")]
+            selection_epoch: 0,
             #[cfg(feature = "emulator")]
             viewport_top: 0,
             #[cfg(feature = "emulator")]
@@ -310,6 +314,14 @@ impl TerminalViewModel {
     }
 
     #[cfg(feature = "emulator")]
+    fn clear_selection(&mut self) {
+        self.selection = None;
+        self.selection_text = None;
+        self.mouse_selecting = false;
+        self.dirty.mark_all();
+    }
+
+    #[cfg(feature = "emulator")]
     fn visible_selected_text(&self) -> Option<String> {
         let selection = self.selection?;
         if !selection.is_active() || self.cols == 0 {
@@ -381,11 +393,12 @@ impl TerminalViewModel {
 
     #[cfg(feature = "emulator")]
     fn set_snapshot(&mut self, snapshot: GridSnapshot) {
-        if self.input_mode.alternate_screen != snapshot.input_mode.alternate_screen {
-            self.selection = None;
-            self.selection_text = None;
-            self.mouse_selecting = false;
+        if self.selection_epoch != snapshot.selection_epoch
+            || self.input_mode.alternate_screen != snapshot.input_mode.alternate_screen
+        {
+            self.clear_selection();
         }
+        self.selection_epoch = snapshot.selection_epoch;
         self.viewport_top = snapshot.history_size as isize - snapshot.display_offset as isize;
         self.cols = snapshot.cols;
         self.rows = snapshot.rows_len;
@@ -408,6 +421,10 @@ impl TerminalViewModel {
     fn apply_diff(&mut self, diff: GridDiff) {
         if self.grid.is_empty() || self.cols == 0 || self.rows == 0 {
             return;
+        }
+        if self.selection_epoch != diff.selection_epoch {
+            self.clear_selection();
+            self.selection_epoch = diff.selection_epoch;
         }
         let old_cursor = (self.cursor_row, self.cursor_col, self.cursor_visible);
         self.cursor_row = diff.cursor_row.min(self.rows.saturating_sub(1));
@@ -582,6 +599,9 @@ impl TerminalViewModel {
 
     #[cfg(feature = "emulator")]
     pub fn resize_grid(&mut self, cols: u16, rows: u16, cell_metrics: Option<(f32, f32)>) {
+        if self.cols != cols || self.rows != rows {
+            self.clear_selection();
+        }
         let cols_usize = cols.max(1) as usize;
         let rows_usize = rows.max(1) as usize;
 
@@ -1243,6 +1263,7 @@ mod tests {
             history_size: 0,
             display_offset: 0,
             scroll_request_id: 0,
+            selection_epoch: 0,
             input_mode: TerminalInputMode::default(),
         });
         model.cell_width = 8.0;
@@ -1633,6 +1654,7 @@ mod tests {
             cursor_row: 0,
             cursor_col: 0,
             cursor_visible: true,
+            selection_epoch: 0,
         }));
 
         assert_eq!(model.take_dirty_rows(), vec![0, 1, 2]);
@@ -1658,6 +1680,7 @@ mod tests {
                 cursor_row: row,
                 cursor_col: col,
                 cursor_visible: true,
+                selection_epoch: 0,
             }));
             assert_eq!(
                 model.take_dirty_rows(),
@@ -1679,6 +1702,7 @@ mod tests {
             cursor_row: 0,
             cursor_col: 0,
             cursor_visible: true,
+            selection_epoch: 0,
         }));
 
         assert_eq!(model.grid.len(), 3);
@@ -1764,6 +1788,7 @@ mod tests {
                 history_size: 3,
                 display_offset: offset,
                 scroll_request_id: 0,
+                selection_epoch: 0,
                 input_mode: TerminalInputMode::default(),
             })
         };
@@ -1849,6 +1874,61 @@ mod tests {
                 point(px(28.0), px(10.0)),
                 MouseButton::Left,
                 gpui::Modifiers::none(),
+            );
+        }
+    }
+
+    #[gpui::test]
+    fn terminal_selection_clears_on_pruning_reflow_and_reset_not_history_growth(
+        cx: &mut TestAppContext,
+    ) {
+        use nucleotide_terminal::engine::Engine;
+        cx.update(install_test_globals);
+        for operation in ["prune", "reflow", "reset"] {
+            let mut engine = Engine::new(8, 2, None);
+            engine.feed_bytes(b"one\r\ntwo");
+            let mut model = TerminalViewModel::new(TerminalId(23));
+            model.apply_frame(engine.take_frame().unwrap());
+            model.resize_grid(8, 2, Some((8.0, 20.0)));
+            let model = Arc::new(Mutex::new(model));
+            let (_, cx) =
+                cx.add_window_view(|_, cx| TerminalView::new(model.clone(), cx.focus_handle(), cx));
+            cx.simulate_mouse_down(
+                point(px(4.0), px(10.0)),
+                MouseButton::Left,
+                gpui::Modifiers::none(),
+            );
+            cx.simulate_mouse_move(
+                point(px(20.0), px(10.0)),
+                MouseButton::Left,
+                gpui::Modifiers::none(),
+            );
+            cx.simulate_mouse_up(
+                point(px(20.0), px(10.0)),
+                MouseButton::Left,
+                gpui::Modifiers::none(),
+            );
+            assert_eq!(
+                lock_or_recover(&model).selected_text().as_deref(),
+                Some("one")
+            );
+            engine.feed_bytes(b"\r\nthree");
+            lock_or_recover(&model).apply_frame(engine.take_frame().unwrap());
+            assert_eq!(
+                lock_or_recover(&model).selected_text().as_deref(),
+                Some("one"),
+                "ordinary history growth keeps selection"
+            );
+            match operation {
+                "prune" => engine.feed_bytes(&b"line\r\n".repeat(20_000)),
+                "reflow" => engine.resize_with_metrics(4, 2, 8.0, 20.0),
+                "reset" => engine.feed_bytes(b"\x1bc"),
+                _ => unreachable!(),
+            }
+            lock_or_recover(&model).apply_frame(engine.take_frame().unwrap());
+            assert!(
+                lock_or_recover(&model).selected_text().is_none(),
+                "{operation} must clear stale coordinates"
             );
         }
     }
