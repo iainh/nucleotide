@@ -116,6 +116,7 @@ pub mod session {
         Scroll {
             delta: i32,
         },
+        Paste(String),
         Shutdown,
     }
 
@@ -470,6 +471,7 @@ pub mod session {
                                 engine.scroll_display(delta);
                                 needs_frame = true;
                             }
+                            ControlMsg::Paste(text) => engine.paste(&text),
                             ControlMsg::Shutdown => break 'parser,
                         }
                     }
@@ -1170,6 +1172,24 @@ pub mod engine {
             }
         }
 
+        pub fn paste(&mut self, text: &str) {
+            let bracketed = self.terminal.as_ref().is_some_and(|terminal| {
+                terminal
+                    .mode(libghostty_vt::terminal::Mode::BRACKETED_PASTE)
+                    .unwrap_or(false)
+            });
+            let mut data = text.as_bytes().to_vec();
+            let mut encoded = vec![0; data.len() + 12];
+            if let Ok(len) = libghostty_vt::paste::encode(&mut data, bracketed, &mut encoded)
+                && let Some(writer) = &self.pty_writer
+                && let Ok(mut writer) = writer.lock()
+                && let Some(writer) = writer.as_mut()
+            {
+                let _ = writer.write_all(&encoded[..len]);
+                let _ = writer.flush();
+            }
+        }
+
         pub fn take_frame(&mut self) -> Option<FramePayload> {
             if !self.ensure_initialized() {
                 return None;
@@ -1444,6 +1464,29 @@ pub mod engine {
                 panic!("expected full snapshot");
             };
             assert!(snapshot.input_mode.application_cursor);
+        }
+
+        #[test]
+        fn paste_uses_current_mode_and_sanitizes_control_bytes() {
+            struct Capture(Arc<Mutex<Vec<u8>>>);
+            impl Write for Capture {
+                fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                    self.0.lock().unwrap().extend_from_slice(bytes);
+                    Ok(bytes.len())
+                }
+                fn flush(&mut self) -> std::io::Result<()> {
+                    Ok(())
+                }
+            }
+            let output = Arc::new(Mutex::new(Vec::new()));
+            let writer: Box<dyn Write + Send> = Box::new(Capture(output.clone()));
+            let mut engine = Engine::new(8, 2, Some(Arc::new(Mutex::new(Some(writer)))));
+            engine.paste("a\nb\x1b[201~");
+            assert_eq!(&*output.lock().unwrap(), b"a\rb [201~");
+            output.lock().unwrap().clear();
+            engine.feed_bytes(b"\x1b[?2004h");
+            engine.paste("a\nb\x1b[201~");
+            assert_eq!(&*output.lock().unwrap(), b"\x1b[200~a\nb [201~\x1b[201~");
         }
 
         #[test]
