@@ -27,6 +27,8 @@ pub mod frame {
     #[derive(Debug, Clone)]
     pub enum FramePayload {
         Raw(Vec<u8>),
+        /// All transport output has been parsed; the retained emulator remains usable.
+        OutputComplete,
         #[cfg(feature = "emulator")]
         Full(GridSnapshot),
         #[cfg(feature = "emulator")]
@@ -114,6 +116,7 @@ pub mod session {
         Scroll {
             delta: i32,
         },
+        Shutdown,
     }
 
     #[derive(Debug, Clone, Default)]
@@ -447,7 +450,11 @@ pub mod session {
                 let mut last_emit = Instant::now();
                 let window = Duration::from_millis(16);
                 let mut needs_frame = false;
-                loop {
+                let mut output_complete = false;
+                'parser: loop {
+                    if tx.is_closed() {
+                        break;
+                    }
                     while let Ok(msg) = control_rx.try_recv() {
                         match msg {
                             ControlMsg::Resize {
@@ -463,28 +470,42 @@ pub mod session {
                                 engine.scroll_display(delta);
                                 needs_frame = true;
                             }
+                            ControlMsg::Shutdown => break 'parser,
                         }
                     }
-                    match data_rx.recv_timeout(Duration::from_millis(8)) {
-                        Ok(data) => {
-                            engine.feed_bytes(&data);
-                            while let Ok(more) = data_rx.try_recv() {
-                                engine.feed_bytes(&more);
+                    if output_complete {
+                        // The data channel is disconnected. Avoid spinning while
+                        // continuing to serve retained scrollback and resize.
+                        std::thread::sleep(Duration::from_millis(8));
+                    } else {
+                        match data_rx.recv_timeout(Duration::from_millis(8)) {
+                            Ok(data) => {
+                                engine.feed_bytes(&data);
+                                while let Ok(more) = data_rx.try_recv() {
+                                    engine.feed_bytes(&more);
+                                }
+                                needs_frame = true;
                             }
-                            needs_frame = true;
-                        }
-                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                            if let Some(frame) = engine.take_frame() {
-                                let _ = tx.try_send(frame);
+                            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                                if let Some(frame) = engine.take_frame() {
+                                    let _ = tx.blocking_send(frame);
+                                }
+                                let _ = tx.blocking_send(FramePayload::OutputComplete);
+                                let (lock, cv) = &*eof_after_parse;
+                                if let Ok(mut eof) = lock.lock() {
+                                    *eof = true;
+                                    cv.notify_all();
+                                }
+                                output_complete = true;
+                                needs_frame = false;
                             }
-                            break;
                         }
                     }
                     if needs_frame && last_emit.elapsed() >= window {
                         if engine
                             .take_frame()
-                            .is_some_and(|frame| tx.try_send(frame).is_err())
+                            .is_some_and(|frame| tx.blocking_send(frame).is_err())
                         {
                             break;
                         }
@@ -511,6 +532,7 @@ pub mod session {
                 }
                 let _ = tx.try_send(FramePayload::Raw(buf[..n].to_vec()));
             }
+            let _ = tx.blocking_send(FramePayload::OutputComplete);
             let (lock, cv) = &*eof_for_reader;
             if let Ok(mut eof) = lock.lock() {
                 *eof = true;
@@ -808,7 +830,11 @@ pub mod session {
                 .unwrap();
             assert!(cancel_called.load(Ordering::SeqCst));
             tokio::time::timeout(std::time::Duration::from_secs(1), async {
-                while frames.recv().await.is_some() {}
+                while let Some(frame) = frames.recv().await {
+                    if matches!(frame, FramePayload::OutputComplete) {
+                        break;
+                    }
+                }
             })
             .await
             .unwrap();
@@ -1493,9 +1519,86 @@ mod tests {
         };
 
         let (mut session, mut rx) = TerminalSession::spawn(42, cfg).await.unwrap();
-        while rx.recv().await.is_some() {}
+        while let Some(frame) = rx.recv().await {
+            if matches!(frame, super::frame::FramePayload::OutputComplete) {
+                break;
+            }
+        }
 
         assert_eq!(session.wait_exit_code(), Some(7));
+    }
+
+    #[cfg(all(unix, feature = "emulator"))]
+    #[tokio::test]
+    async fn exited_session_keeps_scrollback_and_resize_until_closed() {
+        use super::{frame::FramePayload, session::ControlMsg};
+        let (mut session, mut rx) = TerminalSession::spawn(
+            45,
+            TerminalSessionCfg {
+                program: Some("/bin/sh".into()),
+                args: vec![
+                    "-c".into(),
+                    "printf 'one\\r\\ntwo\\r\\nthree\\r\\nfour'; exit 7".into(),
+                ],
+                cols: Some(8),
+                rows: Some(2),
+                ..TerminalSessionCfg::default()
+            },
+        )
+        .await
+        .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while let Some(frame) = rx.recv().await {
+                if matches!(frame, FramePayload::OutputComplete) {
+                    break;
+                }
+            }
+            assert_eq!(session.wait_exit_code(), Some(7));
+            let control = session.control_sender();
+            control.send(ControlMsg::Scroll { delta: 2 }).unwrap();
+            let Some(FramePayload::Full(frame)) = rx.recv().await else {
+                panic!("missing scroll frame")
+            };
+            assert_eq!(frame.display_offset, 2);
+            assert_eq!(
+                frame.rows[0]
+                    .iter()
+                    .map(|cell| cell.ch)
+                    .collect::<String>()
+                    .trim(),
+                "one"
+            );
+            for rows in [1, 2] {
+                control
+                    .send(ControlMsg::Resize {
+                        cols: 8,
+                        rows,
+                        cell_width: 8.0,
+                        cell_height: 16.0,
+                    })
+                    .unwrap();
+                let Some(FramePayload::Full(frame)) = rx.recv().await else {
+                    panic!("missing resize frame")
+                };
+                assert_eq!(frame.rows_len, rows);
+            }
+            control.send(ControlMsg::Scroll { delta: -100 }).unwrap();
+            let Some(FramePayload::Full(frame)) = rx.recv().await else {
+                panic!("missing bottom frame")
+            };
+            assert_eq!(
+                frame.rows[1]
+                    .iter()
+                    .map(|cell| cell.ch)
+                    .collect::<String>()
+                    .trim(),
+                "four"
+            );
+            control.send(ControlMsg::Shutdown).unwrap();
+            assert!(rx.recv().await.is_none());
+        })
+        .await
+        .unwrap();
     }
 
     #[cfg(any(unix, all(windows, feature = "emulator")))]
@@ -1541,20 +1644,16 @@ mod tests {
         };
         let (mut session, mut rx) = TerminalSession::spawn(44, cfg).await.unwrap();
         let mut output = String::new();
+        let mut output_complete = false;
         let completed = tokio::time::timeout(Duration::from_secs(5), async {
             loop {
                 while let Ok(frame) = rx.try_recv() {
+                    output_complete |= matches!(frame, FramePayload::OutputComplete);
                     if let FramePayload::Full(snapshot) = frame {
                         output.extend(snapshot.rows.iter().flatten().map(|cell| cell.ch));
                     }
                 }
-                if let Some(code) = session.poll_exit().unwrap() {
-                    // Parsed output is queued before EOF; consume the retained final frame.
-                    while let Some(frame) = rx.recv().await {
-                        if let FramePayload::Full(snapshot) = frame {
-                            output.extend(snapshot.rows.iter().flatten().map(|cell| cell.ch));
-                        }
-                    }
+                if let Some(code) = session.poll_exit().unwrap().filter(|_| output_complete) {
                     break code;
                 }
                 tokio::time::sleep(Duration::from_millis(10)).await;
@@ -1612,6 +1711,7 @@ mod tests {
                 .flat_map(|range| range.cells.iter())
                 .any(|cell| !cell.ch.is_whitespace()),
             FramePayload::Raw(bytes) => bytes.iter().any(|byte| !byte.is_ascii_whitespace()),
+            FramePayload::OutputComplete => false,
         }
     }
 }

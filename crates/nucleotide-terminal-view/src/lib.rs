@@ -357,7 +357,7 @@ impl TerminalViewModel {
         match frame {
             FramePayload::Full(snapshot) => self.set_snapshot(snapshot),
             FramePayload::Diff(diff) => self.apply_diff(diff),
-            FramePayload::Raw(_) => {}
+            FramePayload::Raw(_) | FramePayload::OutputComplete => {}
         }
     }
 
