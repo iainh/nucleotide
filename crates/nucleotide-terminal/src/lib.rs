@@ -47,6 +47,7 @@ pub mod frame {
         pub title: Option<String>,
         pub history_size: usize,
         pub display_offset: usize,
+        pub scroll_request_id: u64,
         pub input_mode: TerminalInputMode,
     }
 
@@ -117,6 +118,7 @@ pub mod session {
         },
         Scroll {
             delta: i32,
+            request_id: u64,
         },
         Paste(String),
         Shutdown,
@@ -469,8 +471,8 @@ pub mod session {
                                 engine.resize_with_metrics(cols, rows, cell_width, cell_height);
                                 needs_frame = true;
                             }
-                            ControlMsg::Scroll { delta } => {
-                                engine.scroll_display(delta);
+                            ControlMsg::Scroll { delta, request_id } => {
+                                engine.scroll_display(delta, request_id);
                                 needs_frame = true;
                             }
                             ControlMsg::Paste(text) => engine.paste(&text),
@@ -1135,6 +1137,7 @@ pub mod engine {
         cell_width: f32,
         cell_height: f32,
         grid: Vec<Vec<Cell>>,
+        scroll_request_id: u64,
         terminal: Option<Terminal<'static, 'static>>,
         render_state: Option<RenderState<'static>>,
         row_iter: Option<RowIterator<'static>>,
@@ -1156,6 +1159,7 @@ pub mod engine {
                 cell_width: DEFAULT_CELL_WIDTH,
                 cell_height: DEFAULT_CELL_HEIGHT,
                 grid: blank_grid(cols, rows),
+                scroll_request_id: 0,
                 terminal: None,
                 render_state: None,
                 row_iter: None,
@@ -1268,6 +1272,7 @@ pub mod engine {
                 title,
                 history_size,
                 display_offset,
+                scroll_request_id: self.scroll_request_id,
                 input_mode: TerminalInputMode {
                     application_cursor: terminal
                         .mode(libghostty_vt::terminal::Mode::DECCKM)
@@ -1314,7 +1319,8 @@ pub mod engine {
             }
         }
 
-        pub fn scroll_display(&mut self, delta: i32) {
+        pub fn scroll_display(&mut self, delta: i32, request_id: u64) {
+            self.scroll_request_id = request_id;
             // libghostty-vt 0.2.0 hangs inside every scroll_viewport variant on
             // Windows ARM64. Keep the terminal responsive until the upstream
             // native implementation is safe on this target.
@@ -1517,7 +1523,7 @@ pub mod engine {
                 (&b""[..], -2, true),
             ] {
                 engine.feed_bytes(bytes);
-                engine.scroll_display(scroll);
+                engine.scroll_display(scroll, 0);
                 let Some(FramePayload::Full(frame)) = engine.take_frame() else {
                     panic!("missing frame")
                 };
@@ -1536,11 +1542,12 @@ pub mod engine {
             };
             assert_eq!(bottom.display_offset, 0);
 
-            engine.scroll_display(1);
+            engine.scroll_display(1, 1);
             let Some(FramePayload::Full(scrolled)) = engine.take_frame() else {
                 panic!("expected full snapshot");
             };
             assert!(scrolled.display_offset > 0);
+            assert_eq!(scrolled.scroll_request_id, 1);
         }
 
         #[cfg(not(all(windows, target_arch = "aarch64")))]
@@ -1549,13 +1556,13 @@ pub mod engine {
             let mut engine = Engine::new(5, 2, None);
 
             engine.feed_bytes(b"one\r\ntwo\r\nthree\r\nfour");
-            engine.scroll_display(1);
+            engine.scroll_display(1, 1);
             let Some(FramePayload::Full(scrolled)) = engine.take_frame() else {
                 panic!("expected full snapshot");
             };
             assert!(scrolled.display_offset > 0);
 
-            engine.scroll_display(-1);
+            engine.scroll_display(-1, 2);
             let Some(FramePayload::Full(bottom)) = engine.take_frame() else {
                 panic!("expected full snapshot");
             };
@@ -1622,7 +1629,12 @@ mod tests {
             }
             assert_eq!(session.wait_exit_code(), Some(7));
             let control = session.control_sender();
-            control.send(ControlMsg::Scroll { delta: 2 }).unwrap();
+            control
+                .send(ControlMsg::Scroll {
+                    delta: 2,
+                    request_id: 1,
+                })
+                .unwrap();
             let Some(FramePayload::Full(frame)) = rx.recv().await else {
                 panic!("missing scroll frame")
             };
@@ -1649,7 +1661,12 @@ mod tests {
                 };
                 assert_eq!(frame.rows_len, rows);
             }
-            control.send(ControlMsg::Scroll { delta: -100 }).unwrap();
+            control
+                .send(ControlMsg::Scroll {
+                    delta: -100,
+                    request_id: 2,
+                })
+                .unwrap();
             let Some(FramePayload::Full(frame)) = rx.recv().await else {
                 panic!("missing bottom frame")
             };

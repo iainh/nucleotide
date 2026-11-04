@@ -155,9 +155,9 @@ pub struct TerminalViewModel {
     #[cfg(feature = "emulator")]
     pub display_offset: usize,
     #[cfg(feature = "emulator")]
-    control_tx: Option<std::sync::mpsc::Sender<nucleotide_terminal::session::ControlMsg>>,
+    scroll_request_id: u64,
     #[cfg(feature = "emulator")]
-    scroll_dragging: bool,
+    control_tx: Option<std::sync::mpsc::Sender<nucleotide_terminal::session::ControlMsg>>,
     #[cfg(feature = "emulator")]
     wheel_scroll_remainder: f32,
     #[cfg(feature = "emulator")]
@@ -207,9 +207,9 @@ impl TerminalViewModel {
             #[cfg(feature = "emulator")]
             display_offset: 0,
             #[cfg(feature = "emulator")]
-            control_tx: None,
+            scroll_request_id: 0,
             #[cfg(feature = "emulator")]
-            scroll_dragging: false,
+            control_tx: None,
             #[cfg(feature = "emulator")]
             wheel_scroll_remainder: 0.0,
             #[cfg(feature = "emulator")]
@@ -389,9 +389,9 @@ impl TerminalViewModel {
         self.cursor_col = snapshot.cursor_col;
         self.cursor_visible = snapshot.cursor_visible;
         self.history_size = snapshot.history_size;
-        // Don't overwrite display_offset during scrollbar drag to avoid
-        // race conditions where stale frames snap the scroll position back.
-        if !self.scroll_dragging {
+        // A frame predating our latest request must not erase pending wheel
+        // or scrollbar intent, even after a drag has ended.
+        if snapshot.scroll_request_id >= self.scroll_request_id {
             self.display_offset = snapshot.display_offset;
         }
         self.input_mode = snapshot.input_mode;
@@ -560,13 +560,18 @@ impl TerminalViewModel {
     }
 
     #[cfg(feature = "emulator")]
-    fn send_scroll_delta(&self, delta: i32) {
+    fn send_scroll_delta(&mut self, delta: i32) {
         if delta == 0 {
             return;
         }
 
-        if let Some(tx) = &self.control_tx {
-            let _ = tx.send(nucleotide_terminal::session::ControlMsg::Scroll { delta });
+        let request_id = self.scroll_request_id + 1;
+        if let Some(tx) = &self.control_tx
+            && tx
+                .send(nucleotide_terminal::session::ControlMsg::Scroll { delta, request_id })
+                .is_ok()
+        {
+            self.scroll_request_id = request_id;
         }
     }
 
@@ -711,14 +716,6 @@ impl nucleotide_ui::scrollbar::ScrollableHandle for TerminalScrollHandle {
                 height: gpui::px(h),
             },
         )
-    }
-
-    fn drag_started(&self) {
-        lock_or_recover(self.model.as_ref()).scroll_dragging = true;
-    }
-
-    fn drag_ended(&self) {
-        lock_or_recover(self.model.as_ref()).scroll_dragging = false;
     }
 }
 
@@ -1240,6 +1237,7 @@ mod tests {
             title: None,
             history_size: 0,
             display_offset: 0,
+            scroll_request_id: 0,
             input_mode: TerminalInputMode::default(),
         });
         model.cell_width = 8.0;
@@ -1526,10 +1524,48 @@ mod tests {
         assert!(model.scroll_wheel_by_pixel_delta(20.0));
         assert_eq!(model.display_offset, 1);
 
-        let Ok(nucleotide_terminal::session::ControlMsg::Scroll { delta }) = rx.try_recv() else {
+        let Ok(nucleotide_terminal::session::ControlMsg::Scroll { delta, .. }) = rx.try_recv()
+        else {
             panic!("expected scroll control message");
         };
         assert_eq!(delta, 1);
+    }
+
+    #[test]
+    fn stale_frames_do_not_discard_reverse_scroll_or_completed_drag_intent() {
+        use nucleotide_terminal::{engine::Engine, session::ControlMsg};
+        for scrollbar in [false, true] {
+            let mut engine = Engine::new(8, 2, None);
+            engine.feed_bytes(b"one\r\ntwo\r\nthree\r\nfour");
+            let stale = engine.take_frame().unwrap();
+            let mut model = TerminalViewModel::new(TerminalId(21));
+            model.cell_height = 20.0;
+            model.apply_frame(stale.clone());
+            let (tx, rx) = std::sync::mpsc::channel();
+            model.set_control_sender(tx);
+            if scrollbar {
+                assert!(model.set_display_offset(2));
+            } else {
+                assert!(model.scroll_wheel_by_pixel_delta(40.0));
+            }
+            model.apply_frame(stale);
+            assert_eq!(model.display_offset, 2);
+            assert!(model.scroll_wheel_by_pixel_delta(-40.0));
+            assert_eq!(model.display_offset, 0);
+            for expected_delta in [2, -2] {
+                let ControlMsg::Scroll { delta, request_id } = rx.try_recv().unwrap() else {
+                    panic!("missing scroll")
+                };
+                assert_eq!(delta, expected_delta);
+                engine.scroll_display(delta, request_id);
+                model.apply_frame(engine.take_frame().unwrap());
+                assert_eq!(
+                    model.display_offset, 0,
+                    "older acknowledgement must not overwrite newer intent"
+                );
+            }
+            assert_eq!(model.viewport_top, 2);
+        }
     }
 
     #[test]
@@ -1722,6 +1758,7 @@ mod tests {
                 title: None,
                 history_size: 3,
                 display_offset: offset,
+                scroll_request_id: 0,
                 input_mode: TerminalInputMode::default(),
             })
         };
