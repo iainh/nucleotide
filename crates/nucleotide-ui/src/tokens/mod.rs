@@ -332,7 +332,7 @@ impl SizeTokens {
         #[cfg(target_os = "macos")]
         {
             let mut tokens = Self::default();
-            tokens.titlebar_height = px(44.0);
+            tokens.titlebar_height = px(32.0);
             tokens
         }
 

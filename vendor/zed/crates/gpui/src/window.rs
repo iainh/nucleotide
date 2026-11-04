@@ -940,8 +940,7 @@ impl Frame {
         let mut set_hover_hitbox_count = false;
         let mut hit_test = HitTest::default();
         for hitbox in self.hitboxes.iter().rev() {
-            let bounds = hitbox.bounds.intersect(&hitbox.content_mask.bounds);
-            if bounds.contains(&position) {
+            if hitbox.bounds.contains(&position) && hitbox.content_mask.contains(&position) {
                 hit_test.ids.push(hitbox.id);
                 if !set_hover_hitbox_count
                     && hitbox.behavior == HitboxBehavior::BlockMouseExceptScroll
@@ -1792,28 +1791,138 @@ pub struct DispatchEventResult {
     pub default_prevented: bool,
 }
 
-/// Indicates which region of the window is visible. Content falling outside of this mask will not be
-/// rendered. Currently, only rectangular content masks are supported, but we give the mask its own type
-/// to leave room to support more complex shapes in the future.
+/// An immutable, scene-independent intersection of rectangular and rounded clips.
+/// The bounds are the rectangular intersection; rounded clips retain their original geometry.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ContentMask<P: Clone + Debug + Default + PartialEq> {
+    /// The rectangular intersection of all clips.
+    pub bounds: Bounds<P>,
+    /// Rounded constraints, all of which must contain a visible point.
+    pub rounded_clips: Arc<[RoundedClip<P>]>,
+}
+
+/// A single rounded rectangle, in window coordinates.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 #[repr(C)]
-pub struct ContentMask<P: Clone + Debug + Default + PartialEq> {
-    /// The bounds
+pub struct RoundedClip<P: Clone + Debug + Default + PartialEq> {
+    /// The original bounds, not the bounds of an intersection.
     pub bounds: Bounds<P>,
+    /// Circular corner radii in top-left, top-right, bottom-right, bottom-left order.
+    pub corner_radii: Corners<P>,
+}
+
+/// A raw-uploadable mask whose clip range belongs to the containing scene.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+#[repr(C)]
+pub struct GpuContentMask<P: Clone + Debug + Default + PartialEq> {
+    /// Conservative rectangular bounds used for culling.
+    pub bounds: Bounds<P>,
+    /// First rounded clip in `Scene::rounded_clips`.
+    pub clip_start: u32,
+    /// Number of rounded clips; zero means rectangular clipping only.
+    pub clip_count: u32,
+}
+
+impl<P: Clone + Debug + Default + PartialEq> ContentMask<P> {
+    /// Creates a rectangular mask without rounded constraints.
+    pub fn new(bounds: Bounds<P>) -> Self {
+        Self {
+            bounds,
+            rounded_clips: Arc::default(),
+        }
+    }
 }
 
 impl ContentMask<Pixels> {
+    /// Creates a rounded mask, clamping its radii to fit the rectangle.
+    pub fn rounded(bounds: Bounds<Pixels>, corner_radii: Corners<Pixels>) -> Self {
+        let corner_radii = corner_radii
+            .map(|radius| (*radius).max(Pixels::ZERO))
+            .clamp_radii_for_quad_size(bounds.size);
+        if corner_radii == Corners::default() {
+            return Self::new(bounds);
+        }
+        Self {
+            bounds,
+            rounded_clips: Arc::from([RoundedClip {
+                bounds,
+                corner_radii,
+            }]),
+        }
+    }
+
     /// Scale the content mask's pixel units by the given scaling factor.
     pub fn scale(&self, factor: f32) -> ContentMask<ScaledPixels> {
         ContentMask {
             bounds: self.bounds.scale(factor),
+            rounded_clips: self
+                .rounded_clips
+                .iter()
+                .map(|clip| RoundedClip {
+                    bounds: clip.bounds.scale(factor),
+                    corner_radii: clip.corner_radii.scale(factor),
+                })
+                .collect(),
         }
     }
 
     /// Intersect the content mask with the given content mask.
     pub fn intersect(&self, other: &Self) -> Self {
         let bounds = self.bounds.intersect(&other.bounds);
-        ContentMask { bounds }
+        let rounded_clips = if self.rounded_clips.is_empty() {
+            other.rounded_clips.clone()
+        } else if other.rounded_clips.is_empty() || self.rounded_clips == other.rounded_clips {
+            self.rounded_clips.clone()
+        } else {
+            self.rounded_clips
+                .iter()
+                .chain(other.rounded_clips.iter())
+                .copied()
+                .collect()
+        };
+        ContentMask {
+            bounds,
+            rounded_clips,
+        }
+    }
+
+    /// Tests the complete intersection, including each rounded corner.
+    pub fn contains(&self, position: &Point<Pixels>) -> bool {
+        self.bounds.contains(position)
+            && self.rounded_clips.iter().all(|clip| {
+                let bounds = clip.bounds;
+                if !bounds.contains(position) {
+                    return false;
+                }
+                let half_width = bounds.size.width.0 / 2.;
+                let half_height = bounds.size.height.0 / 2.;
+                let dx = (position.x - bounds.origin.x).0 - half_width;
+                let dy = (position.y - bounds.origin.y).0 - half_height;
+                let radii = clip.corner_radii;
+                // Match the GPU quad SDF's quadrant selection, including asymmetric radii.
+                let radius = match (dx < 0., dy < 0.) {
+                    (true, true) => radii.top_left,
+                    (false, true) => radii.top_right,
+                    (false, false) => radii.bottom_right,
+                    (true, false) => radii.bottom_left,
+                }
+                .0;
+                let x = dx.abs() - half_width + radius;
+                let y = dy.abs() - half_height + radius;
+                let distance = x.max(0.).hypot(y.max(0.)) + x.max(y).min(0.) - radius;
+                distance <= 0.
+            })
+    }
+}
+
+impl GpuContentMask<Pixels> {
+    /// Scales bounds while retaining the scene-local clip range.
+    pub fn scale(&self, factor: f32) -> GpuContentMask<ScaledPixels> {
+        GpuContentMask {
+            bounds: self.bounds.scale(factor),
+            clip_start: self.clip_start,
+            clip_count: self.clip_count,
+        }
     }
 }
 
@@ -2552,10 +2661,11 @@ impl Window {
     }
 
     #[inline]
-    fn snapped_content_mask(&self) -> ContentMask<ScaledPixels> {
-        ContentMask {
-            bounds: self.cover_bounds(self.content_mask().bounds),
-        }
+    fn snapped_content_mask(&mut self) -> GpuContentMask<ScaledPixels> {
+        let mask = self.content_mask();
+        let mut scaled = mask.scale(self.scale_factor());
+        scaled.bounds = self.cover_bounds(mask.bounds);
+        self.next_frame.scene.register_content_mask(&scaled)
     }
 
     /// Call to prevent the default action of an event. Currently only used to prevent
@@ -2995,13 +3105,15 @@ impl Window {
                 let prepaint_start = self.prepaint_index();
                 if let Some(element) = deferred_draw.element.as_mut() {
                     self.with_rendered_view(deferred_draw.current_view, |window| {
-                        window.with_rem_size(Some(deferred_draw.rem_size), |window| {
-                            window.with_absolute_element_offset(
-                                deferred_draw.absolute_offset,
-                                |window| {
-                                    element.prepaint(window, cx);
-                                },
-                            );
+                        window.with_content_mask(deferred_draw.content_mask.clone(), |window| {
+                            window.with_rem_size(Some(deferred_draw.rem_size), |window| {
+                                window.with_absolute_element_offset(
+                                    deferred_draw.absolute_offset,
+                                    |window| {
+                                        element.prepaint(window, cx);
+                                    },
+                                );
+                            });
                         });
                     })
                 } else {
@@ -3042,7 +3154,7 @@ impl Window {
                 .set_active_node(deferred_draw.parent_node);
 
             let paint_start = self.paint_index();
-            let content_mask = deferred_draw.content_mask;
+            let content_mask = deferred_draw.content_mask.clone();
             if let Some(element) = deferred_draw.element.as_mut() {
                 self.with_rendered_view(deferred_draw.current_view, |window| {
                     window.with_content_mask(content_mask, |window| {
@@ -3119,7 +3231,7 @@ impl Window {
                     parent_node: reused_subtree.refresh_node_id(deferred_draw.parent_node),
                     element_id_stack: deferred_draw.element_id_stack.clone(),
                     text_style_stack: deferred_draw.text_style_stack.clone(),
-                    content_mask: deferred_draw.content_mask,
+                    content_mask: deferred_draw.content_mask.clone(),
                     rem_size: deferred_draw.rem_size,
                     priority: deferred_draw.priority,
                     element: None,
@@ -3405,15 +3517,12 @@ impl Window {
     /// Obtain the current content mask. This method should only be called during element drawing.
     pub fn content_mask(&self) -> ContentMask<Pixels> {
         self.invalidator.debug_assert_paint_or_prepaint();
-        self.content_mask_stack
-            .last()
-            .cloned()
-            .unwrap_or_else(|| ContentMask {
-                bounds: Bounds {
-                    origin: Point::default(),
-                    size: self.viewport_size,
-                },
+        self.content_mask_stack.last().cloned().unwrap_or_else(|| {
+            ContentMask::new(Bounds {
+                origin: Point::default(),
+                size: self.viewport_size,
             })
+        })
     }
 
     /// Provide elements in the called function with a new namespace in which their identifiers must be unique.
@@ -3751,10 +3860,11 @@ impl Window {
         let opacity = self.element_opacity();
         let snapped_bounds = self.snap_bounds(quad.bounds);
         let snapped_border_widths = self.snap_border_widths(quad.border_widths);
+        let content_mask = self.snapped_content_mask();
         self.next_frame.scene.insert_primitive(Quad {
             order: 0,
             bounds: snapped_bounds,
-            content_mask: self.snapped_content_mask(),
+            content_mask,
             background: quad.background.opacity(opacity),
             border_color: quad.border_color.opacity(opacity),
             corner_radii: quad.corner_radii.scale(self.scale_factor()),
@@ -3772,12 +3882,14 @@ impl Window {
         let scale_factor = self.scale_factor();
         let content_mask = self.content_mask();
         let opacity = self.element_opacity();
-        path.content_mask = content_mask;
         let color: Background = color.into();
         path.color = color.opacity(opacity);
-        self.next_frame
+        let mut path = path.scale(scale_factor);
+        path.content_mask = self
+            .next_frame
             .scene
-            .insert_primitive(path.scale(scale_factor));
+            .register_content_mask(&content_mask.scale(scale_factor));
+        self.next_frame.scene.insert_primitive(path);
     }
 
     /// Paint an underline into the scene for the next frame at the current z-index.
@@ -3803,12 +3915,12 @@ impl Window {
             size: size(self.snap_stroke(width), height),
         };
         let element_opacity = self.element_opacity();
-
+        let content_mask = self.snapped_content_mask();
         self.next_frame.scene.insert_primitive(Underline {
             order: 0,
             pad: 0,
             bounds,
-            content_mask: self.snapped_content_mask(),
+            content_mask,
             color: style.color.unwrap_or_default().opacity(element_opacity),
             thickness,
             wavy: if style.wavy { 1 } else { 0 },
@@ -3833,12 +3945,12 @@ impl Window {
             size: size(self.snap_stroke(width), self.snap_stroke(height)),
         };
         let opacity = self.element_opacity();
-
+        let content_mask = self.snapped_content_mask();
         self.next_frame.scene.insert_primitive(Underline {
             order: 0,
             pad: 0,
             bounds,
-            content_mask: self.snapped_content_mask(),
+            content_mask,
             thickness: self.snap_stroke(style.thickness),
             color: style.color.unwrap_or_default().opacity(opacity),
             wavy: 0,
@@ -6331,6 +6443,119 @@ pub fn outline(
 mod backport_tests {
     use super::*;
     use crate::{EmptyView, KeyBinding, TestAppContext, div, prelude::*};
+
+    #[test]
+    fn nested_content_masks_preserve_original_corners() {
+        let outer = ContentMask::rounded(
+            Bounds::new(point(px(0.), px(0.)), size(px(100.), px(100.))),
+            Corners::all(px(30.)),
+        );
+        let inner = ContentMask::rounded(
+            Bounds::new(point(px(20.), px(0.)), size(px(100.), px(100.))),
+            Corners::all(px(10.)),
+        );
+        let mask = inner.intersect(&outer);
+        assert_eq!(mask.rounded_clips.len(), 2);
+        // Inside both bounding boxes, outside only the outer rounded corner.
+        assert!(!mask.contains(&point(px(99.), px(1.))));
+        // Inside only the outer rounded shape, outside the inner rounded corner.
+        assert!(!mask.contains(&point(px(21.), px(5.))));
+        assert!(mask.contains(&point(px(35.), px(5.))));
+        assert!(!mask.contains(&point(px(10.), px(50.))));
+        assert_eq!(outer.rounded_clips[0].bounds.origin, point(px(0.), px(0.)));
+        assert_eq!(mask.clone(), mask);
+        assert_ne!(mask, ContentMask::new(mask.bounds));
+    }
+
+    #[test]
+    fn asymmetric_content_mask_uses_each_quadrants_radius() {
+        let mask = ContentMask::rounded(
+            Bounds::new(point(px(0.), px(0.)), size(px(100.), px(100.))),
+            Corners {
+                top_left: px(0.),
+                top_right: px(10.),
+                bottom_right: px(20.),
+                bottom_left: px(30.),
+            },
+        );
+        for (position, inside) in [
+            ((1., 1.), true),
+            ((99., 1.), false),
+            ((99., 99.), false),
+            ((1., 99.), false),
+            ((94., 6.), true),
+            ((94., 94.), true),
+            ((9., 91.), true),
+            ((50., 0.), true),
+            ((0., 50.), true),
+            ((100., 50.), false),
+        ] {
+            let position = point(px(position.0), px(position.1));
+            assert_eq!(mask.contains(&position), inside, "{position:?}");
+        }
+    }
+
+    #[gpui::test]
+    fn cached_views_retain_rounded_hitboxes_and_invalidate_on_radius_change(
+        cx: &mut TestAppContext,
+    ) {
+        struct Child(Rc<Cell<usize>>);
+        impl Render for Child {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                self.0.set(self.0.get() + 1);
+                div()
+                    .size_full()
+                    .bg(crate::rgb(0xff0000))
+                    .on_mouse_down(MouseButton::Left, |_, _, _| {})
+            }
+        }
+        struct Root {
+            radius: Pixels,
+            child: Entity<Child>,
+        }
+        impl Render for Root {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div()
+                    .size(px(100.))
+                    .rounded(self.radius)
+                    .overflow_hidden()
+                    .child(
+                        AnyView::from(self.child.clone())
+                            .cached(crate::StyleRefinement::default().size(px(100.))),
+                    )
+            }
+        }
+        let renders = Rc::new(Cell::new(0));
+        let child = cx.new(|_| Child(renders.clone()));
+        let window = cx.add_window(|_, _| Root {
+            radius: px(30.),
+            child,
+        });
+        for (radius, expected_renders) in [(30., 1), (30., 1), (0., 2), (0., 2)] {
+            window
+                .update(cx, |root, _, cx| {
+                    root.radius = px(radius);
+                    cx.notify();
+                })
+                .unwrap();
+            cx.update_window(window.into(), |_, window, cx| {
+                window.draw(cx).clear();
+                assert_eq!(renders.get(), expected_renders);
+                let frame = &window.rendered_frame;
+                assert!(!frame.hit_test(point(px(50.), px(50.))).ids.is_empty());
+                assert_eq!(
+                    frame.hit_test(point(px(1.), px(1.))).ids.is_empty(),
+                    radius != 0.
+                );
+                assert_eq!(frame.scene.quads.len(), 1);
+                assert_eq!(
+                    frame.scene.quads[0].content_mask.clip_count,
+                    u32::from(radius != 0.)
+                );
+            })
+            .unwrap();
+        }
+    }
 
     #[gpui::test]
     fn native_close_defers_app_access(cx: &mut TestAppContext) {

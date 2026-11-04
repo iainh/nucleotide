@@ -5,9 +5,10 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AtlasTextureId, AtlasTile, Background, Bounds, ContentMask, Corners, Edges, Hsla, Pixels,
-    Point, Radians, ScaledPixels, Size, bounds_tree::BoundsTree, point,
+    AtlasTextureId, AtlasTile, Background, Bounds, ContentMask, Corners, Edges, GpuContentMask,
+    Hsla, Pixels, Point, Radians, RoundedClip, ScaledPixels, Size, bounds_tree::BoundsTree, point,
 };
+use collections::FxHashMap;
 use std::{
     fmt::Debug,
     iter::Peekable,
@@ -28,6 +29,8 @@ pub struct Scene {
     pub(crate) paint_operations: Vec<PaintOperation>,
     primitive_bounds: BoundsTree<ScaledPixels>,
     layer_stack: Vec<DrawOrder>,
+    pub rounded_clips: Vec<RoundedClip<ScaledPixels>>,
+    rounded_clip_ranges: FxHashMap<Vec<[u32; 8]>, (u32, u32)>,
     pub shadows: Vec<Shadow>,
     pub quads: Vec<Quad>,
     pub paths: Vec<Path<ScaledPixels>>,
@@ -44,6 +47,8 @@ impl Scene {
         self.paint_operations.clear();
         self.primitive_bounds.clear();
         self.layer_stack.clear();
+        self.rounded_clips.clear();
+        self.rounded_clip_ranges.clear();
         self.paths.clear();
         self.shadows.clear();
         self.quads.clear();
@@ -56,6 +61,58 @@ impl Scene {
 
     pub fn len(&self) -> usize {
         self.paint_operations.len()
+    }
+
+    /// Registers immutable CPU geometry in this scene's GPU clip table.
+    pub fn register_content_mask(
+        &mut self,
+        mask: &ContentMask<ScaledPixels>,
+    ) -> GpuContentMask<ScaledPixels> {
+        let (clip_start, clip_count) = self.intern_rounded_clips(&mask.rounded_clips);
+        GpuContentMask {
+            bounds: mask.bounds,
+            clip_start,
+            clip_count,
+        }
+    }
+
+    fn intern_rounded_clips(&mut self, clips: &[RoundedClip<ScaledPixels>]) -> (u32, u32) {
+        if clips.is_empty() {
+            return (0, 0);
+        }
+        let key = clips
+            .iter()
+            .map(|clip| {
+                [
+                    clip.bounds.origin.x.0,
+                    clip.bounds.origin.y.0,
+                    clip.bounds.size.width.0,
+                    clip.bounds.size.height.0,
+                    clip.corner_radii.top_left.0,
+                    clip.corner_radii.top_right.0,
+                    clip.corner_radii.bottom_right.0,
+                    clip.corner_radii.bottom_left.0,
+                ]
+                .map(|value| if value == 0.0 { 0 } else { value.to_bits() })
+            })
+            .collect::<Vec<_>>();
+        if let Some(range) = self.rounded_clip_ranges.get(&key) {
+            return *range;
+        }
+        let start = self.rounded_clips.len();
+        let end = start
+            .checked_add(clips.len())
+            .expect("rounded clip table overflow");
+        // The GPU ABI uses u32 indices. Fail explicitly instead of truncating a chain.
+        let clip_start =
+            u32::try_from(start).expect("rounded clip table exceeds GPU address space");
+        let clip_count =
+            u32::try_from(clips.len()).expect("rounded clip chain exceeds GPU address space");
+        u32::try_from(end).expect("rounded clip table exceeds GPU address space");
+        self.rounded_clips.extend_from_slice(clips);
+        self.rounded_clip_ranges
+            .insert(key, (clip_start, clip_count));
+        (clip_start, clip_count)
     }
 
     pub fn push_layer(&mut self, bounds: Bounds<ScaledPixels>) {
@@ -127,7 +184,17 @@ impl Scene {
     pub fn replay(&mut self, range: Range<usize>, prev_scene: &Scene) {
         for operation in &prev_scene.paint_operations[range] {
             match operation {
-                PaintOperation::Primitive(primitive) => self.insert_primitive(primitive.clone()),
+                PaintOperation::Primitive(primitive) => {
+                    let mut primitive = primitive.clone();
+                    let mask = primitive.content_mask_mut();
+                    let start = mask.clip_start as usize;
+                    let end = start + mask.clip_count as usize;
+                    let (clip_start, clip_count) =
+                        self.intern_rounded_clips(&prev_scene.rounded_clips[start..end]);
+                    mask.clip_start = clip_start;
+                    mask.clip_count = clip_count;
+                    self.insert_primitive(primitive);
+                }
                 PaintOperation::StartLayer(bounds) => self.push_layer(*bounds),
                 PaintOperation::EndLayer => self.pop_layer(),
             }
@@ -231,7 +298,7 @@ impl Primitive {
         }
     }
 
-    pub fn content_mask(&self) -> &ContentMask<ScaledPixels> {
+    pub fn content_mask(&self) -> &GpuContentMask<ScaledPixels> {
         match self {
             Primitive::Shadow(shadow) => &shadow.content_mask,
             Primitive::Quad(quad) => &quad.content_mask,
@@ -241,6 +308,19 @@ impl Primitive {
             Primitive::SubpixelSprite(sprite) => &sprite.content_mask,
             Primitive::PolychromeSprite(sprite) => &sprite.content_mask,
             Primitive::Surface(surface) => &surface.content_mask,
+        }
+    }
+
+    fn content_mask_mut(&mut self) -> &mut GpuContentMask<ScaledPixels> {
+        match self {
+            Primitive::Shadow(shadow) => &mut shadow.content_mask,
+            Primitive::Quad(quad) => &mut quad.content_mask,
+            Primitive::Path(path) => &mut path.content_mask,
+            Primitive::Underline(underline) => &mut underline.content_mask,
+            Primitive::MonochromeSprite(sprite) => &mut sprite.content_mask,
+            Primitive::SubpixelSprite(sprite) => &mut sprite.content_mask,
+            Primitive::PolychromeSprite(sprite) => &mut sprite.content_mask,
+            Primitive::Surface(surface) => &mut surface.content_mask,
         }
     }
 }
@@ -488,7 +568,7 @@ pub struct Quad {
     pub order: DrawOrder,
     pub border_style: BorderStyle,
     pub bounds: Bounds<ScaledPixels>,
-    pub content_mask: ContentMask<ScaledPixels>,
+    pub content_mask: GpuContentMask<ScaledPixels>,
     pub background: Background,
     pub border_color: Hsla,
     pub corner_radii: Corners<ScaledPixels>,
@@ -508,7 +588,7 @@ pub struct Underline {
     pub order: DrawOrder,
     pub pad: u32, // align to 8 bytes
     pub bounds: Bounds<ScaledPixels>,
-    pub content_mask: ContentMask<ScaledPixels>,
+    pub content_mask: GpuContentMask<ScaledPixels>,
     pub color: Hsla,
     pub thickness: ScaledPixels,
     pub wavy: u32,
@@ -528,7 +608,7 @@ pub struct Shadow {
     pub blur_radius: ScaledPixels,
     pub bounds: Bounds<ScaledPixels>,
     pub corner_radii: Corners<ScaledPixels>,
-    pub content_mask: ContentMask<ScaledPixels>,
+    pub content_mask: GpuContentMask<ScaledPixels>,
     pub color: Hsla,
     pub element_bounds: Bounds<ScaledPixels>,
     pub element_corner_radii: Corners<ScaledPixels>,
@@ -664,7 +744,7 @@ pub struct MonochromeSprite {
     pub order: DrawOrder,
     pub pad: u32,
     pub bounds: Bounds<ScaledPixels>,
-    pub content_mask: ContentMask<ScaledPixels>,
+    pub content_mask: GpuContentMask<ScaledPixels>,
     pub color: Hsla,
     pub tile: AtlasTile,
     pub transformation: TransformationMatrix,
@@ -683,7 +763,7 @@ pub struct SubpixelSprite {
     pub order: DrawOrder,
     pub pad: u32, // align to 8 bytes
     pub bounds: Bounds<ScaledPixels>,
-    pub content_mask: ContentMask<ScaledPixels>,
+    pub content_mask: GpuContentMask<ScaledPixels>,
     pub color: Hsla,
     pub tile: AtlasTile,
     pub transformation: TransformationMatrix,
@@ -704,7 +784,7 @@ pub struct PolychromeSprite {
     pub grayscale: bool,
     pub opacity: f32,
     pub bounds: Bounds<ScaledPixels>,
-    pub content_mask: ContentMask<ScaledPixels>,
+    pub content_mask: GpuContentMask<ScaledPixels>,
     pub corner_radii: Corners<ScaledPixels>,
     pub tile: AtlasTile,
 }
@@ -720,7 +800,7 @@ impl From<PolychromeSprite> for Primitive {
 pub struct PaintSurface {
     pub order: DrawOrder,
     pub bounds: Bounds<ScaledPixels>,
-    pub content_mask: ContentMask<ScaledPixels>,
+    pub content_mask: GpuContentMask<ScaledPixels>,
     #[cfg(target_os = "macos")]
     pub image_buffer: core_video::pixel_buffer::CVPixelBuffer,
 }
@@ -742,7 +822,7 @@ pub struct Path<P: Clone + Debug + Default + PartialEq> {
     pub id: PathId,
     pub order: DrawOrder,
     pub bounds: Bounds<P>,
-    pub content_mask: ContentMask<P>,
+    pub content_mask: GpuContentMask<P>,
     pub vertices: Vec<PathVertex<P>>,
     pub color: Background,
     start: Point<P>,
@@ -886,7 +966,7 @@ impl From<Path<ScaledPixels>> for Primitive {
 pub struct PathVertex<P: Clone + Debug + Default + PartialEq> {
     pub xy_position: Point<P>,
     pub st_position: Point<f32>,
-    pub content_mask: ContentMask<P>,
+    pub content_mask: GpuContentMask<P>,
 }
 
 #[expect(missing_docs)]
@@ -897,5 +977,105 @@ impl PathVertex<Pixels> {
             st_position: self.st_position,
             content_mask: self.content_mask.scale(factor),
         }
+    }
+}
+
+#[cfg(test)]
+mod clip_tests {
+    use super::*;
+    use crate::{px, size};
+
+    #[test]
+    fn gpu_clip_layout_matches_raw_upload_contract() {
+        assert_eq!(size_of::<GpuContentMask<ScaledPixels>>(), 24);
+        assert_eq!(
+            std::mem::offset_of!(GpuContentMask<ScaledPixels>, clip_start),
+            16
+        );
+        assert_eq!(
+            std::mem::offset_of!(GpuContentMask<ScaledPixels>, clip_count),
+            20
+        );
+        assert_eq!(size_of::<RoundedClip<ScaledPixels>>(), 32);
+        assert_eq!(
+            std::mem::offset_of!(RoundedClip<ScaledPixels>, corner_radii),
+            16
+        );
+    }
+
+    #[test]
+    fn registering_deep_clip_chains_preserves_geometry_and_deduplicates() {
+        let bounds = Bounds::new(point(px(0.), px(0.)), size(px(100.), px(100.)));
+        let mut mask = ContentMask::new(bounds);
+        for radius in 1..=128 {
+            // Distinct shapes, with no fixed cap on nesting.
+            mask = mask.intersect(&ContentMask::rounded(
+                bounds,
+                Corners::all(px(radius as f32 / 4.)),
+            ));
+        }
+        let scaled = mask.scale(2.);
+        let mut scene = Scene::default();
+        let registered = scene.register_content_mask(&scaled);
+        assert_eq!(registered.bounds, bounds.scale(2.));
+        assert_eq!(registered.clip_count, 128);
+        assert_eq!(scene.rounded_clips, scaled.rounded_clips.as_ref());
+        assert_eq!(
+            scene.rounded_clips[127].corner_radii.top_left,
+            ScaledPixels(64.)
+        );
+        assert_eq!(
+            scene.register_content_mask(&mask.clone().scale(2.)),
+            registered
+        );
+        assert_eq!(scene.rounded_clips.len(), 128);
+
+        let rectangular = scene.register_content_mask(&ContentMask::new(bounds).scale(2.));
+        assert_eq!((rectangular.clip_start, rectangular.clip_count), (0, 0));
+        assert_eq!(scene.rounded_clips.len(), 128);
+        scene.clear();
+        assert!(scene.rounded_clips.is_empty());
+        assert_eq!(scene.register_content_mask(&scaled).clip_start, 0);
+        assert_eq!(scene.rounded_clips.len(), 128);
+    }
+
+    #[test]
+    fn partial_replay_remaps_clips_and_survives_source_scene_clear() {
+        let bounds = Bounds::new(point(px(0.), px(0.)), size(px(100.), px(100.)));
+        let first = ContentMask::rounded(bounds, Corners::all(px(10.))).scale(1.);
+        let second = ContentMask::rounded(bounds, Corners::all(px(20.))).scale(1.);
+        let mut previous = Scene::default();
+        for mask in [&first, &second] {
+            let content_mask = previous.register_content_mask(mask);
+            previous.insert_primitive(Quad {
+                bounds: mask.bounds,
+                content_mask,
+                ..Quad::default()
+            });
+        }
+        let mut path = Path::new(point(px(0.), px(0.)));
+        path.line_to(point(px(100.), px(0.)));
+        path.line_to(point(px(100.), px(100.)));
+        let mut path = path.scale(1.);
+        path.content_mask = previous.quads[1].content_mask;
+        previous.insert_primitive(path);
+
+        let mut next = Scene::default();
+        let content_mask = next.register_content_mask(&second);
+        next.insert_primitive(Quad {
+            bounds: second.bounds,
+            content_mask,
+            ..Quad::default()
+        });
+        next.replay(1..previous.len(), &previous);
+        assert_eq!(next.quads.len(), 2);
+        assert_eq!(next.quads[1].content_mask.clip_start, 0);
+        assert_eq!(next.paths[0].content_mask, next.quads[1].content_mask);
+        assert_eq!(next.rounded_clips, second.rounded_clips.as_ref());
+        previous.clear();
+        previous.replay(0..next.len(), &next);
+        assert_eq!(previous.quads.len(), 2);
+        assert_eq!(previous.paths.len(), 1);
+        assert_eq!(previous.rounded_clips, second.rounded_clips.as_ref());
     }
 }

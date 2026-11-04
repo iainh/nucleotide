@@ -52,20 +52,15 @@ pub(crate) fn paint_document_selection_backgrounds(
             params.bounds.size.width,
             runs.as_ref(),
         );
-        window.with_content_mask(
-            Some(ContentMask {
-                bounds: text_bounds,
-            }),
-            |window| {
-                paint_line_backgrounds(
-                    window,
-                    &shaped,
-                    runs.as_ref(),
-                    origin,
-                    params.layout.line_height,
-                );
-            },
-        );
+        window.with_content_mask(Some(ContentMask::new(text_bounds)), |window| {
+            paint_line_backgrounds(
+                window,
+                &shaped,
+                runs.as_ref(),
+                origin,
+                params.layout.line_height,
+            );
+        });
         if let Some((range, _)) = &frame.matching_bracket_background
             && let Some(bytes) = selection_display_range(
                 params.text,
@@ -197,7 +192,7 @@ pub(crate) fn paint_document_selection_backgrounds(
         )
     {
         color.a *= opacity;
-        window.with_content_mask(Some(ContentMask { bounds: viewport }), |window| {
+        window.with_content_mask(Some(ContentMask::new(viewport)), |window| {
             for path in selection_paths(
                 &rows,
                 params.layout.cell_width,
@@ -211,16 +206,11 @@ pub(crate) fn paint_document_selection_backgrounds(
     // Bracket matching has higher priority than selection in Helix's overlay
     // stack. Restore that cell above the contours, still below the glyphs.
     if let Some((_, color)) = &frame.matching_bracket_background {
-        window.with_content_mask(
-            Some(ContentMask {
-                bounds: text_bounds,
-            }),
-            |window| {
-                for bounds in matching_bracket_rows {
-                    window.paint_quad(fill(bounds, *color));
-                }
-            },
-        );
+        window.with_content_mask(Some(ContentMask::new(text_bounds)), |window| {
+            for bounds in matching_bracket_rows {
+                window.paint_quad(fill(bounds, *color));
+            }
+        });
     }
 }
 

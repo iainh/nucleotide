@@ -54,7 +54,7 @@ use helix_core::{Position, Rope, RopeSlice, Selection, pos_at_coords};
 use helix_lsp::{OffsetEncoding, lsp};
 use helix_view::input::KeyEvent;
 use helix_view::keyboard::{KeyCode, KeyModifiers};
-use helix_view::{DocumentId, ViewId, graphics::Rect as HelixRect};
+use helix_view::{DocumentId, ViewId};
 use nucleotide_logging::{debug, error, info, instrument, trace, warn};
 use nucleotide_ui::ThemedContext as UIThemedContext;
 use nucleotide_ui::icon as svg;
@@ -11145,15 +11145,13 @@ impl Workspace {
         }
     }
 
-    /// Shell spacing and the safe rectangular content inset inside rounded islands.
+    /// Shell spacing and the border inset inside clipped, zero-padding islands.
     fn content_island_insets(&self, cx: &Context<Self>) -> (Pixels, Pixels) {
         if nucleotide_appearance::content_islands_enabled(
             self.core.read(cx).config.ui_chrome_style(),
         ) {
             let sizes = &cx.theme().tokens.sizes;
-            // GPUI only clips descendants to rectangles. Padding by the radius
-            // plus the border keeps their opaque backgrounds out of the corners.
-            (sizes.space_3, sizes.radius_lg + px(1.0))
+            (sizes.space_2, px(1.0))
         } else {
             (px(0.0), px(0.0))
         }
@@ -11525,40 +11523,7 @@ impl Render for Workspace {
             .unwrap_or_default();
         let dividers = self.render_pane_dividers(&geometry, cx);
         let show_focus_indicator = geometry.len() > 1;
-        let mut tab_strip_backgrounds = Vec::new();
         for pane in geometry {
-            let tab_height = self.pane_tab_bar_height(pane.pane, cx);
-            if content_islands && tab_height > px(0.0) {
-                // Carry each strip through the island's safe content inset.
-                // Only the outer top corners need rounding; split-pane bands
-                // also extend to the island's left/right edges when adjacent.
-                let at_left = pane.rect.x == 0.0;
-                let at_top = pane.rect.y == 0.0;
-                let at_right = (pane.rect.x + pane.rect.width - right_content_w_px).abs() < 1.0;
-                let left_inset = if at_left { island_radius } else { px(0.0) };
-                let top_inset = if at_top { island_radius } else { px(0.0) };
-                let right_inset = if at_right { island_radius } else { px(0.0) };
-                tab_strip_backgrounds.push(
-                    div()
-                        .absolute()
-                        .left(px(pane.rect.x) + island_radius - left_inset)
-                        .top(px(pane.rect.y) + island_radius - top_inset)
-                        .w(px(pane.rect.width) + left_inset + right_inset)
-                        .h(tab_height + top_inset)
-                        .bg(cx
-                            .theme()
-                            .tokens
-                            .tab_bar_tokens()
-                            .container_background
-                            .alpha(1.0))
-                        .when(at_top && at_left, |band| {
-                            band.rounded_tl(island_radius - px(1.0))
-                        })
-                        .when(at_top && at_right, |band| {
-                            band.rounded_tr(island_radius - px(1.0))
-                        }),
-                );
-            }
             if let Some(element) =
                 self.render_document_view_layout(pane, show_focus_indicator, window, cx)
             {
@@ -12512,15 +12477,9 @@ impl Render for Workspace {
                             .size_full()
                             .rounded(island_radius)
                             .padding(px(0.0))
-                            .relative()
+                            .overflow_hidden()
                             .bg(cx.theme().tokens.editor.background.alpha(1.0))
-                            .children(tab_strip_backgrounds)
-                            .child(
-                                div()
-                                    .size_full()
-                                    .p(island_radius)
-                                    .child(div().size_full().overflow_hidden().child(right)),
-                            ),
+                            .child(right),
                     )
                     .into_any_element()
             } else {
@@ -12637,14 +12596,10 @@ impl Render for Workspace {
                             Panel::new("file-tree-island")
                                 .size_full()
                                 .rounded(island_radius)
-                                .padding(island_radius)
+                                .padding(px(0.0))
+                                .overflow_hidden()
                                 .bg(file_tree_background.alpha(1.0))
-                                .child(
-                                    div()
-                                        .size_full()
-                                        .overflow_hidden()
-                                        .child(file_tree_container),
-                                ),
+                                .child(file_tree_container),
                         )
                         .into_any_element()
                 } else {
