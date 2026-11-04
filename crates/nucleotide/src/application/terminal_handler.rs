@@ -709,6 +709,13 @@ impl TerminalRuntimeHandler {
         let rx_drained = frames_drained.clone();
         let handle = std::thread::spawn(move || {
             while let Some(frame) = futures_executor::block_on(rx.recv()) {
+                if matches!(
+                    frame,
+                    nucleotide_terminal::frame::FramePayload::OutputComplete
+                ) {
+                    rx_drained.store(true, Ordering::SeqCst);
+                    continue;
+                }
                 let mut guard = lock_view_model(view_clone.as_ref(), id, "apply_frame");
                 guard.apply_frame(frame);
             }
@@ -791,12 +798,7 @@ impl TerminalRuntimeHandler {
         let control_session = session_arc.clone();
         let control_exited = exit_reported.clone();
         std::thread::spawn(move || {
-            while !control_exited.load(Ordering::SeqCst) {
-                let command = match control_rx.recv_timeout(Duration::from_millis(100)) {
-                    Ok(command) => command,
-                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
-                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
-                };
+            while let Ok(command) = control_rx.recv() {
                 let mut session = control_session
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -809,9 +811,14 @@ impl TerminalRuntimeHandler {
                             cell_width: size.cell_width,
                             cell_height: size.cell_height,
                         });
-                        let _ = futures_executor::block_on(session.resize(size.cols, size.rows));
+                        if !control_exited.load(Ordering::SeqCst) {
+                            let _ =
+                                futures_executor::block_on(session.resize(size.cols, size.rows));
+                        }
                     }
                     SessionControl::Terminate => {
+                        #[cfg(feature = "terminal-emulator-core")]
+                        let _ = session.control_sender().send(ControlMsg::Shutdown);
                         let _ = futures_executor::block_on(session.kill());
                         break;
                     }
@@ -983,9 +990,7 @@ impl TerminalRuntimeHandler {
                         view.clear_input_sender();
                     }
                     drop(entry.input_tx);
-                    if !entry.exit_reported.load(Ordering::SeqCst) {
-                        let _ = entry.control_tx.send(SessionControl::Terminate);
-                    }
+                    let _ = entry.control_tx.send(SessionControl::Terminate);
                 }
             }
             TerminalEvent::Spawned { .. }
@@ -1003,9 +1008,7 @@ impl Default for TerminalRuntimeHandler {
 impl Drop for TerminalRuntimeHandler {
     fn drop(&mut self) {
         for entry in self.sessions.values() {
-            if !entry.exit_reported.load(Ordering::SeqCst) {
-                let _ = entry.control_tx.send(SessionControl::Terminate);
-            }
+            let _ = entry.control_tx.send(SessionControl::Terminate);
         }
         for id in self.models.keys() {
             nucleotide_terminal_view::unregister_view_model(*id);
