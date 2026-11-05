@@ -119,6 +119,12 @@ Status bar metadata and diagnostic icons use `StatusBarTokens.text_secondary`,
 a minimum contrast ratio of 4.5:1. Use these tokens in the footer rather than
 notification colours, which are calibrated for notification backgrounds.
 
+For the system UI look, apply `StatusBarTokens::system_mode_badges` to use
+soft blue Normal, green Insert and amber Select badges, independent of editor
+cursor and OS accent colours. Label contrast is checked against the tint
+composited over the native footer palette. The themed UI keeps cursor-derived
+solid mode badges.
+
 ### Light vs Dark Themes
 
 The system automatically provides appropriate colors for both themes:

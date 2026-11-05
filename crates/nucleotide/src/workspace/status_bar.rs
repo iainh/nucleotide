@@ -543,7 +543,8 @@ impl Workspace {
         status_bar_tokens: &nucleotide_ui::tokens::StatusBarTokens,
         cx: &Context<Self>,
     ) -> gpui::AnyElement {
-        let quiet_shell = self.content_island_insets(cx).0 > px(0.0);
+        let system_look = cx.global::<crate::ThemeManager>().ui_chrome_style()
+            == nucleotide_appearance::UiChromeStyle::System;
         let sizes = &cx.theme().tokens.sizes;
         let (mode_color, mode_text) = match model.mode {
             helix_view::document::Mode::Normal => (
@@ -566,7 +567,7 @@ impl Workspace {
             .flex()
             .items_center()
             .justify_center()
-            .when(quiet_shell, |mode| mode.p(sizes.space_1))
+            .when(system_look, |mode| mode.p(sizes.space_2))
             .child(
                 div()
                     .size_full()
@@ -577,7 +578,15 @@ impl Workspace {
                     .bg(mode_color)
                     .text_color(mode_text)
                     .font_weight(FontWeight::MEDIUM)
-                    .when(quiet_shell, |badge| badge.rounded(sizes.radius_sm))
+                    .when(system_look, |badge| {
+                        badge
+                            .px(sizes.space_2)
+                            .rounded(if cfg!(target_os = "macos") {
+                                sizes.radius_md
+                            } else {
+                                sizes.radius_sm
+                            })
+                    })
                     .child(model.mode_label),
             )
             .into_any_element()
@@ -919,7 +928,13 @@ impl Workspace {
     ) -> impl IntoElement {
         let (status_bar_tokens, sizes) = {
             let ui_theme = cx.global::<nucleotide_ui::Theme>();
-            (ui_theme.tokens.status_bar_tokens(), ui_theme.tokens.sizes)
+            let mut status_bar_tokens = ui_theme.tokens.status_bar_tokens();
+            if cx.global::<crate::ThemeManager>().ui_chrome_style()
+                == nucleotide_appearance::UiChromeStyle::System
+            {
+                status_bar_tokens = status_bar_tokens.system_mode_badges(&ui_theme.tokens.chrome);
+            }
+            (status_bar_tokens, ui_theme.tokens.sizes)
         };
         let viewport_width = f32::from(window.viewport_size().width);
         let (shell_margin, _) = self.content_island_insets(cx);
