@@ -62,6 +62,46 @@ mod system_chrome_token_tests {
     use gpui::hsla;
 
     #[test]
+    fn system_mode_badges_are_distinct_soft_tints_with_readable_text() {
+        for appearance in [SystemAppearance::Light, SystemAppearance::Dark] {
+            // A non-blue OS accent and identical editor cursors must not erase
+            // the system mode identities or turn Normal back into teal/green.
+            let accent = hsla(300.0 / 360.0, 0.7, 0.5, 1.0);
+            for palette in [
+                NativeChromePalette::macos_native(appearance, accent),
+                NativeChromePalette::windows_fluent(appearance, accent),
+            ] {
+                let chrome = ChromeTokens::from_native_chrome_palette(palette);
+                let mut editor = EditorTokens::fallback(appearance.is_dark());
+                editor.cursor_insert = editor.cursor_normal;
+                editor.cursor_select = editor.cursor_normal;
+                let themed = chrome.status_bar_tokens(&editor);
+                assert_eq!(themed.mode_normal, editor.cursor_normal);
+                assert_eq!(themed.mode_insert, editor.cursor_insert);
+
+                let badges = themed.system_mode_badges(&chrome);
+                for (background, foreground, hue_range) in [
+                    (badges.mode_normal, badges.mode_normal_text, 200.0..220.0),
+                    (badges.mode_insert, badges.mode_insert_text, 120.0..150.0),
+                    (badges.mode_select, badges.mode_select_text, 35.0..50.0),
+                ] {
+                    assert!(hue_range.contains(&(background.h * 360.0)));
+                    assert!(hue_range.contains(&(foreground.h * 360.0)));
+                    assert!((0.08..=0.25).contains(&background.a));
+                    assert_eq!(foreground.a, 1.0);
+                    let backdrop = gpui::Hsla {
+                        a: 1.0,
+                        ..palette.mica_base
+                    };
+                    let contrast =
+                        ColorTheory::contrast_ratio(backdrop.blend(background), foreground);
+                    assert!(contrast >= 4.5, "{appearance:?}: contrast {contrast}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn system_chrome_uses_fluent_neutral_surfaces() {
         let editor_background = hsla(0.0, 0.0, 0.08, 1.0);
         let system_accent = default_windows_accent_color();

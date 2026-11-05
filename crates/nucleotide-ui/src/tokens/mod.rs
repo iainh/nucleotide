@@ -1571,6 +1571,40 @@ impl StatusBarTokens {
         }
     }
 
+    /// Soft native status readouts, independent of editor cursor and OS accent colors.
+    pub fn system_mode_badges(mut self, chrome: &ChromeTokens) -> Self {
+        // The footer may be transparent over native material, but retains its
+        // palette RGB. Check text against the composited tint, not the tint alone.
+        let backdrop = utils::with_alpha(chrome.footer_background, 1.0);
+        let is_dark = backdrop.l < 0.5;
+        let colors = if is_dark {
+            [
+                hsla_from_rgb_u8(100, 181, 255, 1.0),
+                hsla_from_rgb_u8(140, 230, 160, 1.0),
+                hsla_from_rgb_u8(255, 211, 106, 1.0),
+            ]
+        } else {
+            [
+                hsla_from_rgb_u8(0, 102, 204, 1.0),
+                hsla_from_rgb_u8(24, 122, 48, 1.0),
+                hsla_from_rgb_u8(153, 99, 0, 1.0),
+            ]
+        };
+        let [normal, insert, select] = colors.map(|color| {
+            let background = utils::with_alpha(color, if is_dark { 0.22 } else { 0.12 });
+            let foreground = ensure_visual_contrast(
+                &[backdrop.blend(background)],
+                color,
+                ContrastRatios::AA_NORMAL,
+            );
+            (background, foreground)
+        });
+        (self.mode_normal, self.mode_normal_text) = normal;
+        (self.mode_insert, self.mode_insert_text) = insert;
+        (self.mode_select, self.mode_select_text) = select;
+        self
+    }
+
     /// Create fallback status bar tokens from design tokens
     pub fn from_design_tokens(dt: &DesignTokens) -> Self {
         Self::from_tokens(&dt.chrome, &dt.editor)
