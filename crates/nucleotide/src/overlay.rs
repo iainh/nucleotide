@@ -741,10 +741,6 @@ impl OverlayView {
                 let prompt_view = cx.new(|cx| {
                     let mut view = PromptView::new(prompt_text.clone(), cx);
 
-                    // Apply theme styling using testing-aware theme access
-                    let style = Self::create_prompt_style_from_context(cx);
-                    view = view.with_style(style);
-
                     if !initial_input.is_empty()
                         && !matches!(submit_action, PromptSubmitAction::Command)
                     {
@@ -2073,21 +2069,6 @@ impl OverlayView {
                 // Don't clear native picker on redraw - let it persist until dismissed by user action
             }
             _ => {}
-        }
-    }
-
-    /// Create PromptStyle using ThemedContext for consistent theme access
-    fn create_prompt_style_from_context(cx: &App) -> nucleotide_ui::prompt_view::PromptStyle {
-        // Get modal style using ThemedContext
-        let modal_style = Self::create_modal_style_from_context(cx);
-
-        // Use ThemedContext for theme access
-        let theme = cx.theme();
-        let tokens = &theme.tokens;
-
-        nucleotide_ui::prompt_view::PromptStyle {
-            modal_style,
-            completion_background: tokens.dropdown_tokens().container_background,
         }
     }
 

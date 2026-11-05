@@ -76,7 +76,7 @@ pub struct PromptView {
     completion_task_fn: Option<PromptCompletionTaskFn>,
 
     // Styling
-    style: PromptStyle,
+    style: Option<PromptStyle>,
 }
 
 #[derive(Clone)]
@@ -96,6 +96,20 @@ impl Default for PromptStyle {
 }
 
 impl PromptStyle {
+    pub fn from_tokens(tokens: &crate::DesignTokens) -> Self {
+        Self {
+            modal_style: ModalStyle {
+                background: tokens.picker_tokens().container_background,
+                text: tokens.chrome.text_on_chrome,
+                border: tokens.picker_tokens().border,
+                selected_background: tokens.dropdown_tokens().item_background_selected,
+                selected_text: tokens.dropdown_tokens().item_text_selected,
+                prompt_text: tokens.chrome.text_on_chrome,
+            },
+            completion_background: tokens.dropdown_tokens().container_background,
+        }
+    }
+
     pub fn from_helix_theme(theme: &helix_view::Theme) -> Self {
         let modal_style = ModalStyle::from_theme(theme);
         Self {
@@ -145,6 +159,8 @@ impl PromptView {
     pub fn new(prompt: impl Into<SharedString>, cx: &mut Context<Self>) -> Self {
         let input_view = Self::new_input_view(cx);
         let focus_handle = input_view.read(cx).focus_handle(cx);
+        cx.observe_global::<crate::Theme>(|_, cx| cx.notify())
+            .detach();
         // Register prompt focus with the global coordinator if available
         if let Some(coord) = cx.try_global::<crate::FocusCoordinator>() {
             coord.set_prompt_focus(focus_handle.clone());
@@ -171,12 +187,12 @@ impl PromptView {
             preview_applied: false,
             completion_fn: None,
             completion_task_fn: None,
-            style: PromptStyle::default(),
+            style: None,
         }
     }
 
     pub fn with_style(mut self, style: PromptStyle) -> Self {
-        self.style = style;
+        self.style = Some(style);
         self
     }
 
@@ -619,15 +635,19 @@ impl Render for PromptView {
             self.focus_handle.focus(window, cx);
         }
         let ui_theme = cx.global::<crate::Theme>();
+        let style = self
+            .style
+            .clone()
+            .unwrap_or_else(|| PromptStyle::from_tokens(&ui_theme.tokens));
 
         div()
             .key_context(PROMPT_CONTEXT)
             .flex()
             .flex_col()
             .w(px(500.))
-            .bg(self.style.modal_style.background)
+            .bg(style.modal_style.background)
             .border_1()
-            .border_color(self.style.modal_style.border)
+            .border_color(style.modal_style.border)
             .rounded_md()
             .shadow(vec![ui_theme.tokens.chrome.shadow_lg.to_box_shadow(false)])
             .font(font.clone())
@@ -650,7 +670,7 @@ impl Render for PromptView {
                     .child(
                         div()
                             .font(font.clone())
-                            .text_color(self.style.modal_style.prompt_text)
+                            .text_color(style.modal_style.prompt_text)
                             .font_weight(gpui::FontWeight::BOLD)
                             .child(
                                 // Show search icon for search prompts, otherwise show text
@@ -658,7 +678,7 @@ impl Render for PromptView {
                                     div().child(create_icon(
                                         "icons/search.svg".to_string(),
                                         16.0,
-                                        Some(self.style.modal_style.prompt_text),
+                                        Some(style.modal_style.prompt_text),
                                     ))
                                 } else {
                                     div().font(font.clone()).child(self.prompt.clone())
@@ -672,7 +692,7 @@ impl Render for PromptView {
                             .items_center()
                             .min_w(px(0.0))
                             .font(font.clone())
-                            .text_color(self.style.modal_style.text)
+                            .text_color(style.modal_style.text)
                             .child(self.input_view.clone()),
                     ),
             )
@@ -682,8 +702,8 @@ impl Render for PromptView {
                     this.child(
                         div()
                             .border_t_1()
-                            .border_color(self.style.modal_style.border)
-                            .bg(self.style.completion_background)
+                            .border_color(style.modal_style.border)
+                            .bg(style.completion_background)
                             .max_h(px(200.))
                             .overflow_y_hidden()
                             .children({
@@ -708,15 +728,15 @@ impl Render for PromptView {
                                             .px_3()
                                             .py_1()
                                             .when(is_selected, |this| {
-                                                this.bg(self.style.modal_style.selected_background)
+                                                this.bg(style.modal_style.selected_background)
                                             })
                                             .child(
                                                 div()
                                                     .font(row_font.clone())
                                                     .text_color(if is_selected {
-                                                        self.style.modal_style.selected_text
+                                                        style.modal_style.selected_text
                                                     } else {
-                                                        self.style.modal_style.text
+                                                        style.modal_style.text
                                                     })
                                                     .child(
                                                         completion
@@ -739,9 +759,9 @@ impl Render for PromptView {
                                                                     .text_sm,
                                                             )
                                                             .text_color(if is_selected {
-                                                                self.style.modal_style.selected_text
+                                                                style.modal_style.selected_text
                                                             } else {
-                                                                self.style.modal_style.prompt_text
+                                                                style.modal_style.prompt_text
                                                             })
                                                             .child(desc.clone()),
                                                     )
