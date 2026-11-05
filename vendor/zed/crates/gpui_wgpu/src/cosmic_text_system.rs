@@ -268,6 +268,27 @@ impl CosmicTextSystemState {
         };
 
         let name = gpui::font_name_with_fallbacks(name, &self.system_font_fallback);
+        let name = if name == "monospace" {
+            let db = self.font_system.db();
+            let configured = db.family_name(&Family::Monospace);
+            if db
+                .faces()
+                .any(|face| face.families.iter().any(|family| family.0 == configured))
+            {
+                configured
+            } else {
+                // Cosmic Text's default mono family may not be installed.
+                db.faces()
+                    .find(|face| {
+                        face.monospaced && !check_is_known_emoji_font(&face.post_script_name)
+                    })
+                    .and_then(|face| face.families.first())
+                    .map(|family| family.0.as_str())
+                    .unwrap_or(configured)
+            }
+        } else {
+            name
+        };
 
         let families = self
             .font_system
@@ -909,6 +930,36 @@ fn check_is_known_emoji_font(postscript_name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn generic_monospace_uses_the_configured_family() {
+        for configured in ["Ligature Test", "Unavailable Mono"] {
+            let system = CosmicTextSystem::new_without_system_fonts("Ligature Test");
+            system
+                .add_fonts(vec![Cow::Borrowed(include_bytes!(
+                    "../test_data/ligature.ttf"
+                ))])
+                .unwrap();
+            {
+                let mut state = system.0.write();
+                let db = state.font_system.db_mut();
+                // Mark the synthetic fixture as a mono candidate to also test
+                // fallback when Cosmic Text's configured family is unavailable.
+                let mut face = db.faces().next().unwrap().clone();
+                db.remove_face(face.id);
+                face.monospaced = true;
+                db.push_face_info(face);
+                db.set_monospace_family(configured);
+            }
+
+            for family in ["monospace", "Ligature Test"] {
+                let font_id = system.font_id(&gpui::font(family)).unwrap();
+                let line = system.layout_line("mi", gpui::px(20.0), &[FontRun { len: 2, font_id }]);
+                // The fixture advances are m=600 and i=300, at 1000 units/em.
+                assert_eq!(line.width, gpui::px(18.0));
+            }
+        }
+    }
 
     #[test]
     fn local_ligature_features_preserve_glyphs_positions_and_utf8_indices() {
