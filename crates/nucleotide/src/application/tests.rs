@@ -2177,6 +2177,88 @@ fn command_prompt_action_accepts_and_executes_native_commands(cx: &mut gpui::Tes
 }
 
 #[gpui::test]
+fn theme_prompt_previews_restores_and_commits_the_rendered_theme(cx: &mut gpui::TestAppContext) {
+    let _runtime = TEST_RUNTIME.enter();
+    let root = tempdir().unwrap();
+    let path = root.path().join("preview.rs");
+    fs::write(&path, "fn main() {}\n").unwrap();
+    let (core, _workspace, cx) = new_test_workspace(cx, &path);
+    core.update(cx, |core, _| {
+        core.editor
+            .set_theme(core.editor.theme_loader.load("default").unwrap())
+            .unwrap();
+    });
+    run_event_driven_maintenance(cx, &core);
+    cx.run_until_parked();
+    let original_background =
+        cx.read(|cx| cx.global::<nucleotide_ui::Theme>().tokens.editor.background);
+
+    for finish in ["escape", "replace", "enter"] {
+        core.update(cx, |_, cx| {
+            cx.emit(crate::Update::Prompt(
+                nucleotide_ui::prompt::Prompt::native(":", "theme base16_default", |_| {}),
+            ));
+        });
+        cx.run_until_parked();
+        // Even before the queued ThemeChanged event, scopes and palette must agree.
+        core.read_with(cx, |core, cx| {
+            assert_eq!(core.editor.theme.name(), "base16_default");
+            assert_eq!(
+                cx.global::<crate::ThemeManager>().helix_theme().name(),
+                "base16_default"
+            );
+            assert_ne!(
+                cx.global::<nucleotide_ui::Theme>().tokens.editor.background,
+                original_background
+            );
+        });
+        run_event_driven_maintenance(cx, &core);
+        cx.run_until_parked();
+
+        if finish == "replace" {
+            core.update(cx, |_, cx| {
+                cx.emit(crate::Update::Prompt(
+                    nucleotide_ui::prompt::Prompt::native("search:", "", |_| {}),
+                ));
+            });
+        } else {
+            cx.simulate_keystrokes(finish);
+        }
+        cx.run_until_parked();
+        let expected = if finish == "enter" {
+            "base16_default"
+        } else {
+            "default"
+        };
+        core.read_with(cx, |core, cx| {
+            assert_eq!(core.editor.theme.name(), expected, "{finish}");
+            assert_eq!(
+                cx.global::<crate::ThemeManager>().helix_theme().name(),
+                expected,
+                "{finish}"
+            );
+            if finish != "enter" {
+                assert_eq!(
+                    cx.global::<nucleotide_ui::Theme>().tokens.editor.background,
+                    original_background
+                );
+            }
+        });
+        run_event_driven_maintenance(cx, &core);
+        cx.run_until_parked();
+        if finish != "enter" {
+            cx.simulate_keystrokes("escape");
+            cx.run_until_parked();
+        }
+    }
+    // No saved preview may undo the committed choice later.
+    core.update(cx, |core, _| core.editor.unset_theme_preview().unwrap());
+    core.read_with(cx, |core, _| {
+        assert_eq!(core.editor.theme.name(), "base16_default")
+    });
+}
+
+#[gpui::test]
 fn file_name_prompts_do_not_complete_or_capture_commands(cx: &mut gpui::TestAppContext) {
     use crate::actions::file_tree;
     use nucleotide_ui::FocusCoordinator;

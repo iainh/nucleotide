@@ -3,6 +3,57 @@
 
 use helix_term::commands::{MappableCommand, TYPABLE_COMMAND_LIST, TYPABLE_COMMAND_MAP};
 
+/// A native command prompt's temporary theme, with rollback owned by Helix.
+#[derive(Default)]
+pub(crate) struct ThemePreview {
+    name: Option<String>,
+}
+
+impl ThemePreview {
+    pub(crate) fn update(
+        &mut self,
+        editor: &mut helix_view::Editor,
+        candidate: Option<&str>,
+    ) -> bool {
+        use helix_core::command_line::{TokenKind, Tokenizer, split};
+
+        let name = candidate.and_then(|input| {
+            let (command, args, _) = split(input.strip_prefix(':').unwrap_or(input));
+            if command != "theme" {
+                return None;
+            }
+            let mut tokens = Tokenizer::new(args, true);
+            let token = tokens.next()?.ok()?;
+            // Never evaluate expansions (especially shell commands) for a preview.
+            let literal = match token.kind {
+                TokenKind::Unquoted | TokenKind::Quoted(_) => true,
+                TokenKind::Expand => !token.content.contains('%'),
+                _ => false,
+            };
+            (literal && tokens.next().is_none()).then_some(token.content)
+        });
+
+        if let Some(name) = name {
+            if self.name.as_deref() == Some(name.as_ref()) && editor.theme.name() == name {
+                return true;
+            }
+            if let Ok(theme) = editor.theme_loader.load(&name)
+                && editor.set_theme_preview(theme).is_ok()
+            {
+                self.name = Some(name.into_owned());
+                return true;
+            }
+        }
+
+        if self.name.take().is_some()
+            && let Err(error) = editor.unset_theme_preview()
+        {
+            nucleotide_logging::warn!(%error, "Failed to restore theme preview");
+        }
+        false
+    }
+}
+
 pub(crate) fn execute_command_line(
     editor: &mut helix_view::Editor,
     jobs: &mut helix_term::job::Jobs,
@@ -207,6 +258,68 @@ mod tests {
         assert_eq!(editor.tree.views().count(), 2);
         assert_eq!(editor.tree.focus, focused_view_id);
         assert_eq!(editor.tree.get(focused_view_id).area.x, 0);
+    }
+
+    #[tokio::test]
+    async fn theme_preview_restores_original_after_cycling_and_preserves_commits() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("themes")).unwrap();
+        std::fs::write(
+            root.path().join("themes/preview.toml"),
+            "inherits = 'default'\n'ui.background' = { bg = '#17394b' }\n",
+        )
+        .unwrap();
+        let mut editor = test_editor();
+        editor.theme_loader = Arc::new(theme::Loader::new(&[root.path().to_path_buf()]));
+        editor
+            .set_theme(editor.theme_loader.load("default").unwrap())
+            .unwrap();
+        let mut preview = ThemePreview::default();
+
+        assert!(preview.update(&mut editor, Some("theme base16_default")));
+        assert_eq!(editor.theme.name(), "base16_default");
+        assert!(preview.update(&mut editor, Some("theme 'preview'")));
+        assert_eq!(editor.theme.name(), "preview");
+        assert!(!preview.update(&mut editor, None));
+        assert_eq!(editor.theme.name(), "default");
+
+        assert!(preview.update(&mut editor, Some("theme base16_default")));
+        preview.update(&mut editor, None);
+        execute_command_line(&mut editor, &mut Jobs::new(), "theme base16_default");
+        preview.update(&mut editor, None);
+        assert_eq!(editor.theme.name(), "base16_default");
+
+        // A config/appearance-driven commit supersedes the temporary snapshot.
+        assert!(preview.update(&mut editor, Some("theme preview")));
+        editor
+            .set_theme(editor.theme_loader.load("default").unwrap())
+            .unwrap();
+        preview.update(&mut editor, None);
+        assert_eq!(editor.theme.name(), "default");
+    }
+
+    #[tokio::test]
+    async fn invalid_or_non_theme_candidates_restore_without_executing_commands() {
+        let mut editor = test_editor();
+        editor
+            .set_theme(editor.theme_loader.load("default").unwrap())
+            .unwrap();
+        let mut preview = ThemePreview::default();
+        let views = editor.tree.views().count();
+        for candidate in [
+            "theme",
+            "theme no-such-preview-theme",
+            "theme default extra",
+            "theme 'unterminated",
+            "theme %sh{echo default}",
+            "vsplit",
+        ] {
+            assert!(preview.update(&mut editor, Some("theme base16_default")));
+            assert!(!preview.update(&mut editor, Some(candidate)), "{candidate}");
+            assert_eq!(editor.theme.name(), "default", "{candidate}");
+            assert_eq!(editor.tree.views().count(), views);
+            assert!(!editor.is_err());
+        }
     }
 
     #[test]

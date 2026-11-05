@@ -5393,7 +5393,7 @@ impl Workspace {
         );
 
         // Update theme in the editor
-        self.core.update(cx, |core, cx| {
+        self.core.update(cx, |core, _cx| {
             let theme_name = if core.editor.theme_loader.load(theme_name).is_ok() {
                 theme_name.to_string()
             } else {
@@ -5407,19 +5407,29 @@ impl Workspace {
                 nucleotide_logging::info!(theme_name = %theme_name, "Theme loaded successfully");
             }
 
-            // Update theme manager global
-            cx.update_global(|theme_manager: &mut crate::ThemeManager, _cx| {
-                theme_manager.set_theme(core.editor.theme.clone());
-            });
-
-            Self::sync_ui_theme_from_theme_manager(cx);
+            core.request_event_driven_maintenance();
         });
+
+        self.sync_editor_theme(cx);
+    }
+
+    /// Reflect the already-applied theme without committing a temporary preview.
+    fn sync_editor_theme(&mut self, cx: &mut Context<Self>) {
+        let theme = self.core.read(cx).editor.theme.clone();
+        cx.update_global(|theme_manager: &mut crate::ThemeManager, _cx| {
+            theme_manager.set_theme(theme);
+        });
+        Self::sync_ui_theme_from_theme_manager(cx);
 
         // Clear caches and redraw
         self.clear_shaped_lines_cache(cx);
+        for view in self.view_manager.document_views().values() {
+            view.update(cx, |_, cx| cx.notify());
+        }
         // Mark cached colors dirty and recompute immediately so background updates propagate
         self.colors_dirty = true;
         self.recompute_theme_colors(cx);
+        self.schedule_window_appearance_update(cx);
         cx.notify();
     }
 
@@ -5567,7 +5577,11 @@ impl Workspace {
                 let config = self.core.read(cx).config.clone();
                 self.apply_workspace_config(&config, cx);
             }
-            ConfigEvent::Update(_) | ConfigEvent::ThemeChanged => {
+            ConfigEvent::Update(_) => {
+                self.refresh_after_editor_config_change(cx);
+            }
+            ConfigEvent::ThemeChanged => {
+                self.sync_editor_theme(cx);
                 self.refresh_after_editor_config_change(cx);
             }
         }
@@ -6301,10 +6315,7 @@ impl Workspace {
 
         debug!(command = %command, "Executing raw command");
 
-        // Store the current theme before executing the command
         let theme_before = core.read(cx).editor.theme.name().to_string();
-        let theme_before_for_closure = theme_before.clone();
-
         // Log current bufferline config before execution
         let bufferline_before = core.read(cx).editor.config().bufferline.clone();
         debug!(bufferline_config = ?bufferline_before, "Bufferline config before command execution");
@@ -6325,21 +6336,8 @@ impl Workspace {
                 handle_for_command.clone(),
             );
 
-            // Check if the theme has changed after command execution
-            let current_theme = core.editor.theme.clone();
-            let theme_name_after = current_theme.name().to_string();
-
             // Always trigger a redraw after command execution to reflect any config changes
             cx.emit(crate::Update::Redraw);
-
-            // If the theme has changed, handle it properly using existing theme switching logic
-            if theme_before_for_closure != theme_name_after {
-                info!(
-                    old_theme = %theme_before_for_closure,
-                    new_theme = %theme_name_after,
-                    "Theme changed via command execution"
-                );
-            }
 
             current_editor_status(&core.editor)
         });
@@ -6350,14 +6348,10 @@ impl Workspace {
 
         core.update(cx, |core, _cx| core.request_event_driven_maintenance());
 
-        // Check if theme changed after command execution and handle accordingly
-        let theme_name_after = core.read(cx).editor.theme.name().to_string();
-        if theme_before != theme_name_after {
-            // Use existing theme switching logic (maintains consistency)
-            self.switch_theme_by_name_no_window(&theme_name_after, cx);
-
-            // Schedule window appearance update for next render cycle
-            self.schedule_window_appearance_update(cx);
+        // Keep syntax scopes and the rendered palette together before the next frame.
+        // ThemeChanged also handles reloading a theme whose name hasn't changed.
+        if core.read(cx).editor.theme.name() != theme_before {
+            self.sync_editor_theme(cx);
         }
 
         // Check if we should quit after command execution

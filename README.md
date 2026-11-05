@@ -20,6 +20,7 @@ Currently, Nucleotide provides a native GUI wrapper around Helix with:
 - Native macOS/Linux/Windows support
 - GPU-accelerated rendering via GPUI
 - File tree sidebar
+- Live `:theme` previews while browsing completions: Up/Down previews, Enter applies, and Escape restores the original theme
 - Integrated terminal (planned)
 - Full Helix keybinding support
 
