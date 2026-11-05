@@ -36,6 +36,7 @@ pub struct CompletionItem {
 type PromptSubmitCallback = Box<dyn FnMut(&str, &mut Context<PromptView>) + 'static>;
 type PromptCancelCallback = Box<dyn FnMut(&mut Context<PromptView>) + 'static>;
 type PromptChangeCallback = Box<dyn FnMut(&str, &mut Context<PromptView>) + 'static>;
+type PromptPreviewCallback = Box<dyn FnMut(Option<&str>, &mut Context<PromptView>) -> bool>;
 type PromptCompletionFn = Box<dyn Fn(&str) -> Vec<CompletionItem> + 'static>;
 type PromptCompletionTask = Task<Vec<CompletionItem>>;
 type PromptCompletionTaskFn =
@@ -69,6 +70,8 @@ pub struct PromptView {
     on_submit: Option<PromptSubmitCallback>,
     on_cancel: Option<PromptCancelCallback>,
     on_change: Option<PromptChangeCallback>,
+    on_preview: Option<PromptPreviewCallback>,
+    preview_applied: bool,
     completion_fn: Option<PromptCompletionFn>,
     completion_task_fn: Option<PromptCompletionTaskFn>,
 
@@ -164,6 +167,8 @@ impl PromptView {
             on_submit: None,
             on_cancel: None,
             on_change: None,
+            on_preview: None,
+            preview_applied: false,
             completion_fn: None,
             completion_task_fn: None,
             style: PromptStyle::default(),
@@ -188,6 +193,39 @@ impl PromptView {
     pub fn on_change(mut self, callback: impl FnMut(&str, &mut Context<Self>) + 'static) -> Self {
         self.on_change = Some(Box::new(callback));
         self
+    }
+
+    /// Preview the highlighted completion, or the input when no completion is visible.
+    /// Return true when applied so Enter accepts even a non-prefix fuzzy match.
+    /// A None candidate requests rollback without submitting anything.
+    pub fn on_preview(
+        mut self,
+        callback: impl FnMut(Option<&str>, &mut Context<Self>) -> bool + 'static,
+    ) -> Self {
+        self.on_preview = Some(Box::new(callback));
+        self
+    }
+
+    fn update_preview(&mut self, cx: &mut Context<Self>) {
+        let candidate = if self.show_completions {
+            self.completions
+                .get(self.completion_selection)
+                .map(|item| item.text.clone())
+        } else {
+            Some(self.input.clone())
+        };
+        if let Some(on_preview) = &mut self.on_preview {
+            self.preview_applied = on_preview(candidate.as_deref(), cx);
+        }
+    }
+
+    pub fn clear_preview(&mut self, cx: &mut Context<Self>) {
+        self.completion_generation = self.completion_generation.wrapping_add(1);
+        self.completion_task = None;
+        if let Some(on_preview) = &mut self.on_preview {
+            on_preview(None, cx);
+        }
+        self.preview_applied = false;
     }
 
     pub fn with_completion_fn(
@@ -280,6 +318,8 @@ impl PromptView {
         if let Some(completion_fn) = &self.completion_fn {
             let completions = completion_fn(&input);
             self.apply_completions(completions, cx);
+        } else {
+            self.update_preview(cx);
         }
 
         if self.completion_task_fn.is_none() {
@@ -332,6 +372,7 @@ impl PromptView {
 
         self.show_completions = will_show_completions;
         self.update_input_ghost_suffix(cx);
+        self.update_preview(cx);
         cx.notify();
     }
 
@@ -341,7 +382,7 @@ impl PromptView {
         }
 
         let max_visible = 4; // Must match the value in render
-        let _old_selection = self.completion_selection;
+        let old_selection = self.completion_selection;
 
         // Move selection
         if delta > 0 {
@@ -371,6 +412,9 @@ impl PromptView {
         }
 
         self.update_input_ghost_suffix(cx);
+        if old_selection != self.completion_selection {
+            self.update_preview(cx);
+        }
         cx.notify();
     }
 
@@ -382,7 +426,10 @@ impl PromptView {
             self.input = completion.text.clone();
             self.show_completions = false;
             self.original_input = None; // Clear original input since completion is accepted
+            self.completion_generation = self.completion_generation.wrapping_add(1);
+            self.completion_task = None;
             self.sync_input_view(cx);
+            self.update_preview(cx);
 
             if let Some(on_change) = &mut self.on_change {
                 on_change(&self.input, cx);
@@ -410,11 +457,11 @@ impl PromptView {
             let input_str = self.input.to_string();
             let completion_str = completion.text.to_string();
 
-            // Only replace input with completion if:
-            // 1. The current input is a prefix of the completion, OR
-            // 2. The completion is longer and starts with the current input
-            let should_accept_completion =
-                input_str.len() <= completion_str.len() && completion_str.starts_with(&input_str);
+            // A successfully previewed choice must be the choice Enter submits.
+            // Other prompts retain their prefix-only completion behaviour.
+            let should_accept_completion = self.preview_applied
+                || (input_str.len() <= completion_str.len()
+                    && completion_str.starts_with(&input_str));
 
             if should_accept_completion {
                 info!(completion_text = %completion.text, "Replacing input with completion");
@@ -436,6 +483,8 @@ impl PromptView {
             self.history.push(self.input.clone());
         }
 
+        // Roll back before handing execution to the owner, including failed commands.
+        self.clear_preview(cx);
         if let Some(on_submit) = &mut self.on_submit {
             on_submit(&self.input, cx);
         }
@@ -472,10 +521,12 @@ impl PromptView {
             }
         }
 
+        self.update_preview(cx);
         cx.notify();
     }
 
     fn cancel(&mut self, cx: &mut Context<Self>) {
+        self.clear_preview(cx);
         if let Some(on_cancel) = &mut self.on_cancel {
             on_cancel(cx);
         }
@@ -494,6 +545,7 @@ impl PromptView {
             self.show_completions = false;
             self.original_input = None;
             self.sync_input_view(cx);
+            self.clear_preview(cx);
             cx.notify();
         } else {
             self.cancel(cx);
@@ -875,5 +927,59 @@ mod tests {
             assert_eq!(prompt.input_view.read(cx).value().as_ref(), "write");
             assert!(!prompt.show_completions);
         });
+    }
+
+    #[gpui::test]
+    fn completion_preview_follows_selection_rolls_back_and_submits_fuzzy_choice(
+        cx: &mut TestAppContext,
+    ) {
+        init_prompt_test(cx);
+        for accept_with_tab in [false, true] {
+            let preview = Rc::new(RefCell::new(None::<String>));
+            let preview_callback = preview.clone();
+            let submitted = Rc::new(RefCell::new(None));
+            let submitted_callback = submitted.clone();
+            let (prompt, cx) = cx.add_window_view(|_, cx| {
+                PromptView::new(":", cx)
+                    .with_completion_fn(|query| {
+                        if query != "theme tp" {
+                            return Vec::new();
+                        }
+                        ["theme teal", "theme paper"]
+                            .into_iter()
+                            .map(|text| CompletionItem {
+                                text: text.into(),
+                                description: None,
+                                display_text: None,
+                            })
+                            .collect()
+                    })
+                    .on_preview(move |candidate, _| {
+                        *preview_callback.borrow_mut() = candidate.map(str::to_string);
+                        candidate.is_some()
+                    })
+                    .on_submit(move |input, _| {
+                        *submitted_callback.borrow_mut() = Some(input.to_string());
+                    })
+            });
+
+            prompt.update(cx, |prompt, cx| prompt.set_text("theme tp", cx));
+            assert_eq!(preview.borrow().as_deref(), Some("theme teal"));
+            cx.dispatch_action(NextCompletion);
+            assert_eq!(preview.borrow().as_deref(), Some("theme paper"));
+            cx.dispatch_action(Cancel);
+            assert_eq!(*preview.borrow(), None);
+            assert_eq!(*submitted.borrow(), None);
+
+            prompt.update(cx, |prompt, cx| prompt.set_text("theme tp", cx));
+            cx.dispatch_action(NextCompletion);
+            if accept_with_tab {
+                cx.dispatch_action(AcceptCompletion);
+                assert_eq!(preview.borrow().as_deref(), Some("theme paper"));
+            }
+            cx.dispatch_action(Confirm);
+            assert_eq!(submitted.borrow().as_deref(), Some("theme paper"));
+            assert_eq!(*preview.borrow(), None);
+        }
     }
 }

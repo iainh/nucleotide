@@ -570,7 +570,11 @@ impl OverlayView {
     }
 
     fn clear_prompt(&mut self, cx: &mut Context<Self>) -> bool {
-        let dismissed = self.native_prompt_view.take().is_some();
+        let prompt = self.native_prompt_view.take();
+        let dismissed = prompt.is_some();
+        if let Some(prompt) = prompt {
+            prompt.update(cx, |prompt, cx| prompt.clear_preview(cx));
+        }
         if dismissed {
             let snapshot = self.regex_selection_preview.take().and_then(|state| {
                 state.lock().ok().and_then(|mut state| {
@@ -741,7 +745,9 @@ impl OverlayView {
                     let style = Self::create_prompt_style_from_context(cx);
                     view = view.with_style(style);
 
-                    if !initial_input.is_empty() {
+                    if !initial_input.is_empty()
+                        && !matches!(submit_action, PromptSubmitAction::Command)
+                    {
                         view.set_text(&initial_input, cx);
                     }
 
@@ -799,6 +805,27 @@ impl OverlayView {
 
                     // Only set up completion for command prompts, not search/regex prompts.
                     if matches!(submit_action, PromptSubmitAction::Command) {
+                        let core_weak_preview = self.core.clone();
+                        let mut theme_preview = crate::helix_command::ThemePreview::default();
+                        view = view.on_preview(move |candidate, cx| {
+                            let Some(core) = core_weak_preview.upgrade() else {
+                                return false;
+                            };
+                            core.update(cx, |core, cx| {
+                                let previous_name = core.editor.theme.name().to_string();
+                                let applied = theme_preview.update(&mut core.editor, candidate);
+                                if applied || core.editor.theme.name() != previous_name {
+                                    // Syntax scopes change synchronously. Keep the renderer's
+                                    // highlight table in lockstep, before any frame can paint.
+                                    cx.global_mut::<crate::ThemeManager>()
+                                        .set_theme(core.editor.theme.clone());
+                                    let theme = cx.global::<crate::ThemeManager>().ui_theme().clone();
+                                    cx.set_global(theme);
+                                }
+                                core.request_event_driven_maintenance();
+                                applied
+                            })
+                        });
                         let completion_context = self
                             .core
                             .upgrade()
@@ -1081,6 +1108,12 @@ impl OverlayView {
                         cx.emit(DismissEvent);
                     });
 
+                    // Initialize after callbacks so a prefilled :theme previews immediately.
+                    if !initial_input.is_empty()
+                        && matches!(submit_action, PromptSubmitAction::Command)
+                    {
+                        view.set_text(&initial_input, cx);
+                    }
                     view
                 });
 
