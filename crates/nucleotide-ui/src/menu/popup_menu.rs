@@ -880,18 +880,31 @@ impl PopupMenu {
             .when(!selected && !disabled, |this| {
                 this.hover(|this| this.bg(dropdown.item_background_hover))
             })
+            .when(tokens.chrome.is_windows_system() && !disabled, |this| {
+                this.active(|this| this.bg(dropdown.item_background_pressed))
+            })
             .when(disabled, |this| this.cursor_not_allowed())
             .when(!disabled, |this| {
                 this.cursor_pointer()
                     .on_mouse_move(cx.listener(move |menu, _, _, cx| {
                         menu.set_selected_index(Some(index), cx);
                     }))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |menu, _, window, cx| {
-                            menu.on_click(index, window, cx);
-                        }),
-                    )
+                    .map(|this| {
+                        if tokens.chrome.is_windows_system() {
+                            // Let the pressed state paint and allow a drag-away
+                            // cancellation before executing the command.
+                            this.on_click(cx.listener(move |menu, _, window, cx| {
+                                menu.on_click(index, window, cx);
+                            }))
+                        } else {
+                            this.on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |menu, _, window, cx| {
+                                    menu.on_click(index, window, cx);
+                                }),
+                            )
+                        }
+                    })
             })
     }
 }
