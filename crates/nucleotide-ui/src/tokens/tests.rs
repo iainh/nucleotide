@@ -63,6 +63,25 @@ mod system_chrome_token_tests {
 
     #[cfg(target_os = "windows")]
     #[test]
+    fn system_text_fields_keep_native_faces_and_text_over_unrelated_editor_colours() {
+        for appearance in [SystemAppearance::Light, SystemAppearance::Dark] {
+            let chrome = ChromeTokens::from_native_chrome_palette(
+                NativeChromePalette::windows_fluent(appearance, default_windows_accent_color()),
+            );
+            let mut editor = EditorTokens::fallback(!appearance.is_dark());
+            editor.background = hsla(0.3, 0.9, 0.5, 1.0);
+            let input = chrome.input_tokens(&editor);
+            assert_eq!(input.background.s, 0.0);
+            assert_eq!(input.background_focus.s, 0.0);
+            assert_eq!(input.background_focus.a, 1.0);
+            assert_eq!(input.text, chrome.text_on_chrome);
+            assert_eq!(input.border_focus, chrome.border_focus);
+            assert_ne!(input.background, editor.background);
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
     fn system_menus_use_neutral_states_without_changing_picker_selection() {
         for appearance in [SystemAppearance::Light, SystemAppearance::Dark] {
             let chrome = ChromeTokens::from_native_chrome_palette(
