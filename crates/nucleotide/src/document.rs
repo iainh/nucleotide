@@ -704,7 +704,11 @@ impl Render for DocumentView {
                 },
             )
             .scrollbar_thumb_color(scrollbar_thumb_color)
-            .scrollbar_style(scrollbar_style, scrollbar_tokens.chrome.surface_elevated)
+            .scrollbar_style(
+                scrollbar_style,
+                scrollbar_tokens.chrome.surface_elevated,
+                scrollbar_tokens.chrome.contrast.map(|c| c.gray_text),
+            )
             .scrollbar_markers(scrollbar_markers)
             .track_focus(focus.clone());
 

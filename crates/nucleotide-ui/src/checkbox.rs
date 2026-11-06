@@ -3,6 +3,7 @@
 
 use crate::icon as svg;
 use crate::tokens::CheckboxTokens;
+use gpui::prelude::FluentBuilder;
 use gpui::{
     App, ClickEvent, ElementId, FocusHandle, InteractiveElement, IntoElement, MouseButton,
     ParentElement, Pixels, RenderOnce, SharedString, StatefulInteractiveElement, Styled, Window,
@@ -148,6 +149,28 @@ impl RenderOnce for Checkbox {
             .size(metrics.icon_size)
             .text_color(icon_color)
             .flex_shrink_0();
+        let icon = if let Some(c) = theme.tokens.chrome.contrast {
+            // Avoid the duotone SVG's translucent fill in contrast mode.
+            let selected = self.checked && !disabled;
+            div()
+                .size(metrics.icon_size)
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .border_1()
+                .border_color(if disabled { c.gray_text } else { c.button_text })
+                .bg(if selected { c.highlight } else { c.button_face })
+                .text_color(if selected {
+                    c.highlight_text
+                } else {
+                    c.gray_text
+                })
+                .when(self.checked, |icon| icon.child("✓"))
+                .into_any_element()
+        } else {
+            icon.into_any_element()
+        };
 
         let mut element = div()
             .id(self.id)
@@ -166,7 +189,11 @@ impl RenderOnce for Checkbox {
             } else {
                 checkbox_tokens.background
             })
-            .opacity(if disabled { 0.7 } else { 1.0 })
+            .opacity(if disabled && theme.tokens.chrome.contrast.is_none() {
+                0.7
+            } else {
+                1.0
+            })
             .child(icon)
             .child(self.label);
 
@@ -174,7 +201,14 @@ impl RenderOnce for Checkbox {
             element = element
                 .track_focus(focus_handle)
                 .tab_stop(!disabled)
-                .focus_visible(|style| style.bg(checkbox_tokens.focus_background));
+                .focus_visible(|style| {
+                    let style = style.bg(checkbox_tokens.focus_background);
+                    if let Some(c) = theme.tokens.chrome.contrast {
+                        style.border_1().border_color(c.button_text)
+                    } else {
+                        style
+                    }
+                });
         }
 
         if disabled {

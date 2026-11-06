@@ -94,6 +94,7 @@ pub struct EditorSurface {
     scrollbar_thumb_color: Hsla,
     scrollbar_style: ScrollbarStyle,
     scrollbar_track_color: Hsla,
+    scrollbar_contrast_disabled_color: Option<Hsla>,
     scrollbar_markers: Vec<EditorScrollbarMarker>,
     on_key_down: Option<KeyDownCallback>,
     on_scroll: Option<ScrollCallback>,
@@ -126,6 +127,7 @@ impl EditorSurface {
             scrollbar_thumb_color: hsla(0.0, 0.0, 0.72, 1.0),
             scrollbar_style: ScrollbarStyle::Themed,
             scrollbar_track_color: gpui::transparent_black(),
+            scrollbar_contrast_disabled_color: None,
             scrollbar_markers: Vec::new(),
             on_key_down: None,
             on_scroll: None,
@@ -140,9 +142,15 @@ impl EditorSurface {
         self
     }
 
-    pub fn scrollbar_style(mut self, style: ScrollbarStyle, track_color: Hsla) -> Self {
+    pub fn scrollbar_style(
+        mut self,
+        style: ScrollbarStyle,
+        track_color: Hsla,
+        contrast_disabled_color: Option<Hsla>,
+    ) -> Self {
         self.scrollbar_style = style;
         self.scrollbar_track_color = track_color;
+        self.scrollbar_contrast_disabled_color = contrast_disabled_color;
         self
     }
 
@@ -205,7 +213,11 @@ impl EditorSurface {
             self.vertical_scrollbar_state.clone(),
         )
         .with_thumb_color(self.scrollbar_thumb_color)
-        .with_style(self.scrollbar_style, self.scrollbar_track_color)
+        .with_style(
+            self.scrollbar_style,
+            self.scrollbar_track_color,
+            self.scrollbar_contrast_disabled_color,
+        )
         .with_markers(self.scrollbar_markers.clone());
 
         if let Some(on_scroll) = self.on_scroll.clone() {
@@ -224,7 +236,11 @@ impl EditorSurface {
             self.horizontal_scrollbar_state.clone(),
         )
         .with_thumb_color(self.scrollbar_thumb_color)
-        .with_style(self.scrollbar_style, self.scrollbar_track_color);
+        .with_style(
+            self.scrollbar_style,
+            self.scrollbar_track_color,
+            self.scrollbar_contrast_disabled_color,
+        );
 
         if let Some(on_scroll) = self.on_scroll.clone() {
             scrollbar = scrollbar.on_scroll(move |viewport, update, cx| {
@@ -615,6 +631,7 @@ mod tests {
                     .scrollbar_style(
                         nucleotide_types::scrollbar::ScrollbarStyle::Windows,
                         gpui::black(),
+                        None,
                     ),
                 )
             }

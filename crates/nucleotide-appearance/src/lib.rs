@@ -139,12 +139,38 @@ impl SystemAccentRamp {
     }
 }
 
+/// Paired Windows system colours, including user-customized contrast themes.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ContrastColors {
+    pub window: Hsla,
+    pub window_text: Hsla,
+    pub button_face: Hsla,
+    pub button_text: Hsla,
+    pub highlight: Hsla,
+    pub highlight_text: Hsla,
+    pub gray_text: Hsla,
+    pub hotlight: Hsla,
+}
+
+/// Contrast mode is orthogonal to the editor's theme-derived light/dark mode.
+pub fn platform_contrast_colors() -> Option<ContrastColors> {
+    #[cfg(target_os = "windows")]
+    {
+        platform::contrast_colors()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        None
+    }
+}
+
 /// Native/system palette inputs used by UI token construction.
 #[derive(Debug, Clone, Copy)]
 pub struct NativeChromePalette {
     pub appearance: SystemAppearance,
     pub accent: Hsla,
     pub accent_ramp: Option<SystemAccentRamp>,
+    pub contrast: Option<ContrastColors>,
     pub mica_base: Hsla,
     pub layer_base: Hsla,
     pub layer_alt_base: Hsla,
@@ -168,6 +194,9 @@ pub struct NativeChromePalette {
 impl NativeChromePalette {
     /// Resolve the current platform palette using the OS accent when available.
     pub fn current(appearance: SystemAppearance) -> Self {
+        if let Some(colors) = platform_contrast_colors() {
+            return Self::windows_contrast(colors);
+        }
         #[cfg(target_os = "windows")]
         if let Some(ramp) = platform::system_accent_ramp() {
             let mut palette = Self::with_accent(appearance, ramp.accent);
@@ -253,6 +282,7 @@ impl NativeChromePalette {
             appearance,
             accent,
             accent_ramp: None,
+            contrast: None,
             mica_base,
             layer_base,
             layer_alt_base,
@@ -331,6 +361,7 @@ impl NativeChromePalette {
             appearance,
             accent,
             accent_ramp: None,
+            contrast: None,
             mica_base,
             layer_base,
             layer_alt_base,
@@ -347,6 +378,37 @@ impl NativeChromePalette {
             layer_alpha,
             dense_text_layer_alpha,
             elevated_alpha,
+        }
+    }
+
+    /// Construct opaque system chrome without altering the editor/syntax palette.
+    pub fn windows_contrast(colors: ContrastColors) -> Self {
+        let appearance = if colors.window.l < 0.5 {
+            SystemAppearance::Dark
+        } else {
+            SystemAppearance::Light
+        };
+        Self {
+            appearance,
+            accent: colors.highlight,
+            accent_ramp: None,
+            contrast: Some(colors),
+            mica_base: colors.window,
+            layer_base: colors.window,
+            layer_alt_base: colors.window,
+            elevated_base: colors.window,
+            acrylic: colors.window,
+            stroke: colors.window_text,
+            stroke_subtle: colors.window_text,
+            text: colors.window_text,
+            secondary_text_alpha: 1.0,
+            disabled_text_alpha: 1.0,
+            shadow_alpha: 0.0,
+            strong_shadow_alpha: 0.0,
+            mica_alpha: 1.0,
+            layer_alpha: 1.0,
+            dense_text_layer_alpha: 1.0,
+            elevated_alpha: 1.0,
         }
     }
 
@@ -367,6 +429,9 @@ pub fn window_background_appearance(
     blur_dark_themes: bool,
 ) -> WindowBackgroundAppearance {
     if ui_chrome_style == UiChromeStyle::System {
+        if platform_contrast_colors().is_some() {
+            return WindowBackgroundAppearance::Opaque;
+        }
         return system_window_background_appearance();
     }
 
@@ -534,6 +599,41 @@ mod platform {
     use super::{Hsla, SystemAccentRamp, hsla_from_rgb_u8};
     use windows::UI::ViewManagement::{UIColorType, UISettings};
 
+    pub fn contrast_colors() -> Option<super::ContrastColors> {
+        use windows_sys::Win32::{Graphics::Gdi::*, UI::Accessibility::*};
+        let mut contrast = HIGHCONTRASTW {
+            cbSize: std::mem::size_of::<HIGHCONTRASTW>() as u32,
+            ..Default::default()
+        };
+        // SAFETY: SPI_GETHIGHCONTRAST writes only this correctly sized structure.
+        let available = unsafe {
+            windows_sys::Win32::UI::WindowsAndMessaging::SystemParametersInfoW(
+                windows_sys::Win32::UI::WindowsAndMessaging::SPI_GETHIGHCONTRAST,
+                contrast.cbSize,
+                &mut contrast as *mut _ as _,
+                0,
+            )
+        };
+        if available == 0 || contrast.dwFlags & HCF_HIGHCONTRASTON == 0 {
+            return None;
+        }
+        let color = |index| {
+            // SAFETY: GetSysColor reads a system colour; it takes no pointers.
+            let rgb = unsafe { GetSysColor(index) };
+            hsla_from_rgb_u8(rgb as u8, (rgb >> 8) as u8, (rgb >> 16) as u8, 1.0)
+        };
+        Some(super::ContrastColors {
+            window: color(COLOR_WINDOW),
+            window_text: color(COLOR_WINDOWTEXT),
+            button_face: color(COLOR_BTNFACE),
+            button_text: color(COLOR_BTNTEXT),
+            highlight: color(COLOR_HIGHLIGHT),
+            highlight_text: color(COLOR_HIGHLIGHTTEXT),
+            gray_text: color(COLOR_GRAYTEXT),
+            hotlight: color(COLOR_HOTLIGHT),
+        })
+    }
+
     pub fn system_accent_color() -> Option<Hsla> {
         let settings = UISettings::new().ok()?;
         color(&settings, UIColorType::Accent)
@@ -574,9 +674,18 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn current_windows_palette_reads_ui_settings_ramp() {
-        use windows::UI::ViewManagement::{UIColorType, UISettings};
+        use windows::UI::ViewManagement::{AccessibilitySettings, UIColorType, UISettings};
         let settings = UISettings::new().unwrap();
         let palette = NativeChromePalette::current(SystemAppearance::Dark);
+        let os_contrast = AccessibilitySettings::new()
+            .unwrap()
+            .HighContrast()
+            .unwrap();
+        assert_eq!(palette.contrast.is_some(), os_contrast);
+        if let Some(colors) = palette.contrast {
+            assert_eq!(palette.accent, colors.highlight);
+            return;
+        }
         let ramp = palette.accent_ramp.expect("Windows UISettings accent ramp");
         for (actual, kind) in [
             (palette.accent, UIColorType::Accent),
@@ -634,7 +743,14 @@ mod tests {
         let material = window_background_appearance(UiChromeStyle::System, false, false);
 
         #[cfg(target_os = "windows")]
-        assert_eq!(material, WindowBackgroundAppearance::MicaBackdrop);
+        assert_eq!(
+            material,
+            if platform_contrast_colors().is_some() {
+                WindowBackgroundAppearance::Opaque
+            } else {
+                WindowBackgroundAppearance::MicaBackdrop
+            }
+        );
 
         #[cfg(target_os = "macos")]
         assert_eq!(material, WindowBackgroundAppearance::Blurred);

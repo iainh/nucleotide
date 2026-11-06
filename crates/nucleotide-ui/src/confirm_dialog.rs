@@ -379,7 +379,9 @@ impl Render for ConfirmDialogView {
                 .border_1()
                 .border_color(tokens.chrome.border_default)
                 .rounded(tokens.sizes.radius_lg)
-                .shadow(vec![tokens.chrome.shadow_lg.to_box_shadow(false)])
+                .when(tokens.chrome.contrast.is_none(), |this| {
+                    this.shadow(vec![tokens.chrome.shadow_lg.to_box_shadow(false)])
+                })
                 .w(self.dialog.width)
                 .when(windows_system, |this| {
                     this.overflow_hidden().font_family("Segoe UI Variable")

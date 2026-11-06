@@ -646,6 +646,7 @@ impl RenderOnce for Tab {
 
         // Use TabBarTokens for consistent hybrid color theming
         let tab_tokens = tokens.tab_bar_tokens();
+        let contrast = tokens.chrome.contrast;
         let fluent_tabs = fluent_tabs_enabled(cx);
         let inactive_bg = Tab::inactive_background_color(tab_tokens);
         let inactive_hover_bg = Tab::inactive_hover_background_color(tab_tokens);
@@ -656,8 +657,19 @@ impl RenderOnce for Tab {
                 tab_tokens.tab_active_background, // No hover change for active tabs
             ),
             ComponentState::Disabled => (
-                nucleotide_ui::styling::ColorTheory::with_alpha(inactive_bg, 0.5),
-                nucleotide_ui::styling::ColorTheory::with_alpha(tab_tokens.tab_text_inactive, 0.5),
+                contrast.map_or_else(
+                    || nucleotide_ui::styling::ColorTheory::with_alpha(inactive_bg, 0.5),
+                    |c| c.window,
+                ),
+                contrast.map_or_else(
+                    || {
+                        nucleotide_ui::styling::ColorTheory::with_alpha(
+                            tab_tokens.tab_text_inactive,
+                            0.5,
+                        )
+                    },
+                    |c| c.gray_text,
+                ),
                 inactive_bg, // No hover for disabled tabs
             ),
             _ => (inactive_bg, tab_tokens.tab_text_inactive, inactive_hover_bg),
@@ -691,7 +703,7 @@ impl RenderOnce for Tab {
         let is_pinned = self.is_pinned;
         let is_preview = self.is_preview;
         let is_loading = self.is_loading;
-        let deemphasized = self.deemphasized;
+        let deemphasized = self.deemphasized && contrast.is_none();
         // WinUI's OnPointerOver mode keeps the selected tab's close affordance
         // visible. An explicit Hidden preference still wins.
         let close_button_visibility = if fluent_tabs
@@ -750,7 +762,16 @@ impl RenderOnce for Tab {
             .min_w(min_width)
             .max_w(max_width)
             .bg(bg_color)
-            .when(!disabled, |tab| tab.hover(|style| style.bg(hover_bg)))
+            .when(!disabled, |tab| {
+                tab.hover(|style| {
+                    let style = style.bg(hover_bg);
+                    if let Some(c) = contrast {
+                        style.border_color(c.window_text)
+                    } else {
+                        style
+                    }
+                })
+            })
             .when(!disabled && !fluent_tabs, |tab| {
                 tab.cursor(CursorStyle::PointingHand)
             })
@@ -799,6 +820,13 @@ impl RenderOnce for Tab {
                             tab_tokens.tab_separator
                         }),
                 )
+            })
+            .when_some(contrast, |tab, colors| {
+                tab.border_1().border_color(if is_active {
+                    colors.highlight
+                } else {
+                    colors.window
+                })
             })
             .when(!disabled, |tab| {
                 // Keep the current keyboard receiver if this press becomes a
@@ -907,10 +935,10 @@ impl Tab {
             .justify_center()
             .when(is_modified, |slot| {
                 slot.child(
-                    div()
-                        .size(px(6.0))
-                        .rounded(px(3.0))
-                        .bg(tokens.editor.diagnostic_warning),
+                    div().size(px(6.0)).rounded(px(3.0)).bg(tokens
+                        .chrome
+                        .contrast
+                        .map_or(tokens.editor.diagnostic_warning, |c| c.window_text)),
                 )
             })
             .into_any_element()
@@ -980,8 +1008,17 @@ impl Tab {
                     .text_color(Tab::content_icon_color(tokens)),
             )
             .when(is_toggleable, |icon| {
-                icon.cursor(CursorStyle::PointingHand)
-                    .hover(|icon| icon.bg(button_tokens.ghost_background_hover))
+                icon.cursor(CursorStyle::PointingHand).hover(|icon| {
+                    let icon = icon.bg(tokens
+                        .chrome
+                        .contrast
+                        .map_or(button_tokens.ghost_background_hover, |c| c.window));
+                    if let Some(c) = tokens.chrome.contrast {
+                        icon.border_1().border_color(c.window_text)
+                    } else {
+                        icon
+                    }
+                })
             })
             .tooltip(move |_window, cx| {
                 let title = Self::readonly_tooltip_title(is_toggleable);
@@ -1057,6 +1094,7 @@ impl Tab {
                 ("icons/triangle-alert.svg", tokens.editor.diagnostic_info)
             }
         };
+        let color = tokens.chrome.contrast.map_or(color, |c| c.window_text);
 
         div()
             .size(px(TAB_SLOT_ICON_SIZE))
@@ -1142,6 +1180,28 @@ impl Tab {
         on_close: MouseEventHandler,
         on_toggle_pin: Option<MouseEventHandler>,
     ) -> gpui::AnyElement {
+        let hover_background = tokens
+            .chrome
+            .contrast
+            .map_or(tokens.button_tokens().ghost_background_hover, |c| c.window);
+        let disabled_pin = props.disabled || on_toggle_pin.is_none();
+        let pin_color = tokens.chrome.contrast.map_or(props.text_color, |c| {
+            if disabled_pin {
+                c.gray_text
+            } else {
+                c.window_text
+            }
+        });
+        let pin_opacity = if disabled_pin && tokens.chrome.contrast.is_none() {
+            0.6
+        } else {
+            1.0
+        };
+        let close_opacity = if props.disabled && tokens.chrome.contrast.is_none() {
+            0.6
+        } else {
+            1.0
+        };
         let button = if props.is_pinned {
             let tooltip = SharedString::from(Self::end_button_tooltip(true));
             let button = div()
@@ -1158,16 +1218,12 @@ impl Tab {
                     })
                     .into()
                 })
-                .opacity(if props.disabled || on_toggle_pin.is_none() {
-                    0.6
-                } else {
-                    1.0
-                })
+                .opacity(pin_opacity)
                 .child(
                     svg()
                         .path("icons/pin.svg")
                         .size(px(TAB_SLOT_ICON_SIZE))
-                        .text_color(props.text_color),
+                        .text_color(pin_color),
                 );
 
             if let Some(on_toggle_pin) = on_toggle_pin {
@@ -1176,7 +1232,14 @@ impl Tab {
                 } else {
                     button
                         .cursor(CursorStyle::PointingHand)
-                        .hover(|button| button.bg(tokens.button_tokens().ghost_background_hover))
+                        .hover(|button| {
+                            let button = button.bg(hover_background);
+                            if let Some(c) = tokens.chrome.contrast {
+                                button.border_1().border_color(c.window_text)
+                            } else {
+                                button
+                            }
+                        })
                         .on_mouse_down(MouseButton::Left, move |event, window, cx| {
                             let click_event = click_event_from_mouse_down(event);
                             window.prevent_default();
@@ -1212,7 +1275,7 @@ impl Tab {
                     })
                     .into()
                 })
-                .opacity(if props.disabled { 0.6 } else { 1.0 })
+                .opacity(close_opacity)
                 .child(
                     svg()
                         .path("icons/close.svg")
@@ -1222,7 +1285,14 @@ impl Tab {
                 .when(!props.disabled, |button| {
                     button
                         .cursor(CursorStyle::PointingHand)
-                        .hover(|button| button.bg(tokens.button_tokens().ghost_background_hover))
+                        .hover(|button| {
+                            let button = button.bg(hover_background);
+                            if let Some(c) = tokens.chrome.contrast {
+                                button.border_1().border_color(c.window_text)
+                            } else {
+                                button
+                            }
+                        })
                         .on_mouse_down(MouseButton::Left, move |event, window, cx| {
                             let click_event = click_event_from_mouse_down(event);
                             window.prevent_default();

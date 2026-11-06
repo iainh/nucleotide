@@ -128,6 +128,7 @@ pub struct EditorScrollbar {
     thumb_color: Hsla,
     style: ScrollbarStyle,
     track_color: Hsla,
+    contrast_disabled_color: Option<Hsla>,
     markers: Vec<EditorScrollbarMarker>,
 }
 
@@ -172,6 +173,7 @@ impl EditorScrollbar {
             thumb_color: hsla(0.0, 0.0, 0.72, 1.0),
             style: ScrollbarStyle::Themed,
             track_color: gpui::transparent_black(),
+            contrast_disabled_color: None,
             markers: Vec::new(),
         }
     }
@@ -194,9 +196,15 @@ impl EditorScrollbar {
         self
     }
 
-    pub fn with_style(mut self, style: ScrollbarStyle, track_color: Hsla) -> Self {
+    pub fn with_style(
+        mut self,
+        style: ScrollbarStyle,
+        track_color: Hsla,
+        contrast_disabled_color: Option<Hsla>,
+    ) -> Self {
         self.style = style;
         self.track_color = track_color;
+        self.contrast_disabled_color = contrast_disabled_color;
         self
     }
 
@@ -243,7 +251,9 @@ impl RenderOnce for EditorScrollbar {
 
         let style = self.style;
         let (_, alpha) = self.state.target_values();
-        let alpha = if style == ScrollbarStyle::Windows {
+        let alpha = if self.contrast_disabled_color.is_some() {
+            1.0
+        } else if style == ScrollbarStyle::Windows {
             0.45
         } else {
             alpha
@@ -486,16 +496,24 @@ impl RenderOnce for EditorScrollbar {
                 } else {
                     position >= self.viewport.max_scroll_offset().along(axis)
                 };
-                let arrow_color = with_alpha(
-                    self.thumb_color,
+                let arrow_color = if let Some(gray_text) = self.contrast_disabled_color {
                     if disabled {
-                        0.2
-                    } else if hovered {
-                        0.8
+                        gray_text
                     } else {
-                        0.45
-                    },
-                );
+                        self.thumb_color
+                    }
+                } else {
+                    with_alpha(
+                        self.thumb_color,
+                        if disabled {
+                            0.2
+                        } else if hovered {
+                            0.8
+                        } else {
+                            0.45
+                        },
+                    )
+                };
                 let mut arrow = div()
                     .absolute()
                     .size(SCROLLBAR_THICKNESS)
@@ -876,10 +894,11 @@ mod tests {
                         ),
                     )
                 };
-                div()
-                    .w(px(width))
-                    .h(px(height))
-                    .child(scrollbar.with_style(ScrollbarStyle::Windows, gpui::black()))
+                div().w(px(width)).h(px(height)).child(scrollbar.with_style(
+                    ScrollbarStyle::Windows,
+                    gpui::black(),
+                    None,
+                ))
             }
         }
         for axis in [Axis::Vertical, Axis::Horizontal] {

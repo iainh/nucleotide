@@ -108,6 +108,9 @@ impl VcsIcon {
     /// Use editor VCS token colors so indicators match gutter, file tree, and tabs
     fn get_vcs_status_color(&self, theme: &Theme) -> Option<Hsla> {
         let dt = &theme.tokens;
+        if let Some(colors) = dt.chrome.contrast {
+            return self.should_show_vcs_status().then_some(colors.window_text);
+        }
         match &self.vcs_status {
             Some(VcsStatus::Modified | VcsStatus::Renamed) => Some(dt.editor.vcs_modified),
             Some(VcsStatus::Added | VcsStatus::Untracked) => Some(dt.editor.vcs_added),

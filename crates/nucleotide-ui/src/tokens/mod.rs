@@ -5,7 +5,7 @@ use crate::ContrastRatios;
 use crate::styling::ColorTheory;
 use gpui::{Hsla, Pixels, hsla, px};
 use nucleotide_appearance::{
-    HelixThemeColors, NativeChromePalette, UiChromeStyle, hsla_from_rgb_u8,
+    ContrastColors, HelixThemeColors, NativeChromePalette, UiChromeStyle, hsla_from_rgb_u8,
 };
 use nucleotide_logging::debug;
 
@@ -442,6 +442,8 @@ impl ShadowToken {
 pub struct ChromeTokens {
     /// Source of platform-specific component styling, independent of the editor theme.
     pub style: UiChromeStyle,
+    /// Exact paired system colours; present only for Windows system contrast UI.
+    pub contrast: Option<ContrastColors>,
     // Computed chrome backgrounds
     pub window_background: Hsla,
     pub titlebar_background: Hsla,
@@ -698,8 +700,14 @@ impl ChromeTokens {
         use gpui::Styled;
 
         let is_dark = self.text_on_chrome.l > 0.5;
-        let primary = hsla(0.0, 0.0, if is_dark { 1.0 } else { 0.0 }, 1.0);
-        let secondary = hsla(0.0, 0.0, if is_dark { 0.0 } else { 1.0 }, 1.0);
+        let primary = self.contrast.map_or_else(
+            || hsla(0.0, 0.0, if is_dark { 1.0 } else { 0.0 }, 1.0),
+            |c| c.window_text,
+        );
+        let secondary = self.contrast.map_or_else(
+            || hsla(0.0, 0.0, if is_dark { 0.0 } else { 1.0 }, 1.0),
+            |c| c.window,
+        );
         gpui::canvas(
             |bounds, _, _| bounds,
             move |_, bounds, window, _| {
@@ -897,6 +905,7 @@ impl ChromeTokens {
 
         Self {
             style: UiChromeStyle::Theme,
+            contrast: None,
             // Computed chrome backgrounds from color theory
             window_background: base_surface,
             titlebar_background: chrome_colors.titlebar_background,
@@ -1066,8 +1075,9 @@ impl ChromeTokens {
                 black
             };
 
-        Self {
+        let mut tokens = Self {
             style: UiChromeStyle::System,
+            contrast: palette.contrast,
             window_background: mica,
             titlebar_background: mica,
             footer_background: mica,
@@ -1160,7 +1170,76 @@ impl ChromeTokens {
             text_on_chrome,
             text_chrome_secondary: utils::with_alpha(text_on_chrome, palette.secondary_text_alpha),
             text_chrome_disabled: utils::with_alpha(text_on_chrome, palette.disabled_text_alpha),
+        };
+        if let Some(colors) = palette.contrast {
+            // Do not recompute user-defined contrast colours or fade their pairs.
+            for background in [
+                &mut tokens.window_background,
+                &mut tokens.titlebar_background,
+                &mut tokens.footer_background,
+                &mut tokens.file_tree_background,
+                &mut tokens.tab_empty_background,
+                &mut tokens.surface,
+                &mut tokens.surface_elevated,
+                &mut tokens.surface_overlay,
+                &mut tokens.surface_disabled,
+                &mut tokens.popup_background,
+                &mut tokens.menu_background,
+                &mut tokens.statusline_active,
+                &mut tokens.statusline_inactive,
+                &mut tokens.bufferline_background,
+                &mut tokens.bufferline_inactive,
+            ] {
+                *background = colors.window;
+            }
+            for foreground in [
+                &mut tokens.text_on_chrome,
+                &mut tokens.text_chrome_secondary,
+                &mut tokens.popup_foreground,
+                &mut tokens.menu_foreground,
+                &mut tokens.statusline_active_foreground,
+                &mut tokens.statusline_inactive_foreground,
+                &mut tokens.bufferline_foreground,
+                &mut tokens.bufferline_inactive_foreground,
+                &mut tokens.separator_color,
+                &mut tokens.border_default,
+                &mut tokens.border_muted,
+                &mut tokens.border_strong,
+                &mut tokens.border_highlight,
+                &mut tokens.border_shadow,
+                &mut tokens.popup_border,
+                &mut tokens.menu_separator,
+                &mut tokens.border_focus,
+            ] {
+                *foreground = colors.window_text;
+            }
+            for background in [
+                &mut tokens.surface_hover,
+                &mut tokens.surface_active,
+                &mut tokens.surface_selected,
+                &mut tokens.primary,
+                &mut tokens.primary_hover,
+                &mut tokens.primary_active,
+                &mut tokens.menu_selected,
+                &mut tokens.bufferline_active,
+            ] {
+                *background = colors.highlight;
+            }
+            tokens.primary_foreground = colors.highlight_text;
+            tokens.menu_selected_foreground = colors.highlight_text;
+            tokens.bufferline_active_foreground = colors.highlight_text;
+            tokens.text_chrome_disabled = colors.gray_text;
+            for shadow in [
+                &mut tokens.shadow_sm,
+                &mut tokens.shadow_md,
+                &mut tokens.shadow_lg,
+                &mut tokens.inset_highlight,
+                &mut tokens.inset_shadow,
+            ] {
+                shadow.color.a = 0.0;
+            }
         }
+        tokens
     }
 
     /// Create fallback chrome tokens for testing
@@ -1468,6 +1547,28 @@ impl FileTreeTokens {
     /// Create file tree tokens using computed chrome colors for backgrounds
     /// and editor colors for content
     pub fn from_tokens(chrome: &ChromeTokens, _editor: &EditorTokens) -> Self {
+        if let Some(c) = chrome.contrast {
+            return Self {
+                background: c.window,
+                item_background_hover: c.highlight,
+                item_background_selected: c.highlight,
+                item_background_selected_hover: c.highlight,
+                item_background_pressed: c.highlight,
+                item_background_selected_pressed: c.highlight,
+                selection_indicator: None,
+                item_text: c.window_text,
+                item_text_secondary: c.window_text,
+                item_text_selected: c.highlight_text,
+                item_text_hidden: c.window_text,
+                icon_color: c.window_text,
+                icon_color_secondary: c.window_text,
+                icon_color_selected: c.highlight_text,
+                icon_color_hidden: c.window_text,
+                folder_icon_color: c.window_text,
+                border: c.window_text,
+                separator: c.window_text,
+            };
+        }
         let bg = chrome.file_tree_background;
         let item_hover = chrome.surface_hover;
         let item_selected = chrome.surface_selected;
@@ -1613,6 +1714,24 @@ pub struct StatusBarTokens {
 impl StatusBarTokens {
     /// Create status bar tokens using computed chrome colors.
     pub fn from_tokens(chrome: &ChromeTokens, editor: &EditorTokens) -> Self {
+        if let Some(c) = chrome.contrast {
+            return Self {
+                background_active: c.window,
+                background_inactive: c.window,
+                text_primary: c.window_text,
+                text_secondary: c.window_text,
+                text_accent: c.window_text,
+                warning: c.window_text,
+                error: c.window_text,
+                border: c.window_text,
+                mode_normal: c.highlight,
+                mode_normal_text: c.highlight_text,
+                mode_insert: c.highlight,
+                mode_insert_text: c.highlight_text,
+                mode_select: c.highlight,
+                mode_select_text: c.highlight_text,
+            };
+        }
         let bg_active = chrome.statusline_active;
         let bg_inactive = chrome.statusline_inactive;
         let text_primary = chrome.statusline_active_foreground;
@@ -1679,6 +1798,9 @@ impl StatusBarTokens {
 
     /// Soft native status readouts, independent of editor cursor and OS accent colors.
     pub fn system_mode_badges(mut self, chrome: &ChromeTokens) -> Self {
+        if chrome.contrast.is_some() {
+            return self;
+        }
         // The footer may be transparent over native material, but retains its
         // palette RGB. Check text against the composited tint, not the tint alone.
         let backdrop = utils::with_alpha(chrome.footer_background, 1.0);
@@ -1737,15 +1859,21 @@ impl TabBarTokens {
     /// bufferline backgrounds.
     pub fn from_tokens(chrome: &ChromeTokens, editor: &EditorTokens) -> Self {
         let container_bg = chrome.bufferline_background;
-        let tab_active_bg = chrome.bufferline_active;
+        let tab_active_bg = chrome
+            .contrast
+            .map_or(chrome.bufferline_active, |c| c.window);
         let tab_inactive_bg = chrome.bufferline_inactive;
-        let tab_hover_bg = chrome.surface_hover;
-        let tab_text_active = chrome.bufferline_active_foreground;
+        // Tabs keep the Window pair; contrast selection/hover uses a border,
+        // avoiding fixed icon/diagnostic foregrounds on a Highlight surface.
+        let tab_hover_bg = chrome.contrast.map_or(chrome.surface_hover, |c| c.window);
+        let tab_text_active = chrome
+            .contrast
+            .map_or(chrome.bufferline_active_foreground, |c| c.window_text);
         let tab_text_inactive = chrome.bufferline_inactive_foreground;
         let tab_border = chrome.border_shadow;
         let tab_separator = chrome.border_shadow;
         let tab_close = chrome.text_chrome_secondary;
-        let tab_modified = editor.warning;
+        let tab_modified = chrome.contrast.map_or(editor.warning, |c| c.window_text);
 
         nucleotide_logging::debug!(
             tab_container_bg = ?container_bg,
@@ -1850,6 +1978,18 @@ impl CheckboxTokens {
     pub fn from_tokens(chrome: &ChromeTokens, _editor: &EditorTokens) -> Self {
         use crate::styling::color_theory::ColorTheory;
 
+        if let Some(c) = chrome.contrast {
+            return Self {
+                background: c.button_face,
+                background_hover: c.button_face,
+                checked_background: c.highlight,
+                text: c.button_text,
+                text_secondary: c.button_text,
+                disabled_background: c.button_face,
+                disabled_text: c.gray_text,
+                focus_background: c.button_face,
+            };
+        }
         let checked_background = chrome.primary;
 
         Self {
@@ -1953,7 +2093,7 @@ impl ButtonTokens {
         let shadow_offset_y = f32::from(chrome.shadow_sm.offset_y);
         let shadow_blur_radius = f32::from(chrome.shadow_sm.blur_radius);
 
-        Self {
+        let mut tokens = Self {
             primary_background: primary_bg,
             primary_background_hover: primary_bg_hover,
             primary_background_active: primary_bg_active,
@@ -1999,7 +2139,51 @@ impl ButtonTokens {
             shadow_offset_x,
             shadow_offset_y,
             shadow_blur_radius,
+        };
+        if let Some(c) = chrome.contrast {
+            for background in [
+                &mut tokens.secondary_background,
+                &mut tokens.ghost_background,
+                &mut tokens.danger_background,
+                &mut tokens.success_background,
+                &mut tokens.warning_background,
+                &mut tokens.info_background,
+                &mut tokens.disabled_background,
+            ] {
+                *background = c.button_face;
+            }
+            for background in [
+                &mut tokens.secondary_background_hover,
+                &mut tokens.secondary_background_active,
+                &mut tokens.ghost_background_hover,
+                &mut tokens.ghost_background_active,
+                &mut tokens.danger_background_hover,
+                &mut tokens.danger_background_active,
+                &mut tokens.success_background_hover,
+                &mut tokens.success_background_active,
+                &mut tokens.warning_background_hover,
+                &mut tokens.warning_background_active,
+                &mut tokens.info_background_hover,
+                &mut tokens.info_background_active,
+            ] {
+                *background = c.highlight;
+            }
+            for foreground in [
+                &mut tokens.secondary_text,
+                &mut tokens.ghost_text,
+                &mut tokens.danger_text,
+                &mut tokens.success_text,
+                &mut tokens.warning_text,
+                &mut tokens.info_text,
+                &mut tokens.secondary_border,
+                &mut tokens.primary_border,
+            ] {
+                *foreground = c.button_text;
+            }
+            tokens.disabled_text = c.gray_text;
+            tokens.disabled_border = c.gray_text;
         }
+        tokens
     }
 }
 
@@ -2046,6 +2230,32 @@ impl PickerTokens {
     pub fn from_tokens(chrome: &ChromeTokens, _editor: &EditorTokens) -> Self {
         use crate::styling::color_theory::ColorTheory;
 
+        if let Some(c) = chrome.contrast {
+            return Self {
+                container_background: c.window,
+                overlay_background: c.window,
+                header_background: c.window,
+                header_text: c.window_text,
+                header_border: c.window_text,
+                item_background: c.window,
+                item_background_hover: c.highlight,
+                item_background_selected: c.highlight,
+                item_text: c.window_text,
+                item_text_secondary: c.window_text,
+                item_text_selected: c.highlight_text,
+                input_background: c.window,
+                input_text: c.window_text,
+                input_border: c.window_text,
+                input_border_focus: c.window_text,
+                input_placeholder: c.window_text,
+                border: c.window_text,
+                separator: c.window_text,
+                shadow: ColorTheory::transparent(),
+                shadow_offset_x: 0.0,
+                shadow_offset_y: 0.0,
+                shadow_blur_radius: 0.0,
+            };
+        }
         // Use the popup fill for readable command surfaces over busy content.
         // Windows system chrome supplies an opaque fallback, not acrylic.
         let container_bg = chrome.popup_background;
@@ -2151,6 +2361,28 @@ impl DropdownTokens {
     pub fn from_tokens(chrome: &ChromeTokens, _editor: &EditorTokens) -> Self {
         use crate::styling::color_theory::ColorTheory;
 
+        if let Some(c) = chrome.contrast {
+            return Self {
+                container_background: c.window,
+                border: c.window_text,
+                shadow: ColorTheory::transparent(),
+                item_background: c.window,
+                item_background_hover: c.highlight,
+                item_background_pressed: c.highlight,
+                item_background_selected: c.highlight,
+                item_text: c.window_text,
+                item_text_secondary: c.window_text,
+                item_text_selected: c.highlight_text,
+                item_text_disabled: c.gray_text,
+                trigger_background: c.button_face,
+                trigger_background_hover: c.highlight,
+                trigger_text: c.button_text,
+                trigger_border: c.button_text,
+                separator: c.window_text,
+                icon_color: c.window_text,
+                icon_color_disabled: c.gray_text,
+            };
+        }
         // Dense menu text uses the transient surface's steady backing colour.
         let container_bg = chrome.menu_background;
         let border = chrome.border_shadow;
@@ -2396,6 +2628,24 @@ impl ChromeTokens {
     pub fn input_tokens(&self, editor: &EditorTokens) -> InputTokens {
         use crate::styling::ColorTheory;
 
+        if let Some(c) = self.contrast {
+            return InputTokens {
+                background: c.window,
+                background_hover: c.window,
+                background_focus: c.window,
+                background_disabled: c.window,
+                text: c.window_text,
+                text_disabled: c.gray_text,
+                placeholder: c.window_text,
+                border: c.window_text,
+                border_hover: c.window_text,
+                border_focus: c.highlight,
+                border_error: c.window_text,
+                border_disabled: c.gray_text,
+                focus_ring: c.highlight,
+                error_text: c.window_text,
+            };
+        }
         // System TextBoxes are chrome controls; editor syntax themes must not
         // turn their faces into unrelated coloured panels.
         let windows_system = self.is_windows_system();
@@ -2482,6 +2732,25 @@ impl ChromeTokens {
     pub fn notification_tokens(&self, editor: &EditorTokens) -> NotificationTokens {
         use crate::styling::ColorTheory;
 
+        if let Some(c) = self.contrast {
+            return NotificationTokens {
+                info_background: c.window,
+                success_background: c.window,
+                warning_background: c.window,
+                error_background: c.window,
+                info_text: c.window_text,
+                success_text: c.window_text,
+                warning_text: c.window_text,
+                error_text: c.window_text,
+                info_border: c.window_text,
+                success_border: c.window_text,
+                warning_border: c.window_text,
+                error_border: c.window_text,
+                close_button_background: c.button_face,
+                close_button_background_hover: c.button_face,
+                close_button_text: c.button_text,
+            };
+        }
         // Semantic backgrounds use Helix colors, others use chrome
         let info_bg = ColorTheory::surface_variant(self.surface_elevated, 0.1);
         let success_bg = ColorTheory::with_alpha(editor.success, 0.15);

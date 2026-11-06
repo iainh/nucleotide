@@ -125,6 +125,26 @@ cursor and OS accent colours. Label contrast is checked against the tint
 composited over the native footer palette. The themed UI keeps cursor-derived
 solid mode badges.
 
+### Windows accent and contrast themes
+
+Windows system chrome reads the personalisation accent and its light/dark ramp
+from `UISettings`, not the legacy selection highlight. Normal light/dark chrome
+still follows the editor theme. Colour-change notifications refresh the palette
+even when the light/dark appearance hasn't changed.
+
+Contrast mode is separate from light/dark mode. For `look = "system"`, it uses
+the current system Window/WindowText, ButtonFace/ButtonText,
+Highlight/HighlightText and GrayText pairs. Secondary text remains WindowText;
+GrayText is reserved for disabled controls. Surfaces become opaque, shadows are
+removed and chrome opacity preferences no longer fade the system pairs.
+Tabs retain Window/WindowText with a contrast selection border, while tree and
+menu selections use Highlight/HighlightText.
+
+This policy changes non-editor UI only, including editor-adjacent inputs,
+pickers, notifications and chrome diagnostic indicators. It does not rewrite
+the Helix syntax theme, editor background, cursor, selection or gutter colours.
+Theme-derived chrome and other platforms retain their existing behaviour.
+
 ### Light vs Dark Themes
 
 The system automatically provides appropriate colors for both themes:

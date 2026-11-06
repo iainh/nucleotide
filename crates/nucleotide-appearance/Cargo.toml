@@ -20,5 +20,5 @@ raw-window-handle = "0.6"
 objc2-app-kit.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Graphics_Gdi", "Win32_Graphics_Dwm"] }
+windows-sys = { version = "0.61", features = ["Win32_Graphics_Gdi", "Win32_Graphics_Dwm", "Win32_UI_Accessibility", "Win32_UI_WindowsAndMessaging"] }
 windows = { version = "0.61", features = ["UI_ViewManagement"] }

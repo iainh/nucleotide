@@ -104,7 +104,11 @@ impl WindowsWindowInner {
             WM_IME_COMPOSITION => self.handle_ime_composition(handle, lparam),
             WM_SETCURSOR => self.handle_set_cursor(handle, lparam),
             WM_SETTINGCHANGE => self.handle_system_settings_changed(handle, wparam, lparam),
-            WM_DWMCOLORIZATIONCOLORCHANGED => self.handle_palette_changed(),
+            WM_DWMCOLORIZATIONCOLORCHANGED | WM_SYSCOLORCHANGE | WM_THEMECHANGED => {
+                self.handle_palette_changed();
+                // Preserve default handling (including child-control notification).
+                None
+            }
             WM_INPUTLANGCHANGE => self.handle_input_language_changed(),
             WM_SHOWWINDOW => self.handle_window_visibility_changed(handle, wparam),
             DM_POINTERHITTEST => self.handle_dm_pointer_hit_test(wparam),
@@ -1157,6 +1161,9 @@ impl WindowsWindowInner {
             self.system_settings().update(wparam.0);
             if text_rendering_setting_changed(wparam) {
                 self.invalidate_text_rendering_settings();
+            }
+            if wparam.0 == SPI_SETHIGHCONTRAST.0 as usize {
+                self.handle_palette_changed();
             }
         } else {
             self.handle_system_theme_changed(handle, lparam)?;

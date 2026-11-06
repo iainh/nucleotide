@@ -824,6 +824,7 @@ struct TextInputElement {
     placeholder_color: gpui::Hsla,
     ghost_color: gpui::Hsla,
     selection_color: gpui::Hsla,
+    selection_text_color: Option<gpui::Hsla>,
     cursor_color: gpui::Hsla,
 }
 
@@ -908,7 +909,7 @@ impl Element for TextInputElement {
             underline: None,
             strikethrough: None,
         };
-        let runs = if content.is_empty() {
+        let mut runs = if content.is_empty() {
             vec![TextRun {
                 len: display_text.len(),
                 ..base_run
@@ -942,6 +943,47 @@ impl Element for TextInputElement {
         } else {
             vec![base_run, ghost_run()]
         };
+
+        if let Some(color) = self.selection_text_color
+            && !selected_range.is_empty()
+        {
+            // Split existing runs so selected glyphs use the system pair while
+            // preserving composition underlines and the unselected suffix.
+            let mut selected_runs = Vec::new();
+            let mut offset = 0;
+            for run in runs {
+                let run_end = offset + run.len;
+                let start = selected_range.start.max(offset);
+                let end = selected_range.end.min(run_end);
+                if start < end {
+                    if start > offset {
+                        selected_runs.push(TextRun {
+                            len: start - offset,
+                            ..run.clone()
+                        });
+                    }
+                    selected_runs.push(TextRun {
+                        len: end - start,
+                        color,
+                        underline: run.underline.map(|underline| UnderlineStyle {
+                            color: Some(color),
+                            ..underline
+                        }),
+                        ..run.clone()
+                    });
+                    if end < run_end {
+                        selected_runs.push(TextRun {
+                            len: run_end - end,
+                            ..run
+                        });
+                    }
+                } else {
+                    selected_runs.push(run);
+                }
+                offset = run_end;
+            }
+            runs = selected_runs;
+        }
 
         let font_size = window.text_style().font_size.to_pixels(window.rem_size());
         let line = window
@@ -1044,7 +1086,8 @@ impl Render for TextInput {
 
         let is_focused = self.focus_handle.is_focused(window);
         let has_error = self.error.is_some();
-        let is_ghost = self.variant == InputVariant::Ghost;
+        let contrast = theme.tokens.chrome.contrast;
+        let is_ghost = self.variant == InputVariant::Ghost && contrast.is_none();
         let windows_system = theme.tokens.chrome.is_windows_system();
         let text_size = match self.size {
             InputSize::Small => theme.tokens.sizes.text_sm,
@@ -1053,7 +1096,7 @@ impl Render for TextInput {
         };
         let background = if self.disabled {
             input_tokens.background_disabled
-        } else if self.variant == InputVariant::Ghost {
+        } else if is_ghost {
             input_tokens.background.alpha(0.0)
         } else if is_focused {
             input_tokens.background_focus
@@ -1064,7 +1107,7 @@ impl Render for TextInput {
             input_tokens.border_disabled
         } else if has_error {
             input_tokens.border_error
-        } else if is_focused && !windows_system {
+        } else if is_focused && (!windows_system || contrast.is_some()) {
             focus_colors.border
         } else {
             input_tokens.border
@@ -1093,6 +1136,13 @@ impl Render for TextInput {
                     .py_1()
             })
             .when(windows_system && !is_ghost, |this| {
+                this.min_h(px(match self.size {
+                    InputSize::Small => 28.0,
+                    InputSize::Medium => 32.0,
+                    InputSize::Large => 40.0,
+                }))
+            })
+            .when(windows_system && contrast.is_none() && !is_ghost, |this| {
                 let underline = if self.disabled {
                     input_tokens.border_disabled
                 } else if has_error {
@@ -1104,11 +1154,6 @@ impl Render for TextInput {
                 };
                 this.relative()
                     .overflow_hidden()
-                    .min_h(px(match self.size {
-                        InputSize::Small => 28.0,
-                        InputSize::Medium => 32.0,
-                        InputSize::Large => 40.0,
-                    }))
                     .when(!self.disabled && !is_focused, |this| {
                         this.hover(|this| this.bg(input_tokens.background_hover))
                     })
@@ -1202,10 +1247,23 @@ impl Render for TextInput {
                     .overflow_hidden()
                     .child(TextInputElement {
                         input: cx.entity().clone(),
-                        text_color: input_tokens.text,
-                        placeholder_color: input_tokens.placeholder,
-                        ghost_color: input_tokens.placeholder,
-                        selection_color: focus_colors.selection,
+                        text_color: if self.disabled && contrast.is_some() {
+                            input_tokens.text_disabled
+                        } else {
+                            input_tokens.text
+                        },
+                        placeholder_color: if self.disabled && contrast.is_some() {
+                            input_tokens.text_disabled
+                        } else {
+                            input_tokens.placeholder
+                        },
+                        ghost_color: if self.disabled && contrast.is_some() {
+                            input_tokens.text_disabled
+                        } else {
+                            input_tokens.placeholder
+                        },
+                        selection_color: contrast.map_or(focus_colors.selection, |c| c.highlight),
+                        selection_text_color: contrast.map(|c| c.highlight_text),
                         cursor_color: input_tokens.text,
                     }),
             )
