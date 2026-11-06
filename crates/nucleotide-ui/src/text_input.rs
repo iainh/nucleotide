@@ -1045,6 +1045,7 @@ impl Render for TextInput {
         let is_focused = self.focus_handle.is_focused(window);
         let has_error = self.error.is_some();
         let is_ghost = self.variant == InputVariant::Ghost;
+        let windows_system = theme.tokens.chrome.is_windows_system();
         let text_size = match self.size {
             InputSize::Small => theme.tokens.sizes.text_sm,
             InputSize::Medium => theme.tokens.sizes.text_md,
@@ -1063,7 +1064,7 @@ impl Render for TextInput {
             input_tokens.border_disabled
         } else if has_error {
             input_tokens.border_error
-        } else if is_focused {
+        } else if is_focused && !windows_system {
             focus_colors.border
         } else {
             input_tokens.border
@@ -1083,9 +1084,43 @@ impl Render for TextInput {
             .when(!is_ghost, |this| {
                 this.border_1()
                     .border_color(border)
-                    .rounded_md()
+                    .rounded(if windows_system {
+                        theme.tokens.sizes.radius_sm
+                    } else {
+                        theme.tokens.sizes.radius_md
+                    })
                     .px_2()
                     .py_1()
+            })
+            .when(windows_system && !is_ghost, |this| {
+                let underline = if self.disabled {
+                    input_tokens.border_disabled
+                } else if has_error {
+                    input_tokens.border_error
+                } else if is_focused {
+                    focus_colors.border
+                } else {
+                    theme.tokens.chrome.text_chrome_secondary.alpha(0.45)
+                };
+                this.relative()
+                    .overflow_hidden()
+                    .min_h(px(match self.size {
+                        InputSize::Small => 28.0,
+                        InputSize::Medium => 32.0,
+                        InputSize::Large => 40.0,
+                    }))
+                    .when(!self.disabled && !is_focused, |this| {
+                        this.hover(|this| this.bg(input_tokens.background_hover))
+                    })
+                    .child(
+                        div()
+                            .absolute()
+                            .bottom_0()
+                            .left_0()
+                            .right_0()
+                            .h(px(if is_focused || has_error { 2.0 } else { 1.0 }))
+                            .bg(underline),
+                    )
             })
             .when(is_ghost, |this| this.p(px(0.0)))
             .text_size(text_size)
@@ -1095,25 +1130,31 @@ impl Render for TextInput {
                 input_tokens.text
             })
             .cursor(CursorStyle::IBeam)
-            .when(!is_ghost && !is_focused && !has_error, |this| {
-                this.shadow(vec![
-                    inset_shadow.to_box_shadow(true),
-                    inset_highlight.to_box_shadow(true),
-                ])
-            })
-            .when(!is_ghost && is_focused && !has_error, |this| {
-                this.shadow(vec![
-                    gpui::BoxShadow {
-                        color: focus_colors.ring,
-                        offset: point(px(0.0), px(0.0)),
-                        blur_radius: px(0.0),
-                        spread_radius: px(2.0),
-                        inset: false,
-                    },
-                    inset_highlight.to_box_shadow(true),
-                ])
-            })
-            .when(!is_ghost && has_error, |this| {
+            .when(
+                !windows_system && !is_ghost && !is_focused && !has_error,
+                |this| {
+                    this.shadow(vec![
+                        inset_shadow.to_box_shadow(true),
+                        inset_highlight.to_box_shadow(true),
+                    ])
+                },
+            )
+            .when(
+                !windows_system && !is_ghost && is_focused && !has_error,
+                |this| {
+                    this.shadow(vec![
+                        gpui::BoxShadow {
+                            color: focus_colors.ring,
+                            offset: point(px(0.0), px(0.0)),
+                            blur_radius: px(0.0),
+                            spread_radius: px(2.0),
+                            inset: false,
+                        },
+                        inset_highlight.to_box_shadow(true),
+                    ])
+                },
+            )
+            .when(!windows_system && !is_ghost && has_error, |this| {
                 this.shadow(vec![
                     gpui::BoxShadow {
                         color: input_tokens.border_error,

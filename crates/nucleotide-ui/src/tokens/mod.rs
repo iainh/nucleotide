@@ -2331,24 +2331,46 @@ impl ChromeTokens {
     pub fn input_tokens(&self, editor: &EditorTokens) -> InputTokens {
         use crate::styling::ColorTheory;
 
-        // Inputs sit beside editor content and should share its background.
-        let input_bg = editor.background;
-        let input_bg_hover = editor.background;
-        let input_bg_focus = editor.background;
+        // System TextBoxes are chrome controls; editor syntax themes must not
+        // turn their faces into unrelated coloured panels.
+        let windows_system = self.is_windows_system();
+        let is_dark = self.text_on_chrome.l > 0.5;
+        let (input_bg, input_bg_hover, input_bg_focus) = if windows_system {
+            if is_dark {
+                (
+                    hsla_from_rgb_u8(255, 255, 255, 15.0 / 255.0),
+                    hsla_from_rgb_u8(255, 255, 255, 21.0 / 255.0),
+                    hsla_from_rgb_u8(30, 30, 30, 1.0),
+                )
+            } else {
+                (
+                    hsla_from_rgb_u8(255, 255, 255, 0.7),
+                    hsla_from_rgb_u8(255, 255, 255, 0.5),
+                    hsla_from_rgb_u8(255, 255, 255, 1.0),
+                )
+            }
+        } else {
+            (editor.background, editor.background, editor.background)
+        };
 
         // Focus follows the platform/chrome accent in system look.
         let focus_ring = self.border_focus;
         let error_color = editor.error;
 
         InputTokens {
-            // Container colors - editor based
+            // Container colors follow the selected chrome style.
             background: input_bg,
             background_hover: input_bg_hover,
             background_focus: input_bg_focus,
             background_disabled: ColorTheory::with_alpha(input_bg, 0.3),
 
-            // Text colors - ensure contrast
-            text: ColorTheory::ensure_contrast(input_bg, self.text_on_chrome, 4.5),
+            // Native fills are translucent overlays; their RGB alone is not
+            // the background against which the text is displayed.
+            text: if windows_system {
+                self.text_on_chrome
+            } else {
+                ColorTheory::ensure_contrast(input_bg, self.text_on_chrome, 4.5)
+            },
             text_disabled: ColorTheory::with_alpha(self.text_on_chrome, 0.5),
             placeholder: ColorTheory::with_alpha(self.text_on_chrome, 0.6),
 
