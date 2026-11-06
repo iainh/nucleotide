@@ -705,10 +705,12 @@ impl PopupMenu {
             .items_center()
             .justify_center()
             .text_size(tokens.sizes.text_sm)
-            .text_color(if disabled {
-                dropdown.icon_color_disabled
-            } else {
-                dropdown.icon_color
+            .when(disabled || tokens.chrome.contrast.is_none(), |this| {
+                this.text_color(if disabled {
+                    dropdown.icon_color_disabled
+                } else {
+                    dropdown.icon_color
+                })
             })
             .when(checked, |this| this.child("✓"))
     }
@@ -726,10 +728,12 @@ impl PopupMenu {
             .ml(tokens.sizes.space_8)
             .min_w(px(76.0))
             .text_align(gpui::TextAlign::Right)
-            .text_color(if disabled {
-                dropdown.item_text_disabled
-            } else {
-                dropdown.item_text_secondary
+            .when(disabled || tokens.chrome.contrast.is_none(), |this| {
+                this.text_color(if disabled {
+                    dropdown.item_text_disabled
+                } else {
+                    dropdown.item_text_secondary
+                })
             })
             .when_some(shortcut, |this, shortcut| this.child(shortcut))
     }
@@ -820,10 +824,12 @@ impl PopupMenu {
                                 svg()
                                     .path("icons/chevron-right.svg")
                                     .size(tokens.sizes.text_sm)
-                                    .text_color(if *disabled {
-                                        dropdown.icon_color_disabled
-                                    } else {
-                                        dropdown.icon_color
+                                    .when(*disabled || tokens.chrome.contrast.is_none(), |this| {
+                                        this.text_color(if *disabled {
+                                            dropdown.icon_color_disabled
+                                        } else {
+                                            dropdown.icon_color
+                                        })
                                     })
                                     .flex_shrink_0(),
                             ),
@@ -878,10 +884,24 @@ impl PopupMenu {
                 this.bg(dropdown.item_background_selected)
             })
             .when(!selected && !disabled, |this| {
-                this.hover(|this| this.bg(dropdown.item_background_hover))
+                this.hover(|this| {
+                    let hovered = this.bg(dropdown.item_background_hover);
+                    if tokens.chrome.contrast.is_some() {
+                        hovered.text_color(dropdown.item_text_selected)
+                    } else {
+                        hovered
+                    }
+                })
             })
             .when(tokens.chrome.is_windows_system() && !disabled, |this| {
-                this.active(|this| this.bg(dropdown.item_background_pressed))
+                this.active(|this| {
+                    let pressed = this.bg(dropdown.item_background_pressed);
+                    if tokens.chrome.contrast.is_some() {
+                        pressed.text_color(dropdown.item_text_selected)
+                    } else {
+                        pressed
+                    }
+                })
             })
             .when(disabled, |this| this.cursor_not_allowed())
             .when(!disabled, |this| {

@@ -106,6 +106,72 @@ mod system_chrome_token_tests {
     }
 
     #[test]
+    fn contrast_chrome_preserves_custom_system_pairs_across_components() {
+        use nucleotide_appearance::{ContrastColors, hsla_from_rgb_u8 as rgb};
+        // Custom colours, deliberately not built-in palettes or black/white:
+        // catches hard-coded colours, alpha fading and automatic adjustment.
+        for (window, text) in [
+            (rgb(19, 28, 39, 1.0), rgb(241, 232, 211, 1.0)),
+            (rgb(249, 238, 221, 1.0), rgb(37, 29, 21, 1.0)),
+        ] {
+            let c = ContrastColors {
+                window,
+                window_text: text,
+                button_face: rgb(21, 42, 37, 1.0),
+                button_text: rgb(224, 251, 239, 1.0),
+                highlight: rgb(233, 194, 101, 1.0),
+                highlight_text: rgb(41, 24, 13, 1.0),
+                gray_text: rgb(151, 143, 133, 1.0),
+                hotlight: rgb(117, 218, 250, 1.0),
+            };
+            let chrome =
+                ChromeTokens::from_native_chrome_palette(NativeChromePalette::windows_contrast(c));
+            let editor = EditorTokens::fallback(true);
+            assert_eq!(chrome.window_background, c.window);
+            assert_eq!(chrome.titlebar_background, c.window);
+            assert_eq!(chrome.surface, c.window);
+            assert_eq!(chrome.text_on_chrome, c.window_text);
+            assert_eq!(chrome.text_chrome_secondary, c.window_text);
+            assert_eq!(chrome.text_chrome_disabled, c.gray_text);
+            assert_eq!(chrome.shadow_md.color.a, 0.0);
+            assert_eq!(chrome.primary, c.highlight);
+            assert_eq!(chrome.primary_foreground, c.highlight_text);
+            let tree = chrome.file_tree_tokens(&editor);
+            assert_eq!(tree.item_background_hover, c.highlight);
+            assert_eq!(tree.item_text_selected, c.highlight_text);
+            assert_eq!(tree.folder_icon_color, c.window_text);
+            let buttons = chrome.button_tokens(&editor);
+            assert_eq!(buttons.secondary_background, c.button_face);
+            assert_eq!(buttons.secondary_text, c.button_text);
+            assert_eq!(buttons.secondary_background_hover, c.highlight);
+            assert_eq!(buttons.danger_background, c.button_face);
+            assert_eq!(buttons.disabled_text, c.gray_text);
+            let menu = chrome.dropdown_tokens(&editor);
+            assert_eq!(menu.item_background_hover, c.highlight);
+            assert_eq!(menu.item_background_pressed, c.highlight);
+            assert_eq!(menu.item_background_selected, c.highlight);
+            assert_eq!(menu.item_text_selected, c.highlight_text);
+            assert_eq!(menu.item_text_secondary, c.window_text);
+            assert_eq!(menu.item_text_disabled, c.gray_text);
+            let input = chrome.input_tokens(&editor);
+            assert_eq!(input.background, c.window);
+            assert_eq!(input.text, c.window_text);
+            assert_eq!(input.placeholder, c.window_text);
+            let picker = chrome.picker_tokens(&editor);
+            assert_eq!(picker.item_background_hover, c.highlight);
+            assert_eq!(picker.item_text_selected, c.highlight_text);
+            let badges = chrome
+                .status_bar_tokens(&editor)
+                .system_mode_badges(&chrome);
+            assert_eq!(badges.mode_normal, c.highlight);
+            assert_eq!(badges.mode_normal_text, c.highlight_text);
+            let notifications = chrome.notification_tokens(&editor);
+            assert_eq!(notifications.error_background, c.window);
+            assert_eq!(notifications.error_text, c.window_text);
+        }
+    }
+
+    #[test]
     fn system_chrome_uses_supplied_os_ramp_without_recomputing_it() {
         use nucleotide_appearance::SystemAccentRamp;
         let ramp = SystemAccentRamp {
@@ -735,6 +801,33 @@ mod component_token_tests {
         assert_eq!(status_bar.mode_normal, helix_colors.cursor_normal);
         assert_eq!(status_bar.mode_insert, helix_colors.cursor_insert);
         assert_eq!(status_bar.mode_select, helix_colors.cursor_select);
+
+        let contrast = DesignTokens::from_helix_and_native_chrome(
+            helix_colors,
+            editor_bg,
+            NativeChromePalette::windows_contrast(nucleotide_appearance::ContrastColors {
+                window: hsla(0.0, 0.0, 0.0, 1.0),
+                window_text: hsla(0.0, 0.0, 1.0, 1.0),
+                button_face: hsla(0.0, 0.0, 0.0, 1.0),
+                button_text: hsla(0.0, 0.0, 1.0, 1.0),
+                highlight: hsla(0.2, 0.7, 0.8, 1.0),
+                highlight_text: hsla(0.2, 0.1, 0.1, 1.0),
+                gray_text: hsla(0.0, 0.0, 0.6, 1.0),
+                hotlight: hsla(0.5, 0.7, 0.7, 1.0),
+            }),
+        );
+        assert_eq!(contrast.editor.background, tokens.editor.background);
+        assert_eq!(contrast.editor.text_primary, tokens.editor.text_primary);
+        assert_eq!(
+            contrast.editor.selection_primary,
+            tokens.editor.selection_primary
+        );
+        assert_eq!(contrast.editor.cursor_normal, tokens.editor.cursor_normal);
+        assert_eq!(
+            contrast.editor.diagnostic_error,
+            tokens.editor.diagnostic_error
+        );
+        assert_eq!(contrast.editor.vcs_modified, tokens.editor.vcs_modified);
 
         println!("Hybrid component tokens validation passed ✓");
     }

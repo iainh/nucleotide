@@ -288,8 +288,21 @@ impl Render for ApplicationMenu {
                         trigger
                     }
                 })
-                .when(is_open, |trigger| trigger.bg(chrome.surface_hover))
-                .hover(|trigger| trigger.bg(chrome.surface_hover))
+                .when(is_open, |trigger| {
+                    trigger
+                        .bg(chrome.surface_hover)
+                        .when_some(chrome.contrast, |trigger, c| {
+                            trigger.text_color(c.highlight_text)
+                        })
+                })
+                .hover(|trigger| {
+                    let hovered = trigger.bg(chrome.surface_hover);
+                    if let Some(c) = chrome.contrast {
+                        hovered.text_color(c.highlight_text)
+                    } else {
+                        hovered
+                    }
+                })
                 .when(chrome.is_windows_system(), |trigger| {
                     let focus = self.focus_handle.clone();
                     trigger.child(

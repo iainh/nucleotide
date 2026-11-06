@@ -188,7 +188,10 @@ impl Render for ProjectTreeDragPreview {
         let tokens = &cx.theme().tokens;
         let metrics =
             nucleotide_ui::DensityMetrics::for_density(nucleotide_ui::ControlDensity::Comfortable);
-        let preview_bg = nucleotide_ui::tokens::with_alpha(tokens.chrome.surface_overlay, 0.72);
+        let preview_bg = tokens.chrome.contrast.map_or_else(
+            || nucleotide_ui::tokens::with_alpha(tokens.chrome.surface_overlay, 0.72),
+            |c| c.window,
+        );
 
         div().pl(self.position.x).pt(self.position.y).child(
             div()
@@ -335,7 +338,9 @@ pub fn render_project_tree_row(
     let can_be_dragged = row.can_be_dragged();
     let drop_background = file_tree_tokens.item_background_hover;
     let on_right_mouse_down = Arc::clone(&on_mouse_down);
-    let windows_system = file_tree_tokens.selection_indicator.is_some();
+    let windows_system = cfg!(target_os = "windows")
+        && theme.tokens.chrome.style == nucleotide_appearance::UiChromeStyle::System;
+    let contrast = theme.tokens.chrome.contrast;
 
     div()
         .id(("file-tree-entry", row.id))
@@ -397,7 +402,7 @@ pub fn render_project_tree_row(
                 .when(row.is_selected, |row| {
                     row.bg(file_tree_tokens.item_background_selected)
                 })
-                .when(windows_system, |element| {
+                .when(windows_system && contrast.is_none(), |element| {
                     let hover = if row.is_selected {
                         file_tree_tokens.item_background_selected_hover
                     } else {
@@ -412,15 +417,27 @@ pub fn render_project_tree_row(
                         .group_hover("file-tree-row", move |style| style.bg(hover))
                         .group_active("file-tree-row", move |style| style.bg(pressed))
                 })
-                .when(!windows_system && !row.is_selected, |row| {
-                    row.hover(move |row| {
-                        row.bg(nucleotide_ui::tokens::with_alpha(
-                            file_tree_tokens.item_background_hover,
-                            0.5,
-                        ))
-                        .text_color(file_tree_tokens.item_text)
-                    })
+                .when_some(contrast, |element, colors| {
+                    element
+                        .group_hover("file-tree-row", move |style| {
+                            style.bg(colors.highlight).text_color(colors.highlight_text)
+                        })
+                        .group_active("file-tree-row", move |style| {
+                            style.bg(colors.highlight).text_color(colors.highlight_text)
+                        })
                 })
+                .when(
+                    !windows_system && contrast.is_none() && !row.is_selected,
+                    |row| {
+                        row.hover(move |row| {
+                            row.bg(nucleotide_ui::tokens::with_alpha(
+                                file_tree_tokens.item_background_hover,
+                                0.5,
+                            ))
+                            .text_color(file_tree_tokens.item_text)
+                        })
+                    },
+                )
                 .children(
                     (0..if windows_system { 0 } else { row.depth }).map(|depth| {
                         div()
@@ -448,7 +465,12 @@ pub fn render_project_tree_row(
                         )
                     })
                 })
-                .child(render_chevron_slot(&row, file_tree_tokens, metrics))
+                .child(render_chevron_slot(
+                    &row,
+                    file_tree_tokens,
+                    metrics,
+                    contrast.is_some(),
+                ))
                 .child(render_icon(&row, theme, file_tree_tokens, metrics))
                 .child(render_filename(&row, theme, file_tree_tokens))
                 .when_some(trailing, |row, trailing| row.child(trailing))
@@ -463,6 +485,7 @@ fn render_chevron_slot(
     row: &ProjectTreeRow,
     file_tree_tokens: FileTreeTokens,
     metrics: ProjectTreeDensityMetrics,
+    contrast: bool,
 ) -> gpui::AnyElement {
     div()
         .size(px(metrics.icon_slot_px))
@@ -470,7 +493,7 @@ fn render_chevron_slot(
         .items_center()
         .justify_center()
         .when(row.is_directory(), |div| {
-            div.child(render_chevron(row, file_tree_tokens, metrics))
+            div.child(render_chevron(row, file_tree_tokens, metrics, contrast))
         })
         .into_any_element()
 }
@@ -479,10 +502,13 @@ fn render_chevron(
     row: &ProjectTreeRow,
     file_tree_tokens: FileTreeTokens,
     metrics: ProjectTreeDensityMetrics,
+    contrast: bool,
 ) -> impl IntoElement {
     chevron_icon(if row.is_expanded { "down" } else { "right" })
         .size(px(metrics.disclosure_icon_size_px))
-        .text_color(chevron_color(row, file_tree_tokens))
+        .when(!contrast, |icon| {
+            icon.text_color(chevron_color(row, file_tree_tokens))
+        })
 }
 
 fn render_icon(
@@ -493,6 +519,15 @@ fn render_icon(
 ) -> impl IntoElement {
     let icon_color = tree_icon_color(row, file_tree_tokens);
 
+    if theme.tokens.chrome.contrast.is_some() {
+        // Inherit the row's HighlightText during hover/press/selection.
+        let icon = match &row.kind {
+            ProjectTreeRowKind::Directory { .. } => VcsIcon::directory(row.is_expanded),
+            ProjectTreeRowKind::File { extension } => VcsIcon::from_extension(extension.as_deref()),
+            ProjectTreeRowKind::Symlink { target_exists, .. } => VcsIcon::symlink(*target_exists),
+        };
+        return icon.size(metrics.icon_size_px).render_with_theme(theme);
+    }
     let vcs_icon = match &row.kind {
         ProjectTreeRowKind::Directory { .. } => VcsIcon::directory(row.is_expanded)
             .size(metrics.icon_size_px)
@@ -536,6 +571,9 @@ fn render_filename(
         .text_size(theme.tokens.sizes.text_md)
         .child(row.file_name.clone());
 
+    if theme.tokens.chrome.contrast.is_some() {
+        return node;
+    }
     if display_status.is_some() {
         node = node.text_color(text_color);
         if is_root_directory || row.is_search_match {
@@ -563,6 +601,13 @@ fn row_text_color(
     theme: &Theme,
     file_tree_tokens: FileTreeTokens,
 ) -> gpui::Hsla {
+    if let Some(colors) = theme.tokens.chrome.contrast {
+        return if row.is_selected {
+            colors.highlight_text
+        } else {
+            colors.window_text
+        };
+    }
     if row.is_selected {
         file_tree_tokens.item_text_selected
     } else if let Some(status) = git_status_for_display(row) {
@@ -625,7 +670,9 @@ fn render_git_status_lane(
                     .justify_center()
                     .text_size(theme.tokens.sizes.text_xs)
                     .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(git_status_color(status, theme))
+                    .when(theme.tokens.chrome.contrast.is_none(), |label| {
+                        label.text_color(git_status_color(status, theme))
+                    })
                     .child(git_status_label(status)),
             )
             .into_any_element(),

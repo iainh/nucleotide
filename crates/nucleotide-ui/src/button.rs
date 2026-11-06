@@ -692,7 +692,14 @@ impl Button {
 
         let metrics = button_metrics(self.size, design_tokens);
         let windows_system = design_tokens.chrome.is_windows_system();
-        let text = if windows_system && state == StyleState::Active {
+        let contrast = design_tokens.chrome.contrast;
+        let text = if let Some(colors) = contrast {
+            match state {
+                StyleState::Disabled | StyleState::Loading => colors.gray_text,
+                StyleState::Hover | StyleState::Active => colors.highlight_text,
+                _ => text,
+            }
+        } else if windows_system && state == StyleState::Active {
             if matches!(
                 self.variant,
                 ButtonVariant::Secondary | ButtonVariant::Ghost
@@ -708,12 +715,18 @@ impl Button {
         ComputedStyle {
             background,
             foreground: text,
-            border_color: if windows_system || matches!(self.variant, ButtonVariant::Ghost) {
+            border_color: if let Some(colors) = contrast {
+                match state {
+                    StyleState::Disabled | StyleState::Loading => colors.gray_text,
+                    StyleState::Hover | StyleState::Active => colors.highlight_text,
+                    _ => colors.button_text,
+                }
+            } else if windows_system || matches!(self.variant, ButtonVariant::Ghost) {
                 border
             } else {
                 design_tokens.chrome.border_shadow
             },
-            border_width: if matches!(self.variant, ButtonVariant::Ghost) {
+            border_width: if matches!(self.variant, ButtonVariant::Ghost) && contrast.is_none() {
                 px(0.0)
             } else {
                 px(1.0)

@@ -328,7 +328,10 @@ impl RenderOnce for Scrollbar {
         };
         let thumb_bg = if let Some(theme) = cx.try_global::<crate::Theme>() {
             let chrome = &theme.tokens.chrome;
-            crate::styling::ColorTheory::with_alpha(chrome.text_on_chrome, alpha)
+            chrome.contrast.map_or_else(
+                || crate::styling::ColorTheory::with_alpha(chrome.text_on_chrome, alpha),
+                |c| c.window_text,
+            )
         } else {
             let tokens = crate::DesignTokens::dark();
             let chrome = &tokens.chrome;
@@ -527,16 +530,23 @@ impl RenderOnce for Scrollbar {
                 } else {
                     position >= self.state.scroll_handle.max_offset().along(self.axis)
                 };
-                let arrow_bg = crate::styling::ColorTheory::with_alpha(
-                    thumb_bg,
-                    if disabled {
-                        0.2
-                    } else if hovered {
-                        0.8
-                    } else {
-                        0.45
-                    },
-                );
+                let contrast = cx
+                    .try_global::<crate::Theme>()
+                    .and_then(|t| t.tokens.chrome.contrast);
+                let arrow_bg = if let Some(c) = contrast {
+                    if disabled { c.gray_text } else { c.window_text }
+                } else {
+                    crate::styling::ColorTheory::with_alpha(
+                        thumb_bg,
+                        if disabled {
+                            0.2
+                        } else if hovered {
+                            0.8
+                        } else {
+                            0.45
+                        },
+                    )
+                };
                 let mut arrow = div()
                     .absolute()
                     .size(SCROLLBAR_THICKNESS)

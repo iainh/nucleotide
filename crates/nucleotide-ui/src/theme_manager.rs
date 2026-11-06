@@ -416,6 +416,11 @@ impl ThemeManager {
             self.ui_theme.tokens.set_ui_font_size(ui_font_size);
         }
         let chrome = &mut self.ui_theme.tokens.chrome;
+        if chrome.contrast.is_some() {
+            // Contrast system colours must stay opaque and paired. This policy
+            // is scoped to system chrome; editor/syntax tokens remain untouched.
+            return;
+        }
         if nucleotide_appearance::content_islands_enabled(self.ui_chrome_style) {
             // The quiet shell exposes native material without stacking translucent
             // titlebar/menu/footer fills over the native window backdrop.
