@@ -191,8 +191,8 @@ mod system_chrome_token_tests {
         assert_eq!(dark_status.background_inactive, dark.footer_background);
         assert_eq!(light_status.text_secondary, light.text_chrome_secondary);
         assert_eq!(dark_status.text_secondary, dark.text_chrome_secondary);
-        assert!(light.popup_background.a < 1.0);
-        assert!(dark.popup_background.a < 1.0);
+        assert_eq!(light.popup_background.a, 1.0);
+        assert_eq!(dark.popup_background.a, 1.0);
         assert!(light.popup_background.a >= 0.94);
         assert!(dark.popup_background.a >= 0.94);
         assert!(light.menu_background.a >= 0.94);
