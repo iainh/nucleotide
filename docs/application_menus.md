@@ -40,3 +40,25 @@ In-window shortcut hints come from GPUI bindings in the original focus context.
 Bindings handled exclusively by Helix, including modal sequences and fallback
 shortcuts, are not advertised as universal menu accelerators. This does not
 change their keyboard behaviour.
+
+## Windows popup material fallback
+
+With `look = "system"`, Windows menus and popups use an intentional opaque
+light/dark fill. This is a readability fallback, not acrylic or native material
+parity. Theme-derived UI and other platforms retain their existing appearance.
+The palette field named `acrylic` supplies a colour only; it does not enable a
+compositor effect. The main window's native Mica backdrop is separate and unchanged.
+
+GPUI currently renders the menu and underlying editor into one Direct3D swapchain
+on one DirectComposition visual. Windows' documented
+[`DWMSBT_TRANSIENTWINDOW`](https://learn.microsoft.com/en-us/windows/win32/api/dwmapi/ne-dwmapi-dwm_systembackdrop_type)
+provides Desktop Acrylic behind an entire HWND on Windows 11 build 22621 or later,
+not behind a rectangle within that swapchain. Setting it on the main window would
+replace the window backdrop without giving the menu its own material.
+
+Native transient acrylic is deferred until GPUI can host a separate popup window
+or composition layer while preserving menu focus, keyboard routing, submenu
+placement, light dismiss, hit testing, clipping and resource lifetimes. A custom
+framebuffer blur would instead be in-app acrylic, not Desktop Acrylic parity;
+that renderer expansion is also deferred. See Microsoft's
+[material distinctions](https://learn.microsoft.com/en-us/windows/apps/develop/ui/materials).

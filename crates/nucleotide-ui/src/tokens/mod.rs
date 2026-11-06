@@ -2043,8 +2043,8 @@ impl PickerTokens {
     pub fn from_tokens(chrome: &ChromeTokens, _editor: &EditorTokens) -> Self {
         use crate::styling::color_theory::ColorTheory;
 
-        // Floating command surfaces need stronger acrylic opacity than passive
-        // Mica-facing chrome so menu rows remain readable over busy content.
+        // Use the popup fill for readable command surfaces over busy content.
+        // Windows system chrome supplies an opaque fallback, not acrylic.
         let container_bg = chrome.popup_background;
         let overlay_bg = ColorTheory::with_alpha(chrome.surface, 0.7); // Semi-transparent backdrop
 

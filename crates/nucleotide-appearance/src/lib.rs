@@ -124,6 +124,8 @@ pub struct NativeChromePalette {
     pub layer_base: Hsla,
     pub layer_alt_base: Hsla,
     pub elevated_base: Hsla,
+    /// Popup fill colour, not a compositor material. Windows uses an opaque
+    /// fallback until GPUI supports separately composited transient surfaces.
     pub acrylic: Hsla,
     pub stroke: Hsla,
     pub stroke_subtle: Hsla,
@@ -184,7 +186,7 @@ impl NativeChromePalette {
                 hsla_from_rgb_u8(43, 43, 43, 1.0),
                 hsla_from_rgb_u8(38, 38, 38, 1.0),
                 hsla_from_rgb_u8(48, 48, 48, 1.0),
-                hsla_from_rgb_u8(44, 44, 44, 0.96),
+                hsla_from_rgb_u8(44, 44, 44, 1.0),
                 hsla_from_rgb_u8(65, 65, 65, 1.0),
                 hsla_from_rgb_u8(78, 78, 78, 0.74),
                 hsla_from_rgb_u8(243, 243, 243, 1.0),
@@ -199,7 +201,7 @@ impl NativeChromePalette {
                 hsla_from_rgb_u8(255, 255, 255, 1.0),
                 hsla_from_rgb_u8(249, 249, 249, 1.0),
                 hsla_from_rgb_u8(255, 255, 255, 1.0),
-                hsla_from_rgb_u8(252, 252, 252, 0.96),
+                hsla_from_rgb_u8(252, 252, 252, 1.0),
                 hsla_from_rgb_u8(225, 225, 225, 1.0),
                 hsla_from_rgb_u8(199, 199, 199, 0.82),
                 hsla_from_rgb_u8(26, 26, 26, 1.0),
@@ -540,6 +542,8 @@ mod tests {
         if cfg!(target_os = "windows") {
             assert_eq!(light.mica_alpha, 0.0);
             assert_eq!(dark.mica_alpha, 0.0);
+            assert_eq!(light.acrylic.a, 1.0, "popup fallback must be opaque");
+            assert_eq!(dark.acrylic.a, 1.0, "popup fallback must be opaque");
             assert!(light.layer_alpha < 1.0);
             assert!(dark.layer_alpha < 1.0);
         } else if cfg!(target_os = "macos") {
