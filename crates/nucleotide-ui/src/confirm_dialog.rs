@@ -343,7 +343,7 @@ impl Render for ConfirmDialogView {
             .when(!windows_system, |button| button.icon("icons/circle-x.svg"))
             .when(windows_system, |button| button.width(button_width))
             .focus_handle(self.cancel_focus_handle.clone())
-            .activate_on_mouse_down()
+            .when(!windows_system, Button::activate_on_mouse_down)
             .on_click(cx.listener(|view, _event, _window, cx| {
                 view.emit_cancelled(cx);
                 cx.stop_propagation();
@@ -361,7 +361,7 @@ impl Render for ConfirmDialogView {
                 .when(!windows_system, |button| button.icon(confirm_icon))
                 .when(windows_system, |button| button.width(button_width))
                 .focus_handle(self.confirm_focus_handle.clone())
-                .activate_on_mouse_down()
+                .when(!windows_system, Button::activate_on_mouse_down)
                 .on_click(cx.listener(|view, _event, _window, cx| {
                     view.emit_confirmed(cx);
                     cx.stop_propagation();
@@ -465,6 +465,41 @@ mod tests {
             init(cx);
             cx.set_global(crate::Theme::from_tokens(crate::DesignTokens::dark()));
         });
+    }
+
+    #[cfg(target_os = "windows")]
+    #[gpui::test]
+    fn windows_confirmation_waits_for_release_and_allows_drag_away(cx: &mut TestAppContext) {
+        init_confirm_dialog_test(cx);
+        cx.update(|cx| {
+            let mut tokens = crate::DesignTokens::dark();
+            tokens.chrome = crate::tokens::ChromeTokens::from_native_chrome_palette(
+                nucleotide_appearance::NativeChromePalette::windows_fluent(
+                    nucleotide_appearance::SystemAppearance::Dark,
+                    nucleotide_appearance::default_windows_accent_color(),
+                ),
+            );
+            cx.set_global(crate::Theme::from_tokens(tokens));
+        });
+        let (harness, cx) = cx.add_window_view(ConfirmDialogHarness::new);
+        cx.run_until_parked();
+        for (selector, expected) in [
+            ("confirm-dialog-confirm", ConfirmDialogEvent::Confirmed),
+            ("confirm-dialog-cancel", ConfirmDialogEvent::Cancelled),
+        ] {
+            let bounds = cx.debug_bounds(selector).expect("rendered dialog button");
+            let outside = gpui::point(bounds.right() + px(25.0), bounds.bottom() + px(25.0));
+            cx.simulate_mouse_down(bounds.center(), gpui::MouseButton::Left, Default::default());
+            harness.read_with(cx, |harness, _| assert!(harness.events.borrow().is_empty()));
+            cx.simulate_mouse_move(outside, gpui::MouseButton::Left, Default::default());
+            cx.simulate_mouse_up(outside, gpui::MouseButton::Left, Default::default());
+            harness.read_with(cx, |harness, _| assert!(harness.events.borrow().is_empty()));
+            cx.simulate_click(bounds.center(), Default::default());
+            harness.read_with(cx, |harness, _| {
+                assert_eq!(harness.events.borrow().as_slice(), &[expected]);
+                harness.events.borrow_mut().clear();
+            });
+        }
     }
 
     #[gpui::test]
