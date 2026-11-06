@@ -108,7 +108,7 @@ struct ButtonMetrics {
 }
 
 fn button_metrics(size: ButtonSize, tokens: &DesignTokens) -> ButtonMetrics {
-    match size {
+    let mut metrics = match size {
         ButtonSize::ExtraSmall => ButtonMetrics {
             height: tokens.sizes.space_7,
             padding_x: tokens.sizes.space_2,
@@ -154,7 +154,22 @@ fn button_metrics(size: ButtonSize, tokens: &DesignTokens) -> ButtonMetrics {
             icon_size: px(crate::tokens::STANDARD_ICON_SIZE),
             gap: tokens.sizes.space_2,
         },
+    };
+    if tokens.chrome.is_windows_system() {
+        metrics.border_radius = tokens.sizes.radius_sm;
+        metrics.height = match size {
+            ButtonSize::ExtraSmall => tokens.sizes.space_7,
+            ButtonSize::Small => tokens.sizes.button_height_sm,
+            ButtonSize::Medium => tokens.sizes.space_8,
+            ButtonSize::Large => tokens.sizes.button_height_md,
+            ButtonSize::ExtraLarge => tokens.sizes.button_height_lg,
+        };
+        if !matches!(size, ButtonSize::ExtraSmall | ButtonSize::ExtraLarge) {
+            metrics.font_size = tokens.sizes.text_md;
+        }
+        metrics.padding_x = tokens.sizes.space_4;
     }
+    metrics
 }
 
 /// Button variant styles (backward compatibility)
@@ -676,11 +691,24 @@ impl Button {
         };
 
         let metrics = button_metrics(self.size, design_tokens);
+        let windows_system = design_tokens.chrome.is_windows_system();
+        let text = if windows_system && state == StyleState::Active {
+            if matches!(
+                self.variant,
+                ButtonVariant::Secondary | ButtonVariant::Ghost
+            ) {
+                design_tokens.chrome.text_chrome_secondary
+            } else {
+                text.alpha(0.7)
+            }
+        } else {
+            text
+        };
 
         ComputedStyle {
             background,
             foreground: text,
-            border_color: if matches!(self.variant, ButtonVariant::Ghost) {
+            border_color: if windows_system || matches!(self.variant, ButtonVariant::Ghost) {
                 border
             } else {
                 design_tokens.chrome.border_shadow
@@ -694,13 +722,15 @@ impl Button {
             padding_x: metrics.padding_x,
             padding_y: metrics.padding_y,
             font_size: metrics.font_size,
-            font_weight: 500, // Medium weight for better readability
-            opacity: if matches!(state, StyleState::Disabled | StyleState::Loading) {
+            font_weight: if windows_system { 400 } else { 500 },
+            opacity: if !windows_system
+                && matches!(state, StyleState::Disabled | StyleState::Loading)
+            {
                 0.6
             } else {
                 1.0
             },
-            shadow: if matches!(self.variant, ButtonVariant::Ghost) {
+            shadow: if windows_system || matches!(self.variant, ButtonVariant::Ghost) {
                 None // Ghost buttons should have no shadow for subtlety
             } else {
                 Some(crate::styling::BoxShadow {
@@ -848,6 +878,14 @@ impl RenderOnce for Button {
             && self.icon_path.is_some();
         let inset_shadow = theme.tokens.chrome.inset_shadow;
         let variant = self.variant;
+        let windows_system = theme.tokens.chrome.is_windows_system();
+        let face_background = |background, pressed| {
+            if windows_system {
+                gpui::solid_background(background)
+            } else {
+                button_face_background(background, variant, pressed)
+            }
+        };
         let activate_on_mouse_down = self.activate_on_mouse_down;
         let focus_handle = self.focus_handle.clone();
         // Mouse-down actions commonly repaint before mouse-up; GPUI's active
@@ -885,11 +923,7 @@ impl RenderOnce for Button {
                 700 => FontWeight::BOLD,
                 _ => FontWeight::MEDIUM,
             })
-            .bg(button_face_background(
-                computed_style.background,
-                variant,
-                false,
-            ))
+            .bg(face_background(computed_style.background, false))
             .text_color(computed_style.foreground)
             .border_color(computed_style.border_color)
             .when(f32::from(computed_style.border_width) > 0.0, |el| {
@@ -912,11 +946,7 @@ impl RenderOnce for Button {
         if current_state.is_interactive() {
             button = button.hover(|this| {
                 let mut hovered = this
-                    .bg(button_face_background(
-                        hover_style.background,
-                        variant,
-                        false,
-                    ))
+                    .bg(face_background(hover_style.background, false))
                     .text_color(hover_style.foreground)
                     .border_color(hover_style.border_color)
                     .text_size(computed_style.font_size)
@@ -936,11 +966,7 @@ impl RenderOnce for Button {
             if apply_active_style {
                 button = button.active(|this| {
                     let mut active = this
-                        .bg(button_face_background(
-                            active_style.background,
-                            variant,
-                            true,
-                        ))
+                        .bg(face_background(active_style.background, true))
                         .text_color(active_style.foreground)
                         .border_color(active_style.border_color)
                         .text_size(computed_style.font_size)
@@ -1012,7 +1038,9 @@ impl RenderOnce for Button {
                         let icon_element = svg()
                             .path(icon_path.to_string())
                             .size(metrics.icon_size)
-                            .text_color(computed_style.foreground)
+                            .when(!windows_system, |icon| {
+                                icon.text_color(computed_style.foreground)
+                            })
                             .flex_shrink_0();
                         button.child(icon_element)
                     }
@@ -1026,7 +1054,9 @@ impl RenderOnce for Button {
                 let icon_element = svg()
                     .path(icon_path.to_string())
                     .size(metrics.icon_size)
-                    .text_color(computed_style.foreground)
+                    .when(!windows_system, |icon| {
+                        icon.text_color(computed_style.foreground)
+                    })
                     .flex_shrink_0();
 
                 if self.label.is_empty() {

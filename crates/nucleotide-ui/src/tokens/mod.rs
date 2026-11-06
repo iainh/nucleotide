@@ -1838,18 +1838,44 @@ impl ButtonTokens {
         let primary_text = chrome.primary_foreground;
         let primary_border = ColorTheory::with_alpha(chrome.primary_active, 0.0);
 
-        // Secondary buttons mirror gpui-component's default button: surfaced,
-        // bordered, and quiet until hovered.
-        let secondary_bg = chrome.surface;
-        let secondary_bg_hover = chrome.surface_hover;
-        let secondary_bg_active = chrome.surface_active;
+        let windows_system = chrome.is_windows_system();
+        let is_dark = chrome.text_on_chrome.l > 0.5;
+        let (secondary_bg, secondary_bg_hover, secondary_bg_active) = if windows_system {
+            let alphas = if is_dark {
+                [15.0 / 255.0, 21.0 / 255.0, 8.0 / 255.0]
+            } else {
+                [0.7, 0.5, 0.3]
+            };
+            let [normal, hover, pressed] = alphas.map(|a| hsla_from_rgb_u8(255, 255, 255, a));
+            (normal, hover, pressed)
+        } else {
+            (chrome.surface, chrome.surface_hover, chrome.surface_active)
+        };
         let secondary_text = chrome.text_on_chrome;
-        let secondary_border = chrome.border_shadow;
+        let secondary_border = if windows_system {
+            chrome.border_default
+        } else {
+            chrome.border_shadow
+        };
 
         // Ghost buttons remain transparent until hovered.
         let ghost_bg = ColorTheory::transparent();
-        let ghost_bg_hover = utils::with_alpha_at_most(chrome.surface_hover, 0.8);
-        let ghost_bg_active = utils::with_alpha_at_most(chrome.surface_active, 0.9);
+        let (ghost_bg_hover, ghost_bg_active) = if windows_system {
+            let neutral = if is_dark {
+                hsla_from_rgb_u8(255, 255, 255, 15.0 / 255.0)
+            } else {
+                hsla_from_rgb_u8(0, 0, 0, 9.0 / 255.0)
+            };
+            (
+                neutral,
+                utils::with_alpha(neutral, if is_dark { 10.0 / 255.0 } else { 6.0 / 255.0 }),
+            )
+        } else {
+            (
+                utils::with_alpha_at_most(chrome.surface_hover, 0.8),
+                utils::with_alpha_at_most(chrome.surface_active, 0.9),
+            )
+        };
         let ghost_text = chrome.text_on_chrome;
 
         // Semantic buttons use Helix editor colors for familiarity
