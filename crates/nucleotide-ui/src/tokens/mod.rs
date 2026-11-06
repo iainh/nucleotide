@@ -688,6 +688,42 @@ impl ChromeTokens {
         cfg!(target_os = "windows") && self.style == UiChromeStyle::System
     }
 
+    /// Hard, dual-colour focus strokes stay visible on both control and backdrop.
+    /// Paint only for keyboard focus; unlike borders, these also outline ghosts.
+    pub(crate) fn keyboard_focus_outline(
+        &self,
+        radius: Pixels,
+        is_focused: impl Fn(&gpui::Window) -> bool + 'static,
+    ) -> gpui::Canvas<gpui::Bounds<Pixels>> {
+        use gpui::Styled;
+
+        let is_dark = self.text_on_chrome.l > 0.5;
+        let primary = hsla(0.0, 0.0, if is_dark { 1.0 } else { 0.0 }, 1.0);
+        let secondary = hsla(0.0, 0.0, if is_dark { 0.0 } else { 1.0 }, 1.0);
+        gpui::canvas(
+            |bounds, _, _| bounds,
+            move |_, bounds, window, _| {
+                if window.last_input_was_keyboard() && is_focused(window) {
+                    // Filled shadows show through transparent ghost controls.
+                    // Paint hollow strokes instead, leaving the face untouched.
+                    let mut outer =
+                        gpui::outline(bounds.dilate(px(3.0)), secondary, gpui::BorderStyle::Solid);
+                    outer.corner_radii = (radius + px(3.0)).into();
+                    window.paint_quad(outer);
+                    let mut inner =
+                        gpui::outline(bounds.dilate(px(2.0)), primary, gpui::BorderStyle::Solid);
+                    inner.corner_radii = (radius + px(2.0)).into();
+                    inner.border_widths = px(2.0).into();
+                    window.paint_quad(inner);
+                }
+            },
+        )
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full()
+    }
+
     /// Create theme-owned chrome from resolved Helix semantic colours.
     pub fn from_helix_theme(
         helix: HelixThemeColors,

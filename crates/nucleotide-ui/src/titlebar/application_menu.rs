@@ -290,7 +290,17 @@ impl Render for ApplicationMenu {
                 })
                 .when(is_open, |trigger| trigger.bg(chrome.surface_hover))
                 .hover(|trigger| trigger.bg(chrome.surface_hover))
-                .focus_visible(|style| style.border_color(chrome.border_focus))
+                .when(chrome.is_windows_system(), |trigger| {
+                    let focus = self.focus_handle.clone();
+                    trigger.child(
+                        chrome.keyboard_focus_outline(metrics.trigger_radius, move |window| {
+                            is_open || (index == 0 && focus.is_focused(window))
+                        }),
+                    )
+                })
+                .when(!chrome.is_windows_system(), |trigger| {
+                    trigger.focus_visible(|style| style.border_color(chrome.border_focus))
+                })
                 .on_mouse_move(cx.listener(move |this, _, window, cx| {
                     if this.open_index.is_some() && this.open_index != Some(index) {
                         this.set_open_index(Some(index), window, cx);

@@ -938,7 +938,21 @@ impl RenderOnce for Button {
             button = button
                 .track_focus(focus_handle)
                 .tab_stop(!self.disabled && !self.loading)
-                .focus_visible(|style| style.border_color(theme.tokens.chrome.border_focus));
+                .when(windows_system, |button| {
+                    let focus = focus_handle.clone();
+                    button.relative().child(
+                        theme
+                            .tokens
+                            .chrome
+                            .keyboard_focus_outline(computed_style.border_radius, move |window| {
+                                focus.is_focused(window)
+                            }),
+                    )
+                })
+                .when(!windows_system, |button| {
+                    button
+                        .focus_visible(|style| style.border_color(theme.tokens.chrome.border_focus))
+                });
         }
 
         // Match gpui-component's interactive treatment: hover lifts the button,
