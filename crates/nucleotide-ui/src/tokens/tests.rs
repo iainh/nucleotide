@@ -234,17 +234,24 @@ mod system_chrome_token_tests {
     }
 
     #[test]
-    fn system_chrome_button_hovers_keep_native_overlay_alpha() {
-        let chrome = ChromeTokens::from_native_chrome_palette(NativeChromePalette::windows_fluent(
-            SystemAppearance::Light,
-            default_windows_accent_color(),
-        ));
-        let buttons = chrome.button_tokens(&EditorTokens::fallback(false));
-
-        assert!(chrome.surface_hover.a <= 0.05);
-        assert_eq!(buttons.secondary_background_hover.a, chrome.surface_hover.a);
-        assert_eq!(buttons.ghost_background_hover.a, chrome.surface_hover.a);
-        assert_eq!(buttons.disabled_background.a, chrome.surface_hover.a);
+    fn system_chrome_button_hovers_use_control_specific_fills() {
+        for (appearance, face_alpha, ghost_alpha) in [
+            (SystemAppearance::Light, 0.5, 9.0 / 255.0),
+            (SystemAppearance::Dark, 21.0 / 255.0, 15.0 / 255.0),
+        ] {
+            let chrome = ChromeTokens::from_native_chrome_palette(
+                NativeChromePalette::windows_fluent(appearance, default_windows_accent_color()),
+            );
+            let buttons = chrome.button_tokens(&EditorTokens::fallback(appearance.is_dark()));
+            if cfg!(target_os = "windows") {
+                assert_eq!(buttons.secondary_background_hover.a, face_alpha);
+                assert_eq!(buttons.ghost_background_hover.a, ghost_alpha);
+            } else {
+                assert_eq!(buttons.secondary_background_hover.a, chrome.surface_hover.a);
+                assert_eq!(buttons.ghost_background_hover.a, chrome.surface_hover.a);
+            }
+            assert_eq!(buttons.disabled_background.a, chrome.surface_hover.a);
+        }
     }
 
     #[cfg(target_os = "windows")]
