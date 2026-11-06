@@ -335,15 +335,23 @@ pub fn render_project_tree_row(
     let can_be_dragged = row.can_be_dragged();
     let drop_background = file_tree_tokens.item_background_hover;
     let on_right_mouse_down = Arc::clone(&on_mouse_down);
+    let windows_system = file_tree_tokens.selection_indicator.is_some();
 
     div()
         .id(("file-tree-entry", row.id))
+        .group("file-tree-row")
         .w_full()
         .min_w(px(min_row_width))
         .h(px(metrics.row_height_px))
         .px(px(0.0))
         .py(px(0.0))
         .rounded(theme.tokens.sizes.radius_sm)
+        .when(windows_system, |row| {
+            // WinUI TreeViewItemPresenterMargin is 4,2. Keep the full row
+            // interactive while insetting only its visual surface.
+            row.px(theme.tokens.sizes.space_2)
+                .py(theme.tokens.sizes.space_1)
+        })
         .can_drop(move |dragged, _, _| {
             dragged
                 .downcast_ref::<ProjectTreeDraggedEntry>()
@@ -374,8 +382,9 @@ pub fn render_project_tree_row(
         .on_click(on_click)
         .child(
             div()
+                .id(("file-tree-row-content", row.id))
                 .w_full()
-                .min_w(px(min_row_width))
+                .min_w(px(min_row_width - if windows_system { 8.0 } else { 0.0 }))
                 .h_full()
                 .flex()
                 .items_center()
@@ -388,7 +397,22 @@ pub fn render_project_tree_row(
                 .when(row.is_selected, |row| {
                     row.bg(file_tree_tokens.item_background_selected)
                 })
-                .when(!row.is_selected, |row| {
+                .when(windows_system, |element| {
+                    let hover = if row.is_selected {
+                        file_tree_tokens.item_background_selected_hover
+                    } else {
+                        file_tree_tokens.item_background_hover
+                    };
+                    let pressed = if row.is_selected {
+                        file_tree_tokens.item_background_selected_pressed
+                    } else {
+                        file_tree_tokens.item_background_pressed
+                    };
+                    element
+                        .group_hover("file-tree-row", move |style| style.bg(hover))
+                        .group_active("file-tree-row", move |style| style.bg(pressed))
+                })
+                .when(!windows_system && !row.is_selected, |row| {
                     row.hover(move |row| {
                         row.bg(nucleotide_ui::tokens::with_alpha(
                             file_tree_tokens.item_background_hover,
@@ -397,17 +421,33 @@ pub fn render_project_tree_row(
                         .text_color(file_tree_tokens.item_text)
                     })
                 })
-                .children((0..row.depth).map(|depth| {
-                    div()
-                        .absolute()
-                        .top_0()
-                        .bottom_0()
-                        .left(px(
-                            depth as f32 * metrics.indent_px + metrics.icon_slot_px / 2.0
-                        ))
-                        .w(px(1.0))
-                        .bg(theme.tokens.chrome.border_muted)
-                }))
+                .children(
+                    (0..if windows_system { 0 } else { row.depth }).map(|depth| {
+                        div()
+                            .absolute()
+                            .top_0()
+                            .bottom_0()
+                            .left(px(
+                                depth as f32 * metrics.indent_px + metrics.icon_slot_px / 2.0
+                            ))
+                            .w(px(1.0))
+                            .bg(theme.tokens.chrome.border_muted)
+                    }),
+                )
+                .when(row.is_selected, |element| {
+                    element.when_some(file_tree_tokens.selection_indicator, |element, accent| {
+                        element.child(
+                            div()
+                                .absolute()
+                                .left_0()
+                                .top(px((metrics.row_height_px - 4.0 - 16.0) / 2.0))
+                                .w(px(3.0))
+                                .h(px(16.0))
+                                .rounded(px(2.0))
+                                .bg(accent),
+                        )
+                    })
+                })
                 .child(render_chevron_slot(&row, file_tree_tokens, metrics))
                 .child(render_icon(&row, theme, file_tree_tokens, metrics))
                 .child(render_filename(&row, theme, file_tree_tokens))
@@ -456,7 +496,16 @@ fn render_icon(
     let vcs_icon = match &row.kind {
         ProjectTreeRowKind::Directory { .. } => VcsIcon::directory(row.is_expanded)
             .size(metrics.icon_size_px)
-            .text_color(icon_color),
+            .text_color(
+                if file_tree_tokens.selection_indicator.is_some()
+                    && !row.is_hidden
+                    && !row.is_ignored
+                {
+                    file_tree_tokens.folder_icon_color
+                } else {
+                    icon_color
+                },
+            ),
         ProjectTreeRowKind::File { extension } => VcsIcon::from_extension(extension.as_deref())
             .size(metrics.icon_size_px)
             .text_color(icon_color),

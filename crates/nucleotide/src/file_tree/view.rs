@@ -2879,7 +2879,9 @@ impl FileTreeView {
                         .items_center()
                         .gap(theme.tokens.sizes.space_2)
                         .rounded(theme.tokens.sizes.radius_sm)
-                        .bg(file_tree_tokens.background)
+                        .when(file_tree_tokens.selection_indicator.is_none(), |actions| {
+                            actions.bg(file_tree_tokens.background)
+                        })
                         .child(
                             Button::icon_only(
                                 "file-tree-search",
@@ -2920,23 +2922,30 @@ impl FileTreeView {
                                 })),
                         )
                         .child(
-                            Button::icon_only("file-tree-more", "icons/menu.svg")
-                                .variant(ButtonVariant::Ghost)
-                                .size(ButtonSize::ExtraSmall)
-                                .tooltip("More Actions")
-                                .activate_on_mouse_down()
-                                .on_click(cx.listener(
-                                    move |view, event: &ClickEvent, window, cx| {
-                                        view.request_entry_context_menu(
-                                            root_path.clone(),
-                                            true,
-                                            event.position(),
-                                            window,
-                                            cx,
-                                        );
-                                        cx.stop_propagation();
-                                    },
-                                )),
+                            Button::icon_only(
+                                "file-tree-more",
+                                if file_tree_tokens.selection_indicator.is_some() {
+                                    "icons/more-horizontal.svg"
+                                } else {
+                                    "icons/menu.svg"
+                                },
+                            )
+                            .variant(ButtonVariant::Ghost)
+                            .size(ButtonSize::ExtraSmall)
+                            .tooltip("More Actions")
+                            .activate_on_mouse_down()
+                            .on_click(cx.listener(
+                                move |view, event: &ClickEvent, window, cx| {
+                                    view.request_entry_context_menu(
+                                        root_path.clone(),
+                                        true,
+                                        event.position(),
+                                        window,
+                                        cx,
+                                    );
+                                    cx.stop_propagation();
+                                },
+                            )),
                         ),
                 )
                 .into_any_element()

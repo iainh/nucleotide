@@ -202,6 +202,63 @@ mod system_chrome_token_tests {
         assert_eq!(buttons.ghost_background_hover.a, chrome.surface_hover.a);
         assert_eq!(buttons.disabled_background.a, chrome.surface_hover.a);
     }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_system_tree_matches_winui_states_without_changing_theme_chrome() {
+        // WinUI TreeView_themeresources.xaml maps hover and selected to
+        // SubtleFillColorSecondary, and selected-hover / pressed to Tertiary.
+        // Use an asymmetric accent so an accidental accent-tinted fill fails.
+        for (appearance, level, secondary_alpha, tertiary_alpha) in [
+            (
+                SystemAppearance::Light,
+                0.0,
+                0x09 as f32 / 255.0,
+                0x06 as f32 / 255.0,
+            ),
+            (
+                SystemAppearance::Dark,
+                1.0,
+                0x0f as f32 / 255.0,
+                0x0a as f32 / 255.0,
+            ),
+        ] {
+            let chrome = ChromeTokens::from_native_chrome_palette(
+                NativeChromePalette::windows_fluent(appearance, hsla(0.83, 0.7, 0.45, 1.0)),
+            );
+            // A dark editor under light chrome must not choose dark row fills.
+            let tree = chrome.file_tree_tokens(&EditorTokens::fallback(true));
+            assert_eq!(tree.selection_indicator, Some(chrome.primary));
+            assert_eq!(
+                tree.item_background_hover,
+                hsla(0.0, 0.0, level, secondary_alpha)
+            );
+            assert_eq!(tree.item_background_selected, tree.item_background_hover);
+            assert_eq!(
+                tree.item_background_selected_hover,
+                hsla(0.0, 0.0, level, tertiary_alpha)
+            );
+            assert_eq!(
+                tree.item_background_pressed,
+                tree.item_background_selected_hover
+            );
+            assert_eq!(
+                tree.item_background_selected_pressed,
+                tree.item_background_selected
+            );
+            assert_eq!(tree.item_text_selected, tree.item_text);
+            assert_eq!(
+                tree.translucent_sidebar().item_background_hover,
+                tree.item_background_hover
+            );
+
+            let themed = ChromeTokens::fallback(appearance.is_dark());
+            let tree = themed.file_tree_tokens(&EditorTokens::fallback(true));
+            assert_eq!(tree.selection_indicator, None);
+            assert_eq!(tree.item_background_selected, themed.surface_selected);
+            assert_eq!(tree.item_background_hover, themed.surface_hover);
+        }
+    }
 }
 
 #[cfg(test)]
