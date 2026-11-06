@@ -61,6 +61,31 @@ mod system_chrome_token_tests {
     use super::*;
     use gpui::hsla;
 
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn system_menus_use_neutral_states_without_changing_picker_selection() {
+        for appearance in [SystemAppearance::Light, SystemAppearance::Dark] {
+            let chrome = ChromeTokens::from_native_chrome_palette(
+                NativeChromePalette::windows_fluent(appearance, hsla(300.0 / 360.0, 0.7, 0.5, 1.0)),
+            );
+            let editor = EditorTokens::fallback(appearance.is_dark());
+            let menu = chrome.dropdown_tokens(&editor);
+            assert_eq!(menu.item_background_hover.s, 0.0);
+            assert_eq!(menu.item_background_selected, menu.item_background_hover);
+            assert!(menu.item_background_pressed.a < menu.item_background_hover.a);
+            assert_eq!(
+                chrome.picker_tokens(&editor).item_background_selected,
+                chrome.menu_selected,
+            );
+
+            let themed = DesignTokens::dark();
+            assert_eq!(
+                themed.dropdown_tokens().item_background_selected,
+                themed.chrome.menu_selected,
+            );
+        }
+    }
+
     #[test]
     fn system_mode_badges_are_distinct_soft_tints_with_readable_text() {
         for appearance in [SystemAppearance::Light, SystemAppearance::Dark] {

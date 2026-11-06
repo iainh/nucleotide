@@ -683,6 +683,11 @@ impl EditorTokens {
 }
 
 impl ChromeTokens {
+    /// Whether controls should use Windows system geometry and interaction states.
+    pub fn is_windows_system(&self) -> bool {
+        cfg!(target_os = "windows") && self.style == UiChromeStyle::System
+    }
+
     /// Create theme-owned chrome from resolved Helix semantic colours.
     pub fn from_helix_theme(
         helix: HelixThemeColors,
@@ -2056,6 +2061,7 @@ pub struct DropdownTokens {
     pub item_background: Hsla,
     pub item_background_hover: Hsla,
     pub item_background_selected: Hsla,
+    pub item_background_pressed: Hsla,
     pub item_text: Hsla,
     pub item_text_secondary: Hsla,
     pub item_text_selected: Hsla,
@@ -2080,16 +2086,36 @@ impl DropdownTokens {
     pub fn from_tokens(chrome: &ChromeTokens, _editor: &EditorTokens) -> Self {
         use crate::styling::color_theory::ColorTheory;
 
-        // Menus use acrylic chrome rather than passive elevated chrome; their
-        // items are dense text controls and need a steadier backing surface.
+        // Dense menu text uses the transient surface's steady backing colour.
         let container_bg = chrome.menu_background;
         let border = chrome.border_shadow;
         let shadow = chrome.shadow_md.color;
 
-        // Items use transparent backgrounds with chrome/system selection.
+        // WinUI menus highlight commands with neutral fills, not the accent
+        // selection used by pickers. Keep those two control contracts separate.
         let item_bg = ColorTheory::transparent();
-        let item_bg_hover = utils::with_alpha_at_most(chrome.surface_hover, 0.3);
-        let item_bg_selected = chrome.menu_selected;
+        let windows_system = chrome.is_windows_system();
+        let is_dark = chrome.menu_foreground.l > 0.5;
+        let neutral = if is_dark {
+            hsla_from_rgb_u8(255, 255, 255, 15.0 / 255.0)
+        } else {
+            hsla_from_rgb_u8(0, 0, 0, 9.0 / 255.0)
+        };
+        let item_bg_hover = if windows_system {
+            neutral
+        } else {
+            utils::with_alpha_at_most(chrome.surface_hover, 0.3)
+        };
+        let item_bg_selected = if windows_system {
+            neutral
+        } else {
+            chrome.menu_selected
+        };
+        let item_bg_pressed = if windows_system {
+            utils::with_alpha(neutral, if is_dark { 10.0 / 255.0 } else { 6.0 / 255.0 })
+        } else {
+            chrome.menu_selected
+        };
         let item_text = chrome.menu_foreground;
         let item_text_secondary = ColorTheory::with_alpha(chrome.menu_foreground, 0.7);
         let item_text_selected = chrome.menu_selected_foreground;
@@ -2113,6 +2139,7 @@ impl DropdownTokens {
             item_background: item_bg,
             item_background_hover: item_bg_hover,
             item_background_selected: item_bg_selected,
+            item_background_pressed: item_bg_pressed,
             item_text,
             item_text_secondary,
             item_text_selected,
