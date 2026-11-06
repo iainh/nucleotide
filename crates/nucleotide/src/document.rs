@@ -607,7 +607,14 @@ impl Render for DocumentView {
             let marked_ranges = self.native_input.marked_ranges();
             let is_focused = self.is_focused;
             let input = self.input.clone();
-            let scrollbar_thumb_color = cx.ui_theme().tokens.editor.focus_ring;
+            let scrollbar_style = nucleotide_ui::scrollbar::scrollbar_style(cx);
+            let scrollbar_tokens = cx.ui_theme().tokens;
+            let scrollbar_thumb_color =
+                if scrollbar_style == nucleotide_types::scrollbar::ScrollbarStyle::Windows {
+                    scrollbar_tokens.chrome.text_on_chrome
+                } else {
+                    scrollbar_tokens.editor.focus_ring
+                };
             let tokens = cx.theme().tokens;
             let diagnostic_colors = DiagnosticSeverityIconColors {
                 error: tokens.editor.diagnostic_error,
@@ -697,6 +704,7 @@ impl Render for DocumentView {
                 },
             )
             .scrollbar_thumb_color(scrollbar_thumb_color)
+            .scrollbar_style(scrollbar_style, scrollbar_tokens.chrome.surface_elevated)
             .scrollbar_markers(scrollbar_markers)
             .track_focus(focus.clone());
 

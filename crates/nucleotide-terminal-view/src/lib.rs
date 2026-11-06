@@ -865,6 +865,10 @@ pub struct TerminalScrollHandle {
 
 #[cfg(feature = "emulator")]
 impl nucleotide_ui::scrollbar::ScrollableHandle for TerminalScrollHandle {
+    fn line_step(&self, _axis: gpui::Axis, _window: &gpui::Window) -> gpui::Pixels {
+        gpui::px(lock_or_recover(self.model.as_ref()).cell_height.max(1.0))
+    }
+
     fn max_offset(&self) -> gpui::Size<gpui::Pixels> {
         let guard = lock_or_recover(self.model.as_ref());
         let max_y = guard.history_size as f32 * guard.cell_height.max(1.0);

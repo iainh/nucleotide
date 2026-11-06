@@ -14,6 +14,150 @@ pub const SCROLLBAR_ALPHA_TRACK_HOVER: f32 = 0.45;
 pub const SCROLLBAR_ALPHA_THUMB_HOVER: f32 = 0.60;
 pub const SCROLLBAR_ALPHA_DRAGGING: f32 = 0.75;
 
+/// Geometry and interactions from Microsoft's ScrollBar_themeresources.xaml.
+/// Keep the themed scrollbar contract unchanged on other looks/platforms.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum ScrollbarStyle {
+    #[default]
+    Themed,
+    Windows,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScrollbarPart {
+    Decrease,
+    PageDecrease,
+    Thumb,
+    PageIncrease,
+    Increase,
+}
+
+impl ScrollbarPart {
+    pub fn scroll_position(
+        self,
+        current: Pixels,
+        maximum: Pixels,
+        viewport: Pixels,
+        line: Pixels,
+    ) -> Pixels {
+        let delta = match self {
+            Self::Decrease => -line,
+            Self::PageDecrease => -viewport,
+            Self::Thumb => px(0.0),
+            Self::PageIncrease => viewport,
+            Self::Increase => line,
+        };
+        (current + delta).clamp(px(0.0), maximum)
+    }
+
+    /// Segoe Fluent Icons' Caret*Solid8 glyphs used by the WinUI template.
+    pub fn arrow_glyph(self, axis: Axis) -> &'static str {
+        match (self, axis) {
+            (Self::Decrease, Axis::Vertical) => "\u{eddb}",
+            (Self::Increase, Axis::Vertical) => "\u{eddc}",
+            (Self::Decrease, Axis::Horizontal) => "\u{edd9}",
+            (Self::Increase, Axis::Horizontal) => "\u{edda}",
+            _ => "",
+        }
+    }
+}
+
+impl ScrollbarStyle {
+    pub fn thumb(
+        self,
+        track: Pixels,
+        viewport: Pixels,
+        maximum: Pixels,
+        position: Pixels,
+    ) -> Option<ScrollbarThumb> {
+        if self == Self::Themed {
+            return scrollbar_thumb(
+                scrollbar_padded_track_length(track),
+                viewport,
+                maximum,
+                position,
+            );
+        }
+        let length = (track - SCROLLBAR_THICKNESS * 2.0).max(px(0.0));
+        let mut thumb = scrollbar_thumb(length, viewport, maximum, position)?;
+        thumb.length = thumb.length.max(px(30.0)).min(length);
+        thumb.start = (length - thumb.length) * (position / maximum).clamp(0.0, 1.0);
+        Some(thumb)
+    }
+
+    pub fn visual(self, thumb: ScrollbarThumb, track: Pixels, expanded: bool) -> ScrollbarVisual {
+        if self == Self::Themed {
+            return scrollbar_visual(thumb, track, scrollbar_width_ratio(expanded));
+        }
+        // WinUI's 12px thumb has a 6px transparent stroke (3px per edge).
+        // The collapsed mouse thumb is 8px wide, translated 2px: its 2px
+        // visible fill remains centred on the expanded thumb.
+        ScrollbarVisual {
+            along_offset: SCROLLBAR_THICKNESS + thumb.start + px(3.0),
+            along_size: (thumb.length - px(6.0)).max(px(0.0)),
+            cross_offset: if expanded { px(3.0) } else { px(5.0) },
+            cross_size: if expanded { px(6.0) } else { px(2.0) },
+        }
+    }
+
+    pub fn thumb_bounds(
+        self,
+        thumb: ScrollbarThumb,
+        axis: Axis,
+        bounds: Bounds<Pixels>,
+        expanded: bool,
+    ) -> Bounds<Pixels> {
+        if self == Self::Themed {
+            return scrollbar_thumb_bounds(thumb, axis, bounds, scrollbar_width_ratio(expanded));
+        }
+        // The transparent stroke belongs to the thumb's hit target.
+        Bounds::new(
+            bounds
+                .origin
+                .apply_along(axis, |p| p + SCROLLBAR_THICKNESS + thumb.start),
+            bounds.size.apply_along(axis, |_| thumb.length),
+        )
+    }
+
+    pub fn scroll_position(
+        self,
+        track: Pixels,
+        maximum: Pixels,
+        thumb: ScrollbarThumb,
+        pointer: Pixels,
+        drag_offset: Pixels,
+    ) -> Pixels {
+        if self == Self::Themed {
+            return scrollbar_scroll_position_for_pointer(
+                track,
+                maximum,
+                thumb,
+                pointer,
+                drag_offset,
+            );
+        }
+        let travel = (track - SCROLLBAR_THICKNESS * 2.0 - thumb.length).max(px(0.0));
+        if travel <= px(0.0) {
+            return px(0.0);
+        }
+        maximum * ((pointer - SCROLLBAR_THICKNESS - drag_offset) / travel).clamp(0.0, 1.0)
+    }
+
+    pub fn part(self, thumb: ScrollbarThumb, track: Pixels, pointer: Pixels) -> ScrollbarPart {
+        if pointer < SCROLLBAR_THICKNESS {
+            ScrollbarPart::Decrease
+        } else if pointer >= track - SCROLLBAR_THICKNESS {
+            ScrollbarPart::Increase
+        } else if pointer < SCROLLBAR_THICKNESS + thumb.start {
+            ScrollbarPart::PageDecrease
+        } else if pointer >= SCROLLBAR_THICKNESS + thumb.start + thumb.length {
+            ScrollbarPart::PageIncrease
+        } else {
+            ScrollbarPart::Thumb
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ScrollbarThumb {
     pub start: Pixels,
@@ -189,5 +333,97 @@ mod tests {
             scrollbar_scroll_position_for_pointer(px(204.0), px(800.0), thumb, px(102.0), px(20.0));
 
         assert_eq!(scroll_y, px(400.0));
+    }
+
+    #[test]
+    fn windows_thumb_reserves_arrows_and_drag_reaches_both_ends() {
+        let style = ScrollbarStyle::Windows;
+        let thumb = style
+            .thumb(px(224.0), px(100.0), px(900.0), px(225.0))
+            .unwrap();
+        assert_eq!(
+            thumb,
+            ScrollbarThumb {
+                start: px(42.5),
+                length: px(30.0)
+            }
+        );
+        let compact = style.visual(thumb, px(224.0), false);
+        let expanded = style.visual(thumb, px(224.0), true);
+        assert_eq!(compact.cross_size, px(2.0));
+        assert_eq!(compact.cross_offset, px(5.0));
+        assert_eq!(expanded.cross_size, px(6.0));
+        assert_eq!(expanded.along_offset, px(57.5));
+        assert_eq!(expanded.along_size, px(24.0));
+        for (pointer, expected) in [
+            (px(-20.0), px(0.0)),
+            (px(59.5), px(225.0)),
+            (px(250.0), px(900.0)),
+        ] {
+            assert_eq!(
+                style.scroll_position(px(224.0), px(900.0), thumb, pointer, px(5.0)),
+                expected
+            );
+        }
+        for axis in [Axis::Vertical, Axis::Horizontal] {
+            let track_size = if axis == Axis::Vertical {
+                size(px(12.0), px(224.0))
+            } else {
+                size(px(224.0), px(12.0))
+            };
+            let bounds = Bounds::new(point(px(7.0), px(11.0)), track_size);
+            let hit = style.thumb_bounds(thumb, axis, bounds, false);
+            assert_eq!(hit.origin.along(axis), bounds.origin.along(axis) + px(54.5));
+            assert_eq!(hit.size.along(axis), px(30.0));
+            assert_eq!(hit.size.along(axis.invert()), px(12.0));
+        }
+        assert_eq!(style.thumb(px(24.0), px(100.0), px(900.0), px(0.0)), None);
+        assert_eq!(
+            style
+                .thumb(px(44.0), px(100.0), px(900.0), px(1000.0))
+                .unwrap(),
+            ScrollbarThumb {
+                start: px(0.0),
+                length: px(20.0)
+            }
+        );
+    }
+
+    #[test]
+    fn windows_arrow_and_page_regions_have_distinct_clamped_actions() {
+        let style = ScrollbarStyle::Windows;
+        let thumb = ScrollbarThumb {
+            start: px(42.5),
+            length: px(30.0),
+        };
+        for (pointer, expected) in [
+            (px(11.0), ScrollbarPart::Decrease),
+            (px(12.0), ScrollbarPart::PageDecrease),
+            (px(54.5), ScrollbarPart::Thumb),
+            (px(84.5), ScrollbarPart::PageIncrease),
+            (px(211.0), ScrollbarPart::PageIncrease),
+            (px(212.0), ScrollbarPart::Increase),
+        ] {
+            assert_eq!(style.part(thumb, px(224.0), pointer), expected);
+        }
+        for (part, expected) in [
+            (ScrollbarPart::Decrease, 208.0),
+            (ScrollbarPart::PageDecrease, 125.0),
+            (ScrollbarPart::PageIncrease, 325.0),
+            (ScrollbarPart::Increase, 242.0),
+        ] {
+            assert_eq!(
+                part.scroll_position(px(225.0), px(900.0), px(100.0), px(17.0)),
+                px(expected)
+            );
+        }
+        assert_eq!(
+            ScrollbarPart::PageDecrease.scroll_position(px(10.0), px(900.0), px(100.0), px(17.0)),
+            px(0.0)
+        );
+        assert_eq!(
+            ScrollbarPart::Increase.scroll_position(px(899.0), px(900.0), px(100.0), px(17.0)),
+            px(900.0)
+        );
     }
 }
