@@ -4,7 +4,9 @@
 use crate::ContrastRatios;
 use crate::styling::ColorTheory;
 use gpui::{Hsla, Pixels, hsla, px};
-use nucleotide_appearance::{HelixThemeColors, NativeChromePalette, hsla_from_rgb_u8};
+use nucleotide_appearance::{
+    HelixThemeColors, NativeChromePalette, UiChromeStyle, hsla_from_rgb_u8,
+};
 use nucleotide_logging::debug;
 
 /// Standard desktop icon canvas, matching WinUI's 20 epx glyphs and macOS toolbar symbols.
@@ -438,6 +440,8 @@ impl ShadowToken {
 /// Chrome-specific tokens computed from surface color using color theory
 #[derive(Debug, Clone, Copy)]
 pub struct ChromeTokens {
+    /// Source of platform-specific component styling, independent of the editor theme.
+    pub style: UiChromeStyle,
     // Computed chrome backgrounds
     pub window_background: Hsla,
     pub titlebar_background: Hsla,
@@ -851,6 +855,7 @@ impl ChromeTokens {
             };
 
         Self {
+            style: UiChromeStyle::Theme,
             // Computed chrome backgrounds from color theory
             window_background: base_surface,
             titlebar_background: chrome_colors.titlebar_background,
@@ -1018,6 +1023,7 @@ impl ChromeTokens {
             };
 
         Self {
+            style: UiChromeStyle::System,
             window_background: mica,
             titlebar_background: mica,
             footer_background: mica,
@@ -1396,6 +1402,11 @@ pub struct FileTreeTokens {
     pub background: Hsla,
     pub item_background_hover: Hsla,
     pub item_background_selected: Hsla,
+    pub item_background_selected_hover: Hsla,
+    pub item_background_pressed: Hsla,
+    pub item_background_selected_pressed: Hsla,
+    /// WinUI's short selection pill; absent for other platform and theme styles.
+    pub selection_indicator: Option<Hsla>,
     pub item_text: Hsla,
     pub item_text_secondary: Hsla,
     pub item_text_selected: Hsla,
@@ -1404,6 +1415,7 @@ pub struct FileTreeTokens {
     pub icon_color_secondary: Hsla,
     pub icon_color_selected: Hsla,
     pub icon_color_hidden: Hsla,
+    pub folder_icon_color: Hsla,
     pub border: Hsla,
     pub separator: Hsla,
 }
@@ -1425,6 +1437,23 @@ impl FileTreeTokens {
         let icon_color_hidden = chrome.text_chrome_disabled;
         let border = chrome.border_shadow;
         let separator = chrome.separator_color;
+        let windows_system = cfg!(target_os = "windows") && chrome.style == UiChromeStyle::System;
+        let is_dark = chrome.text_on_chrome.l > 0.5;
+        // WinUI TreeView uses SubtleFillColorSecondary for both hover and
+        // selection, and SubtleFillColorTertiary for selected hover / press.
+        // Selection is distinguished by a 3 x 16 epx accent pill, not a blue fill.
+        let subtle_secondary = hsla(
+            0.0,
+            0.0,
+            if is_dark { 1.0 } else { 0.0 },
+            if is_dark { 15.0 / 255.0 } else { 9.0 / 255.0 },
+        );
+        let subtle_tertiary = hsla(
+            0.0,
+            0.0,
+            if is_dark { 1.0 } else { 0.0 },
+            if is_dark { 10.0 / 255.0 } else { 6.0 / 255.0 },
+        );
 
         nucleotide_logging::debug!(
             file_tree_bg = ?bg,
@@ -1438,8 +1467,32 @@ impl FileTreeTokens {
 
         Self {
             background: bg,
-            item_background_hover: item_hover,
-            item_background_selected: item_selected,
+            item_background_hover: if windows_system {
+                subtle_secondary
+            } else {
+                item_hover
+            },
+            item_background_selected: if windows_system {
+                subtle_secondary
+            } else {
+                item_selected
+            },
+            item_background_selected_hover: if windows_system {
+                subtle_tertiary
+            } else {
+                item_selected
+            },
+            item_background_pressed: if windows_system {
+                subtle_tertiary
+            } else {
+                chrome.surface_active
+            },
+            item_background_selected_pressed: if windows_system {
+                subtle_secondary
+            } else {
+                item_selected
+            },
+            selection_indicator: windows_system.then_some(chrome.primary),
             item_text,
             item_text_secondary,
             item_text_selected,
@@ -1448,6 +1501,15 @@ impl FileTreeTokens {
             icon_color_secondary,
             icon_color_selected,
             icon_color_hidden,
+            folder_icon_color: if windows_system {
+                if is_dark {
+                    hsla_from_rgb_u8(245, 196, 81, 1.0)
+                } else {
+                    hsla_from_rgb_u8(156, 108, 0, 1.0)
+                }
+            } else {
+                icon_color
+            },
             border,
             separator,
         }
