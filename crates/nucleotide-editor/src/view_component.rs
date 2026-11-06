@@ -14,6 +14,7 @@ use crate::{
     EditorSurfacePointerEvent, EditorTextMetrics, EditorViewState, EditorViewport,
     ViewportScrollUpdate, selection::EditorPointerSelectionPhase,
 };
+use nucleotide_types::scrollbar::ScrollbarStyle;
 
 type ScrollCallback = Rc<dyn Fn(&EditorViewport, ViewportScrollUpdate, &mut App)>;
 type PointerCallback = Rc<dyn Fn(EditorSurfacePointerEvent, &mut App)>;
@@ -31,6 +32,8 @@ pub struct NativeEditorView<F, P, T> {
     frame: PhantomData<T>,
     focus: Option<FocusHandle>,
     scrollbar_thumb_color: Option<Hsla>,
+    scrollbar_style: ScrollbarStyle,
+    scrollbar_track_color: Hsla,
     scrollbar_markers: Vec<EditorScrollbarMarker>,
     on_scroll: Option<ScrollCallback>,
     on_key_down: Option<KeyDownCallback>,
@@ -71,6 +74,8 @@ where
             frame: PhantomData,
             focus: None,
             scrollbar_thumb_color: None,
+            scrollbar_style: ScrollbarStyle::Themed,
+            scrollbar_track_color: gpui::transparent_black(),
             scrollbar_markers: Vec::new(),
             on_scroll: None,
             on_key_down: None,
@@ -84,6 +89,12 @@ where
 
     pub fn scrollbar_thumb_color(mut self, color: Hsla) -> Self {
         self.scrollbar_thumb_color = Some(color);
+        self
+    }
+
+    pub fn scrollbar_style(mut self, style: ScrollbarStyle, track_color: Hsla) -> Self {
+        self.scrollbar_style = style;
+        self.scrollbar_track_color = track_color;
         self
     }
 
@@ -270,6 +281,8 @@ where
         if let Some(scrollbar_thumb_color) = scrollbar_thumb_color {
             editor_surface = editor_surface.scrollbar_thumb_color(scrollbar_thumb_color);
         }
+        editor_surface =
+            editor_surface.scrollbar_style(self.scrollbar_style, self.scrollbar_track_color);
         editor_surface = editor_surface.scrollbar_markers(scrollbar_markers);
 
         if let Some(on_scroll) = on_scroll {

@@ -18,7 +18,7 @@ use crate::{
     EditorScrollbar, EditorScrollbarMarker, EditorScrollbarState, EditorViewport, LineLayoutCache,
     ViewportScrollUpdate,
 };
-use nucleotide_types::scrollbar::SCROLLBAR_THICKNESS;
+use nucleotide_types::scrollbar::{SCROLLBAR_THICKNESS, ScrollbarStyle};
 
 type ScrollCallback = Rc<dyn Fn(&EditorViewport, ViewportScrollUpdate, &mut App)>;
 type PointerCallback = Rc<dyn Fn(EditorSurfacePointerEvent, &mut App) -> bool>;
@@ -92,6 +92,8 @@ pub struct EditorSurface {
     child: AnyElement,
     focus: Option<FocusHandle>,
     scrollbar_thumb_color: Hsla,
+    scrollbar_style: ScrollbarStyle,
+    scrollbar_track_color: Hsla,
     scrollbar_markers: Vec<EditorScrollbarMarker>,
     on_key_down: Option<KeyDownCallback>,
     on_scroll: Option<ScrollCallback>,
@@ -122,6 +124,8 @@ impl EditorSurface {
             child: child.into_any_element(),
             focus: None,
             scrollbar_thumb_color: hsla(0.0, 0.0, 0.72, 1.0),
+            scrollbar_style: ScrollbarStyle::Themed,
+            scrollbar_track_color: gpui::transparent_black(),
             scrollbar_markers: Vec::new(),
             on_key_down: None,
             on_scroll: None,
@@ -133,6 +137,12 @@ impl EditorSurface {
 
     pub fn scrollbar_thumb_color(mut self, color: Hsla) -> Self {
         self.scrollbar_thumb_color = color;
+        self
+    }
+
+    pub fn scrollbar_style(mut self, style: ScrollbarStyle, track_color: Hsla) -> Self {
+        self.scrollbar_style = style;
+        self.scrollbar_track_color = track_color;
         self
     }
 
@@ -195,6 +205,7 @@ impl EditorSurface {
             self.vertical_scrollbar_state.clone(),
         )
         .with_thumb_color(self.scrollbar_thumb_color)
+        .with_style(self.scrollbar_style, self.scrollbar_track_color)
         .with_markers(self.scrollbar_markers.clone());
 
         if let Some(on_scroll) = self.on_scroll.clone() {
@@ -212,7 +223,8 @@ impl EditorSurface {
             self.viewport.clone(),
             self.horizontal_scrollbar_state.clone(),
         )
-        .with_thumb_color(self.scrollbar_thumb_color);
+        .with_thumb_color(self.scrollbar_thumb_color)
+        .with_style(self.scrollbar_style, self.scrollbar_track_color);
 
         if let Some(on_scroll) = self.on_scroll.clone() {
             scrollbar = scrollbar.on_scroll(move |viewport, update, cx| {
@@ -281,6 +293,16 @@ impl RenderOnce for EditorSurface {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
         let vertical_scrollbar = self.vertical_scrollbar();
         let horizontal_scrollbar = self.horizontal_scrollbar();
+        // Reserve the shared corner so neither system arrow is painted under
+        // the other track or receives the other axis's input.
+        let (bottom_inset, right_inset) = if self.scrollbar_style == ScrollbarStyle::Windows {
+            (
+                crate::scrollbar::editor_horizontal_scrollbar_height(&self.viewport),
+                crate::scrollbar::editor_vertical_scrollbar_width(&self.viewport),
+            )
+        } else {
+            (px(0.0), px(0.0))
+        };
         let content_bounds = Rc::new(Cell::new(None::<Bounds<Pixels>>));
         let mut content = div()
             .key_context("Editor")
@@ -540,7 +562,7 @@ impl RenderOnce for EditorSurface {
                 .absolute()
                 .top_0()
                 .right_0()
-                .bottom_0()
+                .bottom(bottom_inset)
                 .w(SCROLLBAR_THICKNESS)
                 .child(vertical_scrollbar),
         );
@@ -549,7 +571,7 @@ impl RenderOnce for EditorSurface {
             div()
                 .absolute()
                 .left_0()
-                .right_0()
+                .right(right_inset)
                 .bottom_0()
                 .h(SCROLLBAR_THICKNESS)
                 .child(horizontal_scrollbar),
@@ -571,6 +593,46 @@ mod tests {
 
     use super::{EditorSurface, EditorSurfaceMetrics};
     use crate::{EditorScrollbarState, EditorViewport, LineLayout};
+
+    #[gpui::test]
+    fn system_surface_arrows_do_not_overlap_at_corner(cx: &mut TestAppContext) {
+        struct Harness {
+            viewport: EditorViewport,
+            vertical: EditorScrollbarState,
+            horizontal: EditorScrollbarState,
+        }
+        impl Render for Harness {
+            fn render(&mut self, _: &mut Window, cx: &mut gpui::Context<Self>) -> impl IntoElement {
+                div().w(px(200.0)).h(px(200.0)).child(
+                    EditorSurface::new(
+                        cx.entity_id(),
+                        self.viewport.clone(),
+                        EditorSurfaceMetrics::new(px(20.0), px(8.0)),
+                        self.vertical.clone(),
+                        self.horizontal.clone(),
+                        div().size_full(),
+                    )
+                    .scrollbar_style(
+                        nucleotide_types::scrollbar::ScrollbarStyle::Windows,
+                        gpui::black(),
+                    ),
+                )
+            }
+        }
+        let mut viewport = EditorViewport::new(px(20.0));
+        viewport.set_layout(px(20.0), size(px(200.0), px(200.0)), 50);
+        viewport.set_content_width(px(1000.0));
+        let (_, cx) = cx.add_window_view(|_, _| Harness {
+            viewport: viewport.clone(),
+            vertical: EditorScrollbarState::default(),
+            horizontal: EditorScrollbarState::default(),
+        });
+        for position in [point(px(194.0), px(183.0)), point(px(183.0), px(194.0))] {
+            cx.simulate_mouse_down(position, MouseButton::Left, gpui::Modifiers::none());
+            cx.simulate_mouse_up(position, MouseButton::Left, gpui::Modifiers::none());
+        }
+        assert_eq!(viewport.scroll_position(), point(px(20.0), px(20.0)));
+    }
 
     #[test]
     fn shared_surface_metrics_reflect_updates_across_clones() {

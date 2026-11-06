@@ -30,6 +30,20 @@ and updates the taskbar Jump List `Recent Folders` category. On Windows,
 Nucleotide also publishes `Open...` and `Open Directory...` taskbar Jump List
 tasks when the app starts.
 
+## System-look scrollbars
+
+With `[ui] look = "system"` in `nucleotide.toml`, application, editor and
+terminal scrollbars use WinUI-style thin indicators that expand on hover to
+show a thumb and arrow buttons. Click an arrow to move one line or click the
+track before or after the thumb to move one viewport. Holding an arrow or the
+track repeats the action; release the mouse button to stop. Drag the thumb
+to move directly to a position.
+
+The track remains 12 logical pixels wide, matching Microsoft's
+[ScrollBar template](https://github.com/microsoft/microsoft-ui-xaml/blob/main/controls/dev/CommonStyles/ScrollBar_themeresources.xaml).
+Theme-look scrollbars retain their existing appearance and pointer-centred
+track clicks. Other platforms are unchanged.
+
 ## Build Locally
 
 Install Rust stable, Zig 0.17.0, the .NET 8 SDK, and the Velopack CLI, then

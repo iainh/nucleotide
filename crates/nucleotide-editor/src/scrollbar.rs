@@ -1,19 +1,19 @@
 // ABOUTME: Native editor scrollbar composed from GPUI element handlers
 // ABOUTME: Keeps editor viewport scrolling inside nucleotide-editor
 
-use std::{cell::Cell, rc::Rc};
+use std::{cell::Cell, rc::Rc, time::Duration};
 
 use gpui::InteractiveElement as _;
 use gpui::{
     Along, App, Axis, Bounds, Component, EntityId, Hsla, IntoElement, MouseButton,
-    ParentElement as _, Pixels, RenderOnce, Styled as _, Window, canvas, div, fill, hsla, point,
-    px, size,
+    ParentElement as _, Pixels, RenderOnce, StatefulInteractiveElement, Styled as _, Window,
+    canvas, div, fill, hsla, point, px, size,
 };
 use nucleotide_types::scrollbar::{
     SCROLLBAR_ALPHA_DRAGGING, SCROLLBAR_ALPHA_INACTIVE, SCROLLBAR_ALPHA_THUMB_HOVER,
-    SCROLLBAR_THICKNESS, ScrollbarThumb, scrollbar_padded_track_length,
-    scrollbar_scroll_position_for_pointer, scrollbar_thumb, scrollbar_thumb_bounds,
-    scrollbar_visual, scrollbar_width_ratio,
+    SCROLLBAR_THICKNESS, ScrollbarPart, ScrollbarStyle, ScrollbarThumb,
+    scrollbar_padded_track_length, scrollbar_scroll_position_for_pointer, scrollbar_thumb,
+    scrollbar_width_ratio,
 };
 
 use crate::{EditorViewport, ViewportScrollUpdate};
@@ -56,11 +56,15 @@ impl EditorThumbState {
 pub struct EditorScrollbarState {
     thumb_state: Rc<Cell<EditorThumbState>>,
     track_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
+    track_hovered: Rc<Cell<bool>>,
+    pressed: Rc<Cell<Option<(u64, ScrollbarPart)>>>,
+    press_generation: Rc<Cell<u64>>,
 }
 
 impl EditorScrollbarState {
     pub fn clear_drag(&self) {
         self.set_thumb_state(EditorThumbState::Inactive);
+        self.pressed.set(None);
     }
 
     fn set_track_bounds(&self, bounds: Option<Bounds<Pixels>>) {
@@ -99,7 +103,7 @@ impl EditorScrollbarState {
     }
 
     fn is_expanded(&self) -> bool {
-        self.thumb_state.get().is_active()
+        self.track_hovered.get() || self.thumb_state.get().is_active()
     }
 
     fn target_values(&self) -> (f32, f32) {
@@ -122,11 +126,14 @@ pub struct EditorScrollbar {
     axis: Axis,
     on_scroll: Option<ScrollCallback>,
     thumb_color: Hsla,
+    style: ScrollbarStyle,
+    track_color: Hsla,
     markers: Vec<EditorScrollbarMarker>,
 }
 
 #[derive(Clone, Copy)]
 struct ScrollbarPointerGeometry {
+    style: ScrollbarStyle,
     bounds: Bounds<Pixels>,
     thumb: EditorScrollbarThumb,
     pointer: Pixels,
@@ -163,6 +170,8 @@ impl EditorScrollbar {
             axis,
             on_scroll: None,
             thumb_color: hsla(0.0, 0.0, 0.72, 1.0),
+            style: ScrollbarStyle::Themed,
+            track_color: gpui::transparent_black(),
             markers: Vec::new(),
         }
     }
@@ -185,6 +194,12 @@ impl EditorScrollbar {
         self
     }
 
+    pub fn with_style(mut self, style: ScrollbarStyle, track_color: Hsla) -> Self {
+        self.style = style;
+        self.track_color = track_color;
+        self
+    }
+
     pub fn with_markers(mut self, markers: Vec<EditorScrollbarMarker>) -> Self {
         self.markers = markers;
         self
@@ -193,10 +208,11 @@ impl EditorScrollbar {
 
 fn thumb_for_bounds(
     viewport: &EditorViewport,
+    style: ScrollbarStyle,
     axis: Axis,
     bounds: Bounds<Pixels>,
 ) -> Option<EditorScrollbarThumb> {
-    editor_scrollbar_thumb(
+    style.thumb(
         bounds.size.along(axis),
         viewport.viewport_bounds().size.along(axis),
         viewport.max_scroll_offset().along(axis),
@@ -219,22 +235,43 @@ impl IntoElement for EditorScrollbar {
 }
 
 impl RenderOnce for EditorScrollbar {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, _cx: &mut App) -> impl IntoElement {
         if !self.is_visible() {
             self.state.set_track_bounds(None);
             return empty_scrollbar_track(self.axis);
         }
 
-        let (width_ratio, alpha) = self.state.target_values();
+        let style = self.style;
+        let (_, alpha) = self.state.target_values();
+        let alpha = if style == ScrollbarStyle::Windows {
+            0.45
+        } else {
+            alpha
+        };
         let thumb_color = with_alpha(self.thumb_color, alpha);
+        let expanded = self.state.is_expanded();
         let state = self.state.clone();
         let viewport = self.viewport.clone();
         let on_scroll = self.on_scroll.clone();
         let view_entity_id = self.view_entity_id;
         let axis = self.axis;
-        let mut track = div().relative().size_full().on_mouse_down(
-            MouseButton::Left,
-            move |event, _window, cx| {
+        let mut track = div()
+            .relative()
+            .size_full()
+            .id(("editor-scrollbar", Rc::as_ptr(&state.track_bounds) as usize))
+            .on_hover({
+                let state = state.clone();
+                move |hovered, window, _cx| {
+                    if style == ScrollbarStyle::Windows {
+                        state.track_hovered.set(*hovered);
+                        if !*hovered && !state.is_dragging() {
+                            state.set_thumb_hovered(false);
+                        }
+                        window.refresh();
+                    }
+                }
+            })
+            .on_mouse_down(MouseButton::Left, move |event, window, cx| {
                 let Some(bounds) = state.track_bounds() else {
                     return;
                 };
@@ -243,13 +280,81 @@ impl RenderOnce for EditorScrollbar {
                 }
 
                 let Some((thumb, thumb_bounds)) =
-                    thumb_geometry_for_bounds(&viewport, &state, axis, bounds)
+                    thumb_geometry_for_bounds(&viewport, &state, style, axis, bounds)
                 else {
                     return;
                 };
                 let pointer = event.position.along(axis) - bounds.origin.along(axis);
                 let thumb_start = thumb_bounds.origin.along(axis) - bounds.origin.along(axis);
                 let thumb_end = thumb_start + thumb_bounds.size.along(axis);
+                if style == ScrollbarStyle::Windows && !thumb_bounds.contains(&event.position) {
+                    let part = style.part(thumb, bounds.size.along(axis), pointer);
+                    let generation = state.press_generation.get().wrapping_add(1);
+                    state.press_generation.set(generation);
+                    state.pressed.set(Some((generation, part)));
+                    apply_scrollbar_part(
+                        &viewport,
+                        on_scroll.as_ref(),
+                        view_entity_id,
+                        axis,
+                        part,
+                        cx,
+                    );
+                    let state = state.clone();
+                    let viewport = viewport.clone();
+                    let on_scroll = on_scroll.clone();
+                    window
+                        .spawn(cx, async move |cx| {
+                            let mut delay = Duration::from_millis(250);
+                            loop {
+                                cx.background_executor().timer(delay).await;
+                                let repeat = cx
+                                    .update(|window, cx| {
+                                        if !window.is_window_active()
+                                            || state.pressed.get() != Some((generation, part))
+                                        {
+                                            return false;
+                                        }
+                                        let Some(bounds) = state.track_bounds() else {
+                                            return false;
+                                        };
+                                        let Some(thumb) =
+                                            thumb_for_bounds(&viewport, style, axis, bounds)
+                                        else {
+                                            return false;
+                                        };
+                                        let pointer = window.mouse_position();
+                                        if bounds.contains(&pointer)
+                                            && style.part(
+                                                thumb,
+                                                bounds.size.along(axis),
+                                                pointer.along(axis) - bounds.origin.along(axis),
+                                            ) == part
+                                        {
+                                            apply_scrollbar_part(
+                                                &viewport,
+                                                on_scroll.as_ref(),
+                                                view_entity_id,
+                                                axis,
+                                                part,
+                                                cx,
+                                            );
+                                            window.refresh();
+                                        }
+                                        true
+                                    })
+                                    .unwrap_or(false);
+                                if !repeat {
+                                    break;
+                                }
+                                delay = Duration::from_millis(50);
+                            }
+                        })
+                        .detach();
+                    window.refresh();
+                    cx.stop_propagation();
+                    return;
+                }
                 let drag_offset = if pointer >= thumb_start && pointer <= thumb_end {
                     pointer - thumb_start
                 } else {
@@ -264,26 +369,27 @@ impl RenderOnce for EditorScrollbar {
                     axis,
                     cx,
                     ScrollbarPointerGeometry {
+                        style,
                         bounds,
                         thumb,
                         pointer,
                         drag_offset,
                     },
                 );
-            },
-        );
+                window.refresh();
+            });
 
         let state = self.state.clone();
         let viewport = self.viewport.clone();
         let on_scroll = self.on_scroll.clone();
         let view_entity_id = self.view_entity_id;
         let axis = self.axis;
-        track = track.on_mouse_move(move |event, _window, cx| {
+        track = track.on_mouse_move(move |event, window, cx| {
             let Some(bounds) = state.track_bounds() else {
                 return;
             };
             let Some((thumb, thumb_bounds)) =
-                thumb_geometry_for_bounds(&viewport, &state, axis, bounds)
+                thumb_geometry_for_bounds(&viewport, &state, style, axis, bounds)
             else {
                 return;
             };
@@ -300,6 +406,7 @@ impl RenderOnce for EditorScrollbar {
                     axis,
                     cx,
                     ScrollbarPointerGeometry {
+                        style,
                         bounds,
                         thumb,
                         pointer: event.position.along(axis) - bounds.origin.along(axis),
@@ -310,6 +417,7 @@ impl RenderOnce for EditorScrollbar {
             }
 
             if event.pressed_button.is_none() {
+                state.pressed.set(None);
                 let over_thumb = thumb_bounds.contains(&event.position);
                 let was_thumb_hover = matches!(state.thumb_state.get(), EditorThumbState::Hover);
                 state.set_thumb_hovered(over_thumb);
@@ -317,16 +425,26 @@ impl RenderOnce for EditorScrollbar {
                     cx.notify(view_entity_id);
                 }
             }
+            if style == ScrollbarStyle::Windows {
+                window.refresh();
+            }
         });
 
         let state = self.state.clone();
         let viewport = self.viewport.clone();
         let axis = self.axis;
-        track = track.on_mouse_up(MouseButton::Left, move |event, _window, cx| {
+        track = track.on_mouse_up(MouseButton::Left, move |event, window, cx| {
+            if state.pressed.replace(None).is_some() {
+                window.refresh();
+                cx.stop_propagation();
+            }
             if state.is_dragging() {
                 if let Some(bounds) = state.track_bounds() {
-                    let over_thumb = thumb_geometry_for_bounds(&viewport, &state, axis, bounds)
-                        .is_some_and(|(_, thumb_bounds)| thumb_bounds.contains(&event.position));
+                    let over_thumb =
+                        thumb_geometry_for_bounds(&viewport, &state, style, axis, bounds)
+                            .is_some_and(|(_, thumb_bounds)| {
+                                thumb_bounds.contains(&event.position)
+                            });
                     state.set_thumb_hovered(over_thumb);
                 } else {
                     state.set_thumb_hovered(false);
@@ -336,15 +454,127 @@ impl RenderOnce for EditorScrollbar {
             }
         });
 
+        let state = self.state.clone();
+        track = track.on_mouse_up_out(MouseButton::Left, move |_, window, cx| {
+            if style == ScrollbarStyle::Windows
+                && (state.pressed.replace(None).is_some() || state.is_dragging())
+            {
+                state.clear_drag();
+                state.track_hovered.set(false);
+                window.refresh();
+                cx.stop_propagation();
+            }
+        });
+        if style == ScrollbarStyle::Windows && expanded {
+            track = track.bg(self.track_color).rounded(px(3.0));
+            for part in [ScrollbarPart::Decrease, ScrollbarPart::Increase] {
+                let hovered = self.state.track_bounds().is_some_and(|bounds| {
+                    bounds.contains(&window.mouse_position())
+                        && thumb_for_bounds(&self.viewport, style, axis, bounds).is_some_and(
+                            |thumb| {
+                                style.part(
+                                    thumb,
+                                    bounds.size.along(axis),
+                                    window.mouse_position().along(axis) - bounds.origin.along(axis),
+                                ) == part
+                            },
+                        )
+                });
+                let position = self.viewport.scroll_position().along(axis);
+                let disabled = if part == ScrollbarPart::Decrease {
+                    position <= px(0.0)
+                } else {
+                    position >= self.viewport.max_scroll_offset().along(axis)
+                };
+                let arrow_color = with_alpha(
+                    self.thumb_color,
+                    if disabled {
+                        0.2
+                    } else if hovered {
+                        0.8
+                    } else {
+                        0.45
+                    },
+                );
+                let mut arrow = div()
+                    .absolute()
+                    .size(SCROLLBAR_THICKNESS)
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .font_family("Segoe Fluent Icons")
+                    .line_height(gpui::relative(1.0))
+                    .text_size(px(
+                        if !disabled
+                            && hovered
+                            && self.state.pressed.get().is_some_and(|(_, p)| p == part)
+                        {
+                            7.0
+                        } else {
+                            8.0
+                        },
+                    ))
+                    .text_color(arrow_color)
+                    .child(part.arrow_glyph(axis));
+                arrow = match (axis, part) {
+                    (Axis::Vertical, ScrollbarPart::Decrease) => arrow.top_0().pt(px(4.0)),
+                    (Axis::Vertical, _) => arrow.bottom_0().pb(px(4.0)),
+                    (Axis::Horizontal, ScrollbarPart::Decrease) => arrow.left_0().pl(px(4.0)),
+                    (Axis::Horizontal, _) => arrow.right_0().pr(px(4.0)),
+                };
+                track = track.child(arrow);
+            }
+        }
+
         let viewport = self.viewport.clone();
+        let drag_viewport = viewport.clone();
+        let drag_state = self.state.clone();
+        let on_scroll = self.on_scroll.clone();
         let markers = self.markers;
         track = track.child(
             canvas(
                 move |bounds, _, _| {
-                    thumb_for_bounds(&viewport, axis, bounds)
-                        .map(|thumb| scrollbar_visual(thumb, bounds.size.along(axis), width_ratio))
+                    thumb_for_bounds(&viewport, style, axis, bounds)
+                        .map(|thumb| style.visual(thumb, bounds.size.along(axis), expanded))
                 },
                 move |bounds, visual, window, _| {
+                    if style == ScrollbarStyle::Windows {
+                        // A thumb owns its drag even beyond the track's hitbox.
+                        window.on_mouse_event(
+                            move |event: &gpui::MouseMoveEvent, phase, window, cx| {
+                                if phase != gpui::DispatchPhase::Capture || !event.dragging() {
+                                    return;
+                                }
+                                let Some(drag_offset) = drag_state.drag_offset() else {
+                                    return;
+                                };
+                                let Some(bounds) = drag_state.track_bounds() else {
+                                    return;
+                                };
+                                let Some(thumb) =
+                                    thumb_for_bounds(&drag_viewport, style, axis, bounds)
+                                else {
+                                    return;
+                                };
+                                apply_scrollbar_pointer(
+                                    &drag_viewport,
+                                    on_scroll.as_ref(),
+                                    view_entity_id,
+                                    axis,
+                                    cx,
+                                    ScrollbarPointerGeometry {
+                                        style,
+                                        bounds,
+                                        thumb,
+                                        pointer: event.position.along(axis)
+                                            - bounds.origin.along(axis),
+                                        drag_offset,
+                                    },
+                                );
+                                window.refresh();
+                            },
+                        );
+                    }
                     // Use this frame's track bounds, never the previous frame's size.
                     if axis == Axis::Vertical {
                         for marker in &markers {
@@ -412,12 +642,12 @@ fn scrollbar_track(axis: Axis) -> gpui::Div {
 fn thumb_geometry_for_bounds(
     viewport: &EditorViewport,
     state: &EditorScrollbarState,
+    style: ScrollbarStyle,
     axis: Axis,
     bounds: Bounds<Pixels>,
 ) -> Option<(ScrollbarThumb, Bounds<Pixels>)> {
-    let thumb = thumb_for_bounds(viewport, axis, bounds)?;
-    let (width_ratio, _) = state.target_values();
-    let thumb_bounds = scrollbar_thumb_bounds(thumb, axis, bounds, width_ratio);
+    let thumb = thumb_for_bounds(viewport, style, axis, bounds)?;
+    let thumb_bounds = style.thumb_bounds(thumb, axis, bounds, state.is_expanded());
 
     Some((thumb, thumb_bounds))
 }
@@ -440,13 +670,48 @@ fn apply_scrollbar_pointer(
     cx: &mut App,
     geometry: ScrollbarPointerGeometry,
 ) {
-    let scroll_position = scroll_position_for_scrollbar_pointer(
+    let scroll_position = geometry.style.scroll_position(
         geometry.bounds.size.along(axis),
         viewport.max_scroll_offset().along(axis),
         geometry.thumb,
         geometry.pointer,
         geometry.drag_offset,
     );
+    apply_scrollbar_position(
+        viewport,
+        on_scroll,
+        view_entity_id,
+        axis,
+        scroll_position,
+        cx,
+    );
+}
+
+fn apply_scrollbar_part(
+    viewport: &EditorViewport,
+    on_scroll: Option<&ScrollCallback>,
+    view_entity_id: EntityId,
+    axis: Axis,
+    part: ScrollbarPart,
+    cx: &mut App,
+) {
+    let position = part.scroll_position(
+        viewport.scroll_position().along(axis),
+        viewport.max_scroll_offset().along(axis),
+        viewport.viewport_bounds().size.along(axis),
+        viewport.line_height(),
+    );
+    apply_scrollbar_position(viewport, on_scroll, view_entity_id, axis, position, cx);
+}
+
+fn apply_scrollbar_position(
+    viewport: &EditorViewport,
+    on_scroll: Option<&ScrollCallback>,
+    view_entity_id: EntityId,
+    axis: Axis,
+    scroll_position: Pixels,
+    cx: &mut App,
+) {
     let update = if axis == Axis::Vertical {
         viewport.scroll_to_vertical_position_from_scrollbar(scroll_position)
     } else {
@@ -572,6 +837,90 @@ mod tests {
         assert_eq!(scrollbar_marker_top(0.5, px(200.0)), px(99.0));
         assert_eq!(scrollbar_marker_top(0.0, px(200.0)), px(0.0));
         assert_eq!(scrollbar_marker_top(1.0, px(200.0)), px(198.0));
+    }
+
+    #[gpui::test]
+    fn windows_editor_scrollbar_pages_and_steps_on_both_axes(cx: &mut TestAppContext) {
+        use gpui::{Along, Axis, Modifiers};
+        use nucleotide_types::scrollbar::ScrollbarStyle;
+
+        struct Harness {
+            viewport: EditorViewport,
+            state: EditorScrollbarState,
+            axis: Axis,
+        }
+        impl gpui::Render for Harness {
+            fn render(
+                &mut self,
+                _: &mut gpui::Window,
+                cx: &mut gpui::Context<Self>,
+            ) -> impl gpui::IntoElement {
+                let (width, height, scrollbar) = if self.axis == Axis::Vertical {
+                    (
+                        12.0,
+                        200.0,
+                        EditorScrollbar::vertical(
+                            cx.entity_id(),
+                            self.viewport.clone(),
+                            self.state.clone(),
+                        ),
+                    )
+                } else {
+                    (
+                        200.0,
+                        12.0,
+                        EditorScrollbar::horizontal(
+                            cx.entity_id(),
+                            self.viewport.clone(),
+                            self.state.clone(),
+                        ),
+                    )
+                };
+                div()
+                    .w(px(width))
+                    .h(px(height))
+                    .child(scrollbar.with_style(ScrollbarStyle::Windows, gpui::black()))
+            }
+        }
+        for axis in [Axis::Vertical, Axis::Horizontal] {
+            let mut viewport = EditorViewport::new(px(20.0));
+            viewport.set_layout(px(20.0), size(px(200.0), px(200.0)), 50);
+            viewport.set_content_width(px(1000.0));
+            let (_, window) = cx.add_window_view(|_, _| Harness {
+                viewport: viewport.clone(),
+                state: EditorScrollbarState::default(),
+                axis,
+            });
+            let pointer = |along| point(px(6.0), px(6.0)).apply_along(axis, |_| px(along));
+            window.simulate_mouse_down(pointer(130.0), MouseButton::Left, Modifiers::none());
+            assert_eq!(
+                viewport.scroll_position().along(axis),
+                px(200.0),
+                "track press pages, not pointer-centres"
+            );
+            window.simulate_mouse_move(pointer(160.0), MouseButton::Left, Modifiers::none());
+            assert_eq!(
+                viewport.scroll_position().along(axis),
+                px(200.0),
+                "page press must not turn into dragging"
+            );
+            window.simulate_mouse_up(pointer(130.0), MouseButton::Left, Modifiers::none());
+            window.simulate_mouse_down(pointer(195.0), MouseButton::Left, Modifiers::none());
+            window.simulate_mouse_up(pointer(195.0), MouseButton::Left, Modifiers::none());
+            assert_eq!(viewport.scroll_position().along(axis), px(220.0));
+            window.simulate_mouse_down(pointer(5.0), MouseButton::Left, Modifiers::none());
+            window.simulate_mouse_up(pointer(5.0), MouseButton::Left, Modifiers::none());
+            assert_eq!(viewport.scroll_position().along(axis), px(200.0));
+
+            window.simulate_mouse_down(pointer(60.0), MouseButton::Left, Modifiers::none());
+            window.simulate_mouse_move(pointer(250.0), MouseButton::Left, Modifiers::none());
+            window.simulate_mouse_up(pointer(250.0), MouseButton::Left, Modifiers::none());
+            assert_eq!(viewport.scroll_position().along(axis), px(800.0));
+            window.simulate_mouse_down(pointer(170.0), MouseButton::Left, Modifiers::none());
+            window.simulate_mouse_move(pointer(-25.0), MouseButton::Left, Modifiers::none());
+            window.simulate_mouse_up(pointer(-25.0), MouseButton::Left, Modifiers::none());
+            assert_eq!(viewport.scroll_position().along(axis), px(0.0));
+        }
     }
 
     #[gpui::test]

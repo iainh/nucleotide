@@ -117,6 +117,8 @@ pub struct UniformListScrollState {
     pub deferred_scroll_to_item: Option<DeferredScrollToItem>,
     /// Size of the item, captured during last layout.
     pub last_item_size: Option<ItemSize>,
+    /// Measured height of one row, distinct from the viewport in `last_item_size.item`.
+    pub last_item_height: Option<Pixels>,
     /// Whether the list was vertically flipped during last layout.
     pub y_flipped: bool,
 }
@@ -138,6 +140,7 @@ impl UniformListScrollHandle {
             base_handle: ScrollHandle::new(),
             deferred_scroll_to_item: None,
             last_item_size: None,
+            last_item_height: None,
             y_flipped: false,
         })))
     }
@@ -375,6 +378,7 @@ impl Element for UniformList {
                 item: padded_bounds.size,
                 contents: content_size,
             });
+            handle.last_item_height = Some(item_height);
             handle.deferred_scroll_to_item.take()
         });
 
