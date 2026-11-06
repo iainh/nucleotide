@@ -115,8 +115,12 @@ impl RenderOnce for OverlaySurface {
                 .justify_center()
                 .items_start()
                 .pt(self.top)
+                .pb(px(16.0))
+                .px(px(16.0))
                 .child(
                     div()
+                        .max_w_full()
+                        .max_h_full()
                         .occlude()
                         .on_any_mouse_down(|_, _, cx| cx.stop_propagation())
                         .children(self.children),

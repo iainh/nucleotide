@@ -203,6 +203,66 @@ F6 = ["vsplit", "jump_view_left", "goto_next_buffer", "delete_selection"]
 }
 
 #[gpui::test]
+fn buffer_picker_updates_the_active_split_tab(cx: &mut gpui::TestAppContext) {
+    let _runtime = TEST_RUNTIME.enter();
+    let root = tempdir().unwrap();
+    let original = root.path().join("alpha.txt");
+    let target = root.path().join("beta.txt");
+    fs::write(&original, "Alpha document\n").unwrap();
+    fs::write(&target, "Beta document\n").unwrap();
+    let (core, workspace, cx) = new_test_workspace(cx, &original);
+    let (original_doc, target_doc) = core.update(cx, |core, _| {
+        (
+            core.editor.tree.get(core.editor.tree.focus).doc,
+            core.editor.open(&target, Action::Load).unwrap(),
+        )
+    });
+    workspace.update_in(cx, |workspace, window, cx| {
+        workspace.focus_editor(window, cx)
+    });
+    cx.simulate_keystrokes("ctrl-w v");
+    cx.run_until_parked();
+    let slot = core.read_with(cx, |core, _| core.editor.tree.focus);
+    let pane = workspace.read_with(cx, |workspace, _| workspace.pane_id_for_slot(slot).unwrap());
+
+    for (query, expected_doc, mouse) in [
+        ("beta.txt", target_doc, true),
+        ("alpha.txt", original_doc, false),
+    ] {
+        cx.dispatch_action(crate::actions::workspace::ShowBufferPicker);
+        cx.run_until_parked();
+        cx.simulate_input(query);
+        cx.run_until_parked();
+        if mouse {
+            let row = cx
+                .debug_bounds("picker-row-0")
+                .expect("filtered buffer result");
+            cx.simulate_click(row.center(), gpui::Modifiers::default());
+        } else {
+            cx.simulate_keystrokes("enter");
+        }
+        cx.run_until_parked();
+        core.read_with(cx, |core, _| {
+            assert_eq!(core.editor.tree.focus, slot);
+            assert_eq!(core.editor.tree.get(slot).doc, expected_doc);
+            let other = core
+                .editor
+                .tree
+                .views()
+                .find(|(view, _)| view.id != slot)
+                .unwrap()
+                .0;
+            assert_eq!(other.doc, original_doc, "the other split must not switch");
+        });
+        assert_eq!(
+            workspace.read_with(cx, |workspace, _| workspace.active_test_pane_tab(pane)),
+            Some(crate::tab::TabId::Document(expected_doc)),
+            "the active tab must match the document selected in the buffer picker"
+        );
+    }
+}
+
+#[gpui::test]
 fn window_navigation_only_and_close_preserve_other_buffers(cx: &mut gpui::TestAppContext) {
     let _runtime = TEST_RUNTIME.enter();
     let root = tempdir().unwrap();

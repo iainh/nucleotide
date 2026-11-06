@@ -282,6 +282,7 @@ pub struct RemoteConnectionManagerView {
     pending_selected_path: Option<PathBuf>,
     directory_scroll_handle: ScrollHandle,
     directory_scrollbar_state: ScrollbarState,
+    body_scroll_handle: ScrollHandle,
     status: Option<EditorStatus>,
     connection_attempt: ConnectionAttemptState,
     save_on_open: bool,
@@ -339,6 +340,7 @@ impl RemoteConnectionManagerView {
             pending_selected_path: None,
             directory_scroll_handle,
             directory_scrollbar_state,
+            body_scroll_handle: ScrollHandle::new(),
             status: None,
             connection_attempt: ConnectionAttemptState::default(),
             save_on_open: false,
@@ -1598,6 +1600,7 @@ impl RemoteConnectionManagerView {
         };
 
         div()
+            .debug_selector(|| "remote-connection-status".into())
             .px_3()
             .py_2()
             .rounded_md()
@@ -1693,6 +1696,7 @@ impl Render for RemoteConnectionManagerView {
         };
 
         div()
+            .debug_selector(|| "remote-connection-dialog".into())
             .key_context(REMOTE_CONNECTION_MANAGER_CONTEXT)
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::accept_action))
@@ -1708,7 +1712,11 @@ impl Render for RemoteConnectionManagerView {
             .gap_4()
             .w(px(640.0))
             .h(px(dialog_height))
-            .max_h(px(600.0))
+            // OverlaySurface supplies the available bounds, including its edge insets.
+            .max_w_full()
+            .max_h_full()
+            .min_w(px(0.0))
+            .min_h(px(0.0))
             .p_5()
             .rounded_md()
             .border_1()
@@ -1750,10 +1758,23 @@ impl Render for RemoteConnectionManagerView {
             )
             .child(
                 div()
+                    .id("remote-connection-body")
+                    .debug_selector(|| "remote-connection-body".into())
                     .flex()
                     .flex_col()
                     .flex_1()
+                    .min_w(px(0.0))
                     .min_h(px(0.0))
+                    // Keep status text in the scrollable body, never ahead of the footer.
+                    .overflow_scroll()
+                    .track_scroll(&self.body_scroll_handle)
+                    .gap_4()
+                    .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_h(px(240.0))
                     .when(!browsing, |this| {
                         this.child(
                             div()
@@ -1815,8 +1836,10 @@ impl Render for RemoteConnectionManagerView {
             .when(self.status.is_some(), |this| {
                 this.child(div().flex_shrink_0().child(self.render_status(cx)))
             })
+            )
             .child(
                 div()
+                    .debug_selector(|| "remote-connection-footer".into())
                     .flex()
                     .flex_shrink_0()
                     .items_center()
@@ -2554,6 +2577,121 @@ mod tests {
         atomic::{AtomicBool, Ordering},
     };
     use std::task::{Context as TaskContext, Poll};
+
+    #[gpui::test]
+    fn constrained_dialog_keeps_footer_visible_and_errors_scrollable(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        struct DialogHarness(Entity<RemoteConnectionManagerView>);
+
+        impl Render for DialogHarness {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div()
+                    .relative()
+                    .size_full()
+                    .child(nucleotide_ui::OverlaySurface::new().child(self.0.clone()))
+            }
+        }
+
+        cx.update(|cx| {
+            cx.set_global(nucleotide_ui::Theme::from_tokens(
+                nucleotide_ui::DesignTokens::dark(),
+            ));
+            cx.set_global(nucleotide_ui::FocusCoordinator::default());
+            cx.set_global(nucleotide_ui::UIConfig::default());
+            cx.set_global(nucleotide_types::UiFontConfig {
+                family: "Test UI Font".into(),
+                size: 13.0,
+                weight: nucleotide_types::FontWeight::Normal,
+            });
+        });
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let (harness, cx) = cx.add_window_view(|_, cx| {
+            DialogHarness(cx.new(|cx| {
+                let suggestions_scroll_handle = ScrollHandle::new();
+                let directory_scroll_handle = ScrollHandle::new();
+                // Build without host-file or WSL discovery: only layout is under test.
+                RemoteConnectionManagerView {
+                    focus_handle: cx.focus_handle(),
+                    save_connection_focus_handle: cx.focus_handle(),
+                    core: gpui::WeakEntity::new_invalid(),
+                    handle: runtime.handle().clone(),
+                    bootstrap: nucleotide_remote::RemoteWorkspaceBootstrap::new(Default::default()),
+                    protocol: RemoteConnectionProtocol::Ssh,
+                    protocol_menu_open: false,
+                    protocol_menu: None,
+                    protocol_menu_subscription: None,
+                    server_input_view: RemoteConnectionManagerView::new_server_input(cx),
+                    server_input: "devbox".into(),
+                    suggestions: vec![ssh_host_suggestion(
+                        "devbox".into(),
+                        RemoteSuggestionSource::SshConfig,
+                    )],
+                    suggestion_selection: 0,
+                    suggestions_scrollbar_state: ScrollbarState::new(
+                        suggestions_scroll_handle.clone(),
+                    ),
+                    suggestions_scroll_handle,
+                    accepted_suggestion: false,
+                    browse_session: None,
+                    pending_selected_path: None,
+                    directory_scrollbar_state: ScrollbarState::new(directory_scroll_handle.clone()),
+                    directory_scroll_handle,
+                    body_scroll_handle: ScrollHandle::new(),
+                    status: None,
+                    connection_attempt: ConnectionAttemptState::default(),
+                    save_on_open: false,
+                }
+            }))
+        });
+        let manager = harness.read_with(cx, |harness, _| harness.0.clone());
+
+        // The first size models the workspace content area at 1600x1000 / 175%,
+        // with space already removed for title/status chrome. Also cover a narrow window.
+        for (width, height) in [(914.0, 491.0), (560.0, 400.0)] {
+            cx.simulate_resize(gpui::size(px(width), px(height)));
+            for browsing in [false, true] {
+                manager.update(cx, |view, cx| {
+                    view.browse_session = browsing.then(|| RemoteBrowseSession {
+                        backend: nucleotide_workspace::local_workspace_backend(),
+                        selected_path: PathBuf::from("/home/me/project"),
+                        selected_tree_path: None,
+                        root: remote_directory_root_from_listing(
+                            PathBuf::from("/home/me"),
+                            &test_listing("/home/me", &[("project", FileKind::Directory)]),
+                        ),
+                    });
+                    view.status = Some(EditorStatus {
+                        status: "Provisioning failed: could not download remote helper; retry or check the remote host configuration.\n".repeat(40),
+                        severity: Severity::Error,
+                    });
+                    cx.notify();
+                });
+                cx.run_until_parked();
+                let dialog = cx.debug_bounds("remote-connection-dialog").unwrap();
+                let footer = cx.debug_bounds("remote-connection-footer").unwrap();
+                let body = cx.debug_bounds("remote-connection-body").unwrap();
+                assert!(dialog.left() >= px(16.0));
+                assert!(dialog.right() <= px(width - 16.0));
+                assert!(dialog.top() >= px(32.0));
+                assert!(dialog.bottom() <= px(height - 16.0));
+                assert!(footer.top() >= body.bottom());
+                assert!(footer.bottom() < dialog.bottom());
+                assert!(footer.size.height > px(0.0));
+                assert!(body.size.height > px(0.0));
+
+                manager.update(cx, |view, cx| {
+                    assert!(view.body_scroll_handle.max_offset().y > px(0.0));
+                    view.body_scroll_handle.scroll_to_bottom();
+                    cx.notify();
+                });
+                cx.run_until_parked();
+                let status = cx.debug_bounds("remote-connection-status").unwrap();
+                assert!(status.bottom() <= body.bottom() + px(1.0));
+                assert_eq!(cx.debug_bounds("remote-connection-footer").unwrap(), footer);
+            }
+        }
+    }
 
     struct PendingStartupFuture {
         polled: Arc<AtomicBool>,

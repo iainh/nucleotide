@@ -11570,22 +11570,26 @@ impl Render for Workspace {
                     })
                     .when_some(Some(docs_root), gpui::ParentElement::child)
                     .child(self.notifications.clone())
-                    .when(!self.overlay.read(cx).is_empty(), |this| {
-                        debug!("COMP: Workspace rendering overlay because it's not empty");
-                        let view = &self.overlay;
-                        // Overlay wrapper (magenta)
-                        if self.debug_colors_enabled {
-                            this.child(
-                                div()
-                                    .id("overlay-debug-wrapper")
-                                    .border_1()
-                                    .border_color(cx.theme().tokens.chrome.border_strong)
-                                    .child(view.clone()),
-                            )
-                        } else {
-                            this.child(view.clone())
-                        }
-                    })
+                    .when(
+                        !self.overlay.read(cx).is_empty()
+                            && !self.overlay.read(cx).has_focusable_overlay(),
+                        |this| {
+                            debug!("COMP: Workspace rendering overlay because it's not empty");
+                            let view = &self.overlay;
+                            // Overlay wrapper (magenta)
+                            if self.debug_colors_enabled {
+                                this.child(
+                                    div()
+                                        .id("overlay-debug-wrapper")
+                                        .border_1()
+                                        .border_color(cx.theme().tokens.chrome.border_strong)
+                                        .child(view.clone()),
+                                )
+                            } else {
+                                this.child(view.clone())
+                            }
+                        },
+                    )
                     .when(
                         !self.info_hidden && !self.info.read(cx).is_empty(),
                         |this| this.child(self.info.clone()),
@@ -12661,6 +12665,19 @@ impl Render for Workspace {
                     )
                     .child(self.render_unified_status_bar(window, cx)), // Unified bottom status bar pinned at bottom
             )
+            // Modal overlays belong to the workspace, not the clipped editor island.
+            // Cursor-anchored completions remain in the editor container above.
+            .when(self.overlay.read(cx).has_focusable_overlay(), |root| {
+                root.child(
+                    div()
+                        .absolute()
+                        .top(titlebar_height)
+                        .bottom(status_bar_height)
+                        .left_0()
+                        .right_0()
+                        .child(self.overlay.clone()),
+                )
+            })
             // Add Linux client-side resize hitboxes so the window can be resized
             .map(|root| {
                 #[cfg(target_os = "linux")]

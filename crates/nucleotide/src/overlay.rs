@@ -1905,21 +1905,27 @@ impl OverlayView {
                                                 });
                                         }
                                     }
-                                    // Check if it's a buffer picker item (DocumentId, Option<PathBuf>)
-                                    else if let Some((doc_id, _path)) =
+                                    // Accept current and legacy buffer picker payloads.
+                                    else if let Some(doc_id) =
                                         selected_item.data.downcast_ref::<(
                                             helix_view::DocumentId,
                                             Option<std::path::PathBuf>,
                                         )>(
                                         )
+                                        .map(|(doc_id, _)| doc_id)
+                                        .or_else(|| selected_item.data.downcast_ref::<helix_view::DocumentId>())
                                     {
-                                        // Switch to the selected buffer
                                         if let Some(core) = core_for_on_select.upgrade() {
-                                            core.update(picker_cx, |core, _cx| {
+                                            core.update(picker_cx, |core, core_cx| {
                                                 core.editor.switch(
                                                     *doc_id,
                                                     helix_view::editor::Action::Replace,
                                                 );
+                                                // Apply hosted effects before synchronizing focused chrome.
+                                                core_cx.emit(crate::Update::Redraw);
+                                                core_cx.emit(crate::Update::ViewFocused {
+                                                    view_id: core.editor.tree.focus,
+                                                });
                                             });
                                         }
                                     } else if let Some(task) = selected_item
@@ -1944,21 +1950,6 @@ impl OverlayView {
                                                     continuation,
                                                 ));
                                                 core_cx.emit(crate::Update::OpenFile(path.clone()));
-                                            });
-                                        }
-                                    }
-                                    // Check if it's a document ID for buffer switching (legacy)
-                                    else if let Some(doc_id) =
-                                        selected_item.data.downcast_ref::<helix_view::DocumentId>()
-                                    {
-                                        // Switch to the selected buffer
-                                        if let Some(core) = core_for_on_select.upgrade() {
-                                            core.update(picker_cx, |core, _cx| {
-                                                // Switch to the selected document
-                                                core.editor.switch(
-                                                    *doc_id,
-                                                    helix_view::editor::Action::Replace,
-                                                );
                                             });
                                         }
                                     }

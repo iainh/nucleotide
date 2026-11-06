@@ -1045,10 +1045,11 @@ impl PickerView {
 
         // Calculate fixed dimensions to prevent size changes
         let total_width = if self.is_diagnostic_picker() {
-            px(900.0).min(window_size.width - px(32.0))
+            px(900.0)
         } else {
             px(800.0)
-        };
+        }
+        .min((window_size.width - px(32.0)).max(px(0.0)));
 
         // Calculate height based on items with max 60% of window
         let items_height = if self.is_diagnostic_picker() {
@@ -1924,13 +1925,13 @@ impl PickerView {
                                                         // Full-width wrapper for selection background
                                                         div()
                                                             .id(("picker-item", visible_idx))
+                                                            .debug_selector(move || format!("picker-row-{visible_idx}"))
                                                             .w_full() // Extend to full width
                                                             .h(Self::row_height_for_item(item)) // Fixed height for items
                                                             .flex() // Make it a flex container
                                                             .items_center() // Center content vertically
                                                             .cursor_pointer()
-                                                            .when(is_diagnostic_picker, |this| {
-                                                                this.on_click(cx.listener(
+                                                            .on_click(cx.listener(
                                                                     move |picker,
                                                                           _event,
                                                                           _window,
@@ -1941,7 +1942,6 @@ impl PickerView {
                                                                             .confirm_selection(cx);
                                                                     },
                                                                 ))
-                                                            })
                                                             .when(is_selected, |this| {
                                                                 this.bg(picker
                                                                     .style
@@ -2495,6 +2495,41 @@ mod tests {
             );
             assert_eq!(picker.filtered_indices, vec![0]);
         });
+    }
+
+    #[gpui::test]
+    fn ordinary_picker_rows_confirm_clicked_item(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            cx.set_global(crate::Theme::from_tokens(crate::DesignTokens::dark()));
+            cx.set_global(crate::FocusCoordinator::default());
+            cx.set_global(nucleotide_types::UiFontConfig {
+                family: "Test UI Font".into(),
+                size: 13.0,
+                weight: nucleotide_types::FontWeight::Normal,
+            });
+        });
+        let selected = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let selections = selected.clone();
+        let (_, cx) = cx.add_window_view(|_, cx| {
+            PickerView::new(cx)
+                .with_preview(false)
+                .with_items(vec![
+                    PickerItem::from_file_path("alpha.txt", "alpha.txt".into(), Arc::new(())),
+                    PickerItem::from_file_path("beta.txt", "beta.txt".into(), Arc::new(())),
+                ])
+                .on_select(move |item, _| selections.borrow_mut().push(item.label.to_string()))
+        });
+        for width in [900.0, 700.0, 500.0] {
+            cx.simulate_resize(size(px(width), px(570.0)));
+            cx.run_until_parked();
+            let row = cx.debug_bounds("picker-row-1").expect("second result row");
+            assert!(row.left() >= px(0.0));
+            assert!(row.right() <= px(width), "result row exceeds viewport");
+        }
+        let second_row = cx.debug_bounds("picker-row-1").expect("second result row");
+        cx.simulate_click(second_row.center(), Modifiers::default());
+        cx.run_until_parked();
+        assert_eq!(*selected.borrow(), vec!["beta.txt"]);
     }
 
     #[test]

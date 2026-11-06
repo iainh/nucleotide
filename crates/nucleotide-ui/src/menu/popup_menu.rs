@@ -1034,6 +1034,83 @@ mod tests {
 
     use crate::{DesignTokens, Theme};
 
+    #[cfg(target_os = "windows")]
+    #[derive(Clone, PartialEq, gpui::Action)]
+    #[action(no_json)]
+    struct ChooseProtocol;
+
+    #[cfg(target_os = "windows")]
+    struct OverlayMenuRoot {
+        menu: Entity<PopupMenu>,
+        input: Entity<crate::TextInput>,
+        focus: FocusHandle,
+        selections: usize,
+    }
+
+    #[cfg(target_os = "windows")]
+    impl Render for OverlayMenuRoot {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            crate::OverlaySurface::new().child(
+                div()
+                    .track_focus(&self.focus)
+                    .on_action(cx.listener(|this, _: &ChooseProtocol, _, cx| {
+                        this.selections += 1;
+                        cx.notify();
+                    }))
+                    .w(px(300.0))
+                    .h(px(200.0))
+                    .child(self.input.clone())
+                    .child(
+                        gpui::deferred(anchored().child(div().occlude().child(self.menu.clone())))
+                            .with_priority(500),
+                    ),
+            )
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    #[gpui::test]
+    fn windows_overlay_menu_activates_on_mouse_release(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let mut tokens = DesignTokens::dark();
+            tokens.chrome.style = nucleotide_appearance::UiChromeStyle::System;
+            cx.set_global(Theme::from_tokens(tokens));
+        });
+        let (root, cx) = cx.add_window_view(|window, cx| {
+            let focus = cx.focus_handle();
+            let input = cx.new(|cx| crate::TextInput::new("host", cx));
+            let menu = PopupMenu::build(window, cx, |menu, _, _| {
+                menu.action_context(focus.clone())
+                    .menu("WSL", Box::new(ChooseProtocol))
+            });
+            menu.read(cx).focus_handle(cx).focus(window, cx);
+            OverlayMenuRoot {
+                menu,
+                input,
+                focus,
+                selections: 0,
+            }
+        });
+        cx.run_until_parked();
+        let menu = root.read_with(cx, |root, _| root.menu.clone());
+        let bounds = menu.read_with(cx, |menu, _| menu.bounds);
+        let position = bounds.center();
+        // Moving off the row before release must still cancel activation.
+        cx.simulate_mouse_down(position, MouseButton::Left, gpui::Modifiers::default());
+        let outside = bounds.bottom_right() + point(px(10.0), px(10.0));
+        cx.simulate_mouse_move(outside, MouseButton::Left, gpui::Modifiers::default());
+        cx.simulate_mouse_up(outside, MouseButton::Left, gpui::Modifiers::default());
+        assert_eq!(root.read_with(cx, |root, _| root.selections), 0);
+
+        cx.simulate_mouse_move(position, None, gpui::Modifiers::default());
+        cx.simulate_mouse_down(position, MouseButton::Left, gpui::Modifiers::default());
+        assert_eq!(root.read_with(cx, |root, _| root.selections), 0);
+        cx.refresh().unwrap();
+        cx.simulate_mouse_up(position, MouseButton::Left, gpui::Modifiers::default());
+        cx.run_until_parked();
+        assert_eq!(root.read_with(cx, |root, _| root.selections), 1);
+    }
+
     struct TestRoot {
         menu: Entity<PopupMenu>,
         first_focus: FocusHandle,

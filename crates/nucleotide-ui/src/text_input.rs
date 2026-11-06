@@ -549,8 +549,10 @@ impl TextInput {
     }
 
     fn on_mouse_up(&mut self, _: &MouseUpEvent, _window: &mut Window, cx: &mut Context<Self>) {
-        self.is_selecting = false;
-        cx.stop_propagation();
+        if self.is_selecting {
+            self.is_selecting = false;
+            cx.stop_propagation();
+        }
     }
 
     fn on_mouse_move(&mut self, event: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
