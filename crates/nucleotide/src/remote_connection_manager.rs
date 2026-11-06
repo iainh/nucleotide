@@ -2381,7 +2381,7 @@ fn remote_directory_nodes_from_listing(listing: &DirectoryListing) -> Vec<Remote
     let mut nodes = listing
         .entries
         .iter()
-        .filter(|entry| entry.stat.kind == FileKind::Directory)
+        .filter(|entry| entry.stat.kind == FileKind::Directory && !entry.name.starts_with('.'))
         .map(|entry| RemoteDirectoryNode {
             name: entry.name.clone(),
             path: entry.path.clone(),
@@ -2747,7 +2747,10 @@ mod tests {
             "/home/me",
             &[
                 ("zeta", FileKind::Directory),
+                (".ssh", FileKind::Directory),
                 ("readme.md", FileKind::File),
+                (".cache", FileKind::Directory),
+                ("project.config", FileKind::Directory),
                 ("alpha", FileKind::Directory),
             ],
         );
@@ -2756,13 +2759,15 @@ mod tests {
         let rows = visible_remote_directory_rows(&root);
 
         assert_eq!(root.name, "me");
-        assert_eq!(root.children.len(), 2);
-        assert_eq!(rows.len(), 3);
+        assert_eq!(root.children.len(), 3);
+        assert_eq!(rows.len(), 4);
         assert_eq!(rows[0].path, PathBuf::from("/home/me"));
         assert_eq!(rows[1].name, "alpha");
         assert_eq!(rows[1].depth, 1);
-        assert_eq!(rows[2].name, "zeta");
+        assert_eq!(rows[2].name, "project.config");
         assert_eq!(rows[2].depth, 1);
+        assert_eq!(rows[3].name, "zeta");
+        assert_eq!(rows[3].depth, 1);
     }
 
     #[test]
