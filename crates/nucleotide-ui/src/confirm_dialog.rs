@@ -5,7 +5,7 @@
 use gpui::{
     AnyElement, App, Context, DismissEvent, EventEmitter, FocusHandle, Focusable, FontWeight,
     InteractiveElement, IntoElement, KeyBinding, ParentElement, Pixels, Render, RenderOnce,
-    SharedString, Styled, Window, div, px,
+    SharedString, Styled, Window, div, prelude::FluentBuilder, px, relative,
 };
 
 use crate::actions::dialog::{Cancel as CancelDialogAction, Confirm as ConfirmDialogAction};
@@ -88,11 +88,19 @@ impl ParentElement for DialogTitle {
 
 impl RenderOnce for DialogTitle {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let tokens = &cx.theme().tokens;
         div()
             .id("dialog-title")
-            .text_size(cx.theme().tokens.sizes.text_md)
+            .text_size(if tokens.chrome.is_windows_system() {
+                tokens.sizes.text_md + px(6.0)
+            } else {
+                tokens.sizes.text_md
+            })
+            .when(tokens.chrome.is_windows_system(), |this| {
+                this.line_height(relative(1.4))
+            })
             .font_weight(FontWeight::SEMIBOLD)
-            .text_color(cx.theme().tokens.chrome.text_on_chrome)
+            .text_color(tokens.chrome.text_on_chrome)
             .children(self.children)
     }
 }
@@ -125,10 +133,22 @@ impl ParentElement for DialogDescription {
 
 impl RenderOnce for DialogDescription {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let tokens = &cx.theme().tokens;
         div()
             .id("dialog-description")
-            .text_size(cx.theme().tokens.sizes.text_sm)
-            .text_color(cx.theme().tokens.chrome.text_chrome_secondary)
+            .text_size(if tokens.chrome.is_windows_system() {
+                tokens.sizes.text_md
+            } else {
+                tokens.sizes.text_sm
+            })
+            .when(tokens.chrome.is_windows_system(), |this| {
+                this.line_height(relative(20.0 / 14.0))
+            })
+            .text_color(if tokens.chrome.is_windows_system() {
+                tokens.chrome.text_on_chrome
+            } else {
+                tokens.chrome.text_chrome_secondary
+            })
             .children(self.children)
     }
 }
@@ -161,9 +181,14 @@ impl ParentElement for DialogFooter {
 
 impl RenderOnce for DialogFooter {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let tokens = &cx.theme().tokens;
         div()
             .flex()
-            .gap(cx.theme().tokens.sizes.space_2)
+            .gap(if tokens.chrome.is_windows_system() {
+                tokens.sizes.space_3
+            } else {
+                tokens.sizes.space_2
+            })
             .justify_end()
             .children(self.children)
     }
@@ -234,11 +259,18 @@ pub struct ConfirmDialogView {
 
 impl ConfirmDialogView {
     pub fn new(dialog: ConfirmDialog, cx: &mut Context<Self>) -> Self {
+        let windows_system = cx.theme().tokens.chrome.is_windows_system();
         Self {
             dialog,
             focus_handle: cx.focus_handle().tab_stop(false),
-            cancel_focus_handle: cx.focus_handle().tab_index(1).tab_stop(true),
-            confirm_focus_handle: cx.focus_handle().tab_index(2).tab_stop(true),
+            cancel_focus_handle: cx
+                .focus_handle()
+                .tab_index(if windows_system { 2 } else { 1 })
+                .tab_stop(true),
+            confirm_focus_handle: cx
+                .focus_handle()
+                .tab_index(if windows_system { 1 } else { 2 })
+                .tab_stop(true),
             dismissed_by_action: false,
         }
     }
@@ -297,10 +329,19 @@ impl ModalView for ConfirmDialogView {
 impl Render for ConfirmDialogView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let tokens = &cx.theme().tokens;
+        let windows_system = tokens.chrome.is_windows_system();
+        let button_width =
+            (self.dialog.width - px(2.0) - tokens.sizes.space_7 * 2.0 - tokens.sizes.space_3) / 2.0;
+        let button_size = if windows_system {
+            ButtonSize::Medium
+        } else {
+            ButtonSize::Small
+        };
         let cancel_button = Button::new("confirm-dialog-cancel", self.dialog.cancel_label.clone())
             .variant(ButtonVariant::Secondary)
-            .size(ButtonSize::Small)
-            .icon("icons/circle-x.svg")
+            .size(button_size)
+            .when(!windows_system, |button| button.icon("icons/circle-x.svg"))
+            .when(windows_system, |button| button.width(button_width))
             .focus_handle(self.cancel_focus_handle.clone())
             .activate_on_mouse_down()
             .on_click(cx.listener(|view, _event, _window, cx| {
@@ -316,8 +357,9 @@ impl Render for ConfirmDialogView {
         let confirm_button =
             Button::new("confirm-dialog-confirm", self.dialog.confirm_label.clone())
                 .variant(self.dialog.confirm_variant)
-                .size(ButtonSize::Small)
-                .icon(confirm_icon)
+                .size(button_size)
+                .when(!windows_system, |button| button.icon(confirm_icon))
+                .when(windows_system, |button| button.width(button_width))
                 .focus_handle(self.confirm_focus_handle.clone())
                 .activate_on_mouse_down()
                 .on_click(cx.listener(|view, _event, _window, cx| {
@@ -329,28 +371,46 @@ impl Render for ConfirmDialogView {
             div()
                 .track_focus(&self.focus_handle)
                 .occlude()
-                .bg(tokens.chrome.surface)
+                .bg(if windows_system {
+                    tokens.chrome.surface_elevated.alpha(1.0)
+                } else {
+                    tokens.chrome.surface
+                })
                 .border_1()
                 .border_color(tokens.chrome.border_default)
                 .rounded(tokens.sizes.radius_lg)
                 .shadow(vec![tokens.chrome.shadow_lg.to_box_shadow(false)])
                 .w(self.dialog.width)
-                .p(tokens.sizes.space_4)
+                .when(windows_system, |this| {
+                    this.overflow_hidden().font_family("Segoe UI Variable")
+                })
+                .when(!windows_system, |this| this.p(tokens.sizes.space_4))
                 .flex()
                 .flex_col()
-                .gap(tokens.sizes.space_3)
+                .when(!windows_system, |this| this.gap(tokens.sizes.space_3))
                 .on_action(cx.listener(Self::confirm))
                 .on_action(cx.listener(Self::cancel))
                 .on_any_mouse_down(|_, _, cx| cx.stop_propagation())
                 .child(
-                    DialogHeader::new()
-                        .child(DialogTitle::new().child(self.dialog.title.clone()))
-                        .child(DialogDescription::new().child(self.dialog.message.clone())),
+                    div()
+                        .when(windows_system, |this| this.p(tokens.sizes.space_7))
+                        .child(
+                            DialogHeader::new()
+                                .child(DialogTitle::new().child(self.dialog.title.clone()))
+                                .child(DialogDescription::new().child(self.dialog.message.clone())),
+                        ),
                 )
                 .child(
-                    DialogFooter::new()
-                        .child(cancel_button)
-                        .child(confirm_button),
+                    div()
+                        .when(windows_system, |this| {
+                            this.p(tokens.sizes.space_7)
+                                .bg(tokens.chrome.file_tree_background.alpha(1.0))
+                        })
+                        .child(DialogFooter::new().children(if windows_system {
+                            vec![confirm_button, cancel_button]
+                        } else {
+                            vec![cancel_button, confirm_button]
+                        })),
                 ),
         )
         .key_context(CONFIRM_DIALOG_CONTEXT)
