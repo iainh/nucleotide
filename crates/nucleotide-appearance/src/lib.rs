@@ -115,11 +115,36 @@ struct GlobalSystemAppearance(SystemAppearance);
 
 impl Global for GlobalSystemAppearance {}
 
+/// Windows personalisation accent and the OS-provided light/dark variants.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SystemAccentRamp {
+    pub accent: Hsla,
+    pub light1: Hsla,
+    pub light2: Hsla,
+    pub light3: Hsla,
+    pub dark1: Hsla,
+    pub dark2: Hsla,
+    pub dark3: Hsla,
+}
+
+impl SystemAccentRamp {
+    /// Fluent accent fill uses Light2 on dark surfaces and Dark1 on light ones.
+    pub fn control_colors(self, appearance: SystemAppearance) -> (Hsla, Hsla, Hsla) {
+        let accent = if appearance.is_dark() {
+            self.light2
+        } else {
+            self.dark1
+        };
+        (accent, Hsla { a: 0.9, ..accent }, Hsla { a: 0.8, ..accent })
+    }
+}
+
 /// Native/system palette inputs used by UI token construction.
 #[derive(Debug, Clone, Copy)]
 pub struct NativeChromePalette {
     pub appearance: SystemAppearance,
     pub accent: Hsla,
+    pub accent_ramp: Option<SystemAccentRamp>,
     pub mica_base: Hsla,
     pub layer_base: Hsla,
     pub layer_alt_base: Hsla,
@@ -143,6 +168,12 @@ pub struct NativeChromePalette {
 impl NativeChromePalette {
     /// Resolve the current platform palette using the OS accent when available.
     pub fn current(appearance: SystemAppearance) -> Self {
+        #[cfg(target_os = "windows")]
+        if let Some(ramp) = platform::system_accent_ramp() {
+            let mut palette = Self::with_accent(appearance, ramp.accent);
+            palette.accent_ramp = Some(ramp);
+            return palette;
+        }
         let accent = platform_system_accent_color().unwrap_or_else(default_system_accent_color);
         Self::with_accent(appearance, accent)
     }
@@ -221,6 +252,7 @@ impl NativeChromePalette {
         Self {
             appearance,
             accent,
+            accent_ramp: None,
             mica_base,
             layer_base,
             layer_alt_base,
@@ -298,6 +330,7 @@ impl NativeChromePalette {
         Self {
             appearance,
             accent,
+            accent_ramp: None,
             mica_base,
             layer_base,
             layer_alt_base,
@@ -498,19 +531,30 @@ pub fn hsla_from_rgb_u8(red: u8, green: u8, blue: u8, alpha: f32) -> Hsla {
 
 #[cfg(target_os = "windows")]
 mod platform {
-    use gpui::Hsla;
+    use super::{Hsla, SystemAccentRamp, hsla_from_rgb_u8};
+    use windows::UI::ViewManagement::{UIColorType, UISettings};
 
     pub fn system_accent_color() -> Option<Hsla> {
-        use windows_sys::Win32::Graphics::Gdi::{COLOR_HIGHLIGHT, GetSysColor};
+        let settings = UISettings::new().ok()?;
+        color(&settings, UIColorType::Accent)
+    }
 
-        // SAFETY: GetSysColor reads a process-global system color for the
-        // supplied COLOR_* index and has no pointer or lifetime requirements.
-        let color = unsafe { GetSysColor(COLOR_HIGHLIGHT) };
-        let red = (color & 0xFF) as u8;
-        let green = ((color >> 8) & 0xFF) as u8;
-        let blue = ((color >> 16) & 0xFF) as u8;
+    fn color(settings: &UISettings, kind: UIColorType) -> Option<Hsla> {
+        let color = settings.GetColorValue(kind).ok()?;
+        Some(hsla_from_rgb_u8(color.R, color.G, color.B, 1.0))
+    }
 
-        Some(super::hsla_from_rgb_u8(red, green, blue, 1.0))
+    pub fn system_accent_ramp() -> Option<SystemAccentRamp> {
+        let settings = UISettings::new().ok()?;
+        Some(SystemAccentRamp {
+            accent: color(&settings, UIColorType::Accent)?,
+            light1: color(&settings, UIColorType::AccentLight1)?,
+            light2: color(&settings, UIColorType::AccentLight2)?,
+            light3: color(&settings, UIColorType::AccentLight3)?,
+            dark1: color(&settings, UIColorType::AccentDark1)?,
+            dark2: color(&settings, UIColorType::AccentDark2)?,
+            dark3: color(&settings, UIColorType::AccentDark3)?,
+        })
     }
 }
 
@@ -526,6 +570,30 @@ mod platform {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn current_windows_palette_reads_ui_settings_ramp() {
+        use windows::UI::ViewManagement::{UIColorType, UISettings};
+        let settings = UISettings::new().unwrap();
+        let palette = NativeChromePalette::current(SystemAppearance::Dark);
+        let ramp = palette.accent_ramp.expect("Windows UISettings accent ramp");
+        for (actual, kind) in [
+            (palette.accent, UIColorType::Accent),
+            (ramp.light2, UIColorType::AccentLight2),
+            (ramp.dark1, UIColorType::AccentDark1),
+        ] {
+            let expected = settings.GetColorValue(kind).unwrap();
+            println!(
+                "UISettings {kind:?}: #{:02X}{:02X}{:02X}",
+                expected.R, expected.G, expected.B
+            );
+            assert_eq!(
+                actual,
+                hsla_from_rgb_u8(expected.R, expected.G, expected.B, 1.0)
+            );
+        }
+    }
 
     #[test]
     fn system_palette_uses_platform_material_alpha_policy() {

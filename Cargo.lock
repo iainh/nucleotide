@@ -5598,6 +5598,7 @@ dependencies = [
  "gpui",
  "objc2-app-kit 0.3.2",
  "raw-window-handle",
+ "windows 0.61.3",
  "windows-sys 0.61.2",
 ]
 

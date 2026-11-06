@@ -104,6 +104,7 @@ impl WindowsWindowInner {
             WM_IME_COMPOSITION => self.handle_ime_composition(handle, lparam),
             WM_SETCURSOR => self.handle_set_cursor(handle, lparam),
             WM_SETTINGCHANGE => self.handle_system_settings_changed(handle, wparam, lparam),
+            WM_DWMCOLORIZATIONCOLORCHANGED => self.handle_palette_changed(),
             WM_INPUTLANGCHANGE => self.handle_input_language_changed(),
             WM_SHOWWINDOW => self.handle_window_visibility_changed(handle, wparam),
             DM_POINTERHITTEST => self.handle_dm_pointer_hit_test(wparam),
@@ -1194,13 +1195,19 @@ impl WindowsWindowInner {
 
                 if new_appearance != self.state.appearance.get() {
                     self.state.appearance.set(new_appearance);
-                    let mut callback = self.state.callbacks.appearance_changed.take()?;
-
-                    callback();
-                    self.state.callbacks.appearance_changed.set(Some(callback));
                     configure_dwm_dark_mode(handle, new_appearance);
                 }
+                // Accent changes do not necessarily change the light/dark enum.
+                self.handle_palette_changed();
             }
+        }
+        Some(0)
+    }
+
+    fn handle_palette_changed(&self) -> Option<isize> {
+        if let Some(mut callback) = self.state.callbacks.appearance_changed.take() {
+            callback();
+            self.state.callbacks.appearance_changed.set(Some(callback));
         }
         Some(0)
     }
