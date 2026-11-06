@@ -893,9 +893,13 @@ impl PopupMenu {
                         if tokens.chrome.is_windows_system() {
                             // Let the pressed state paint and allow a drag-away
                             // cancellation before executing the command.
-                            this.on_click(cx.listener(move |menu, _, window, cx| {
-                                menu.on_click(index, window, cx);
-                            }))
+                            this.on_click(cx.listener(
+                                move |menu, event: &gpui::ClickEvent, window, cx| {
+                                    if event.standard_click() {
+                                        menu.on_click(index, window, cx);
+                                    }
+                                },
+                            ))
                         } else {
                             this.on_mouse_down(
                                 MouseButton::Left,

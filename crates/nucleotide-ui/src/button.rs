@@ -892,6 +892,8 @@ impl RenderOnce for Button {
         // pseudo-state can otherwise read as latched after the action runs.
         let apply_active_style = !activate_on_mouse_down;
 
+        #[cfg(test)]
+        let debug_id = self.id.to_string();
         let mut button = div()
             .id(self.id)
             .flex()
@@ -933,6 +935,11 @@ impl RenderOnce for Button {
                 el.shadow(button_shadow_stack(variant, inset_shadow, false))
             })
             .opacity(computed_style.opacity);
+
+        #[cfg(test)]
+        {
+            button = button.debug_selector(move || debug_id.clone());
+        }
 
         if let Some(focus_handle) = focus_handle.as_ref() {
             button = button
