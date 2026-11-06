@@ -1028,7 +1028,10 @@ impl ChromeTokens {
             palette.text,
             ContrastRatios::AA_NORMAL,
         );
-        let (accent, accent_hover, accent_active) = system_accent_colors(palette.accent, is_dark);
+        let (accent, accent_hover, accent_active) = palette
+            .accent_ramp
+            .map(|ramp| ramp.control_colors(palette.appearance))
+            .unwrap_or_else(|| system_accent_colors(palette.accent, is_dark));
         let selected = utils::with_alpha(accent, if is_dark { 0.24 } else { 0.14 });
         let hover = if is_dark {
             hsla_from_rgb_u8(255, 255, 255, 0.08)

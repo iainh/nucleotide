@@ -106,6 +106,31 @@ mod system_chrome_token_tests {
     }
 
     #[test]
+    fn system_chrome_uses_supplied_os_ramp_without_recomputing_it() {
+        use nucleotide_appearance::SystemAccentRamp;
+        let ramp = SystemAccentRamp {
+            accent: hsla(0.1, 0.4, 0.5, 1.0),
+            light1: hsla(0.2, 0.5, 0.6, 1.0),
+            light2: hsla(0.3, 0.6, 0.7, 1.0),
+            light3: hsla(0.4, 0.7, 0.8, 1.0),
+            dark1: hsla(0.5, 0.6, 0.3, 1.0),
+            dark2: hsla(0.6, 0.5, 0.2, 1.0),
+            dark3: hsla(0.7, 0.4, 0.1, 1.0),
+        };
+        for (appearance, expected) in [
+            (SystemAppearance::Light, ramp.dark1),
+            (SystemAppearance::Dark, ramp.light2),
+        ] {
+            let mut palette = NativeChromePalette::windows_fluent(appearance, ramp.accent);
+            palette.accent_ramp = Some(ramp);
+            let chrome = ChromeTokens::from_native_chrome_palette(palette);
+            assert_eq!(chrome.primary, expected);
+            assert_eq!(chrome.primary_hover, gpui::Hsla { a: 0.9, ..expected });
+            assert_eq!(chrome.primary_active, gpui::Hsla { a: 0.8, ..expected });
+        }
+    }
+
+    #[test]
     fn system_mode_badges_are_distinct_soft_tints_with_readable_text() {
         for appearance in [SystemAppearance::Light, SystemAppearance::Dark] {
             // A non-blue OS accent and identical editor cursors must not erase
