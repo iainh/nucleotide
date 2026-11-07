@@ -303,6 +303,17 @@ Use higher-level wrappers like `sidebar_split`, `right_sidebar_split`, and
 `bottom_panel_split` when the component can own both layout and resize
 mechanics.
 
+The file tree fits its sidebar viewport rather than scrolling horizontally.
+Names truncate; full paths remain available in row tooltips and full names in
+accessibility labels. Keep indentation and filenames inside the shrinkable,
+clipped leading region. VCS badges and root actions reserve their width outside
+it, so long names cannot push them offscreen. Clip indentation before taking
+away a filename's ellipsis-sized foothold. The scrollbar track starts below
+the root row so its hitbox cannot intercept the action buttons.
+At the 96px sidebar minimum, the root name may be fully clipped to preserve
+all three 24px action targets and the root status. Include island borders and
+gutters in width checks.
+
 Paint resize handles after both panes so the full hitbox stays reachable and
 drag initiation runs before editor selection handlers. Measure drag displacement
 from the original mouse-down position, including movement before GPUI's drag

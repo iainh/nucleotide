@@ -11,14 +11,13 @@ use gpui::{
 };
 use nucleotide_types::VcsStatus;
 use nucleotide_ui::tokens::FileTreeTokens;
-use nucleotide_ui::{Theme, ThemedContext as _, VcsIcon};
+use nucleotide_ui::{TextTooltip, Theme, ThemedContext as _, VcsIcon};
 
 use crate::file_tree::{
     FileKind, FileTreeDisplayDensity, FileTreeEntry, entry::FileTreeFlattenedSegment,
     icons::chevron_icon,
 };
 
-const PROJECT_TREE_FILENAME_CHAR_WIDTH_PX: f32 = 8.0;
 type ProjectTreeMouseDownHandler = Arc<dyn Fn(&MouseDownEvent, &mut Window, &mut App) + 'static>;
 
 #[derive(Clone, Copy)]
@@ -330,7 +329,8 @@ pub fn render_project_tree_row(
     let row_foreground = row_text_color(&row, theme, file_tree_tokens);
     let metrics = ProjectTreeDensityMetrics::new(density);
     let indentation = px(row.depth as f32 * metrics.indent_px);
-    let min_row_width = project_tree_row_min_width(&row, density);
+    let has_actions = trailing.is_some();
+    let path_label = row.path.to_string_lossy().into_owned();
     let drop_target_row = row.clone();
     let drop_style_row = row.clone();
     let drop_event_row = row.clone();
@@ -346,7 +346,10 @@ pub fn render_project_tree_row(
         .id(("file-tree-entry", row.id))
         .group("file-tree-row")
         .w_full()
-        .min_w(px(min_row_width))
+        .min_w(px(0.0))
+        .debug_selector(move || format!("file-tree-row-{}", row.id))
+        .aria_label(row.file_name.clone())
+        .tooltip(move |_, cx| cx.new(|_| TextTooltip::new(path_label.clone())).into())
         .h(px(metrics.row_height_px))
         .px(px(0.0))
         .py(px(0.0))
@@ -389,13 +392,15 @@ pub fn render_project_tree_row(
             div()
                 .id(("file-tree-row-content", row.id))
                 .w_full()
-                .min_w(px(min_row_width - if windows_system { 8.0 } else { 0.0 }))
+                .min_w(px(0.0))
                 .h_full()
                 .flex()
                 .items_center()
                 .gap(px(metrics.row_gap_px))
-                .pl(indentation)
                 .pr(px(metrics.padding_right_px))
+                // At the 96px minimum, reserve room for all three 24px
+                // actions and the root status, even inside a bordered island.
+                .when(has_actions, |content| content.gap_0().pr_0())
                 .relative()
                 .rounded(theme.tokens.sizes.radius_sm)
                 .text_color(row_foreground)
@@ -438,19 +443,6 @@ pub fn render_project_tree_row(
                         })
                     },
                 )
-                .children(
-                    (0..if windows_system { 0 } else { row.depth }).map(|depth| {
-                        div()
-                            .absolute()
-                            .top_0()
-                            .bottom_0()
-                            .left(px(
-                                depth as f32 * metrics.indent_px + metrics.icon_slot_px / 2.0
-                            ))
-                            .w(px(1.0))
-                            .bg(theme.tokens.chrome.border_muted)
-                    }),
-                )
                 .when(row.is_selected, |element| {
                     element.when_some(file_tree_tokens.selection_indicator, |element, accent| {
                         element.child(
@@ -465,18 +457,60 @@ pub fn render_project_tree_row(
                         )
                     })
                 })
-                .child(render_chevron_slot(
-                    &row,
-                    file_tree_tokens,
-                    metrics,
-                    contrast.is_some(),
-                ))
-                .child(render_icon(&row, theme, file_tree_tokens, metrics))
-                .child(render_filename(&row, theme, file_tree_tokens))
-                .when_some(trailing, |row, trailing| row.child(trailing))
-                .when_some(render_git_status_lane(&row, theme, metrics), |row, lane| {
-                    row.child(lane)
-                }),
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .h_full()
+                        .flex()
+                        .items_center()
+                        .gap(px(metrics.row_gap_px))
+                        .overflow_hidden()
+                        .child(
+                            div()
+                                .w(indentation
+                                    + px(metrics.icon_slot_px
+                                        + metrics.icon_size_px
+                                        + metrics.row_gap_px))
+                                .min_w(px(0.0))
+                                .h_full()
+                                .relative()
+                                .overflow_hidden()
+                                .children((0..if windows_system { 0 } else { row.depth }).map(
+                                    |depth| {
+                                        div()
+                                            .absolute()
+                                            .top_0()
+                                            .bottom_0()
+                                            .left(px(depth as f32 * metrics.indent_px
+                                                + metrics.icon_slot_px / 2.0))
+                                            .w(px(1.0))
+                                            .bg(theme.tokens.chrome.border_muted)
+                                    },
+                                ))
+                                .child(
+                                    div()
+                                        .h_full()
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(metrics.row_gap_px))
+                                        .pl(indentation)
+                                        .child(render_chevron_slot(
+                                            &row,
+                                            file_tree_tokens,
+                                            metrics,
+                                            contrast.is_some(),
+                                        ))
+                                        .child(render_icon(&row, theme, file_tree_tokens, metrics)),
+                                ),
+                        )
+                        .child(render_filename(&row, theme, file_tree_tokens)),
+                )
+                .when_some(
+                    render_git_status_lane(&row, theme, metrics, has_actions),
+                    |row, lane| row.child(lane),
+                )
+                .when_some(trailing, |row, trailing| row.child(trailing)),
         )
         .into_any_element()
 }
@@ -489,6 +523,7 @@ fn render_chevron_slot(
 ) -> gpui::AnyElement {
     div()
         .size(px(metrics.icon_slot_px))
+        .flex_shrink_0()
         .flex()
         .items_center()
         .justify_center()
@@ -566,8 +601,11 @@ fn render_filename(
     let text_color = row_text_color(row, theme, file_tree_tokens);
 
     let mut node = div()
-        .flex_shrink_0()
-        .whitespace_nowrap()
+        .flex_1()
+        // Give names an ellipsis-sized foothold before clipping deep indentation.
+        .min_w(theme.tokens.sizes.space_7)
+        .debug_selector(move || format!("file-tree-name-{}", row.id))
+        .truncate()
         .text_size(theme.tokens.sizes.text_md)
         .child(row.file_name.clone());
 
@@ -651,20 +689,29 @@ fn render_git_status_lane(
     row: &ProjectTreeRow,
     theme: &Theme,
     metrics: ProjectTreeDensityMetrics,
+    has_actions: bool,
 ) -> Option<gpui::AnyElement> {
     let status = git_status_for_display(row)?;
+    let width = if has_actions {
+        theme.tokens.sizes.space_4
+    } else {
+        px(metrics.icon_slot_px)
+    };
 
     Some(
         div()
+            .id(("file-tree-status", row.id))
+            .debug_selector(move || format!("file-tree-status-{}", row.id))
+            .aria_label(format!("Version control: {status:?}"))
             .ml_auto()
-            .w(px(metrics.icon_slot_px))
+            .w(width)
             .flex_shrink_0()
             .flex()
             .items_center()
             .justify_end()
             .child(
                 div()
-                    .size(px(metrics.icon_slot_px))
+                    .size(width)
                     .flex()
                     .items_center()
                     .justify_center()
@@ -709,59 +756,6 @@ fn git_status_color(status: VcsStatus, theme: &Theme) -> gpui::Hsla {
         VcsStatus::Conflicted | VcsStatus::Unknown => theme.tokens.editor.error,
         VcsStatus::Clean => theme.tokens.file_tree_tokens().item_text,
     }
-}
-
-fn project_tree_row_min_width(row: &ProjectTreeRow, density: FileTreeDisplayDensity) -> f32 {
-    project_tree_row_min_width_for(
-        row.depth,
-        row.file_name.chars().count(),
-        git_status_for_display(row).is_some(),
-        density,
-    )
-}
-
-pub(crate) fn project_tree_entry_min_width(
-    entry: &FileTreeEntry,
-    density: FileTreeDisplayDensity,
-) -> f32 {
-    project_tree_entry_min_width_with_vcs(entry, density, entry.git_status)
-}
-
-pub(crate) fn project_tree_entry_min_width_with_vcs(
-    entry: &FileTreeEntry,
-    density: FileTreeDisplayDensity,
-    vcs_status: Option<VcsStatus>,
-) -> f32 {
-    project_tree_row_min_width_for(
-        entry.depth,
-        display_name(entry).chars().count(),
-        vcs_status
-            .filter(|status| should_render_git_status(*status))
-            .is_some(),
-        density,
-    )
-}
-
-fn project_tree_row_min_width_for(
-    depth: usize,
-    filename_char_count: usize,
-    has_git_status_lane: bool,
-    density: FileTreeDisplayDensity,
-) -> f32 {
-    let metrics = ProjectTreeDensityMetrics::new(density);
-    let indentation = depth as f32 * metrics.indent_px;
-    let fixed_width = metrics.icon_slot_px
-        + metrics.icon_size_px
-        + metrics.padding_right_px
-        + metrics.row_gap_px * 2.0;
-    let git_status_lane_width = if has_git_status_lane {
-        metrics.icon_slot_px + metrics.row_gap_px
-    } else {
-        0.0
-    };
-    let filename_width = filename_char_count as f32 * PROJECT_TREE_FILENAME_CHAR_WIDTH_PX;
-
-    indentation + fixed_width + git_status_lane_width + filename_width
 }
 
 fn display_name(entry: &FileTreeEntry) -> String {
@@ -861,54 +855,6 @@ mod tests {
                 extension: Some("rs".to_string())
             }
         );
-    }
-
-    #[test]
-    fn row_min_width_grows_with_depth_and_filename() {
-        let mut shallow = ProjectTreeRow::from_entry(
-            &FileTreeEntry::new_file(
-                FileTreeEntryId(2),
-                PathBuf::from("/workspace/a.rs"),
-                42,
-                None,
-            ),
-            false,
-            None,
-        );
-        shallow.depth = 0;
-        let mut deep = shallow.clone();
-        deep.depth = 3;
-        deep.file_name = "very_long_nested_file_name.rs".to_string();
-
-        assert!(
-            project_tree_row_min_width(&deep, FileTreeDisplayDensity::Default)
-                > project_tree_row_min_width(&shallow, FileTreeDisplayDensity::Default)
-        );
-    }
-
-    #[test]
-    fn row_min_width_reserves_right_aligned_git_status_lane() {
-        let width = project_tree_row_min_width_for(0, 0, true, FileTreeDisplayDensity::Default);
-        let metrics = ProjectTreeDensityMetrics::new(FileTreeDisplayDensity::Default);
-        let expected = metrics.icon_slot_px
-            + metrics.icon_size_px
-            + metrics.padding_right_px
-            + metrics.icon_slot_px
-            + metrics.row_gap_px * 3.0;
-
-        assert_eq!(width, expected);
-    }
-
-    #[test]
-    fn row_min_width_omits_git_status_lane_without_badge() {
-        let width = project_tree_row_min_width_for(0, 0, false, FileTreeDisplayDensity::Default);
-        let metrics = ProjectTreeDensityMetrics::new(FileTreeDisplayDensity::Default);
-        let expected = metrics.icon_slot_px
-            + metrics.icon_size_px
-            + metrics.padding_right_px
-            + metrics.row_gap_px * 2.0;
-
-        assert_eq!(width, expected);
     }
 
     #[test]

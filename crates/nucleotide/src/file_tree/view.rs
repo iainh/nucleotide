@@ -7,15 +7,13 @@ use crate::file_tree::{
     FileTreeDisplayDensity, FileTreeEntry, FileTreeEvent,
     sidebar::{
         ProjectTreeContextMenuIntent, ProjectTreeDraggedEntry, ProjectTreeRow,
-        ProjectTreeRowAction, ProjectTreeRowEvent, ProjectTreeRowStyle,
-        project_tree_entry_min_width, project_tree_entry_min_width_with_vcs,
-        render_project_tree_row,
+        ProjectTreeRowAction, ProjectTreeRowEvent, ProjectTreeRowStyle, render_project_tree_row,
     },
 };
 use gpui::prelude::FluentBuilder;
 use gpui::{
     App, ClickEvent, Context, EventEmitter, FocusHandle, Focusable, InteractiveElement,
-    IntoElement, MouseButton, MouseDownEvent, ParentElement, Render, ScrollHandle, ScrollStrategy,
+    IntoElement, MouseButton, MouseDownEvent, ParentElement, Render, ScrollStrategy,
     StatefulInteractiveElement, Styled, UniformListScrollHandle, Window, div, px, uniform_list,
 };
 use nucleotide_logging::{debug, error, warn};
@@ -75,8 +73,6 @@ struct FileTreePresentationCache {
     vcs_revision: u64,
     entry_count: usize,
     vcs_statuses: Arc<[Option<VcsStatus>]>,
-    width_measure_item_index: Option<usize>,
-    content_width: f32,
 }
 
 fn cached_file_tree_presentation(
@@ -172,41 +168,6 @@ fn scroll_file_tree_index(
             scroll_handle.scroll_to_item(index, strategy);
         }
     }
-}
-
-fn widest_project_tree_entry_index(
-    entries: &[FileTreeEntry],
-    density: FileTreeDisplayDensity,
-) -> Option<usize> {
-    widest_project_tree_entry_index_in_range(entries, 0..entries.len(), density)
-}
-
-fn widest_project_tree_entry_index_in_range(
-    entries: &[FileTreeEntry],
-    range: std::ops::Range<usize>,
-    density: FileTreeDisplayDensity,
-) -> Option<usize> {
-    let start = range.start;
-    entries
-        .get(range)?
-        .iter()
-        .enumerate()
-        .max_by(|(_, left), (_, right)| {
-            project_tree_entry_min_width(left, density)
-                .total_cmp(&project_tree_entry_min_width(right, density))
-        })
-        .map(|(range_index, _)| start + range_index)
-}
-
-fn project_tree_content_width(
-    entries: &[FileTreeEntry],
-    density: FileTreeDisplayDensity,
-    mut vcs_status: impl FnMut(&FileTreeEntry) -> Option<VcsStatus>,
-) -> f32 {
-    entries
-        .iter()
-        .map(|entry| project_tree_entry_min_width_with_vcs(entry, density, vcs_status(entry)))
-        .fold(0.0_f32, f32::max)
 }
 
 fn rebase_file_tree_path(path: &Path, from: &Path, to: &Path) -> Option<PathBuf> {
@@ -422,8 +383,6 @@ pub struct FileTreeView {
     focus_handle: FocusHandle,
     /// Scroll handle for the list
     scroll_handle: UniformListScrollHandle,
-    /// Horizontal scroll state for content wider than the sidebar.
-    horizontal_scroll_handle: ScrollHandle,
     /// Vertical scrollbar state for managing token-aware scrollbar UI
     vertical_scrollbar_state: ScrollbarState,
     /// Tokio runtime handle for async VCS operations
@@ -483,7 +442,6 @@ impl FileTreeView {
         }
 
         let scroll_handle = UniformListScrollHandle::new();
-        let horizontal_scroll_handle = ScrollHandle::new();
         let vertical_scrollbar_state = ScrollbarState::new(scroll_handle.clone());
         let focus_handle = cx.focus_handle();
         if let Some(coord) = cx.try_global::<nucleotide_ui::FocusCoordinator>().cloned() {
@@ -496,7 +454,6 @@ impl FileTreeView {
             selected_paths: BTreeSet::new(),
             focus_handle,
             scroll_handle,
-            horizontal_scroll_handle,
             vertical_scrollbar_state,
             _tokio_handle: None,
             file_watcher_task: None,
@@ -557,7 +514,6 @@ impl FileTreeView {
             FileTree::new_for_backend(root_path.clone(), config, workspace_backend.identity());
 
         let scroll_handle = UniformListScrollHandle::new();
-        let horizontal_scroll_handle = ScrollHandle::new();
         let vertical_scrollbar_state = ScrollbarState::new(scroll_handle.clone());
         let focus_handle = cx.focus_handle();
         if let Some(coord) = cx.try_global::<nucleotide_ui::FocusCoordinator>().cloned() {
@@ -570,7 +526,6 @@ impl FileTreeView {
             selected_paths: BTreeSet::new(),
             focus_handle,
             scroll_handle,
-            horizontal_scroll_handle,
             vertical_scrollbar_state,
             _tokio_handle: tokio_handle,
             file_watcher_task: None,
@@ -2388,18 +2343,12 @@ impl FileTreeView {
             .map(|entry| self.get_vcs_status_for_entry(&entry.path, cx))
             .collect::<Vec<_>>()
             .into();
-        let width_measure_item_index = widest_project_tree_entry_index(entries, density);
-        let mut statuses = vcs_statuses.iter().copied();
-        let content_width =
-            project_tree_content_width(entries, density, |_| statuses.next().flatten());
         let cache = FileTreePresentationCache {
             tree_revision: self.tree_revision,
             density,
             vcs_revision,
             entry_count: entries.len(),
             vcs_statuses,
-            width_measure_item_index,
-            content_width,
         };
         self.presentation_cache = Some(cache.clone());
         cache
@@ -2866,10 +2815,7 @@ impl FileTreeView {
         let root_actions = (row.depth == 0).then(|| {
             let root_path = row.path.clone();
             div()
-                .absolute()
-                .top_0()
-                .bottom_0()
-                .right(theme.tokens.sizes.space_2)
+                .debug_selector(|| "file-tree-actions".into())
                 .flex()
                 .flex_none()
                 .items_center()
@@ -2877,7 +2823,6 @@ impl FileTreeView {
                     div()
                         .flex()
                         .items_center()
-                        .gap(theme.tokens.sizes.space_2)
                         .rounded(theme.tokens.sizes.radius_sm)
                         .when(file_tree_tokens.selection_indicator.is_none(), |actions| {
                             actions.bg(file_tree_tokens.background)
@@ -2893,6 +2838,11 @@ impl FileTreeView {
                             )
                             .variant(ButtonVariant::Ghost)
                             .size(ButtonSize::ExtraSmall)
+                            .aria_label(if search_active {
+                                "Clear File Filter"
+                            } else {
+                                "Filter Files"
+                            })
                             .tooltip(if search_active {
                                 "Clear File Filter"
                             } else {
@@ -2914,6 +2864,7 @@ impl FileTreeView {
                             Button::icon_only("file-tree-collapse-all", "icons/chevron-up.svg")
                                 .variant(ButtonVariant::Ghost)
                                 .size(ButtonSize::ExtraSmall)
+                                .aria_label("Collapse All")
                                 .tooltip("Collapse All")
                                 .activate_on_mouse_down()
                                 .on_click(cx.listener(|view, _event, _window, cx| {
@@ -2932,6 +2883,7 @@ impl FileTreeView {
                             )
                             .variant(ButtonVariant::Ghost)
                             .size(ButtonSize::ExtraSmall)
+                            .aria_label("More Actions")
                             .tooltip("More Actions")
                             .activate_on_mouse_down()
                             .on_click(cx.listener(
@@ -2999,7 +2951,6 @@ impl FileTreeView {
 #[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
-    use crate::file_tree::entry::FileTreeEntryId;
     use gpui::{AppContext, TestAppContext};
     use nucleotide_workspace::{
         FileRead, FileSearchQuery, FileSearchResult, FileStat, GitHeadResult, GitStatusOptions,
@@ -3020,6 +2971,196 @@ mod tests {
             density: FileTreeDisplayDensity::Default,
             translucent_background: false,
         }
+    }
+
+    #[gpui::test]
+    fn narrow_sidebar_keeps_status_and_actions_visible_and_clickable(cx: &mut TestAppContext) {
+        use nucleotide_appearance::{NativeChromePalette, SystemAppearance};
+        use nucleotide_ui::{DesignTokens, Theme, tokens::ChromeTokens};
+
+        struct SidebarHarness {
+            tree: gpui::Entity<FileTreeView>,
+            width: f32,
+            root_status: bool,
+        }
+        impl Render for SidebarHarness {
+            fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                let content = if self.root_status {
+                    self.tree.update(cx, |view, cx| {
+                        let root = view.tree.entry_by_path(view.tree.root_path()).unwrap();
+                        view.render_entry(&root, Some(VcsStatus::Modified), cx)
+                            .into_any_element()
+                    })
+                } else {
+                    self.tree.clone().into_any_element()
+                };
+                // Match the sidebar island's 2px gutter and 1px borders.
+                div().w(px(self.width)).h(px(400.0)).pr(px(2.0)).child(
+                    nucleotide_ui::Panel::new("sidebar-test-island")
+                        .size_full()
+                        .padding(px(0.0))
+                        .border_1()
+                        .child(content),
+                )
+            }
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp
+            .path()
+            .join("a_very_long_project_name_that_must_not_push_actions_away");
+        std::fs::create_dir(&root).unwrap();
+        let nested = root.join("one/two/three/four/five/six");
+        std::fs::create_dir_all(&nested).unwrap();
+        let file = nested.join("a_very_long_filename_that_must_not_push_its_status_away.rs");
+        std::fs::write(&file, "fixture").unwrap();
+        for index in 0..30 {
+            std::fs::write(root.join(format!("z_other_file_{index}.rs")), "fixture").unwrap();
+        }
+        cx.update(|cx| {
+            cx.set_global(Theme::from_tokens(DesignTokens::dark()));
+            let vcs = VcsServiceHandle::new(nucleotide_vcs::VcsConfig::default(), cx);
+            cx.set_global(vcs);
+        });
+        let mut config = test_config();
+        config.initial_depth = 10;
+        config.flatten_empty_directories = false;
+        let tree = cx.new(|cx| FileTreeView::new(root.clone(), config.clone(), cx));
+        tree.update(cx, |view, _| {
+            view.tree.toggle_directory(&nested).unwrap();
+            let mut entry = view.tree.entry_by_path(&file).unwrap();
+            entry.git_status = Some(VcsStatus::Added);
+            view.tree.upsert_entry(entry);
+        });
+        let status_selector: &'static str = Box::leak(
+            format!(
+                "file-tree-status-{}",
+                tree.read_with(cx, |view, _| view.tree.entry_by_path(&file).unwrap().id.0)
+            )
+            .into_boxed_str(),
+        );
+        let name_selector: &'static str =
+            Box::leak(status_selector.replace("status", "name").into_boxed_str());
+        let events = subscribe_file_tree_events(cx, &tree);
+        let (harness, cx) = cx.add_window_view(|_, _| SidebarHarness {
+            tree: tree.clone(),
+            width: 240.0,
+            root_status: false,
+        });
+        let mut appearances = vec![DesignTokens::dark(), DesignTokens::light()];
+        for appearance in [SystemAppearance::Dark, SystemAppearance::Light] {
+            let mut tokens = DesignTokens::dark();
+            tokens.chrome = ChromeTokens::from_native_chrome_palette(
+                NativeChromePalette::windows_fluent(appearance, gpui::hsla(0.6, 0.7, 0.5, 1.0)),
+            );
+            appearances.push(tokens);
+        }
+        let mut contrast = DesignTokens::dark();
+        let black = gpui::black();
+        let white = gpui::white();
+        contrast.chrome = ChromeTokens::from_native_chrome_palette(
+            NativeChromePalette::windows_contrast(nucleotide_appearance::ContrastColors {
+                window: black,
+                window_text: white,
+                button_face: black,
+                button_text: white,
+                highlight: white,
+                highlight_text: black,
+                gray_text: white,
+                hotlight: white,
+            }),
+        );
+        appearances.push(contrast);
+        for tokens in appearances {
+            cx.update(|_, cx| cx.set_global(Theme::from_tokens(tokens)));
+            for density in [
+                FileTreeDisplayDensity::Compact,
+                FileTreeDisplayDensity::Default,
+                FileTreeDisplayDensity::Relaxed,
+            ] {
+                tree.update(cx, |view, cx| {
+                    let mut config = config.clone();
+                    config.density = density;
+                    view.set_config(config, cx);
+                });
+                for width in [96.0, 128.0, 160.0, 240.0, 480.0] {
+                    tree.update(cx, |view, cx| {
+                        view.select_only_path(
+                            if width == 128.0 {
+                                file.clone()
+                            } else {
+                                root.clone()
+                            },
+                            cx,
+                        );
+                    });
+                    for root_status in [false, true] {
+                        harness.update(cx, |harness, cx| {
+                            harness.width = width;
+                            harness.root_status = root_status;
+                            cx.notify();
+                        });
+                        cx.run_until_parked();
+                        let row = cx.debug_bounds("file-tree-row-0").unwrap();
+                        assert_eq!(row.size.width, px(width - 4.0));
+                        let status = cx
+                            .debug_bounds(if root_status {
+                                "file-tree-status-0"
+                            } else {
+                                status_selector
+                            })
+                            .expect("VCS badge is rendered");
+                        assert!(
+                            status.left() >= row.left() && status.right() <= row.right(),
+                            "status clipped at {width}px, {density:?}"
+                        );
+                        if !root_status {
+                            let name = cx.debug_bounds(name_selector).unwrap();
+                            assert!(name.size.width >= px(24.0));
+                            assert!(name.left() >= row.left() && name.right() <= status.left());
+                        }
+                        let actions = cx.debug_bounds("file-tree-actions").unwrap();
+                        assert_eq!(actions.size, gpui::size(px(72.0), px(24.0)));
+                        assert!(
+                            actions.left() >= row.left() && actions.right() <= row.right(),
+                            "actions clipped at {width}px, {density:?}"
+                        );
+                        if root_status {
+                            assert!(actions.left() >= status.right());
+                        }
+                        let search = gpui::point(actions.left() + px(12.0), actions.center().y);
+                        cx.simulate_click(search, gpui::Modifiers::default());
+                        assert!(
+                            events.borrow().iter().any(|event| matches!(
+                                event,
+                                FileTreeEvent::SearchRequested { .. }
+                            ))
+                        );
+                        events.borrow_mut().clear();
+                        let more = gpui::point(actions.right() - px(12.0), actions.center().y);
+                        cx.simulate_click(more, gpui::Modifiers::default());
+                        assert!(events.borrow().iter().any(|event| matches!(event, FileTreeEvent::ContextMenuRequested { path, .. } if path == &root)));
+                        events.borrow_mut().clear();
+                    }
+                }
+            }
+        }
+        tree.update(cx, |view, cx| {
+            view.set_search_query(Some("away".into()), cx)
+        });
+        harness.update(cx, |harness, cx| {
+            harness.width = 96.0;
+            harness.root_status = false;
+            cx.notify();
+        });
+        cx.run_until_parked();
+        let actions = cx.debug_bounds("file-tree-actions").unwrap();
+        let search = gpui::point(actions.left() + px(12.0), actions.center().y);
+        cx.simulate_click(search, gpui::Modifiers::default());
+        assert!(tree.read_with(cx, |view, _| view.search_query().is_none()));
+        assert!(tree.read_with(cx, |view, _| view.tree.is_expanded(&root.join("one"))));
+        cx.simulate_click(actions.center(), gpui::Modifiers::default());
+        assert!(!tree.read_with(cx, |view, _| view.tree.is_expanded(&root.join("one"))));
     }
 
     #[derive(Default)]
@@ -3844,8 +3985,6 @@ mod tests {
             vcs_revision: 5,
             entry_count: 1,
             vcs_statuses: statuses.clone(),
-            width_measure_item_index: Some(0),
-            content_width: 120.0,
         };
 
         let reused =
@@ -4027,85 +4166,6 @@ mod tests {
     }
 
     #[test]
-    fn widest_project_tree_entry_index_uses_depth_and_filename_width() {
-        let mut shallow = FileTreeEntry::new_file(
-            FileTreeEntryId(1),
-            PathBuf::from("/workspace/main.rs"),
-            0,
-            None,
-        );
-        shallow.depth = 0;
-        let mut deep = FileTreeEntry::new_file(
-            FileTreeEntryId(2),
-            PathBuf::from("/workspace/src/nested/very_long_component_name.rs"),
-            0,
-            None,
-        );
-        deep.depth = 4;
-        let mut medium = FileTreeEntry::new_file(
-            FileTreeEntryId(3),
-            PathBuf::from("/workspace/src/lib.rs"),
-            0,
-            None,
-        );
-        medium.depth = 2;
-
-        assert_eq!(
-            widest_project_tree_entry_index(
-                &[shallow, deep, medium],
-                FileTreeDisplayDensity::Default
-            ),
-            Some(1)
-        );
-    }
-
-    #[test]
-    fn project_tree_content_width_uses_longest_visible_entry() {
-        let mut shallow = FileTreeEntry::new_file(
-            FileTreeEntryId(1),
-            PathBuf::from("/workspace/main.rs"),
-            0,
-            None,
-        );
-        shallow.depth = 0;
-        let mut deep = FileTreeEntry::new_file(
-            FileTreeEntryId(2),
-            PathBuf::from("/workspace/src/nested/very_long_component_name.rs"),
-            0,
-            None,
-        );
-        deep.depth = 4;
-
-        let expected = project_tree_entry_min_width(&deep, FileTreeDisplayDensity::Default);
-
-        assert_eq!(
-            project_tree_content_width(&[shallow, deep], FileTreeDisplayDensity::Default, |_| None),
-            expected
-        );
-    }
-
-    #[test]
-    fn project_tree_content_width_scales_spacing_with_density() {
-        let mut entry = FileTreeEntry::new_file(
-            FileTreeEntryId(1),
-            PathBuf::from("/workspace/src/nested/main.rs"),
-            0,
-            None,
-        );
-        entry.depth = 4;
-
-        let compact =
-            project_tree_content_width(&[entry.clone()], FileTreeDisplayDensity::Compact, |_| None);
-        let default =
-            project_tree_content_width(&[entry.clone()], FileTreeDisplayDensity::Default, |_| None);
-        let relaxed =
-            project_tree_content_width(&[entry], FileTreeDisplayDensity::Relaxed, |_| None);
-
-        assert!(compact < default);
-        assert!(default < relaxed);
-    }
-
-    #[test]
     fn file_tree_scroll_offset_maps_to_gpui_scroll_strategy() {
         assert_eq!(
             scroll_strategy_for_file_tree_offset(FileTreeScrollOffset::Top),
@@ -4118,36 +4178,6 @@ mod tests {
         assert_eq!(
             scroll_strategy_for_file_tree_offset(FileTreeScrollOffset::Nearest),
             ScrollStrategy::Nearest
-        );
-    }
-
-    #[test]
-    fn project_tree_content_width_uses_longest_entry_across_visible_tree() {
-        let mut long = FileTreeEntry::new_file(
-            FileTreeEntryId(1),
-            PathBuf::from("/workspace/extremely_long_name_that_can_scroll.rs"),
-            0,
-            None,
-        );
-        long.depth = 1;
-        let mut short = FileTreeEntry::new_file(
-            FileTreeEntryId(2),
-            PathBuf::from("/workspace/lib.rs"),
-            0,
-            None,
-        );
-        short.depth = 1;
-
-        let entries = [long.clone(), short];
-        let expected = project_tree_entry_min_width(&long, FileTreeDisplayDensity::Default);
-
-        assert_eq!(
-            project_tree_content_width(&entries, FileTreeDisplayDensity::Default, |_| None),
-            expected
-        );
-        assert_eq!(
-            widest_project_tree_entry_index(&entries, FileTreeDisplayDensity::Default),
-            Some(0)
         );
     }
 
@@ -4557,8 +4587,6 @@ impl Render for FileTreeView {
         let density = self.tree.config().density;
         let vcs_revision = cx.global::<VcsServiceHandle>().status_revision(cx);
         let presentation = self.resolve_presentation_cache(&entries, density, vcs_revision, cx);
-        let width_measure_item_index = presentation.width_measure_item_index;
-        let content_width = presentation.content_width;
         let vcs_statuses = presentation.vcs_statuses;
 
         // (debug logging removed)
@@ -4717,7 +4745,9 @@ impl Render for FileTreeView {
                             })
                         })
                         .with_sizing_behavior(gpui::ListSizingBehavior::Infer)
-                        .with_width_from_item(width_measure_item_index)
+                        .with_horizontal_sizing_behavior(
+                            gpui::ListHorizontalSizingBehavior::FitList,
+                        )
                         .track_scroll(&self.scroll_handle)
                         .w_full()
                         .h_full();
@@ -4729,35 +4759,20 @@ impl Render for FileTreeView {
                             .min_w(px(0.0))
                             .min_h(px(0.0))
                             .overflow_hidden()
-                            .child(
-                                div()
-                                    .id("file-tree-horizontal-scroll")
-                                    .size_full()
-                                    .min_w(px(0.0))
-                                    .min_h(px(0.0))
-                                    .overflow_x_scroll()
-                                    .map(|mut scroll_container| {
-                                        scroll_container.style().restrict_scroll_to_axis =
-                                            Some(true);
-                                        scroll_container
-                                    })
-                                    .track_scroll(&self.horizontal_scroll_handle)
-                                    .child(
-                                        div()
-                                            .w_full()
-                                            .min_w(px(content_width))
-                                            .h_full()
-                                            .min_h(px(0.0))
-                                            .child(list),
-                                    ),
-                            )
+                            .child(list)
                             .when_some(
                                 Scrollbar::vertical(self.vertical_scrollbar_state.clone()),
                                 |container, scrollbar| {
                                     container.child(
                                         div()
                                             .absolute()
-                                            .top_0()
+                                            // Keep the scrollbar's hitbox off the root actions.
+                                            .top(
+                                                nucleotide_ui::DensityMetrics::for_density(
+                                                    density.control_density(),
+                                                )
+                                                .row_height,
+                                            )
                                             .right_0()
                                             .bottom_0()
                                             .w(SCROLLBAR_THICKNESS)
