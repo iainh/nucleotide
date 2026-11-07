@@ -1241,13 +1241,14 @@ mod surface_extraction_tests {
                 assert_eq!(tokens.titlebar_tokens().background.a, 0.0);
                 assert_eq!(tokens.status_bar_tokens().background_active.a, 0.0);
                 assert_eq!(tokens.status_bar_tokens().background_inactive.a, 0.0);
-                assert!(tokens.chrome.file_tree_background.a > 0.0);
                 if cfg!(target_os = "macos") {
                     // GPUI strips AppKit's material tint. Apply it once across
                     // the whole shell so chrome stays legible over wallpaper.
+                    assert!(tokens.chrome.file_tree_background.a > 0.0);
                     assert!(tokens.chrome.window_background.a > 0.8);
                     assert_eq!(tokens.chrome.window_background.l < 0.5, expected_dark);
                 } else {
+                    assert_eq!(tokens.chrome.file_tree_background.a, 0.0);
                     assert_eq!(tokens.chrome.window_background.a, 0.0);
                     let tabs = tokens.tab_bar_tokens();
                     assert_eq!(tabs.tab_active_background, tokens.editor.background);

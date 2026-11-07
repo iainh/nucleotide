@@ -272,10 +272,12 @@ impl NativeChromePalette {
             )
         };
 
+        // Expanded navigation belongs to the Mica shell, like NavigationView
+        // in WinUI Gallery. Content/control layers retain their own fills.
         let (mica_alpha, layer_alpha, dense_text_layer_alpha, elevated_alpha) = if is_dark {
-            (0.0, 0.62, 0.62, 0.78)
+            (0.0, 0.62, 0.0, 0.78)
         } else {
-            (0.0, 0.58, 0.58, 0.76)
+            (0.0, 0.58, 0.0, 0.76)
         };
 
         Self {

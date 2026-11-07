@@ -11426,6 +11426,7 @@ impl Render for Workspace {
             .alpha(if ui_theme.is_dark() { 0.12 } else { 0.14 });
         let (island_margin, island_inset) = self.content_island_insets(cx);
         let content_islands = island_margin > px(0.0);
+        let windows_system_shell = cfg!(target_os = "windows") && content_islands;
         let island_gutter_half = if self.show_file_tree {
             island_margin * 0.5
         } else {
@@ -12590,12 +12591,24 @@ impl Render for Workspace {
                         .child(
                             Panel::new("file-tree-island")
                                 .size_full()
-                                .rounded(island_radius)
-                                .padding(px(0.0))
-                                .border_1()
-                                .border_color(island_border_color)
+                                // Keep the content inset when removing the card
+                                // border; editor sizing and tree hitboxes stay put.
+                                .padding(if windows_system_shell {
+                                    island_inset
+                                } else {
+                                    px(0.0)
+                                })
+                                .border(!windows_system_shell)
+                                .when(windows_system_shell, |panel| {
+                                    panel.rounded_none().bg(file_tree_background)
+                                })
+                                .when(!windows_system_shell, |panel| {
+                                    panel
+                                        .rounded(island_radius)
+                                        .border_color(island_border_color)
+                                        .bg(file_tree_background.alpha(1.0))
+                                })
                                 .overflow_hidden()
-                                .bg(file_tree_background.alpha(1.0))
                                 .child(file_tree_container),
                         )
                         .into_any_element()

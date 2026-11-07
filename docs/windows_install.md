@@ -40,6 +40,15 @@ existing behaviour. Editor content, controls, split handles, side gutters and
 the status bar are not added to the drag areas. Theme-look windows and other
 platforms are unchanged.
 
+## System-look surfaces
+
+With `[ui] look = "system"` in `nucleotide.toml`, the title chrome and
+persistent file-tree sidebar share the window's single Mica backdrop, following
+WinUI Gallery's shell layering. The sidebar has no separate card border or blur.
+The editor and terminal remain on an opaque, theme-owned content surface.
+Contrast themes use solid system-colour surfaces and paired text colours instead
+of exposing Mica. Theme look and other platforms retain their existing layering.
+
 ## System-look scrollbars
 
 With `[ui] look = "system"` in `nucleotide.toml`, application, editor and

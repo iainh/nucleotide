@@ -297,10 +297,9 @@ mod system_chrome_token_tests {
         assert_eq!(dark.bufferline_background.a, 0.0);
         assert_eq!(light.bufferline_inactive.a, 0.0);
         assert_eq!(dark.bufferline_inactive.a, 0.0);
-        assert!(light.file_tree_background.a >= 0.56);
-        assert!(light.file_tree_background.a <= 0.62);
-        assert!(dark.file_tree_background.a >= 0.60);
-        assert!(dark.file_tree_background.a <= 0.66);
+        // Persistent navigation exposes the same backdrop as the title chrome.
+        assert_eq!(light.file_tree_background.a, 0.0);
+        assert_eq!(dark.file_tree_background.a, 0.0);
         assert!(light.surface.a <= 0.6);
         assert!(dark.surface.a <= 0.65);
     }
