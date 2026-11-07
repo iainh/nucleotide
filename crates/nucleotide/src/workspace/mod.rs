@@ -12657,10 +12657,35 @@ impl Render for Workspace {
                         div()
                             .flex()
                             .flex_col()
+                            .relative()
                             .flex_1()
                             .w_full()
                             .min_h(px(0.0)) // allow vertical shrink in flex column
                             .p(island_margin)
+                            .when(cfg!(target_os = "windows") && content_islands, |shell| {
+                                // Only the empty horizontal shell padding is draggable.
+                                // Do not mark the container: its content and split handles
+                                // must remain client areas, including otherwise blank panes.
+                                shell
+                                    .child(
+                                        div()
+                                            .absolute()
+                                            .top_0()
+                                            .left_0()
+                                            .w_full()
+                                            .h(island_margin)
+                                            .window_control_area(gpui::WindowControlArea::Drag),
+                                    )
+                                    .child(
+                                        div()
+                                            .absolute()
+                                            .bottom_0()
+                                            .left_0()
+                                            .w_full()
+                                            .h(island_margin)
+                                            .window_control_area(gpui::WindowControlArea::Drag),
+                                    )
+                            })
                             .child(content_area),
                     )
                     .child(self.render_unified_status_bar(window, cx)), // Unified bottom status bar pinned at bottom

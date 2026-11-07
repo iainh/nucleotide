@@ -30,6 +30,16 @@ and updates the taskbar Jump List `Recent Folders` category. On Windows,
 Nucleotide also publishes `Open...` and `Open Directory...` taskbar Jump List
 tasks when the app starts.
 
+## Window dragging
+
+With `[ui] look = "system"` in `nucleotide.toml`, the empty horizontal strips
+between the titlebar and the content islands, and between the content islands
+and the status bar, act as native window drag areas. Each strip follows the
+shell spacing token (currently 4 logical pixels). The titlebar retains its
+existing behaviour. Editor content, controls, split handles, side gutters and
+the status bar are not added to the drag areas. Theme-look windows and other
+platforms are unchanged.
+
 ## System-look scrollbars
 
 With `[ui] look = "system"` in `nucleotide.toml`, application, editor and
