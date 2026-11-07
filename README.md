@@ -106,6 +106,28 @@ behaviour are labelled in the example. Save the file, then choose
 **Settings > Reload Configuration** (under **Nucleotide** on macOS/Linux or
 **File** on Windows), or restart Nucleotide.
 
+### Bundled themes
+
+Four palettes cover distinct everyday working environments:
+
+| Theme | Appearance | Character |
+| --- | --- | --- |
+| `nucleotide-teal` | Dark (default) | Evergreen surfaces, amber keywords, mint types and lilac numbers |
+| `nucleotide-graphite` | Dark | Neutral slate surfaces, violet keywords, blue functions and gold numbers |
+| `nucleotide-sandcastle` | Light (default) | Warm sand surfaces, seaside syntax and soft seafoam selections |
+| `nucleotide-2026-light` | Light | Crisp white surfaces, red keywords, violet functions and blue accents |
+
+Use `:theme <name>` to preview or apply a theme. Text palettes target at least
+4.5:1 contrast on their intended backgrounds, including cursor rows, selections,
+popups and inactive chrome. Decorative separators and indent guides stay subtle;
+diagnostics also use underlines, so colour is not their only signal.
+
+The overlapping `nucleotide-2026-dark`, `nucleotide-dark-purple`,
+`nucleotide-classic-light`, `nucleotide-cyan-light`, `nucleotide-ocean`,
+`nucleotide-outdoors`, `nucleotide-paper` and `nucleotide-warm` themes are no longer
+bundled. If your configuration names one, choose a retained theme above. Other
+Helix and user-installed themes are unaffected.
+
 ## License
 
 MPL-2.0 (same as Helix)

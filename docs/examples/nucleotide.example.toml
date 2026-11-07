@@ -43,7 +43,7 @@ auto_download = false
 mode = "system"
 
 # Theme used when light appearance is active. Default: "nucleotide-sandcastle".
-# Try "nucleotide-paper" for Warm Paper's quieter ivory palette.
+# Choose "nucleotide-2026-light" for a crisp white palette instead of warm sand.
 light_theme = "nucleotide-sandcastle"
 
 # Theme used when dark appearance is active. Default: "nucleotide-teal".

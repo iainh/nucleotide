@@ -1,10 +1,10 @@
-# Nucleotide Teal Theme - A WCAG-compliant teal variant of the default Helix theme
+# Nucleotide Teal Theme - deep evergreen surfaces with warm syntax accents
 # Author: Nucleotide contributors
 # License: MPL-2.0
 # Compatibility: This theme was created for Nucleotide but is fully compatible with Helix
 #
-# Based on the default purple theme but with teal as the dominant color
-# Features WCAG AA compliant contrast ratios for accessibility
+# Text colours target at least 4.5:1 on editor, cursor-row and selection surfaces.
+# Decorative separators and indent guides are intentionally quieter than text.
 
 attribute = "link"
 keyword = "amber"
@@ -19,7 +19,7 @@ variable = "ink"
 # "variable.parameter" = { fg = "ink", modifiers = ["underlined"] }
 "variable.parameter" = { fg = "ink" }
 "variable.builtin" = "aqua"
-type = "white"
+type = "aqua"
 "type.builtin" = "aqua"
 constructor = "aqua"
 function = "white"
@@ -30,7 +30,7 @@ comment = "comment"
 constant = "aqua"
 "constant.builtin" = "aqua"
 string = "sage"
-"constant.numeric" = "link"
+"constant.numeric" = "lavender"
 "constant.character.escape" = "coral"
 # used for lifetimes
 label = "link"
@@ -85,7 +85,7 @@ tabstop = { modifiers = ["italic"], bg = "panel" }
 "ui.cursor.insert" = { bg = "white" }
 "ui.cursor.primary.select" = { bg = "matched" }
 "ui.cursor.primary.insert" = { bg = "white" }
-"ui.cursor.match" = { fg = "base", bg = "matched" }
+"ui.cursor.match" = { fg = "white", bg = "matched" }
 "ui.cursor" = { fg = "base", bg = "link" }
 "ui.cursorline.primary" = { bg = "caret_row" }
 "ui.highlight" = { bg = "caret_row" }
@@ -94,7 +94,7 @@ tabstop = { modifiers = ["italic"], bg = "panel" }
 "ui.debug.breakpoint" = { fg = "coral" }
 "ui.menu" = { fg = "ink", bg = "panel" }
 "ui.menu.selected" = { fg = "white", bg = "selection" }
-"ui.menu.scroll" = { fg = "ink", bg = "gutter_fg" }
+"ui.menu.scroll" = { fg = "gutter_fg", bg = "panel" }
 
 "diagnostic.hint" = { underline = { color = "muted_mid", style = "curl" } }
 "diagnostic.info" = { underline = { color = "gold", style = "curl" } }
@@ -109,7 +109,7 @@ info = "gold"
 hint = "muted_mid"
 
 [palette]
-# Teal palette with dark-purple-style role separation.
+# Evergreen surfaces, amber keywords, mint types and lilac numbers.
 
 # Backgrounds and surfaces
 base = "#102423"
@@ -128,9 +128,9 @@ matched = "#3b6864"
 # Text
 white = "#ffffff"
 ink = "#c8d2d5"
-comment = "#6f8584"
-muted_mid = "#95a7a8"
-gutter_fg = "#5f7473"
+comment = "#98ada5"
+muted_mid = "#a4b5b2"
+gutter_fg = "#8a9f9b"
 
 # Accents
 aqua = "#67e8d1"
@@ -138,6 +138,7 @@ link = "#4fc3c7"
 sage = "#93d6ac"
 amber = "#d6ad63"
 gold = "#c6a95f"
-coral = "#f07868"
-error = "#dd5f59"
-warn = "#c89424"
+lavender = "#c4acf0"
+coral = "#f69484"
+error = "#f18b87"
+warn = "#dfb350"

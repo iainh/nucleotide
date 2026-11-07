@@ -150,7 +150,7 @@ editor_fg = "#202020"
 text_soft = "#1f2328"
 muted = "#606060"
 disabled = "#BBBBBB"
-comment = "#6e7781"
+comment = "#626b75" # Readable on both white and the highlighted cursor row.
 line_number = "#606060"
 indent_guide = "#EEEEEE"
 

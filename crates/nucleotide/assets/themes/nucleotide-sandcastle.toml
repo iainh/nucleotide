@@ -145,7 +145,7 @@ palm = "#276528"       # 6.59:1 on sand
 warning = "#765A00"    # 6.08:1 on sand
 error = "#A12F35"      # 6.60:1 on sand
 
-# Bright non-text accents retain a sunny, seaside character.
-seafoam = "#8EDDD2"
-aqua = "#73D2DE"
-sunshine = "#FFD166"
+# Soft non-text accents keep selections and search highlights unobtrusive.
+seafoam = "#D5E9E1"
+aqua = "#B8DAD8"
+sunshine = "#F4DFA3"

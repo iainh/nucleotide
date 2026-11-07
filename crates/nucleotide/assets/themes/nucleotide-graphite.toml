@@ -1,6 +1,14 @@
-# Graphite Studio: neutral, compact chrome with restrained cyan accents.
+# Graphite Studio: neutral slate surfaces with cool blue and violet syntax.
 # Shares Teal's semantic roles so all editor and GUI states stay consistent.
 inherits = "nucleotide-teal"
+
+keyword = "lavender"
+tag = "lavender"
+function = "link"
+"function.builtin" = "link"
+constant = "amber"
+"constant.builtin" = "amber"
+"constant.numeric" = "amber"
 
 [palette]
 base = "#171a1f"
@@ -17,14 +25,15 @@ selection = "#29414f"
 matched = "#446579"
 white = "#f2f5f8"
 ink = "#ced5de"
-comment = "#8893a2"
+comment = "#a0adbd"
 muted_mid = "#a2adbc"
 gutter_fg = "#788391"
 aqua = "#89dce8"
-link = "#7dcde4"
+link = "#8fbcf4"
+lavender = "#c3aff5"
 sage = "#a5d5a5"
 amber = "#e2bb7d"
 gold = "#d3ba82"
 coral = "#ee948c"
-error = "#f08080"
+error = "#f39595"
 warn = "#dbb36b"

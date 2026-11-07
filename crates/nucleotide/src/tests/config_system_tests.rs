@@ -116,9 +116,61 @@ mod tests {
         for (name, editor, chrome) in [
             ("nucleotide-teal", 0x102423, 0x142b29),
             ("nucleotide-graphite", 0x171a1f, 0x20242b),
-            ("nucleotide-paper", 0xf6f4ee, 0xece9e1),
+            ("nucleotide-sandcastle", 0xfaf7f1, 0xf1e9da),
+            ("nucleotide-2026-light", 0xffffff, 0xfafafd),
         ] {
             let theme = loader.load(name).unwrap();
+            let color = |color| nucleotide_ui::theme_utils::color_to_hsla(color).unwrap();
+            let editor_background = theme.get("ui.background").bg.unwrap();
+            for scope in [
+                "variable",
+                "keyword",
+                "type",
+                "function",
+                "string",
+                "constant.numeric",
+                "punctuation",
+                "comment",
+                "ui.virtual.inlay-hint",
+                "error",
+                "warning",
+                "info",
+                "hint",
+                "diff.plus",
+                "diff.minus",
+                "diff.delta",
+            ] {
+                let foreground = theme.get(scope).fg.unwrap();
+                for surface in [
+                    "ui.background",
+                    "ui.cursorline.primary",
+                    "ui.selection.primary",
+                ] {
+                    let style = theme.get(surface);
+                    let background = style.bg.unwrap_or(editor_background);
+                    let foreground = if surface == "ui.selection.primary" {
+                        style.fg.unwrap_or(foreground)
+                    } else {
+                        foreground
+                    };
+                    let ratio = nucleotide_ui::ColorTheory::contrast_ratio(
+                        color(background),
+                        color(foreground),
+                    );
+                    assert!(
+                        ratio >= 4.5,
+                        "{name}: {scope} on {surface}: {ratio:.2}:1 < 4.5:1"
+                    );
+                }
+            }
+            for scope in ["ui.linenr", "ui.help", "ui.cursor.match"] {
+                let style = theme.get(scope);
+                let ratio = nucleotide_ui::ColorTheory::contrast_ratio(
+                    color(style.bg.unwrap_or(editor_background)),
+                    color(style.fg.unwrap()),
+                );
+                assert!(ratio >= 4.5, "{name}: {scope}: {ratio:.2}:1 < 4.5:1");
+            }
             let manager = nucleotide_ui::theme_manager::ThemeManager::new(theme);
             let tokens = manager.ui_theme().tokens;
             assert_eq!(
@@ -144,6 +196,14 @@ mod tests {
                 (
                     tokens.chrome.menu_selected,
                     tokens.chrome.menu_selected_foreground,
+                ),
+                (
+                    tokens.chrome.statusline_inactive,
+                    tokens.chrome.statusline_inactive_foreground,
+                ),
+                (
+                    tokens.chrome.bufferline_inactive,
+                    tokens.chrome.bufferline_inactive_foreground,
                 ),
             ] {
                 assert!(
