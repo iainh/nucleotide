@@ -55,7 +55,7 @@ impl InteractiveElement for Icon {
 }
 
 impl RenderOnce for Icon {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+    fn render(mut self, window: &mut Window, _cx: &mut App) -> impl IntoElement {
         #[cfg(any(target_os = "windows", target_os = "macos"))]
         if self.transformation.is_none()
             && let Some(symbol) = symbols::lookup(&self.path)
@@ -92,7 +92,19 @@ impl RenderOnce for Icon {
                 .into_any_element();
         }
 
-        let mut fallback = gpui::svg().path(self.path).absolute().inset_0().size_full();
+        // GPUI's SVG painter requires an explicit color on the SVG itself.
+        let color = self
+            .element
+            .style()
+            .text
+            .color
+            .unwrap_or_else(|| window.text_style().color);
+        let mut fallback = gpui::svg()
+            .path(self.path)
+            .text_color(color)
+            .absolute()
+            .inset_0()
+            .size_full();
         if let Some(transformation) = self.transformation {
             fallback = fallback.with_transformation(transformation);
         }
