@@ -4,6 +4,8 @@ Open a Markdown file and click the book icon (**Render Markdown**) at the top-ri
 
 The rendered view supports headings, links, images, syntax-highlighted code blocks, nested lists, task lists, block quotes, GitHub-style alerts and tables. Prose stays in a centred, bounded-width column that shrinks with the pane. Only level-one and level-two headings have dividers.
 
+Tables use the surrounding surface without header fills or alternating row colours, preserving the same text contrast as prose. Bold headers and cell borders distinguish the rows and columns.
+
 ## Select and copy text
 
 - Drag over text to select it, including across paragraphs, lists, quotes, table cells and code blocks.

@@ -50,8 +50,6 @@ pub struct MarkdownStyle {
     pub heading_font_sizes: [Pixels; 6],
     pub heading_border_color: Option<Hsla>,
     pub code_overflow_x_scroll: bool,
-    pub table_header_background: Hsla,
-    pub table_alternate_background: Hsla,
     pub alert_note_color: Hsla,
     pub alert_tip_color: Hsla,
     pub alert_important_color: Hsla,
@@ -80,8 +78,6 @@ impl MarkdownStyle {
             heading_font_sizes: scaled_heading_sizes(body_font_size),
             heading_border_color: None,
             code_overflow_x_scroll: false,
-            table_header_background: tokens.editor.background,
-            table_alternate_background: with_alpha(tokens.chrome.surface_hover, 0.28),
             alert_note_color: tokens.editor.info,
             alert_tip_color: tokens.editor.success,
             alert_important_color: tokens.editor.info,
@@ -100,8 +96,6 @@ impl MarkdownStyle {
         style.heading_font_sizes = scaled_heading_sizes(body_font_size);
         style.heading_border_color = Some(tokens.chrome.border_muted);
         style.code_overflow_x_scroll = true;
-        style.table_header_background = tokens.chrome.surface_hover;
-        style.table_alternate_background = with_alpha(tokens.chrome.surface_hover, 0.32);
         style
     }
 
@@ -3515,10 +3509,6 @@ fn render_table(
                     .border_color(style.code_border)
                     .when(column_index > 0, |this| this.border_l_1())
                     .when(row_index > 0, |this| this.border_t_1())
-                    .when(header, |this| this.bg(style.table_header_background))
-                    .when(!header && row_index % 2 == 1, |this| {
-                        this.bg(style.table_alternate_background)
-                    })
                     .child(text)
                     .into_any_element(),
             );
