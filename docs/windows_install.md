@@ -45,9 +45,23 @@ platforms are unchanged.
 With `[ui] look = "system"` in `nucleotide.toml`, the title chrome and
 persistent file-tree sidebar share the window's single Mica backdrop, following
 WinUI Gallery's shell layering. The sidebar has no separate card border or blur.
-The editor and terminal remain on an opaque, theme-owned content surface.
+When the tab bar is visible, its empty space and inactive tabs share that same
+shell rather than inheriting the editor island's opaque fill. The selected tab
+keeps its theme-owned face and shares a continuous outline with the opaque editor
+or terminal content below, with no divider beneath the selected tab. The frame
+uses a neutral border that follows the selected tab into the content surface;
+the body-right edge stops below the tab strip rather than enclosing its empty
+space or controls. The frame is painted inside the content viewport. Split panes
+have a shell gutter between their frames; resizing still uses the centre of that
+gutter. Their editor and terminal grids use the space remaining after the gutter.
+The outline stays neutral when pane focus changes, without a separate full-height
+focus stripe in normal System look. With separate pinned rows, the selected row
+sits closest to the content so its active tab remains attached. Each pane's
+content and the documentation reading sidebar remain opaque. Hiding all tab bars
+retains the original bordered content island.
 Contrast themes use solid system-colour surfaces and paired text colours instead
-of exposing Mica. Theme look and other platforms retain their existing layering.
+of exposing Mica, and retain the existing explicit focus indicator and closed
+selected-tab border. Theme look and other platforms retain their existing layering.
 
 ## System-look scrollbars
 

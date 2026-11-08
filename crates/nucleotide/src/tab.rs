@@ -780,10 +780,17 @@ impl RenderOnce for Tab {
                     .rounded_tl(tokens.sizes.radius_md)
                     .rounded_tr(tokens.sizes.radius_md)
                     .when(is_active, |tab| {
-                        tab.border_t_1()
-                            .border_l_1()
-                            .border_r_1()
-                            .border_color(tokens.chrome.border_default)
+                        tab.when(contrast.is_none(), |tab| {
+                            // Bleed over the snapped baseline at fractional DPI.
+                            // Cancel the extra height in layout and padding so
+                            // the top edge and label stay put. Contrast themes
+                            // retain their closed selection border below.
+                            tab.h(height + px(1.0)).mb(-px(1.0)).pb(px(1.0))
+                        })
+                        .border_t_1()
+                        .border_l_1()
+                        .border_r_1()
+                        .border_color(tokens.chrome.border_default)
                     })
                     .when(!is_active, |tab| {
                         tab.child(

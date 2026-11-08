@@ -506,9 +506,9 @@ impl RenderOnce for TabBar {
         let mut tab_bar_tokens = tokens.tab_bar_tokens();
         let fluent_tabs = fluent_tabs_enabled(cx);
         if fluent_tabs {
-            // Attached tabs supply their own outline; do not box the toolbar
-            // or draw a baseline through the selected tab/editor connection.
-            tab_bar_tokens.tab_separator = gpui::transparent_black();
+            // The selected face covers this baseline, joining its side strokes
+            // to the content frame without a divider beneath the selection.
+            tab_bar_tokens.tab_separator = tokens.chrome.border_default;
         }
         let ui_font = cx
             .try_global::<crate::types::UiFontConfig>()
@@ -706,7 +706,9 @@ impl TabBar {
                         .gap(tab_bar_control_gap(tokens))
                         .px(tab_bar_control_padding_x())
                         .border_b_1()
-                        .border_r_1()
+                        .when(!tokens.chrome.is_windows_system(), |controls| {
+                            controls.border_r_1()
+                        })
                         .border_color(border_color)
                         .children(start_children),
                 )
@@ -736,7 +738,11 @@ impl TabBar {
                                 .items_center()
                                 .h_full()
                                 .when(pinned_scroll_separator, |pinned| {
-                                    let pinned = if has_active_unpinned_tab {
+                                    // Keep the clipped native tab junction as
+                                    // thin as the attached content outline.
+                                    let pinned = if has_active_unpinned_tab
+                                        && !tokens.chrome.is_windows_system()
+                                    {
                                         pinned.border_r_2()
                                     } else {
                                         pinned.border_r_1()
@@ -758,7 +764,9 @@ impl TabBar {
                         .gap(tab_bar_control_gap(tokens))
                         .px(tab_bar_control_padding_x())
                         .border_b_1()
-                        .border_l_1()
+                        .when(!tokens.chrome.is_windows_system(), |controls| {
+                            controls.border_l_1()
+                        })
                         .border_color(border_color)
                         .children(end_children),
                 )
@@ -790,7 +798,9 @@ impl TabBar {
                         .gap(tab_bar_control_gap(tokens))
                         .px(tab_bar_control_padding_x())
                         .border_b_1()
-                        .border_r_1()
+                        .when(!tokens.chrome.is_windows_system(), |controls| {
+                            controls.border_r_1()
+                        })
                         .border_color(border_color)
                         .children(start_children),
                 )
@@ -823,7 +833,9 @@ impl TabBar {
                         .gap(tab_bar_control_gap(tokens))
                         .px(tab_bar_control_padding_x())
                         .border_b_1()
-                        .border_l_1()
+                        .when(!tokens.chrome.is_windows_system(), |controls| {
+                            controls.border_l_1()
+                        })
                         .border_color(border_color)
                         .children(end_children),
                 )
@@ -840,6 +852,13 @@ impl TabBar {
     ) -> gpui::AnyElement {
         let tabbar_bg = tab_bar_tokens.container_background;
         let border_color = tab_bar_tokens.tab_separator;
+        // An attached tab must sit next to its content, including when the
+        // selected document belongs to the separate pinned row.
+        let active_pinned_row = tokens.chrome.is_windows_system()
+            && self
+                .documents
+                .iter()
+                .any(|doc| doc.is_pinned && Some(doc.id) == self.active_doc_id);
         let scroll_handle = self.scroll_handle;
         let on_empty_double_click = self.on_empty_double_click;
         let on_scroll_wheel = self.on_scroll_wheel;
@@ -876,6 +895,7 @@ impl TabBar {
             .group("tab_bar")
             .flex()
             .flex_col()
+            .when(active_pinned_row, |bar| bar.flex_col_reverse())
             .flex_none()
             .w_full()
             .h(row_height * 2.0)

@@ -25,6 +25,7 @@ impl Workspace {
     pub(super) fn render_pane_dividers(
         &self,
         geometry: &[PaneGeometry],
+        show_separator: bool,
         cx: &mut Context<Self>,
     ) -> Vec<gpui::AnyElement> {
         fn collect(
@@ -148,15 +149,17 @@ impl Workspace {
                 .top(px(divider.rect.y - if horizontal { 0.0 } else { hit / 2.0 }))
                 .w(px(if horizontal { hit } else { divider.rect.width }))
                 .h(px(if horizontal { divider.rect.height } else { hit }))
-                .child(
-                    div()
-                        .absolute()
-                        .left(px(if horizontal { hit / 2.0 } else { 0.0 }))
-                        .top(px(if horizontal { 0.0 } else { hit / 2.0 }))
-                        .w(px(if horizontal { 1.0 } else { divider.rect.width }))
-                        .h(px(if horizontal { divider.rect.height } else { 1.0 }))
-                        .bg(cx.theme().tokens.chrome.separator_color),
-                )
+                .when(show_separator, |handle| {
+                    handle.child(
+                        div()
+                            .absolute()
+                            .left(px(if horizontal { hit / 2.0 } else { 0.0 }))
+                            .top(px(if horizontal { 0.0 } else { hit / 2.0 }))
+                            .w(px(if horizontal { 1.0 } else { divider.rect.width }))
+                            .h(px(if horizontal { divider.rect.height } else { 1.0 }))
+                            .bg(cx.theme().tokens.chrome.separator_color),
+                    )
+                })
                 .into_any_element()
             })
             .collect()

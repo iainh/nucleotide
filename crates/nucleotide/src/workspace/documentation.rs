@@ -267,6 +267,11 @@ impl Workspace {
             .flex_col()
             .overflow_hidden()
             .bg(file_tree_tokens.background)
+            .when(crate::tab::fluent_tabs_enabled(cx), |sidebar| {
+                // This reading surface previously inherited the opaque editor
+                // island; do not expose Mica when the tab strip joins the shell.
+                sidebar.bg(tokens.editor.background.alpha(1.0))
+            })
             .border_l_1()
             .border_color(file_tree_tokens.border)
             .text_color(file_tree_tokens.item_text)

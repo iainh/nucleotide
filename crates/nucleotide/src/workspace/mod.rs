@@ -10743,6 +10743,7 @@ impl Workspace {
         &mut self,
         geometry: pane_layout::PaneGeometry,
         show_focus_indicator: bool,
+        windows_tab_shell: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
@@ -10806,6 +10807,8 @@ impl Workspace {
                         preview.debug_selector(|| "pane-drop-preview".to_string())
                     })
             });
+        let connected_tab_frame =
+            crate::tab::fluent_tabs_enabled(cx) && self.pane_tab_bar_height(pane_id, cx) > px(0.0);
         let tab_bar = self.render_tab_bar(pane_id, window, cx).into_any_element();
         let active = self.pane_host.layout.pane(pane_id)?.active_tab();
         let image = match active {
@@ -10854,6 +10857,19 @@ impl Workspace {
                         .flex_1()
                         .min_h(px(0.0))
                         .overflow_hidden()
+                        .when(crate::tab::fluent_tabs_enabled(cx), |body| {
+                            // Keep dense content opaque while the tab strip above
+                            // it exposes the window's shared Mica backdrop.
+                            body.bg(tokens.editor.background.alpha(1.0))
+                        })
+                        .when(windows_tab_shell, |body| {
+                            body.rounded_bl(tokens.sizes.radius_lg)
+                                .rounded_br(tokens.sizes.radius_lg)
+                                .when(!connected_tab_frame, |body| {
+                                    body.rounded_tl(tokens.sizes.radius_lg)
+                                        .rounded_tr(tokens.sizes.radius_lg)
+                                })
+                        })
                         .capture_any_mouse_down(cx.listener(
                             move |workspace, event: &MouseDownEvent, window, cx| {
                                 if event.button != MouseButton::Left {
@@ -10915,11 +10931,35 @@ impl Workspace {
                                 cx.stop_propagation();
                             }),
                         )
-                        .child(content),
+                        .child(content)
+                        .when(windows_tab_shell, |body| {
+                            // Paint inside the existing viewport rather than
+                            // adding layout borders that change the editor grid.
+                            // The tab strip supplies the open top of this frame.
+                            body.child(
+                                div()
+                                    .absolute()
+                                    .inset_0()
+                                    .border_l_1()
+                                    .border_r_1()
+                                    .border_b_1()
+                                    .rounded_bl(tokens.sizes.radius_lg)
+                                    .rounded_br(tokens.sizes.radius_lg)
+                                    .when(!connected_tab_frame, |frame| {
+                                        frame
+                                            .border_t_1()
+                                            .rounded_tl(tokens.sizes.radius_lg)
+                                            .rounded_tr(tokens.sizes.radius_lg)
+                                    })
+                                    .border_color(tokens.chrome.border_default),
+                            )
+                        }),
                 )
                 .children(preview)
                 .when(
-                    show_focus_indicator && self.focused_pane_id() == pane_id,
+                    show_focus_indicator
+                        && (!windows_tab_shell || tokens.chrome.contrast.is_some())
+                        && self.focused_pane_id() == pane_id,
                     |d| {
                         d.child(div().absolute().top_0().left_0().bottom_0().w(px(2.0)).bg(
                             nucleotide_ui::tokens::with_alpha(tokens.editor.focus_ring, 0.8),
@@ -11511,12 +11551,52 @@ impl Render for Workspace {
             .layout
             .layout(self.pane_bounds, pane_resize::MINIMUM)
             .unwrap_or_default();
-        let dividers = self.render_pane_dividers(&geometry, cx);
+        let windows_tab_shell = windows_system_shell
+            && geometry
+                .iter()
+                .any(|pane| self.pane_tab_bar_height(pane.pane, cx) > px(0.0));
+        let dividers = self.render_pane_dividers(&geometry, !windows_tab_shell, cx);
         let show_focus_indicator = geometry.len() > 1;
-        for pane in geometry {
-            if let Some(element) =
-                self.render_document_view_layout(pane, show_focus_indicator, window, cx)
-            {
+        for mut pane in geometry {
+            if windows_tab_shell {
+                // Keep topology and resize boundaries unchanged. Reserve half
+                // the shell gutter on each internal edge, and project editor
+                // and terminal viewports using these actual content bounds.
+                let half_gutter = f32::from(cx.theme().tokens.sizes.space_2) * 0.5;
+                let rect = &mut pane.rect;
+                let left = if rect.x > self.pane_bounds.x {
+                    half_gutter
+                } else {
+                    0.0
+                };
+                let top = if rect.y > self.pane_bounds.y {
+                    half_gutter
+                } else {
+                    0.0
+                };
+                let right = if rect.x + rect.width < self.pane_bounds.x + self.pane_bounds.width {
+                    half_gutter
+                } else {
+                    0.0
+                };
+                let bottom = if rect.y + rect.height < self.pane_bounds.y + self.pane_bounds.height
+                {
+                    half_gutter
+                } else {
+                    0.0
+                };
+                rect.x += left;
+                rect.y += top;
+                rect.width -= left + right;
+                rect.height -= top + bottom;
+            }
+            if let Some(element) = self.render_document_view_layout(
+                pane,
+                show_focus_indicator,
+                windows_tab_shell,
+                window,
+                cx,
+            ) {
                 docs_root = docs_root.child(element);
             }
         }
@@ -12470,11 +12550,19 @@ impl Render for Workspace {
                         Panel::new("editor-island")
                             .size_full()
                             .rounded(island_radius)
-                            .padding(px(0.0))
-                            .border_1()
+                            .padding(if windows_tab_shell {
+                                island_inset
+                            } else {
+                                px(0.0)
+                            })
+                            .border(!windows_tab_shell)
                             .border_color(island_border_color)
                             .overflow_hidden()
-                            .bg(cx.theme().tokens.editor.background.alpha(1.0))
+                            .bg(if windows_tab_shell {
+                                cx.theme().tokens.chrome.window_background
+                            } else {
+                                cx.theme().tokens.editor.background.alpha(1.0)
+                            })
                             .child(right),
                     )
                     .into_any_element()

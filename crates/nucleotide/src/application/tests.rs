@@ -1931,6 +1931,122 @@ fn native_islands_keep_editor_bounds_in_sync_when_resized_or_sidebar_hidden(
 
 #[cfg(target_os = "windows")]
 #[gpui::test]
+fn fluent_splits_keep_a_resizable_shell_gutter(cx: &mut gpui::TestAppContext) {
+    use gpui::{Modifiers, MouseButton, point, px, size};
+
+    let _runtime = TEST_RUNTIME.enter();
+    let root = tempdir().unwrap();
+    let first = root.path().join("first.txt");
+    let second = root.path().join("second.txt");
+    fs::write(&first, "first pane\n").unwrap();
+    fs::write(&second, "second pane\n").unwrap();
+
+    for horizontal in [true, false] {
+        let (core, workspace, cx) = new_test_workspace(cx, &first);
+        cx.update(|_, cx| {
+            cx.global_mut::<crate::ThemeManager>()
+                .set_ui_chrome_style(nucleotide_appearance::UiChromeStyle::System);
+            let theme = cx.global::<crate::ThemeManager>().ui_theme().clone();
+            cx.set_global(theme);
+        });
+        let first_slot = core.update(cx, |core, cx| {
+            core.config.gui.ui.look = crate::config::UiLook::System;
+            let mut config = (**core.helix_config_arc.load()).clone();
+            config.editor.bufferline = helix_view::editor::BufferLine::Always;
+            core.helix_config_arc.store(Arc::new(config));
+            cx.emit(crate::Update::Redraw);
+            core.editor.tree.focus
+        });
+        cx.simulate_resize(size(px(900.0), px(600.0)));
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear());
+        let first_pane = workspace.read_with(cx, |workspace, _| {
+            workspace.pane_id_for_slot(first_slot).unwrap()
+        });
+        let first_selector = Box::leak(format!("editor-pane-{first_pane:?}").into_boxed_str());
+        let outer = cx.debug_bounds(first_selector).unwrap();
+
+        let second_slot = core.update(cx, |core, cx| {
+            core.editor
+                .open(
+                    &second,
+                    if horizontal {
+                        Action::VerticalSplit
+                    } else {
+                        Action::HorizontalSplit
+                    },
+                )
+                .unwrap();
+            cx.emit(crate::Update::Redraw);
+            core.editor.tree.focus
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear());
+        let second_pane = workspace.read_with(cx, |workspace, _| {
+            workspace.pane_id_for_slot(second_slot).unwrap()
+        });
+        let second_selector = Box::leak(format!("editor-pane-{second_pane:?}").into_boxed_str());
+        let first_bounds = cx.debug_bounds(first_selector).unwrap();
+        let second_bounds = cx.debug_bounds(second_selector).unwrap();
+        assert_eq!(first_bounds.origin, outer.origin);
+        assert_eq!(second_bounds.bottom_right(), outer.bottom_right());
+        let gap = if horizontal {
+            second_bounds.left() - first_bounds.right()
+        } else {
+            second_bounds.top() - first_bounds.bottom()
+        };
+        assert_eq!(gap, px(4.0));
+
+        let start = if horizontal {
+            point(first_bounds.right() + gap / 2.0, first_bounds.center().y)
+        } else {
+            point(first_bounds.center().x, first_bounds.bottom() + gap / 2.0)
+        };
+        let end = start
+            + if horizontal {
+                point(px(17.0), px(0.0))
+            } else {
+                point(px(0.0), px(17.0))
+            };
+        cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::none());
+        // The mouse-down render installs the workspace's drag listeners.
+        cx.update(|window, cx| window.draw(cx).clear());
+        // GPUI consumes the move that starts its drag; continue the pointer
+        // path afterwards, as a real divider drag does.
+        cx.simulate_mouse_move(
+            start + (end - start) * 0.25,
+            MouseButton::Left,
+            Modifiers::none(),
+        );
+        cx.update(|window, cx| window.draw(cx).clear());
+        cx.simulate_mouse_move(end, MouseButton::Left, Modifiers::none());
+        cx.update(|window, cx| window.draw(cx).clear());
+        cx.simulate_mouse_up(end, MouseButton::Left, Modifiers::none());
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear());
+        let resized_first = cx.debug_bounds(first_selector).unwrap();
+        let resized_second = cx.debug_bounds(second_selector).unwrap();
+        let (movement, gap) = if horizontal {
+            (
+                resized_first.right() - first_bounds.right(),
+                resized_second.left() - resized_first.right(),
+            )
+        } else {
+            (
+                resized_first.bottom() - first_bounds.bottom(),
+                resized_second.top() - resized_first.bottom(),
+            )
+        };
+        assert!(
+            (movement - px(17.0)).abs() < px(1.0),
+            "horizontal={horizontal}, movement={movement:?}, gap={gap:?}"
+        );
+        assert_eq!(gap, px(4.0));
+    }
+}
+
+#[cfg(target_os = "windows")]
+#[gpui::test]
 fn fluent_selected_tab_close_target_respects_hover_and_hidden_preferences(
     cx: &mut gpui::TestAppContext,
 ) {
