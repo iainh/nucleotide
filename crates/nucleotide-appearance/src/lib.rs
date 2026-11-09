@@ -1,6 +1,11 @@
 // ABOUTME: Platform appearance facade for native/system UI chrome.
 // ABOUTME: Keeps OS color/material decisions separate from reusable UI tokens.
 
+#[cfg(target_os = "macos")]
+mod macos_material;
+#[cfg(target_os = "macos")]
+pub use macos_material::ChromeMaterial;
+
 use gpui::{App, Global, Hsla, WindowAppearance, WindowBackgroundAppearance, hsla};
 
 /// Extracted colors from a Helix theme used to derive editor and themed chrome.
@@ -538,7 +543,9 @@ fn system_window_background_appearance() -> WindowBackgroundAppearance {
 
 #[cfg(target_os = "macos")]
 fn system_window_background_appearance() -> WindowBackgroundAppearance {
-    WindowBackgroundAppearance::Blurred
+    // The app owns the native chrome material. Do not stack GPUI's blur below
+    // it; the editor island supplies its own opaque surface above the material.
+    WindowBackgroundAppearance::Transparent
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
@@ -755,7 +762,7 @@ mod tests {
         );
 
         #[cfg(target_os = "macos")]
-        assert_eq!(material, WindowBackgroundAppearance::Blurred);
+        assert_eq!(material, WindowBackgroundAppearance::Transparent);
 
         #[cfg(not(any(target_os = "windows", target_os = "macos")))]
         assert_eq!(material, WindowBackgroundAppearance::Opaque);

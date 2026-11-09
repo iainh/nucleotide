@@ -2103,7 +2103,7 @@ auto_download = true
         #[cfg(target_os = "macos")]
         assert_eq!(
             config.window_background_appearance(true),
-            gpui::WindowBackgroundAppearance::Blurred
+            gpui::WindowBackgroundAppearance::Transparent
         );
 
         #[cfg(not(any(target_os = "windows", target_os = "macos")))]

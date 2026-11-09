@@ -536,6 +536,8 @@ pub struct Workspace {
     active_completion_session: Option<ActiveCompletionSession>,
     completion_memory: CompletionMemory,
     last_native_window_metadata: Option<NativeWindowMetadata>,
+    #[cfg(target_os = "macos")]
+    chrome_material: nucleotide_appearance::ChromeMaterial,
     pending_remote_open: Option<PendingRemoteOpen>,
     remote_open_generation: u64,
     last_remote_open_target: Option<RemoteOpenTarget>,
@@ -3876,6 +3878,8 @@ impl Workspace {
             active_completion_session: None,
             completion_memory: CompletionMemory::default(),
             last_native_window_metadata: None,
+            #[cfg(target_os = "macos")]
+            chrome_material: nucleotide_appearance::ChromeMaterial::default(),
             pending_remote_open: None,
             remote_open_generation: 0,
             last_remote_open_target: None,
@@ -5477,8 +5481,8 @@ impl Workspace {
             .unwrap_or(false);
 
         self.cached_bg_color = if uses_native_material_backdrop {
-            // Windows Mica needs no fill. macOS GPUI removes AppKit's tint,
-            // so the native palette supplies one continuous translucent shell.
+            // Windows exposes Mica. On macOS this is the solid fallback colour
+            // if the separately composited native chrome material is unavailable.
             tokens.chrome.window_background
         } else if self.core.read(cx).config.gui.window.chrome_opacity < 1.0 {
             gpui::hsla(0.0, 0.0, 0.0, 0.0)
@@ -11467,6 +11471,26 @@ impl Render for Workspace {
         let (island_margin, island_inset) = self.content_island_insets(cx);
         let content_islands = island_margin > px(0.0);
         let windows_system_shell = cfg!(target_os = "windows") && content_islands;
+        let macos_system_shell = cfg!(target_os = "macos") && content_islands;
+        let bg_color = if macos_system_shell {
+            bg_color.alpha(1.0)
+        } else {
+            bg_color
+        };
+        #[cfg(target_os = "macos")]
+        let native_material_visible =
+            match self
+                .chrome_material
+                .sync(window, macos_system_shell, ui_theme.is_dark())
+            {
+                Ok(visible) => visible,
+                Err(error) => {
+                    warn!(%error, "Failed to update native chrome material");
+                    false
+                }
+            };
+        #[cfg(not(target_os = "macos"))]
+        let native_material_visible = false;
         let island_gutter_half = if self.show_file_tree {
             island_margin * 0.5
         } else {
@@ -11731,7 +11755,13 @@ impl Render for Workspace {
             .w_full()
             .h_full()
             .relative() // Anchor for absolute-positioned resize hitboxes
-            .bg(bg_color)
+            // One native backdrop spans the shell; only the editor island
+            // paints an opaque surface, so no seam crosses titlebar or footer.
+            .bg(if native_material_visible {
+                gpui::transparent_black()
+            } else {
+                bg_color
+            })
             .focusable()
             .capture_drop(
                 cx.listener(|workspace, paths: &gpui::ExternalPaths, window, cx| {
@@ -12681,12 +12711,12 @@ impl Render for Workspace {
                                 .size_full()
                                 // Keep the content inset when removing the card
                                 // border; editor sizing and tree hitboxes stay put.
-                                .padding(if windows_system_shell {
+                                .padding(if windows_system_shell || macos_system_shell {
                                     island_inset
                                 } else {
                                     px(0.0)
                                 })
-                                .border(!windows_system_shell)
+                                .border(!windows_system_shell && !macos_system_shell)
                                 .when(windows_system_shell, |panel| {
                                     panel.rounded_none().bg(file_tree_background)
                                 })
@@ -12694,7 +12724,11 @@ impl Render for Workspace {
                                     panel
                                         .rounded(island_radius)
                                         .border_color(island_border_color)
-                                        .bg(file_tree_background.alpha(1.0))
+                                        .bg(if macos_system_shell {
+                                            file_tree_background
+                                        } else {
+                                            file_tree_background.alpha(1.0)
+                                        })
                                 })
                                 .overflow_hidden()
                                 .child(file_tree_container),

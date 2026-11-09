@@ -429,6 +429,12 @@ impl ThemeManager {
             chrome.statusline_active.a = 0.0;
             chrome.statusline_inactive.a = 0.0;
         }
+        if cfg!(target_os = "macos") && self.ui_chrome_style == UiChromeStyle::System {
+            // AppKit supplies the continuous chrome tint. Keep a solid fallback
+            // colour for windows where the native material cannot be attached.
+            chrome.file_tree_background.a = 0.0;
+            chrome.window_background.a = 1.0;
+        }
         if cfg!(target_os = "windows") && self.ui_chrome_style == UiChromeStyle::System {
             // Fluent's selected tab joins the editor surface. Inactive tabs
             // share the neutral strip instead of stacking translucent fills.
@@ -1242,10 +1248,11 @@ mod surface_extraction_tests {
                 assert_eq!(tokens.status_bar_tokens().background_active.a, 0.0);
                 assert_eq!(tokens.status_bar_tokens().background_inactive.a, 0.0);
                 if cfg!(target_os = "macos") {
-                    // GPUI strips AppKit's material tint. Apply it once across
-                    // the whole shell so chrome stays legible over wallpaper.
-                    assert!(tokens.chrome.file_tree_background.a > 0.0);
-                    assert!(tokens.chrome.window_background.a > 0.8);
+                    // Native chrome stays transparent while the editor and the
+                    // fallback shell stay opaque, even with a mismatched OS look.
+                    assert_eq!(tokens.file_tree_tokens().background.a, 0.0);
+                    assert_eq!(tokens.chrome.window_background.a, 1.0);
+                    assert_eq!(tokens.editor.background.a, 1.0);
                     assert_eq!(tokens.chrome.window_background.l < 0.5, expected_dark);
                 } else {
                     assert_eq!(tokens.chrome.file_tree_background.a, 0.0);

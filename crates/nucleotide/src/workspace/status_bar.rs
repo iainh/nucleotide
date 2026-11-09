@@ -939,8 +939,17 @@ impl Workspace {
         let viewport_width = f32::from(window.viewport_size().width);
         let (shell_margin, _) = self.content_island_insets(cx);
         let quiet_shell = shell_margin > px(0.0);
-        let geometry =
-            StatusBarGeometry::new(viewport_width - f32::from(shell_margin * 2.0), &sizes);
+        // Match the editor island's left edge without painting status content
+        // over the native sidebar material. Include its half of the gutter.
+        let sidebar_width = if cfg!(target_os = "macos") && quiet_shell && self.show_file_tree {
+            px(self.file_tree_width) + shell_margin * 0.5
+        } else {
+            px(0.0)
+        };
+        let geometry = StatusBarGeometry::new(
+            viewport_width - f32::from(shell_margin * 2.0 + sidebar_width),
+            &sizes,
+        );
         let model = self.statusbar_model(geometry.density, cx);
         let chrome_metrics =
             nucleotide_ui::DensityMetrics::for_density(nucleotide_ui::ControlDensity::Comfortable);
@@ -1008,6 +1017,9 @@ impl Workspace {
         StatusBar::new("workspace-status-bar")
             .top_border(!quiet_shell)
             .when(quiet_shell, |bar| bar.px(shell_margin))
+            .when(sidebar_width > px(0.0), |bar| {
+                bar.leading(sidebar_width, div())
+            })
             .content(content)
             .trailing(utilities)
     }
