@@ -1,0 +1,59 @@
+# Nucleotide Silk: near-black surfaces, teal keywords and warm ivory strings.
+# Inspired by the Silk code screenshot; supporting text is lifted for readability.
+# Shares Teal's semantic roles for consistent editor and GUI states.
+inherits = "nucleotide-teal"
+
+attribute = "ink"
+keyword = "link"
+namespace = "ink"
+punctuation = "ink"
+"punctuation.delimiter" = "ink"
+special = "amber"
+"variable.builtin" = "link"
+type = { fg = "white", modifiers = ["bold"] }
+"type.builtin" = { fg = "white", modifiers = ["bold"] }
+constructor = { fg = "white", modifiers = ["bold"] }
+"function.macro" = "white"
+tag = "link"
+comment = { fg = "comment", modifiers = ["italic"] }
+"comment.block.documentation" = { fg = "comment", modifiers = ["italic"] }
+"comment.line.documentation" = { fg = "comment", modifiers = ["italic"] }
+constant = "white"
+"constant.builtin" = "white"
+string = "amber"
+"constant.numeric" = "amber"
+label = "link"
+"markup.link.text" = "link"
+
+[palette]
+# Neutral black surfaces, with teal reserved for focus and selections.
+base = "#0b0b0b"
+chrome = "#101111"
+panel = "#171a19"
+gutter_bg = "#0b0b0b"
+caret_row = "#141a18"
+separator = "#292e2c"
+separator_selected = "#46665f"
+indent = "#252b28"
+indent_selected = "#3a4c46"
+folded_bg = "#1c302b"
+selection = "#18312e"
+matched = "#345e58"
+
+# Soft grey identifiers, bright type names and quiet italic comments.
+white = "#f2f2ed"
+ink = "#c8c8c2"
+comment = "#969693"
+muted_mid = "#a5aaa5"
+gutter_fg = "#858580"
+
+# Teal syntax and UI accents; warm strings, understated diagnostics and diffs.
+aqua = "#62bfb1"
+link = "#50b9aa"
+sage = "#a5c4a3"
+amber = "#d9c49a"
+gold = "#d0bb91"
+lavender = "#c2b6cc"
+coral = "#df9b8e"
+error = "#e39891"
+warn = "#d7b777"

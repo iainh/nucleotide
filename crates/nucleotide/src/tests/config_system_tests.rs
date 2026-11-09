@@ -116,6 +116,8 @@ mod tests {
         for (name, editor, chrome) in [
             ("nucleotide-teal", 0x102423, 0x142b29),
             ("nucleotide-graphite", 0x171a1f, 0x20242b),
+            ("nucleotide-silk", 0x0b0b0b, 0x101111),
+            ("nucleotide-silk-light", 0xfafaf6, 0xf1f2ed),
             ("nucleotide-sandcastle", 0xfaf7f1, 0xf1e9da),
             ("nucleotide-2026-light", 0xffffff, 0xfafafd),
         ] {

@@ -1,0 +1,36 @@
+# Nucleotide Silk Light: soft ivory surfaces, deep teal keywords and warm strings.
+# Keeps Silk's bold types, italic comments and restrained syntax hierarchy.
+inherits = "nucleotide-silk"
+
+[palette]
+# Quiet ivory surfaces, with pale teal selections and focus accents.
+base = "#fafaf6"
+chrome = "#f1f2ed"
+panel = "#f3f4ef"
+gutter_bg = "#fafaf6"
+caret_row = "#f0f4ef"
+separator = "#d5dbd4"
+separator_selected = "#99b3a8"
+indent = "#e0e5dd"
+indent_selected = "#b8c9bf"
+folded_bg = "#e2ece5"
+selection = "#dceae5"
+matched = "#c8ded6"
+
+# Silk's shared role names: "white" is the strongest text, now near-black.
+white = "#202923"
+ink = "#3e4541"
+comment = "#60665f"
+muted_mid = "#59635c"
+gutter_fg = "#6c726a"
+
+# Darkened teal, ochre and muted functional colours for light surfaces.
+aqua = "#246c60"
+link = "#176d62"
+sage = "#3c6a46"
+amber = "#795a2c"
+gold = "#755b32"
+lavender = "#705c7d"
+coral = "#9e5148"
+error = "#a3443e"
+warn = "#805e19"

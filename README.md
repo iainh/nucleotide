@@ -108,12 +108,14 @@ behaviour are labelled in the example. Save the file, then choose
 
 ### Bundled themes
 
-Four palettes cover distinct everyday working environments:
+Six palettes cover distinct everyday working environments:
 
 | Theme | Appearance | Character |
 | --- | --- | --- |
 | `nucleotide-teal` | Dark (default) | Evergreen surfaces, amber keywords, mint types and lilac numbers |
 | `nucleotide-graphite` | Dark | Neutral slate surfaces, violet keywords, blue functions and gold numbers |
+| `nucleotide-silk` | Dark | Near-black surfaces, teal keywords, bright type names and warm ivory strings |
+| `nucleotide-silk-light` | Light | Soft ivory surfaces, deep teal keywords, bold dark type names and warm ochre strings |
 | `nucleotide-sandcastle` | Light (default) | Warm sand surfaces, seaside syntax and soft seafoam selections |
 | `nucleotide-2026-light` | Light | Crisp white surfaces, red keywords, violet functions and blue accents |
 
