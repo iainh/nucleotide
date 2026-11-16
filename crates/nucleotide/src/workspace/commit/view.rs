@@ -80,9 +80,39 @@ impl Workspace {
             .commit_review
             .snapshot
             .as_ref()
-            .map(|s| s.branch.clone())
+            .map(|s| match &s.upstream {
+                Ok(state) if state.upstream.is_some() => {
+                    format!("{} ↑{} ↓{}", s.branch, state.ahead, state.behind)
+                }
+                _ => s.branch.clone(),
+            })
             .unwrap_or_default();
         let busy = self.commit_review.busy;
+        let can_commit = self.can_commit(cx);
+        let can_push = self.can_push();
+        let amending = self.commit_amending();
+        let can_amend = !busy
+            && self
+                .commit_review
+                .snapshot
+                .as_ref()
+                .is_some_and(|s| s.head.is_some());
+        let error = self.commit_review.error.clone().or_else(|| {
+            self.commit_amend_stale().then(|| "HEAD changed since Amend was selected. Toggle Amend off and on to review the new commit.".into())
+        }).or_else(|| {
+            self.commit_review.snapshot.as_ref().and_then(|s| {
+                s.message_context
+                    .as_ref()
+                    .err()
+                    .map(|e| format!("Cannot load commit message defaults: {e}"))
+                    .or_else(|| {
+                        s.upstream
+                            .as_ref()
+                            .err()
+                            .map(|e| format!("Cannot read upstream: {e}"))
+                    })
+            })
+        });
         self.commit_review.controls.clear();
         let mut list = div()
             .id("commit-files")
@@ -128,7 +158,7 @@ impl Workspace {
             .when_some(self.commit_review.focus.as_ref(), |view, focus| {
                 view.track_focus(focus)
             })
-            .capture_key_down(cx.listener(Self::commit_message_escape))
+            .capture_key_down(cx.listener(Self::commit_shortcut))
             .on_key_down(cx.listener(Self::commit_review_key))
             .size_full()
             .flex()
@@ -187,9 +217,16 @@ impl Workspace {
                     ),
             )
             .child(self.render_commit_message(cx))
-            .when_some(self.commit_review.error.clone(), |view, error| {
+            .when_some(error, |view, error| {
                 view.child(
                     div()
+                        .id("commit-error")
+                        .when(cfg!(test), |view| {
+                            view.debug_selector(|| "commit-error".into())
+                        })
+                        .max_h(tokens.sizes.space_8 * 3.0)
+                        .overflow_y_scroll()
+                        .flex_shrink_0()
                         .p(tokens.sizes.space_3)
                         .bg(tokens.editor.error.opacity(0.12))
                         .text_color(tokens.editor.error)
@@ -202,7 +239,9 @@ impl Workspace {
                         .px(tokens.sizes.space_3)
                         .py(tokens.sizes.space_1)
                         .text_color(style.text_secondary)
-                        .child(if self.commit_review.pending.is_some() {
+                        .child(if let Some(operation) = self.commit_review.operation {
+                            operation
+                        } else if self.commit_review.pending.is_some() {
                             "Saving buffers before staging…"
                         } else {
                             "Refreshing repository…"
@@ -219,20 +258,67 @@ impl Workspace {
                     .p(tokens.sizes.space_3)
                     .border_t_1()
                     .border_color(style.border)
+                    .flex_shrink_0()
                     .child(format!(
                         "{staged_count} of {} files staged · Staging saves affected buffers",
                         files.len()
                     ))
                     .child(
-                        Button::new("commit-submit", "Commit")
-                            .disabled(true)
-                            .size(ButtonSize::Small),
+                        Checkbox::new("commit-amend", "Amend")
+                            .checked(amending)
+                            .disabled(!can_amend)
+                            .on_change({
+                                let workspace = cx.entity().downgrade();
+                                move |_, _, cx| {
+                                    let _ = workspace
+                                        .update(cx, |this, cx| this.toggle_commit_amend(cx));
+                                }
+                            }),
                     )
                     .child(
-                        Button::new("commit-push", "Commit and Push")
-                            .disabled(true)
-                            .size(ButtonSize::Small),
-                    ),
+                        div()
+                            .when(cfg!(test), |view| {
+                                view.debug_selector(|| "commit-submit".into())
+                            })
+                            .child(
+                                Button::new(
+                                    "commit-submit",
+                                    if amending { "Amend Commit" } else { "Commit" },
+                                )
+                                .disabled(!can_commit)
+                                .size(ButtonSize::Small)
+                                .on_click(
+                                    cx.listener(|this, _, _, cx| this.submit_commit(false, cx)),
+                                ),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .when(cfg!(test), |view| {
+                                view.debug_selector(|| "commit-push".into())
+                            })
+                            .child(
+                                Button::new("commit-push", "Commit and Push")
+                                    .disabled(!can_commit)
+                                    .size(ButtonSize::Small)
+                                    .on_click(
+                                        cx.listener(|this, _, _, cx| this.submit_commit(true, cx)),
+                                    ),
+                            ),
+                    )
+                    .when(can_push, |footer| {
+                        footer.child(
+                            div()
+                                .when(cfg!(test), |view| {
+                                    view.debug_selector(|| "commit-push-only".into())
+                                })
+                                .child(
+                                    button("commit-push-only", "Push").on_click(
+                                        cx.listener(|this, _, _, cx| this.push_commit(cx)),
+                                    ),
+                                ),
+                        )
+                    }),
             )
             .into_any_element()
     }

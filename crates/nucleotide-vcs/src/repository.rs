@@ -26,6 +26,13 @@ pub struct UpstreamState {
     pub behind: u32,
 }
 
+/// Message defaults read on the repository's host, including linked worktrees.
+pub struct CommitMessageContext {
+    pub seed: String,
+    pub last_message: Option<String>,
+    pub comment_prefix: String,
+}
+
 /// A git repository reached through a workspace backend.
 #[derive(Clone)]
 pub struct GitRepository {
@@ -199,6 +206,95 @@ impl GitRepository {
         self.git_with_paths(&["reset", "--quiet"], paths).await
     }
 
+    /// A read-only snapshot of staged changes, including conflict stages.
+    pub async fn index_signature(&self) -> Result<Vec<u8>, String> {
+        let output = self
+            .run_limited(
+                &[
+                    "diff",
+                    "--cached",
+                    "--raw",
+                    "-z",
+                    "--no-abbrev",
+                    "--no-renames",
+                    "--no-ext-diff",
+                ],
+                READ_TIMEOUT_MS,
+                16 * 1024 * 1024,
+            )
+            .await?;
+        if !output.success || output.stdout_truncated {
+            return Err(command_error("diff --cached", &output));
+        }
+        Ok(output.stdout)
+    }
+
+    pub async fn message_context(&self) -> Result<CommitMessageContext, String> {
+        let seed_path = if self
+            .optional_line(&["rev-parse", "--verify", "--quiet", "MERGE_HEAD"])
+            .await?
+            .is_some()
+        {
+            let path = self
+                .git(&["rev-parse", "--git-path", "MERGE_MSG"], READ_TIMEOUT_MS)
+                .await?;
+            Some(self.root.join(String::from_utf8_lossy(&path).trim()))
+        } else {
+            self.optional_line(&["config", "--path", "--get", "commit.template"])
+                .await?
+                .map(|path| self.root.join(path))
+        };
+        let seed = if let Some(path) = seed_path {
+            let read = self
+                .backend
+                .read_file(
+                    &path,
+                    nucleotide_workspace::ReadOptions {
+                        max_bytes: Some(METADATA_OUTPUT_LIMIT as u64),
+                    },
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+            if read.truncated {
+                return Err("Commit message template exceeds 64 KiB".into());
+            }
+            String::from_utf8(read.bytes).map_err(|e| e.to_string())?
+        } else {
+            String::new()
+        };
+        let last_message = if self
+            .optional_line(&["rev-parse", "--verify", "--quiet", "HEAD"])
+            .await?
+            .is_some()
+        {
+            Some(
+                String::from_utf8(
+                    self.git(&["log", "-1", "--format=%B"], READ_TIMEOUT_MS)
+                        .await?,
+                )
+                .map_err(|e| e.to_string())?,
+            )
+        } else {
+            None
+        };
+        let comment_prefix = match self
+            .optional_line(&["config", "--get", "core.commentString"])
+            .await?
+        {
+            Some(prefix) => prefix,
+            None => self
+                .optional_line(&["config", "--get", "core.commentChar"])
+                .await?
+                .filter(|prefix| prefix != "auto")
+                .unwrap_or_else(|| "#".into()),
+        };
+        Ok(CommitMessageContext {
+            seed,
+            last_message,
+            comment_prefix,
+        })
+    }
+
     /// Commits the index. Comment lines and surrounding blank lines are
     /// stripped from `message`, as in git's own editor flow.
     pub async fn commit(&self, message: &str, amend: bool) -> Result<(), String> {
@@ -293,7 +389,63 @@ impl GitRepository {
             args.push("--set-upstream");
         }
         args.extend(["--", remote.as_str(), refspec.as_str()]);
-        let output = self.run(&args, Vec::new(), PUSH_TIMEOUT_MS).await?;
+        let head = self
+            .optional_line(&["rev-parse", "--verify", "HEAD"])
+            .await?;
+        let output = match self.run(&args, Vec::new(), PUSH_TIMEOUT_MS).await {
+            Ok(output) => output,
+            Err(error) => {
+                // A timeout or disconnected transport can happen after the
+                // remote accepted the commit. Inspect, never automatically retry.
+                let probe = async {
+                    // Fetch and push URLs may differ, and Git pushes to every
+                    // configured push URL. Inspect those destinations, not the
+                    // fetch URL that ls-remote <remote> would otherwise use.
+                    let urls = if remote == "." {
+                        remote.clone()
+                    } else {
+                        String::from_utf8(
+                            self.git(
+                                &["remote", "get-url", "--push", "--all", &remote],
+                                READ_TIMEOUT_MS,
+                            )
+                            .await?,
+                        )
+                        .map_err(|e| e.to_string())?
+                    };
+                    let mut states = Vec::new();
+                    for url in urls.lines() {
+                        let bytes = self
+                            .git(
+                                &["ls-remote", "--refs", "--", url, &destination],
+                                READ_TIMEOUT_MS,
+                            )
+                            .await?;
+                        let refs = String::from_utf8_lossy(&bytes);
+                        let state = match refs.split_whitespace().next() {
+                            Some(tip) if Some(tip) == head.as_deref() => {
+                                "The remote already contains this commit; do not commit again."
+                                    .to_string()
+                            }
+                            Some(tip) => format!(
+                                "The remote currently points to {tip}. Review it before retrying Push."
+                            ),
+                            None => "The destination branch is absent on the remote.".to_string(),
+                        };
+                        states.push(format!("Push destination {}: {state}", states.len() + 1));
+                    }
+                    Ok::<_, String>(states.join("\n"))
+                }
+                .await;
+                let remote_state = match probe {
+                    Ok(state) => state,
+                    Err(probe) => format!(
+                        "Remote state could not be confirmed: {probe}. Inspect the remote before retrying."
+                    ),
+                };
+                return Err(format!("{error}\n{remote_state}"));
+            }
+        };
         if output.success {
             Ok(())
         } else {
@@ -874,6 +1026,45 @@ mod tests {
         let error = repo.push().await.unwrap_err();
         assert!(error.contains("rejected"), "{error}");
         assert_eq!(git(temp.path(), &["rev-parse", "HEAD"]), ours);
+    }
+
+    #[tokio::test]
+    async fn message_defaults_use_template_then_merge_message_in_linked_worktree() {
+        let root = repository_with(&[("file", "base\n")]);
+        let template = root.path().join("template");
+        std::fs::write(&template, "; describe the change\n").unwrap();
+        git(
+            root.path(),
+            &["config", "commit.template", template.to_str().unwrap()],
+        );
+        git(root.path(), &["config", "core.commentChar", ";"]);
+        let repo = open(root.path()).await;
+        let context = repo.message_context().await.unwrap();
+        assert_eq!(context.seed, "; describe the change\n");
+        assert_eq!(context.last_message.as_deref(), Some("initial\n\n"));
+        assert_eq!(context.comment_prefix, ";");
+
+        let linked = tempfile::tempdir().unwrap();
+        git(
+            root.path(),
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "linked",
+                linked.path().to_str().unwrap(),
+            ],
+        );
+        let head = git(linked.path(), &["rev-parse", "HEAD"]);
+        for (name, contents) in [
+            ("MERGE_HEAD", head.as_str()),
+            ("MERGE_MSG", "Merge topic\n"),
+        ] {
+            let path = git(linked.path(), &["rev-parse", "--git-path", name]);
+            std::fs::write(linked.path().join(path.trim()), contents).unwrap();
+        }
+        let repo = open(linked.path()).await;
+        assert_eq!(repo.message_context().await.unwrap().seed, "Merge topic\n");
     }
 
     #[tokio::test]

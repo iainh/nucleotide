@@ -20,6 +20,7 @@ fn repository() -> tempfile::TempDir {
     let root = tempdir().unwrap();
     git(root.path(), &["init", "-q"]);
     git(root.path(), &["config", "user.name", "Test"]);
+    git(root.path(), &["config", "commit.gpgsign", "false"]);
     git(
         root.path(),
         &["config", "user.email", "test@example.invalid"],
@@ -42,6 +43,7 @@ fn pump(core: &Entity<Application>, cx: &mut gpui::VisualTestContext) {
     cx.update(|window, cx| window.draw(cx).clear());
 }
 
+#[track_caller]
 fn wait_for(
     core: &Entity<Application>,
     cx: &mut gpui::VisualTestContext,
@@ -54,7 +56,10 @@ fn wait_for(
         }
         std::thread::sleep(Duration::from_millis(5));
     }
-    panic!("Commit review did not reach the expected state");
+    let status = core.read_with(cx, |core, _| {
+        core.editor.get_status().map(|(s, _)| s.to_string())
+    });
+    panic!("Commit review did not reach the expected state: {status:?}");
 }
 
 fn click_line(cx: &mut gpui::VisualTestContext, selector: &'static str) {
@@ -392,4 +397,278 @@ fn commit_review_reopens_one_tab_and_split_keeps_one_review(cx: &mut gpui::TestA
             Some(crate::tab::TabId::Commit)
         )
     });
+}
+
+#[gpui::test]
+fn commit_button_commits_index_not_unsaved_buffer_and_amend_rewords(cx: &mut gpui::TestAppContext) {
+    let _runtime = TEST_RUNTIME.enter();
+    let root = repository();
+    let path = root.path().join("file.txt");
+    fs::write(&path, "staged\nbeta\n").unwrap();
+    git(root.path(), &["add", "file.txt"]);
+    let (core, workspace, cx) = new_test_workspace(cx, &path);
+    install_commit_language(&core, cx);
+    workspace.update_in(cx, |workspace, window, cx| {
+        workspace.focus_editor(window, cx)
+    });
+    cx.simulate_keystrokes("i");
+    cx.simulate_input("unsaved\n");
+    cx.simulate_keystrokes("escape");
+    let file = core.read_with(cx, |core, _| {
+        core.editor.tree.get(core.editor.tree.focus).doc
+    });
+    core.update(cx, |_, cx| cx.emit(crate::Update::ShowCommit));
+    wait_for(&core, cx, |cx| {
+        cx.debug_bounds("commit-message-editor").is_some()
+    });
+    cx.simulate_keystrokes("c i");
+    cx.simulate_input("# comments alone are not a message");
+    cx.simulate_keystrokes("escape");
+    click_line(cx, "commit-submit");
+    pump(&core, cx);
+    assert_eq!(
+        git(root.path(), &["rev-list", "--count", "HEAD"]).trim(),
+        "1"
+    );
+    let message_bounds = cx.debug_bounds("commit-message-editor").unwrap();
+    cx.simulate_click(message_bounds.center(), Modifiers::none());
+    cx.simulate_keystrokes("% c");
+    cx.simulate_input("feat: commit the index\n\nKeep the buffer unsaved.\n# omit this comment");
+    cx.simulate_keystrokes("escape");
+    let message = core.read_with(cx, |core, _| {
+        core.editor.tree.get(core.editor.tree.focus).doc
+    });
+    click_line(cx, "commit-submit");
+    wait_for(&core, cx, |cx| {
+        core.read_with(cx, |core, _| core.editor.documents[&message].text() == "\n")
+    });
+    assert_eq!(
+        git(root.path(), &["show", "HEAD:file.txt"]),
+        "staged\nbeta\n"
+    );
+    assert_eq!(fs::read_to_string(&path).unwrap(), "staged\nbeta\n");
+    assert_eq!(
+        git(root.path(), &["log", "-1", "--format=%B"]).trim(),
+        "feat: commit the index\n\nKeep the buffer unsaved."
+    );
+    core.read_with(cx, |core, _| {
+        assert!(core.editor.documents[&file].is_modified());
+        assert_eq!(
+            core.editor.documents[&file].text().to_string(),
+            "unsaved\nstaged\nbeta\n"
+        );
+    });
+    // Wait for the refreshed HEAD before invoking Amend.
+    wait_for(&core, cx, |cx| {
+        cx.debug_bounds("commit-push-only").is_some()
+    });
+    cx.simulate_keystrokes("alt-a");
+    core.read_with(cx, |core, _| {
+        assert!(
+            core.editor.documents[&message]
+                .text()
+                .to_string()
+                .starts_with("feat: commit the index")
+        )
+    });
+    let message_bounds = cx.debug_bounds("commit-message-editor").unwrap();
+    cx.simulate_click(message_bounds.center(), Modifiers::none());
+    cx.simulate_keystrokes("% c");
+    cx.simulate_input("fix: reword the commit");
+    cx.simulate_keystrokes("escape");
+    cx.simulate_keystrokes(if cfg!(target_os = "macos") {
+        "cmd-enter"
+    } else {
+        "ctrl-enter"
+    });
+    wait_for(&core, cx, |_| {
+        git(root.path(), &["log", "-1", "--format=%s"]).trim() == "fix: reword the commit"
+    });
+    assert_eq!(
+        git(root.path(), &["rev-list", "--count", "HEAD"]).trim(),
+        "2"
+    );
+}
+
+#[cfg(unix)]
+fn hook(path: &Path, text: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    fs::write(path, text).unwrap();
+    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[cfg(unix)]
+#[gpui::test]
+fn commit_and_push_keeps_commit_on_rejection_and_push_retry_does_not_commit_again(
+    cx: &mut gpui::TestAppContext,
+) {
+    let _runtime = TEST_RUNTIME.enter();
+    let root = repository();
+    let remote = tempdir().unwrap();
+    git(remote.path(), &["init", "--bare", "-q"]);
+    git(
+        root.path(),
+        &["remote", "add", "origin", remote.path().to_str().unwrap()],
+    );
+    hook(
+        &remote.path().join("hooks/pre-receive"),
+        "#!/bin/sh\necho preview-rejected >&2\nexit 1\n",
+    );
+    fs::write(root.path().join("file.txt"), "push this\n").unwrap();
+    git(root.path(), &["add", "file.txt"]);
+    let (core, _, cx) = new_test_workspace(cx, &root.path().join("file.txt"));
+    install_commit_language(&core, cx);
+    core.update(cx, |_, cx| cx.emit(crate::Update::ShowCommit));
+    wait_for(&core, cx, |cx| {
+        cx.debug_bounds("commit-message-editor").is_some()
+    });
+    cx.simulate_keystrokes("c i");
+    cx.simulate_input("feat: publish changes");
+    cx.simulate_keystrokes("escape");
+    let message = core.read_with(cx, |core, _| {
+        core.editor.tree.get(core.editor.tree.focus).doc
+    });
+    // A failing commit hook must not attempt the push or discard the draft.
+    let pre_commit = root.path().join(".git/hooks/pre-commit");
+    hook(&pre_commit, "#!/bin/sh\necho commit-rejected >&2\nexit 1\n");
+    click_line(cx, "commit-push");
+    wait_for(&core, cx, |cx| {
+        core.read_with(cx, |core, _| {
+            core.editor
+                .get_status()
+                .is_some_and(|(s, _)| s.contains("commit-rejected"))
+        })
+    });
+    assert_eq!(
+        git(root.path(), &["rev-list", "--count", "HEAD"]).trim(),
+        "1"
+    );
+    assert_eq!(git(root.path(), &["show", ":file.txt"]), "push this\n");
+    core.read_with(cx, |core, _| {
+        assert_eq!(
+            core.editor.documents[&message].text().to_string(),
+            "feat: publish changes\n"
+        )
+    });
+    fs::remove_file(pre_commit).unwrap();
+    // Refresh completion is observable through the return of the Push control.
+    wait_for(&core, cx, |cx| {
+        cx.debug_bounds("commit-push-only").is_some()
+    });
+    click_line(cx, "commit-push");
+    wait_for(&core, cx, |cx| {
+        core.read_with(cx, |core, _| {
+            core.editor
+                .get_status()
+                .is_some_and(|(s, _)| s.contains("Commit created, but push failed"))
+        })
+    });
+    let head = git(root.path(), &["rev-parse", "HEAD"]);
+    assert_eq!(
+        git(root.path(), &["rev-list", "--count", "HEAD"]).trim(),
+        "2"
+    );
+    core.read_with(cx, |core, _| {
+        assert_eq!(core.editor.documents[&message].text().to_string(), "\n")
+    });
+    fs::remove_file(remote.path().join("hooks/pre-receive")).unwrap();
+    wait_for(&core, cx, |cx| {
+        cx.debug_bounds("commit-push-only").is_some()
+    });
+    click_line(cx, "commit-push-only");
+    wait_for(&core, cx, |_| {
+        !git(remote.path(), &["for-each-ref", "--format=%(objectname)"])
+            .trim()
+            .is_empty()
+    });
+    assert_eq!(
+        git(remote.path(), &["for-each-ref", "--format=%(objectname)"]),
+        head
+    );
+    assert_eq!(git(root.path(), &["rev-parse", "HEAD"]), head);
+    assert!(git(root.path(), &["rev-parse", "--abbrev-ref", "@{u}"]).starts_with("origin/"));
+    wait_for(&core, cx, |cx| {
+        core.read_with(cx, |core, _| {
+            core.editor
+                .get_status()
+                .is_some_and(|(status, _)| status == "Push completed")
+        })
+    });
+}
+
+#[cfg(unix)]
+#[gpui::test]
+fn commit_template_and_amend_preserve_the_original_draft(cx: &mut gpui::TestAppContext) {
+    let _runtime = TEST_RUNTIME.enter();
+    let root = repository();
+    fs::write(
+        root.path().join(".git/template"),
+        "feat: from template\n\n# describe why\n",
+    )
+    .unwrap();
+    git(root.path(), &["config", "commit.template", ".git/template"]);
+    fs::write(root.path().join("file.txt"), "ready\n").unwrap();
+    git(root.path(), &["add", "file.txt"]);
+    let (core, _, cx) = new_test_workspace(cx, &root.path().join("file.txt"));
+    install_commit_language(&core, cx);
+    core.update(cx, |_, cx| cx.emit(crate::Update::ShowCommit));
+    wait_for(&core, cx, |cx| {
+        cx.debug_bounds("commit-message-editor").is_some()
+    });
+    cx.simulate_keystrokes("c");
+    let message = core.read_with(cx, |core, _| {
+        core.editor.tree.get(core.editor.tree.focus).doc
+    });
+    core.read_with(cx, |core, _| {
+        assert_eq!(
+            core.editor.documents[&message].text().to_string(),
+            "feat: from template\n\n# describe why\n"
+        )
+    });
+    cx.simulate_keystrokes("alt-a");
+    core.read_with(cx, |core, _| {
+        assert_eq!(
+            core.editor.documents[&message].text().to_string(),
+            "initial\n"
+        )
+    });
+    cx.simulate_keystrokes("alt-a");
+    core.read_with(cx, |core, _| {
+        assert!(
+            core.editor.documents[&message]
+                .text()
+                .to_string()
+                .starts_with("feat: from template")
+        )
+    });
+    click_line(cx, "commit-submit");
+    wait_for(&core, cx, |cx| {
+        cx.debug_bounds("commit-push-only").is_some()
+    });
+    assert_eq!(
+        git(root.path(), &["log", "-1", "--format=%B"]).trim(),
+        "feat: from template"
+    );
+    assert_eq!(
+        git(root.path(), &["rev-list", "--count", "HEAD"]).trim(),
+        "2"
+    );
+    core.read_with(cx, |core, _| {
+        assert_eq!(core.editor.documents[&message].text().to_string(), "\n")
+    });
+    cx.simulate_keystrokes("alt-a");
+    git(
+        root.path(),
+        &["commit", "--allow-empty", "-qm", "external commit"],
+    );
+    let external = git(root.path(), &["rev-parse", "HEAD"]);
+    core.update(cx, |_, cx| cx.emit(crate::Update::ShowCommit));
+    wait_for(&core, cx, |cx| cx.debug_bounds("commit-error").is_some());
+    click_line(cx, "commit-submit");
+    pump(&core, cx);
+    assert_eq!(
+        git(root.path(), &["rev-parse", "HEAD"]),
+        external,
+        "Amend must never silently switch to an external commit"
+    );
 }

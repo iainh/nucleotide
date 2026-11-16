@@ -12,7 +12,11 @@ impl Workspace {
             snapshot.backend.identity(),
             snapshot.repository.root().to_path_buf(),
         );
-        let existing = self.commit_review.messages.get(&key).copied();
+        let existing = self
+            .commit_review
+            .messages
+            .get(&key)
+            .map(|draft| draft.document);
         let slot = self.pane_host.commit_message.map(|(_, slot)| slot);
         let handle = self.handle.clone();
         let result = self.core.update(cx, |core, _| -> Result<_, String> {
@@ -51,8 +55,20 @@ impl Workspace {
         });
         match result {
             Ok((document, slot)) => {
-                self.commit_review.messages.insert(key, document);
+                self.commit_review
+                    .messages
+                    .entry(key)
+                    .or_insert(CommitDraft {
+                        document,
+                        before_amend: None,
+                        amend_head: None,
+                    });
                 self.pane_host.commit_message = Some((document, slot));
+                if existing.is_none()
+                    && let Ok(context) = &snapshot.message_context
+                {
+                    self.replace_commit_message(document, slot, &context.seed, cx);
+                }
                 self.project_panes(cx);
                 self.update_document_views(cx);
             }
@@ -64,6 +80,31 @@ impl Workspace {
                 self.update_document_views(cx);
             }
         }
+    }
+
+    pub(super) fn replace_commit_message(
+        &mut self,
+        document: DocumentId,
+        slot: ViewId,
+        text: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let handle = self.handle.clone();
+        self.core.update(cx, |core, _| {
+            let _guard = handle.enter();
+            let Some(doc) = core.editor.document_mut(document) else {
+                return;
+            };
+            let text = format!("{}\n", text.trim_end_matches('\n'));
+            let transaction = helix_core::Transaction::change(
+                doc.text(),
+                [(0, doc.text().len_chars(), Some(text.into()))].into_iter(),
+            )
+            .with_selection(helix_core::Selection::point(0));
+            doc.apply(&transaction, slot);
+        });
+        self.update_document_views(cx);
+        cx.notify();
     }
 
     pub(in crate::workspace) fn focus_commit_message(

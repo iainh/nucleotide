@@ -1,11 +1,12 @@
 //! Commit review state and save-before-stage coordination. Git work never runs on the UI thread.
 mod message;
+mod submit;
 #[cfg(test)]
 mod tests;
 mod view;
 
 use super::*;
-use nucleotide_vcs::repository::GitRepository;
+use nucleotide_vcs::repository::{CommitMessageContext, GitRepository, UpstreamState};
 use nucleotide_vcs::staging::{
     FileChanges, MAX_LINE_STAGING_BYTES, Selection, SelectionState, supports_line_staging,
 };
@@ -26,7 +27,14 @@ pub(super) struct CommitReview {
     control_focus: HashMap<String, FocusHandle>,
     controls: Vec<(FocusHandle, Arc<ReviewFile>, StageChange)>,
     collapse_prefix: bool,
-    messages: HashMap<(WorkspaceIdentity, PathBuf), DocumentId>,
+    messages: HashMap<(WorkspaceIdentity, PathBuf), CommitDraft>,
+    operation: Option<&'static str>,
+}
+
+struct CommitDraft {
+    document: DocumentId,
+    before_amend: Option<String>,
+    amend_head: Option<String>,
 }
 
 struct ReviewSnapshot {
@@ -37,6 +45,9 @@ struct ReviewSnapshot {
     branch: String,
     files: Vec<Arc<ReviewFile>>,
     truncated: bool,
+    index_signature: Vec<u8>,
+    message_context: Result<CommitMessageContext, String>,
+    upstream: Result<UpstreamState, String>,
 }
 
 struct ReviewFile {
@@ -202,6 +213,9 @@ async fn load_review(
         .git_head(repository.root())
         .await
         .map_err(|e| e.to_string())?;
+    let index_signature = repository.index_signature().await?;
+    let message_context = repository.message_context().await;
+    let upstream = repository.upstream_state().await;
     let mut status = backend
         .git_status(repository.root(), GitStatusOptions::default())
         .await
@@ -233,14 +247,17 @@ async fn load_review(
             content,
         }));
     }
-    if backend
-        .git_head(repository.root())
-        .await
-        .map_err(|e| e.to_string())?
-        .head
-        != head.head
+    if repository.index_signature().await? != index_signature
+        || backend
+            .git_head(repository.root())
+            .await
+            .map_err(|e| e.to_string())?
+            .head
+            != head.head
     {
-        return Err("HEAD changed while loading. Refresh to review the new changes.".into());
+        return Err(
+            "HEAD or index changed while loading. Refresh to review the new changes.".into(),
+        );
     }
     Ok(ReviewSnapshot {
         repository,
@@ -250,6 +267,9 @@ async fn load_review(
         branch: head.display_ref.unwrap_or_else(|| "No commits yet".into()),
         files,
         truncated: status.truncated,
+        index_signature,
+        message_context,
+        upstream,
     })
 }
 
