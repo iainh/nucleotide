@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 
 use gpui::{Bounds, Font, Hsla, Pixels, Point, SharedString, TextRun, point, px, size};
 use helix_core::{
-    RopeSlice,
+    RopeSlice, char_idx_at_visual_offset,
     doc_formatter::{DocumentFormatter, FormattedGrapheme, GraphemeSource, TextFormat},
     graphemes::Grapheme,
     syntax,
@@ -102,6 +102,8 @@ pub struct SoftWrapRenderPlan {
     pub viewport_height: usize,
     pub visual_lines: Vec<SoftWrapVisualLine>,
     pub inline_diagnostic_virtual_rows: BTreeMap<usize, usize>,
+    /// Native virtual rows above the viewport top that belong to the first visual line.
+    pub leading_virtual_rows: usize,
 }
 
 impl SoftWrapRenderPlan {
@@ -118,6 +120,7 @@ impl SoftWrapRenderPlan {
             line_height,
             scroll_line_offset,
             self.view_offset.vertical_offset,
+            self.leading_virtual_rows,
             cursor_line,
         )
     }
@@ -155,9 +158,28 @@ pub fn soft_wrap_render_plan(mut params: SoftWrapRenderPlanParams<'_>) -> SoftWr
         EditorSurfaceGeometry::new(params.bounds, params.gutter_columns, params.cell_width);
     let viewport_height =
         soft_wrap_viewport_height(params.bounds, params.line_height, params.scroll_line_offset);
+    let mut view_offset = params.view_offset;
+    let mut leading_virtual_rows = 0;
     if params.inline_diagnostic_virtual_rows.is_some()
         && let Some(annotations) = params.text_annotations.as_mut()
     {
+        // When the viewport top falls inside virtual rows, start the plan at the line that
+        // owns them and shift it up; skipping rows without annotations would land too low.
+        if view_offset.vertical_offset > 0 {
+            let (char_idx, virtual_rows) = char_idx_at_visual_offset(
+                params.text,
+                view_offset.anchor,
+                isize::try_from(view_offset.vertical_offset).unwrap_or(isize::MAX),
+                0,
+                &params.text_format,
+                annotations,
+            );
+            if virtual_rows > 0 {
+                leading_virtual_rows = virtual_rows;
+                view_offset.anchor = char_idx;
+                view_offset.vertical_offset = 0;
+            }
+        }
         // Native diagnostic rows are planned and painted separately. Retaining Helix's
         // diagnostic line annotations here would reserve the same rows a second time.
         annotations.clear_line_annotations();
@@ -166,15 +188,15 @@ pub fn soft_wrap_render_plan(mut params: SoftWrapRenderPlanParams<'_>) -> SoftWr
         params.text,
         &params.text_format,
         params.text_annotations.as_ref(),
-        params.view_offset.anchor,
-        params.view_offset.vertical_offset,
-        viewport_height,
+        view_offset.anchor,
+        view_offset.vertical_offset,
+        viewport_height + leading_virtual_rows,
         params.whitespace,
     );
 
     SoftWrapRenderPlan {
         text_format: params.text_format,
-        view_offset: params.view_offset,
+        view_offset,
         gutter_columns: params.gutter_columns,
         geometry,
         viewport_height,
@@ -183,6 +205,7 @@ pub fn soft_wrap_render_plan(mut params: SoftWrapRenderPlanParams<'_>) -> SoftWr
             .inline_diagnostic_virtual_rows
             .cloned()
             .unwrap_or_default(),
+        leading_virtual_rows,
     }
 }
 
@@ -405,10 +428,12 @@ pub fn soft_wrap_line_paint_plans<'a>(
     line_height: Pixels,
     scroll_line_offset: Pixels,
     vertical_offset: usize,
+    leading_virtual_rows: usize,
     cursor_line: usize,
 ) -> Vec<SoftWrapLinePaintPlan<'a>> {
     let text_origin_x = geometry.text_origin_x();
     let mut extra_rows_before = 0usize;
+    let scroll_line_offset = scroll_line_offset + line_height * leading_virtual_rows as f32;
 
     visual_lines
         .iter()
@@ -1004,8 +1029,16 @@ mod tests {
         ];
 
         let virtual_rows = std::collections::BTreeMap::new();
-        let plans =
-            soft_wrap_line_paint_plans(&lines, &virtual_rows, geometry(), px(20.0), px(5.0), 1, 4);
+        let plans = soft_wrap_line_paint_plans(
+            &lines,
+            &virtual_rows,
+            geometry(),
+            px(20.0),
+            px(5.0),
+            1,
+            0,
+            4,
+        );
 
         assert_eq!(plans.len(), 2);
         assert_eq!(plans[0].y_offset, px(-5.0));
@@ -1075,8 +1108,16 @@ mod tests {
         let mut virtual_rows = std::collections::BTreeMap::new();
         virtual_rows.insert(0, 2);
 
-        let plans =
-            soft_wrap_line_paint_plans(&lines, &virtual_rows, geometry(), px(20.0), px(0.0), 0, 0);
+        let plans = soft_wrap_line_paint_plans(
+            &lines,
+            &virtual_rows,
+            geometry(),
+            px(20.0),
+            px(0.0),
+            0,
+            0,
+            0,
+        );
 
         assert_eq!(plans[0].y_offset, px(0.0));
         assert_eq!(plans[1].y_offset, px(20.0));

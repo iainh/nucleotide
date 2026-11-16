@@ -18,7 +18,7 @@ use helix_core::{
     visual_offset_from_block,
 };
 use helix_stdx::rope::RopeSliceExt;
-use helix_view::{Document, DocumentId, Theme};
+use helix_view::{Document, DocumentId, Theme, view::ReservedRows};
 use nucleotide_logging::{PerfTimer, trace};
 
 use crate::EditorSurfaceGeometry;
@@ -67,6 +67,7 @@ struct EditorDocumentMetricsCacheKey {
     document_version: i32,
     text_len: usize,
     diagnostics_hash: u64,
+    reserved_rows: Option<ReservedRows>,
     gutter_columns: u16,
     viewport_columns: u16,
     minimum_columns: u16,
@@ -248,6 +249,10 @@ impl EditorDocumentMetricsCache {
             document_version: params.document.version(),
             text_len: params.document.text().len_chars(),
             diagnostics_hash: diagnostics_hash(params.document),
+            reserved_rows: params
+                .view
+                .reserved_rows
+                .and_then(|reserved| reserved.active_for(params.document)),
             gutter_columns: params.gutter_columns,
             viewport_columns,
             minimum_columns: params.minimum_columns,
@@ -355,6 +360,7 @@ fn metrics_layout_matches(
     current: &EditorDocumentMetricsCacheKey,
 ) -> bool {
     cached.document_id == current.document_id
+        && cached.reserved_rows == current.reserved_rows
         && cached.gutter_columns == current.gutter_columns
         && cached.viewport_columns == current.viewport_columns
         && cached.minimum_columns == current.minimum_columns

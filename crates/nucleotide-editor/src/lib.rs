@@ -125,8 +125,9 @@ pub use ruler::{
     visible_zero_based_column_bound,
 };
 pub use run_gutter::{
-    GutterRunButtonHit, run_gutter_button_bounds, run_gutter_button_left, run_gutter_button_size,
-    run_gutter_extra_columns, run_gutter_icon_bounds, run_gutter_required_width,
+    GutterRunButtonHit, diff_gutter_hit_bounds, run_gutter_button_bounds, run_gutter_button_left,
+    run_gutter_button_size, run_gutter_extra_columns, run_gutter_icon_bounds,
+    run_gutter_required_width,
 };
 pub use scroll_manager::ScrollManager;
 pub use scrollbar::{

@@ -300,10 +300,20 @@ impl EditorViewState {
 
     pub fn clear_gutter_run_button_hits(&self) {
         self.overlay_state.clear_gutter_run_button_hits();
+        self.overlay_state.set_gutter_diff_hits(Vec::new());
     }
 
     pub fn gutter_run_button_line_at(&self, position: Point<Pixels>) -> Option<usize> {
         self.overlay_state.gutter_run_button_line_at(position)
+    }
+
+    pub fn set_gutter_diff_hits(&self, hits: Vec<GutterRunButtonHit>) {
+        self.overlay_state.set_gutter_diff_hits(hits);
+    }
+
+    /// Document line of the diff gutter marker under `position`, from the last painted frame.
+    pub fn gutter_diff_line_at(&self, position: Point<Pixels>) -> Option<usize> {
+        self.overlay_state.gutter_diff_line_at(position)
     }
 
     pub fn layout_snapshot(&self) -> EditorViewLayoutSnapshot {

@@ -12,7 +12,11 @@ use helix_core::{
     RopeSlice, char_idx_at_visual_offset, doc_formatter::TextFormat,
     text_annotations::TextAnnotations, visual_offset_from_block,
 };
-use helix_view::{Document, DocumentId, Editor, Theme, ViewId, graphics::Rect, view::ViewPosition};
+use helix_view::{
+    Document, DocumentId, Editor, Theme, ViewId,
+    graphics::Rect,
+    view::{ReservedRows, ViewPosition},
+};
 use nucleotide_logging::{PerfTimer, trace};
 
 use crate::{
@@ -104,6 +108,7 @@ struct EditorViewportConversionBaseKey {
     document_version: i32,
     text_len: usize,
     view_id: ViewId,
+    reserved_rows: Option<ReservedRows>,
     text_format: EditorViewportTextFormatKey,
 }
 
@@ -731,7 +736,7 @@ impl EditorViewport {
     ) -> HelixViewportSnapshot {
         let view_position = document.view_offset(view_id);
         let key = HelixViewportSnapshotCacheKey {
-            base: viewport_conversion_base_key(document, view_id, text_format),
+            base: viewport_conversion_base_key(document, view, text_format),
             view_position,
         };
 
@@ -841,7 +846,7 @@ impl EditorViewport {
                 view_position: plan.view_position,
                 changed: false,
             };
-            self.cache_view_position_plan(document, view_id, text_format, synced_plan);
+            self.cache_view_position_plan(document, view, text_format, synced_plan);
         }
 
         (synced, plan)
@@ -1015,17 +1020,12 @@ impl EditorViewport {
             };
             self.cache_helix_viewport_snapshot(
                 document,
-                view_id,
+                view,
                 &metrics.text_format,
                 plan.view_position,
                 snapshot,
             );
-            self.cache_view_position_plan(
-                document,
-                view_id,
-                &metrics.text_format,
-                view_position_plan,
-            );
+            self.cache_view_position_plan(document, view, &metrics.text_format, view_position_plan);
             (snapshot, view_position_plan)
         } else {
             let helix_snapshot =
@@ -1077,7 +1077,7 @@ impl EditorViewport {
         let previous_view_position = document.view_offset(view_id);
         let top_visual_row = self.top_visual_row();
         let key = EditorViewportViewPositionPlanCacheKey {
-            base: viewport_conversion_base_key(document, view_id, text_format),
+            base: viewport_conversion_base_key(document, view, text_format),
             previous_view_position,
             top_visual_row,
             horizontal_offset,
@@ -1108,12 +1108,12 @@ impl EditorViewport {
     fn cache_view_position_plan(
         &self,
         document: &Document,
-        view_id: ViewId,
+        view: &helix_view::View,
         text_format: &TextFormat,
         plan: EditorViewportViewPositionPlan,
     ) {
         let key = EditorViewportViewPositionPlanCacheKey {
-            base: viewport_conversion_base_key(document, view_id, text_format),
+            base: viewport_conversion_base_key(document, view, text_format),
             previous_view_position: plan.previous_view_position,
             top_visual_row: plan.top_visual_row,
             horizontal_offset: plan.view_position.horizontal_offset,
@@ -1126,13 +1126,13 @@ impl EditorViewport {
     fn cache_helix_viewport_snapshot(
         &self,
         document: &Document,
-        view_id: ViewId,
+        view: &helix_view::View,
         text_format: &TextFormat,
         view_position: ViewPosition,
         snapshot: HelixViewportSnapshot,
     ) {
         let key = HelixViewportSnapshotCacheKey {
-            base: viewport_conversion_base_key(document, view_id, text_format),
+            base: viewport_conversion_base_key(document, view, text_format),
             view_position,
         };
         self.conversion_cache
@@ -1150,7 +1150,7 @@ impl EditorViewport {
         let text = document.text().slice(..);
         let cursor_char_idx = document.selection(view_id).primary().cursor(text);
         let key = DocumentCursorVisualRowCacheKey {
-            base: viewport_conversion_base_key(document, view_id, text_format),
+            base: viewport_conversion_base_key(document, view, text_format),
             cursor_char_idx,
         };
 
@@ -1314,13 +1314,16 @@ fn editor_text_viewport_size_for_bounds(
 
 fn viewport_conversion_base_key(
     document: &Document,
-    view_id: ViewId,
+    view: &helix_view::View,
     text_format: &TextFormat,
 ) -> EditorViewportConversionBaseKey {
     EditorViewportConversionBaseKey {
         document_version: document.version(),
         text_len: document.text().len_chars(),
-        view_id,
+        view_id: view.id,
+        reserved_rows: view
+            .reserved_rows
+            .and_then(|reserved| reserved.active_for(document)),
         text_format: EditorViewportTextFormatKey::from(text_format),
     }
 }
@@ -2511,6 +2514,7 @@ mod tests {
             document_version: 1,
             text_len: 12,
             view_id: ViewId::default(),
+            reserved_rows: None,
             text_format: EditorViewportTextFormatKey::from(&TextFormat::default()),
         };
         let key = EditorViewportViewPositionPlanCacheKey {
@@ -2556,6 +2560,7 @@ mod tests {
             document_version: 1,
             text_len: 12,
             view_id: ViewId::default(),
+            reserved_rows: None,
             text_format: EditorViewportTextFormatKey::from(&TextFormat::default()),
         };
         let key = DocumentCursorVisualRowCacheKey {
@@ -2589,6 +2594,7 @@ mod tests {
             document_version: 1,
             text_len: 12,
             view_id: ViewId::default(),
+            reserved_rows: None,
             text_format: EditorViewportTextFormatKey::from(&TextFormat::default()),
         };
         let key = HelixViewportSnapshotCacheKey {

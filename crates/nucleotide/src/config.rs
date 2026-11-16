@@ -1242,8 +1242,14 @@ fn merge_nucleotide_helix_keybindings(config: &mut HelixConfig) -> anyhow::Resul
     let space = KeyEvent::from_str("space")?;
     let v = KeyEvent::from_str("v")?;
     let r = KeyEvent::from_str("r")?;
+    let d = KeyEvent::from_str("d")?;
     let t = KeyEvent::from_str("t")?;
     let reset_diff_change = MappableCommand::from_str(":reset-diff-change")?;
+    let peek_diff_change = MappableCommand::Typable {
+        name: "peek-diff-change".into(),
+        args: String::new(),
+        doc: "Show diff of change under cursor".into(),
+    };
     let toggle_file_tree = MappableCommand::Typable {
         name: "toggle-file-tree".into(),
         args: String::new(),
@@ -1252,6 +1258,7 @@ fn merge_nucleotide_helix_keybindings(config: &mut HelixConfig) -> anyhow::Resul
 
     let mut vcs_node = IndexMap::new();
     vcs_node.insert(r, KeyTrie::MappableCommand(reset_diff_change));
+    vcs_node.insert(d, KeyTrie::MappableCommand(peek_diff_change));
 
     let mut space_node = IndexMap::new();
     space_node.insert(v, KeyTrie::Node(KeyTrieNode::new("VCS", vcs_node)));
@@ -1459,6 +1466,15 @@ mod tests {
             command,
             MappableCommand::from_str(":reset-diff-change").unwrap()
         );
+
+        for key in ["space", "v"] {
+            keymaps.get(Mode::Normal, KeyEvent::from_str(key).unwrap());
+        }
+        let peek = match keymaps.get(Mode::Normal, KeyEvent::from_str("d").unwrap()) {
+            KeymapResult::Matched(command) => command,
+            other => panic!("expected <space> v d to match peek-diff-change, got {other:?}"),
+        };
+        assert_eq!(peek.name(), "peek-diff-change");
 
         let mut keymaps = Keymaps::new(Box::new(arc_swap::access::Constant(config.keys)));
         assert!(matches!(

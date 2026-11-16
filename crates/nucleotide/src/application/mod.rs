@@ -3607,6 +3607,9 @@ impl Application {
                 editor_input::NativeWorkspaceRequest::ToggleFileTree => {
                     self.emit_native_ui_update(crate::Update::ToggleFileTree, continuation, cx);
                 }
+                editor_input::NativeWorkspaceRequest::PeekDiffChange => {
+                    self.emit_native_ui_update(crate::Update::PeekDiffChange, continuation, cx);
+                }
                 editor_input::NativeWorkspaceRequest::OpenFiles { paths, action } => {
                     cx.emit(crate::Update::WorkspaceCommand {
                         request: editor_input::workspace_commands::WorkspaceCommandRequest {

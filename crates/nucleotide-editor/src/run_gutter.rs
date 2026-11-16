@@ -13,6 +13,20 @@ pub struct GutterRunButtonHit {
     pub bounds: Bounds<Pixels>,
 }
 
+/// Click target for a diff gutter marker. The bar is only a few pixels wide, so the
+/// target covers its whole gutter column plus a little padding on each side.
+pub fn diff_gutter_hit_bounds(
+    marker_origin: Point<Pixels>,
+    cell_width: Pixels,
+    line_height: Pixels,
+) -> Bounds<Pixels> {
+    let padding = px(2.0);
+    Bounds::new(
+        point(marker_origin.x - padding, marker_origin.y),
+        size(cell_width + padding * 2.0, line_height),
+    )
+}
+
 pub fn run_gutter_button_size(line_height: Pixels) -> Pixels {
     (line_height * RUN_GUTTER_BUTTON_LINE_HEIGHT_RATIO).max(px(RUN_GUTTER_BUTTON_MIN_SIZE_PX))
 }

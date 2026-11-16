@@ -699,6 +699,7 @@ impl OverlayView {
             | crate::Update::OpenFile(_)
             | crate::Update::SemanticShortcut(_)
             | crate::Update::ToggleFileTree
+            | crate::Update::PeekDiffChange
             | crate::Update::ShowFilePicker
             | crate::Update::ShowFilePickerAt(_)
             | crate::Update::ShowCodeActions => {

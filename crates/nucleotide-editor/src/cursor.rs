@@ -688,9 +688,12 @@ pub fn soft_wrap_cursor_paint_plan(
         let byte_offset =
             line.char_to_byte(char_offset) - line.char_to_byte(line_layout.segment_char_offset);
         let display_byte = line_layout.display_byte_for_source_byte(byte_offset);
-        paint_position.paint_origin.x = params.geometry.text_bounds().origin.x
+        let text_origin = params.geometry.text_bounds().origin;
+        paint_position.paint_origin.x = text_origin.x
             + line_layout.origin.x
             + grapheme_x_for_index(&line_layout.shaped_line, display_byte);
+        // The painted line already includes native virtual rows above it.
+        paint_position.paint_origin.y = text_origin.y + line_layout.origin.y;
     }
 
     Some(SoftWrapCursorPaintPlan {

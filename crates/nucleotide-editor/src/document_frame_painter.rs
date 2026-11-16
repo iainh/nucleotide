@@ -333,6 +333,44 @@ pub struct NativeEditorPreparedFrame {
 }
 
 impl NativeEditorPreparedFrame {
+    /// Window bounds of the host-reserved rows across the text area, if any are reserved.
+    /// The rows may extend past the editor bounds when partly scrolled out of view.
+    pub fn reserved_rows_bounds(&self, layout: &EditorLayout) -> Option<Bounds<Pixels>> {
+        let frame = &self.paint_plan.frame;
+        let reserved = frame.reserved_rows?;
+        let line_height = layout.line_height;
+        let plans = &frame.gutter_line_plans;
+        let top = if let Some(line) = plans
+            .iter()
+            .rev()
+            .find(|plan| plan.doc_line == reserved.line)
+        {
+            let diagnostic_rows = frame
+                .inline_diagnostic_plan
+                .line(reserved.line)
+                .map_or(0, |line| line.virtual_row_count());
+            line.origin.y + line_height * (1 + diagnostic_rows) as f32
+        } else {
+            // The reserved line is above the viewport; find the line below the rows.
+            plans
+                .iter()
+                .find(|plan| plan.doc_line == reserved.line + 1 && plan.first_visual_line)?
+                .origin
+                .y
+                - line_height * reserved.rows as f32
+        };
+        let text_bounds = EditorSurfaceGeometry::new(
+            self.paint_plan.bounds,
+            frame.gutter_width,
+            layout.cell_width,
+        )
+        .text_bounds();
+        Some(Bounds::new(
+            gpui::point(text_bounds.origin.x, top),
+            gpui::size(text_bounds.size.width, line_height * reserved.rows as f32),
+        ))
+    }
+
     /// Resolve the overlay anchor during prepaint using the same cursor plans
     /// and text shaping as painting, before sibling overlays are prepainted.
     pub fn cursor_overlay_plan(
@@ -783,6 +821,7 @@ fn native_editor_frame_gutter_line_plans(
             visual_lines: &soft_wrap_plan.visual_lines,
             inline_diagnostic_virtual_rows: &soft_wrap_plan.inline_diagnostic_virtual_rows,
             vertical_offset: soft_wrap_plan.view_offset.vertical_offset,
+            leading_virtual_rows: soft_wrap_plan.leading_virtual_rows,
             editor: params.editor,
             document: params.document,
             view: params.view,
@@ -855,8 +894,36 @@ pub fn paint_native_editor_frame(
     params
         .editor_state
         .set_gutter_run_button_hits(run_button_hits);
+    let diff_hits = gutter_diff_hits(window, &params);
+    params.editor_state.set_gutter_diff_hits(diff_hits);
 
     overlay_plan
+}
+
+fn gutter_diff_hits(
+    window: &mut Window,
+    params: &NativeEditorFramePaintParams<'_>,
+) -> Vec<crate::GutterRunButtonHit> {
+    let mouse = window.mouse_position();
+    let hits: Vec<_> = params
+        .plan
+        .frame
+        .gutter_line_plans
+        .iter()
+        .filter(|line| line.kind.is_diff())
+        .map(|line| crate::GutterRunButtonHit {
+            doc_line: line.doc_line,
+            bounds: crate::diff_gutter_hit_bounds(
+                line.origin,
+                params.layout.cell_width,
+                params.layout.line_height,
+            ),
+        })
+        .collect();
+    if hits.iter().any(|hit| hit.bounds.contains(&mouse)) {
+        window.set_window_cursor_style(CursorStyle::PointingHand);
+    }
+    hits
 }
 
 fn paint_gutter_run_buttons(

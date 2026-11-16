@@ -19,6 +19,7 @@ use nucleotide_ui::{
 };
 use nucleotide_workspace::{WorkspaceBackendHandle, WorkspaceIdentity};
 
+mod diff_peek;
 mod native_input;
 
 use crate::{Core, Input, InputEvent};
@@ -119,6 +120,9 @@ pub struct DocumentView {
     runnable_tasks_cache: Option<RunnableTasksCache>,
     runnable_tasks_pending: Option<RunnableTasksPending>,
     native_input: native_input::NativeInput,
+    diff_peek: Option<diff_peek::DiffPeek>,
+    /// Primary cursor line when the panel last changed, so only cursor moves retarget it.
+    diff_peek_cursor_line: Option<usize>,
 }
 
 impl DocumentView {
@@ -151,6 +155,175 @@ impl DocumentView {
             runnable_tasks_cache: None,
             runnable_tasks_pending: None,
             native_input: native_input::NativeInput::default(),
+            diff_peek: None,
+            diff_peek_cursor_line: None,
+        }
+    }
+
+    /// `:peek-diff-change`: toggles the panel for the change under the primary cursor.
+    pub fn toggle_diff_peek_at_cursor(&mut self, cx: &mut Context<Self>) {
+        let Some(line) = self.cursor_line(cx) else {
+            return;
+        };
+        if !self.toggle_diff_peek(line, cx) {
+            self.core.update(cx, |core, cx| {
+                core.editor.set_error("There is no change under the cursor");
+                cx.notify();
+            });
+        }
+    }
+
+    /// Opens the inline diff panel for the change marked on `line`, or closes it when
+    /// that change is already open. Returns false when `line` has no change.
+    fn toggle_diff_peek(&mut self, line: usize, cx: &mut Context<Self>) -> bool {
+        let peek = {
+            let core = self.core.read(cx);
+            core.editor
+                .tree
+                .try_get(self.view_id)
+                .and_then(|view| core.editor.documents.get(&view.doc))
+                .and_then(|doc| diff_peek::DiffPeek::at_line(doc, line))
+        };
+        let Some(peek) = peek else {
+            return false;
+        };
+        let peek = (self.diff_peek.as_ref() != Some(&peek)).then_some(peek);
+        self.set_diff_peek(peek, cx);
+        true
+    }
+
+    fn cursor_line(&self, cx: &App) -> Option<usize> {
+        let core = self.core.read(cx);
+        let view = core.editor.tree.try_get(self.view_id)?;
+        let doc = core.editor.documents.get(&view.doc)?;
+        Some(
+            doc.selection(self.view_id)
+                .primary()
+                .cursor_line(doc.text().slice(..)),
+        )
+    }
+
+    fn set_diff_peek(&mut self, peek: Option<diff_peek::DiffPeek>, cx: &mut Context<Self>) {
+        self.diff_peek_cursor_line = peek.as_ref().and(self.cursor_line(cx));
+        let view_id = self.view_id;
+        let reservation = peek.as_ref().map(diff_peek::DiffPeek::reservation);
+        self.core.update(cx, |core, cx| {
+            if core.editor.tree.try_get(view_id).is_some() {
+                core.editor.tree.get_mut(view_id).reserved_rows = reservation;
+                cx.notify();
+            }
+        });
+        self.diff_peek = peek;
+        cx.notify();
+    }
+
+    /// Keeps the open panel in step with the editor: it closes once its document is
+    /// edited or replaced in this view, and moves to another change when the cursor
+    /// does, such as with `]g` / `[g`.
+    fn sync_diff_peek(&mut self, cx: &mut Context<Self>) {
+        let Some(peek) = &self.diff_peek else {
+            return;
+        };
+        let cursor_line = self.cursor_line(cx);
+        let next = {
+            let core = self.core.read(cx);
+            let doc = core
+                .editor
+                .tree
+                .try_get(self.view_id)
+                .and_then(|view| core.editor.documents.get(&view.doc))
+                .filter(|doc| peek.is_current_for(doc));
+            match (doc, cursor_line) {
+                (None, _) => Some(None),
+                (Some(doc), Some(line)) if self.diff_peek_cursor_line != Some(line) => {
+                    diff_peek::DiffPeek::at_line(doc, line)
+                        .filter(|next| next.hunk_index != peek.hunk_index)
+                        .map(Some)
+                }
+                _ => None,
+            }
+        };
+        self.diff_peek_cursor_line = cursor_line;
+        if let Some(next) = next {
+            self.set_diff_peek(next, cx);
+        }
+    }
+
+    fn close_diff_peek(&mut self, cx: &mut Context<Self>) {
+        self.set_diff_peek(None, cx);
+    }
+
+    fn show_previous_diff_change(&mut self, cx: &mut Context<Self>) {
+        self.step_diff_peek(false, cx);
+    }
+
+    fn show_next_diff_change(&mut self, cx: &mut Context<Self>) {
+        self.step_diff_peek(true, cx);
+    }
+
+    /// Moves the panel and the cursor to the neighbouring change, like `]g` / `[g`.
+    fn step_diff_peek(&mut self, forward: bool, cx: &mut Context<Self>) {
+        let Some(current) = &self.diff_peek else {
+            return;
+        };
+        let index = if forward {
+            current.hunk_index + 1
+        } else {
+            let Some(index) = current.hunk_index.checked_sub(1) else {
+                return;
+            };
+            index
+        };
+        let (doc_id, view_id) = (current.doc_id, self.view_id);
+        let peek = self.core.update(cx, |core, _cx| {
+            let doc = core.editor.documents.get_mut(&doc_id)?;
+            let peek = diff_peek::DiffPeek::for_hunk(doc, index)?;
+            let cursor = doc.text().line_to_char(peek.after.start);
+            doc.set_selection(view_id, helix_core::Selection::point(cursor));
+            Some(peek)
+        });
+        if let Some(peek) = peek {
+            self.set_diff_peek(Some(peek), cx);
+            self.request_cursor_reveal();
+        }
+    }
+
+    fn revert_diff_peek(&mut self, cx: &mut Context<Self>) {
+        let Some(peek) = self.diff_peek.take() else {
+            return;
+        };
+        let view_id = self.view_id;
+        self.core.update(cx, |core, cx| {
+            if core.editor.tree.try_get(view_id).is_none() {
+                return;
+            }
+            if core.editor.tree.focus != view_id {
+                core.editor.focus(view_id);
+            }
+            let view = core.editor.tree.get_mut(view_id);
+            view.reserved_rows = None;
+            let Some(doc) = core.editor.documents.get_mut(&peek.doc_id) else {
+                return;
+            };
+            let Some(transaction) = peek.revert_transaction(doc) else {
+                core.editor
+                    .set_error("The change moved; reopen it from the gutter");
+                return;
+            };
+            doc.apply(&transaction, view_id);
+            doc.append_changes_to_history(view);
+            core.editor.set_status("Reset 1 change");
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                core.reconcile_vcs_after_diff_reset(cx, &handle);
+            }
+            cx.notify();
+        });
+        cx.notify();
+    }
+
+    fn copy_diff_peek_original(&mut self, cx: &mut Context<Self>) {
+        if let Some(peek) = &self.diff_peek {
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string(peek.original_text()));
         }
     }
 
@@ -564,6 +737,7 @@ impl EventEmitter<DismissEvent> for DocumentView {}
 impl Render for DocumentView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.reset_native_input_if_needed(window, cx);
+        self.sync_diff_peek(cx);
         let runnable_tasks_by_line = self.runnable_tasks_by_line(cx);
         let layout_snapshot = self.editor_state.layout_snapshot();
         let desired_gutter_extra_columns = if runnable_tasks_by_line.is_empty() {
@@ -712,9 +886,51 @@ impl Render for DocumentView {
             .scrollbar_markers(scrollbar_markers)
             .track_focus(focus.clone());
 
+            if let Some(peek) = self.diff_peek.clone() {
+                let tokens = cx.theme().tokens;
+                let ui_tokens = cx.ui_theme().tokens;
+                let diff_color = |scope: &str, fallback| {
+                    cx.theme_style(scope)
+                        .fg
+                        .and_then(nucleotide_ui::theme_utils::color_to_hsla)
+                        .unwrap_or(fallback)
+                };
+                let peek_style = diff_peek::DiffPeekStyle {
+                    font_family: self.style.font_family.clone(),
+                    font_size: self.style.font_size.to_pixels(px(16.0)),
+                    surface: ui_tokens.chrome.popup_background,
+                    border: ui_tokens.chrome.popup_border,
+                    text: tokens.editor.text_primary,
+                    text_secondary: tokens.editor.text_secondary,
+                    added: diff_color("diff.plus", tokens.editor.success),
+                    removed: diff_color("diff.minus", tokens.editor.error),
+                };
+                let peek_view = cx.entity();
+                editor_content =
+                    editor_content.frame_overlay(move |prepared, layout, _window, _cx| {
+                        let bounds = prepared.as_ref()?.reserved_rows_bounds(layout)?;
+                        let element = diff_peek::render_diff_peek(
+                            &peek,
+                            &peek_style,
+                            peek_view.clone(),
+                            view_id,
+                            layout.line_height,
+                        );
+                        Some((bounds, element))
+                    });
+            }
+
             if let Some(input) = input {
                 let input_view = cx.entity();
                 editor_content = editor_content.on_key_down(move |ev, _window, cx| {
+                    // Esc dismisses the diff panel, then reaches Helix as usual.
+                    if ev.keystroke.key == "escape" && !ev.keystroke.modifiers.modified() {
+                        input_view.update(cx, |view, cx| {
+                            if view.diff_peek.is_some() {
+                                view.close_diff_peek(cx);
+                            }
+                        });
+                    }
                     let key = crate::utils::translate_key(&ev.keystroke);
                     let uses_native_text = input_view.read(cx).uses_native_text(ev, cx);
                     if uses_native_text {
@@ -739,6 +955,14 @@ impl Render for DocumentView {
                     move |phase, event, cx| {
                         if phase == EditorPointerSelectionPhase::Begin {
                             input_view.update(cx, |view, cx| view.cancel_native_composition(cx));
+                        }
+                        if phase == EditorPointerSelectionPhase::Begin
+                            && let Some(line) = editor_state.gutter_diff_line_at(event.position)
+                        {
+                            input_view.update(cx, |view, cx| {
+                                view.toggle_diff_peek(line, cx);
+                            });
+                            return false;
                         }
                         if phase == EditorPointerSelectionPhase::Begin
                             && let Some(task) = editor_state

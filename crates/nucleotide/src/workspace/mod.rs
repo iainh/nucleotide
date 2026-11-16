@@ -7949,6 +7949,22 @@ impl Workspace {
                 }
                 cx.notify();
             }
+            crate::Update::PeekDiffChange => {
+                let continuation = self.ui_continuation.take();
+                if let Some(continuation) = continuation
+                    && !self.begin_command_completion(continuation.token, cx)
+                {
+                    return;
+                }
+                let view_id = self.core.read(cx).editor.tree.focus;
+                if let Some(view) = self.view_manager.get_document_view(&view_id) {
+                    view.update(cx, |view, cx| view.toggle_diff_peek_at_cursor(cx));
+                }
+                if let Some(continuation) = continuation {
+                    self.resume_command_continuation(continuation.token, cx);
+                }
+                cx.notify();
+            }
             crate::Update::SemanticShortcut(intent) => {
                 use crate::types::SemanticShortcutIntent as Intent;
                 let continuation = self.ui_continuation.take();

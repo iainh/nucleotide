@@ -24,6 +24,7 @@ pub struct EditorOverlayState {
     gutter_extra_columns: Rc<Cell<u16>>,
     gutter_line_anchors: Rc<RefCell<Vec<GutterLineAnchor>>>,
     gutter_run_button_hits: Rc<RefCell<Vec<GutterRunButtonHit>>>,
+    gutter_diff_hits: Rc<RefCell<Vec<GutterRunButtonHit>>>,
 }
 
 impl Default for EditorOverlayState {
@@ -35,6 +36,7 @@ impl Default for EditorOverlayState {
             gutter_extra_columns: Rc::new(Cell::new(0)),
             gutter_line_anchors: Rc::new(RefCell::new(Vec::new())),
             gutter_run_button_hits: Rc::new(RefCell::new(Vec::new())),
+            gutter_diff_hits: Rc::new(RefCell::new(Vec::new())),
         }
     }
 }
@@ -115,6 +117,18 @@ impl EditorOverlayState {
 
     pub fn gutter_run_button_line_at(&self, position: Point<Pixels>) -> Option<usize> {
         self.gutter_run_button_hits
+            .borrow()
+            .iter()
+            .find(|hit| hit.bounds.contains(&position))
+            .map(|hit| hit.doc_line)
+    }
+
+    pub fn set_gutter_diff_hits(&self, hits: Vec<GutterRunButtonHit>) {
+        *self.gutter_diff_hits.borrow_mut() = hits;
+    }
+
+    pub fn gutter_diff_line_at(&self, position: Point<Pixels>) -> Option<usize> {
+        self.gutter_diff_hits
             .borrow()
             .iter()
             .find(|hit| hit.bounds.contains(&position))

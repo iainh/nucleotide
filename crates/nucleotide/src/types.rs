@@ -189,6 +189,8 @@ pub enum Update {
     ShowHoverDocs,
     RunTask(nucleotide_events::run::ResolvedTask),
     ToggleFileTree,
+    /// Show or hide the inline diff of the change under the focused view's cursor.
+    PeekDiffChange,
     SemanticShortcut(SemanticShortcutIntent),
 }
 
@@ -289,6 +291,7 @@ impl std::fmt::Debug for Update {
             Update::ShowHoverDocs => write!(f, "ShowHoverDocs"),
             Update::RunTask(task) => write!(f, "RunTask({:?})", task.label()),
             Update::ToggleFileTree => write!(f, "ToggleFileTree"),
+            Update::PeekDiffChange => write!(f, "PeekDiffChange"),
             Update::SemanticShortcut(intent) => {
                 write!(f, "SemanticShortcut({intent:?})")
             }

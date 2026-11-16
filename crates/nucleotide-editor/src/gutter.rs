@@ -39,6 +39,14 @@ pub struct GutterLinePlan {
 pub enum GutterLineKind {
     Text,
     DiffBar(DiffGutterStyle),
+    /// Painted as text; marks where lines were removed.
+    DiffRemoved,
+}
+
+impl GutterLineKind {
+    pub fn is_diff(self) -> bool {
+        matches!(self, Self::DiffBar(_) | Self::DiffRemoved)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,6 +102,7 @@ pub struct SoftWrapGutterLinePlanParams<'a> {
     pub visual_lines: &'a [SoftWrapVisualLine],
     pub inline_diagnostic_virtual_rows: &'a BTreeMap<usize, usize>,
     pub vertical_offset: usize,
+    pub leading_virtual_rows: usize,
     pub editor: &'a Editor,
     pub document: &'a Document,
     pub view: &'a View,
@@ -181,6 +190,7 @@ pub fn build_soft_wrap_gutter_line_plans(
     let positions = soft_wrap_gutter_line_positions_with_virtual_rows(
         params.visual_lines,
         params.vertical_offset,
+        params.leading_virtual_rows,
         params.inline_diagnostic_virtual_rows,
     );
 
@@ -463,7 +473,7 @@ fn diff_gutter_decoration<'doc>(
                     out.push('▔');
                     Some(GutterDecorationStyle {
                         style: deleted,
-                        kind: GutterLineKind::Text,
+                        kind: GutterLineKind::DiffRemoved,
                     })
                 } else {
                     out.push_str(DIFF_GUTTER_BAR_GLYPH);
@@ -508,6 +518,8 @@ pub fn unwrapped_gutter_line_positions_from_plans(
 ) -> Vec<GutterLinePosition> {
     visible_lines
         .iter()
+        // A line above the viewport top owns the leading virtual rows; it has no gutter row.
+        .filter(|line| line.y_offset + scroll_line_offset > -line_height * 0.5)
         .map(|line| GutterLinePosition {
             first_visual_line: true,
             doc_line: line.line_idx,
@@ -523,6 +535,7 @@ pub fn soft_wrap_gutter_line_positions(
     soft_wrap_gutter_line_positions_with_virtual_rows(
         visual_lines,
         vertical_offset,
+        0,
         &BTreeMap::new(),
     )
 }
@@ -530,6 +543,7 @@ pub fn soft_wrap_gutter_line_positions(
 pub fn soft_wrap_gutter_line_positions_with_virtual_rows(
     visual_lines: &[SoftWrapVisualLine],
     vertical_offset: usize,
+    leading_virtual_rows: usize,
     inline_diagnostic_virtual_rows: &BTreeMap<usize, usize>,
 ) -> Vec<GutterLinePosition> {
     let mut extra_rows_before = 0usize;
@@ -537,15 +551,15 @@ pub fn soft_wrap_gutter_line_positions_with_virtual_rows(
     visual_lines
         .iter()
         .enumerate()
-        .map(|(index, visual)| {
-            let position = GutterLinePosition {
+        .filter_map(|(index, visual)| {
+            // Rows above the viewport top (the line owning leading virtual rows) are skipped.
+            let row = (visual.relative_row(vertical_offset) + extra_rows_before)
+                .checked_sub(leading_virtual_rows);
+            let position = row.map(|row| GutterLinePosition {
                 first_visual_line: visual.segment_char_offset == 0,
                 doc_line: visual.doc_line,
-                visual_line: u16::try_from(
-                    visual.relative_row(vertical_offset) + extra_rows_before,
-                )
-                .unwrap_or(u16::MAX),
-            };
+                visual_line: u16::try_from(row).unwrap_or(u16::MAX),
+            });
 
             let is_last_visual_for_doc_line = visual_lines
                 .get(index + 1)
@@ -758,7 +772,7 @@ mod tests {
         virtual_rows.insert(41, 2);
 
         let positions =
-            soft_wrap_gutter_line_positions_with_virtual_rows(&visual_lines, 0, &virtual_rows);
+            soft_wrap_gutter_line_positions_with_virtual_rows(&visual_lines, 0, 0, &virtual_rows);
 
         assert_eq!(
             positions,

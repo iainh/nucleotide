@@ -100,6 +100,7 @@ pub enum NativeLspNavigationRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NativeWorkspaceRequest {
     ToggleFileTree,
+    PeekDiffChange,
     Command(WorkspaceCommandRequest),
     OpenFiles {
         paths: Vec<PathBuf>,
@@ -2821,7 +2822,11 @@ pub(crate) fn sync_cursor_after_native_page_scroll(
 }
 
 fn native_workspace_command(command: &MappableCommand) -> Option<NativeWorkspaceRequest> {
-    (command.name() == "toggle-file-tree").then_some(NativeWorkspaceRequest::ToggleFileTree)
+    match command.name() {
+        "toggle-file-tree" => Some(NativeWorkspaceRequest::ToggleFileTree),
+        "peek-diff-change" => Some(NativeWorkspaceRequest::PeekDiffChange),
+        _ => None,
+    }
 }
 
 fn native_file_navigation_command(command: &MappableCommand) -> Option<NativeFileOpenAction> {
@@ -6157,6 +6162,14 @@ mod tests {
                 doc: "Toggle file tree".into(),
             }),
             Some(NativeWorkspaceRequest::ToggleFileTree)
+        );
+        assert_eq!(
+            native_workspace_command(&MappableCommand::Typable {
+                name: "peek-diff-change".into(),
+                args: String::new(),
+                doc: String::new(),
+            }),
+            Some(NativeWorkspaceRequest::PeekDiffChange)
         );
         assert_eq!(
             native_workspace_command(&MappableCommand::command_palette),

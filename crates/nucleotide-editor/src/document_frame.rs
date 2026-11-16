@@ -10,7 +10,7 @@ use helix_view::{
     document::Mode,
     editor::CursorShapeConfig,
     graphics::{CursorKind, Style},
-    view::ViewPosition,
+    view::{ReservedRows, ViewPosition},
 };
 
 use crate::{
@@ -80,6 +80,8 @@ pub struct EditorDocumentFrame {
     pub diagnostic_severity_by_line: DiagnosticSeverityByLine,
     pub inline_diagnostic_plan: InlineDiagnosticFramePlan,
     pub fallback_diagnostic_plan: FallbackDiagnosticFramePlan,
+    /// Host-reserved rows painted after the inline diagnostic rows of their line.
+    pub reserved_rows: Option<ReservedRows>,
     pub soft_wrap_render_plan: Option<SoftWrapRenderPlan>,
     pub soft_wrap_cursor_position: Option<SoftWrapVisualPosition>,
     pub unwrapped_render_plan: Option<UnwrappedRenderPlan>,
@@ -99,11 +101,21 @@ pub fn editor_document_frame(params: EditorDocumentFrameParams<'_>) -> EditorDoc
     let _timer =
         PerfTimer::new("editor_document_frame").with_warn_threshold(Duration::from_millis(12));
     let text = params.document.text();
+    // Helix reports a top row inside virtual rows as rows below the anchor's line.
+    // Unwrapped rendering counts document lines, so start at that line and shift up.
+    let leading_virtual_rows = params.view_position.vertical_offset;
+    let (first_row, last_row_from_scroll) = if params.soft_wrap_enabled {
+        (params.first_row, params.last_row_from_scroll)
+    } else {
+        let first_line = text.char_to_line(params.view_position.anchor.min(text.len_chars()));
+        let visible_rows = params.last_row_from_scroll.saturating_sub(params.first_row);
+        (first_line, first_line + visible_rows + leading_virtual_rows)
+    };
     let render_snapshot = document_render_snapshot(
         params.document,
         params.view_id,
-        params.first_row,
-        params.last_row_from_scroll,
+        first_row,
+        last_row_from_scroll,
     );
     let gutter_width = params.gutter_columns;
     let (_, text_format) = document_text_format_for_surface(
@@ -217,7 +229,17 @@ pub fn editor_document_frame(params: EditorDocumentFrameParams<'_>) -> EditorDoc
             view_id: params.view_id,
             theme: params.theme,
         });
-    let inline_diagnostic_virtual_rows = inline_diagnostic_plan.virtual_rows_by_line();
+    let reserved_rows = params
+        .view
+        .reserved_rows
+        .and_then(|reserved| reserved.active_for(params.document));
+    // Native virtual rows per line: inline diagnostics, then any host-reserved rows.
+    let mut inline_diagnostic_virtual_rows = inline_diagnostic_plan.virtual_rows_by_line();
+    if let Some(reserved) = reserved_rows {
+        *inline_diagnostic_virtual_rows
+            .entry(reserved.line)
+            .or_default() += reserved.rows;
+    }
     let ruler_geometry = EditorSurfaceGeometry::new(params.bounds, gutter_width, params.cell_width);
     let ruler_paint_plans = document_ruler_paint_plans(DocumentRulerPaintParams {
         document: params.document,
@@ -263,7 +285,8 @@ pub fn editor_document_frame(params: EditorDocumentFrameParams<'_>) -> EditorDoc
             gutter_columns: gutter_width,
             cell_width: params.cell_width,
             line_height: params.line_height,
-            scroll_line_offset: params.scroll_line_offset,
+            scroll_line_offset: params.scroll_line_offset
+                + params.line_height * leading_virtual_rows as f32,
             horizontal_offset: params.view_position.horizontal_offset,
             cursor_line: render_snapshot.cursor_line,
             inline_diagnostic_virtual_rows: Some(&inline_diagnostic_virtual_rows),
@@ -378,6 +401,7 @@ pub fn editor_document_frame(params: EditorDocumentFrameParams<'_>) -> EditorDoc
         diagnostic_severity_by_line: diagnostic_severity_by_line(params.document),
         inline_diagnostic_plan,
         fallback_diagnostic_plan,
+        reserved_rows,
         soft_wrap_render_plan,
         soft_wrap_cursor_position,
         unwrapped_render_plan,
@@ -590,6 +614,90 @@ mod tests {
 
         assert_eq!(soft_wrap.view_offset, view_position);
         assert_eq!(soft_wrap.visual_lines[0].visual_line, 1);
+    }
+
+    #[test]
+    fn reserved_rows_push_following_lines_down_when_scrolled_into() {
+        let config = Arc::new(ArcSwap::new(Arc::new(Config::default())));
+        let syntax_loader = syntax::Loader::default();
+        let syntax_loader_swap = Arc::new(ArcSwap::from_pointee(syntax::Loader::default()));
+        let mut document = Document::from(
+            Rope::from("one\ntwo\nthree\nfour\n"),
+            None,
+            config,
+            syntax_loader_swap,
+        );
+        let mut view = View::new(DocumentId::default(), GutterConfig::default());
+        document.ensure_view_init(view.id);
+        view.reserved_rows = Some(ReservedRows {
+            doc: document.id(),
+            doc_version: document.version(),
+            line: 0,
+            rows: 3,
+        });
+        let theme = ThemeLoader::new(&[]).default_theme(true);
+        let line_height = px(20.0);
+        // The viewport top is the second of the three rows reserved below "one", as
+        // Helix reports it: anchored on "one" with two rows of offset.
+        let view_position = ViewPosition {
+            anchor: 0,
+            vertical_offset: 2,
+            horizontal_offset: 0,
+        };
+        let frame = |soft_wrap_enabled| {
+            editor_document_frame(EditorDocumentFrameParams {
+                document: &document,
+                view: &view,
+                view_id: view.id,
+                theme: &theme,
+                syntax_loader: &syntax_loader,
+                first_row: 2,
+                last_row_from_scroll: 6,
+                view_position,
+                soft_wrap_enabled,
+                gutter_line_plans: Vec::new(),
+                bounds: Bounds::new(point(px(0.0), px(0.0)), size(px(240.0), px(120.0))),
+                gutter_columns: view.gutter_offset(&document),
+                cell_width: px(8.0),
+                line_height,
+                scroll_line_offset: px(0.0),
+                soft_wrap_minimum_columns: 10,
+                fg_color: black(),
+                font: font("TestFont"),
+                default_text_style: Style::default(),
+                default_bg: white(),
+                wrap_indicator_color: None,
+                ruler_color: black(),
+                editor_mode: Mode::Normal,
+                cursor_kind: CursorKind::Block,
+                cursor_style: Style::default(),
+                cursor_shape: CursorShapeConfig::default(),
+                editor_rulers: Vec::new(),
+                cursorline_enabled: false,
+                is_focused: false,
+            })
+        };
+        // "two" follows "one" and its 3 reserved rows, 2 of which are above the top.
+        let expected_two_y = line_height * 2.0;
+
+        let unwrapped = frame(false);
+        let lines = &unwrapped
+            .unwrapped_render_plan
+            .as_ref()
+            .unwrap()
+            .visible_lines;
+        let two = lines.iter().find(|line| line.line_idx == 1).unwrap();
+        assert_eq!(two.y_offset, expected_two_y);
+        assert_eq!(lines[0].line_idx, 0);
+
+        let wrapped = frame(true);
+        let plan = wrapped.soft_wrap_render_plan.as_ref().unwrap();
+        let paint_plans = plan.line_paint_plans(line_height, px(0.0), 0);
+        let two = paint_plans
+            .iter()
+            .find(|line| line.visual.doc_line == 1)
+            .unwrap();
+        assert_eq!(two.y_offset, expected_two_y);
     }
 
     #[test]

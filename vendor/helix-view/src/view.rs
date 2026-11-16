@@ -11,7 +11,7 @@ use crate::{
 use helix_core::{
     char_idx_at_visual_offset,
     doc_formatter::TextFormat,
-    text_annotations::TextAnnotations,
+    text_annotations::{LineAnnotation, TextAnnotations},
     visual_offset_from_anchor, visual_offset_from_block, Position, RopeSlice, Selection,
     Transaction,
     VisualOffsetError::{PosAfterMaxRow, PosBeforeAnchorRow},
@@ -172,6 +172,55 @@ pub struct View {
     // left to future work. For now we treat all views as focused and give them
     // each their own handler.
     pub diagnostics_handler: DiagnosticsHandler,
+    /// Blank rows a GUI host reserves below one document line, such as for an
+    /// embedded panel. Layout, scrolling and cursor visibility all account for them.
+    pub reserved_rows: Option<ReservedRows>,
+}
+
+/// Blank virtual rows below `line` of `doc`, valid only while the document is
+/// at `doc_version` so a stale reservation never shifts edited text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ReservedRows {
+    pub doc: DocumentId,
+    pub doc_version: i32,
+    pub line: usize,
+    pub rows: usize,
+}
+
+impl ReservedRows {
+    /// The reservation, if it still applies to `doc` and its line ends with a line break
+    /// (the formatter only inserts virtual rows after a newline).
+    pub fn active_for(self, doc: &Document) -> Option<Self> {
+        let text = doc.text();
+        (self.doc == doc.id()
+            && self.doc_version == doc.version()
+            && self.rows > 0
+            && self.line + 1 < text.len_lines())
+        .then_some(self)
+    }
+}
+
+struct ReservedRowsAnnotation {
+    /// First char of the line after the reserved line: the formatter reports this
+    /// position only at the reserved line's newline, never at its soft wraps.
+    next_line_char: usize,
+    rows: usize,
+}
+
+impl LineAnnotation for ReservedRowsAnnotation {
+    fn insert_virtual_lines(
+        &mut self,
+        line_end_char_idx: usize,
+        _line_end_visual_pos: Position,
+        _doc_line: usize,
+    ) -> Position {
+        let rows = if line_end_char_idx == self.next_line_char {
+            self.rows
+        } else {
+            0
+        };
+        Position::new(rows, 0)
+    }
 }
 
 impl fmt::Debug for View {
@@ -197,6 +246,7 @@ impl View {
             gutters,
             doc_revisions: HashMap::new(),
             diagnostics_handler: DiagnosticsHandler::new(),
+            reserved_rows: None,
         }
     }
 
@@ -526,6 +576,16 @@ impl View {
                 doc.view_offset(self.id).horizontal_offset,
                 config,
             ));
+        }
+
+        if let Some(reserved) = self
+            .reserved_rows
+            .and_then(|reserved| reserved.active_for(doc))
+        {
+            text_annotations.add_line_annotation(Box::new(ReservedRowsAnnotation {
+                next_line_char: doc.text().line_to_char(reserved.line + 1),
+                rows: reserved.rows,
+            }));
         }
 
         text_annotations
