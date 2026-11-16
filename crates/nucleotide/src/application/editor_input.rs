@@ -101,6 +101,7 @@ pub enum NativeLspNavigationRequest {
 pub enum NativeWorkspaceRequest {
     ToggleFileTree,
     PeekDiffChange,
+    ShowCommit,
     Command(WorkspaceCommandRequest),
     OpenFiles {
         paths: Vec<PathBuf>,
@@ -1493,6 +1494,64 @@ impl NativeCommandInput {
                         break;
                     }
                     let has_document = self.has_active_slot(editor);
+                    let name = match &command {
+                        MappableCommand::Typable { name, .. } => {
+                            helix_term::commands::TYPABLE_COMMAND_MAP
+                                .get(name.as_str())
+                                .map_or(name.as_str(), |command| command.name)
+                        }
+                        _ => command.name(),
+                    };
+                    if self.hosted && has_document {
+                        let current = editor.tree.get(editor.tree.focus).doc;
+                        let base_name = name.trim_end_matches('!');
+                        if editor.is_hosted_auxiliary(current)
+                            && (base_name.starts_with("write")
+                                || base_name.starts_with("buffer-close")
+                                || matches!(
+                                    base_name,
+                                    "quit" | "quit-all" | "cquit" | "exit" | "wclose"
+                                ))
+                        {
+                            self.cancel_pending(editor);
+                            editor.set_error(
+                                "Use the Commit button to commit; Esc returns to changes",
+                            );
+                            break;
+                        }
+                        if matches!(
+                            name,
+                            "goto_next_buffer"
+                                | "goto_previous_buffer"
+                                | "buffer-next"
+                                | "buffer-previous"
+                        ) {
+                            let documents: Vec<_> =
+                                editor.documents().map(|doc| doc.id()).collect();
+                            if !documents.is_empty() {
+                                let backwards =
+                                    matches!(name, "goto_previous_buffer" | "buffer-previous");
+                                let step = if matches!(command, MappableCommand::Typable { .. }) {
+                                    1
+                                } else {
+                                    count.map_or(1, |count| count.get())
+                                } % documents.len();
+                                let index = documents.iter().position(|id| *id == current).map_or(
+                                    if backwards { documents.len() - 1 } else { 0 },
+                                    |index| {
+                                        if backwards {
+                                            (index + documents.len() - step) % documents.len()
+                                        } else {
+                                            (index + step) % documents.len()
+                                        }
+                                    },
+                                );
+                                editor
+                                    .switch(documents[index], helix_view::editor::Action::Replace);
+                            }
+                            continue;
+                        }
+                    }
                     let mode_before = if has_document {
                         editor.mode()
                     } else {
@@ -2825,6 +2884,7 @@ fn native_workspace_command(command: &MappableCommand) -> Option<NativeWorkspace
     match command.name() {
         "toggle-file-tree" => Some(NativeWorkspaceRequest::ToggleFileTree),
         "peek-diff-change" => Some(NativeWorkspaceRequest::PeekDiffChange),
+        "commit" => Some(NativeWorkspaceRequest::ShowCommit),
         _ => None,
     }
 }

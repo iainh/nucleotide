@@ -2059,6 +2059,11 @@ impl Editor {
             log::error!("cannot switch to document that does not exist (anymore)");
             return;
         }
+        if self.is_hosted_auxiliary(id) && !self.hosted.as_ref().is_some_and(|host| host.projecting)
+        {
+            self.set_error("This buffer is displayed by its host");
+            return;
+        }
 
         // A content-only active pane must never replace a hidden slot's document.
         if self.is_hosted() && self.hosted_active_slot().is_none() {
@@ -2377,6 +2382,10 @@ impl Editor {
     }
 
     pub fn close_document(&mut self, doc_id: DocumentId, force: bool) -> Result<(), CloseError> {
+        // Bulk buffer-close commands must not dispose of host-owned drafts.
+        if self.is_hosted_auxiliary(doc_id) {
+            return Ok(());
+        }
         let doc = match self.documents.get(&doc_id) {
             Some(doc) => doc,
             None => return Err(CloseError::DoesNotExist),
@@ -2466,6 +2475,10 @@ impl Editor {
         path: Option<P>,
         force: bool,
     ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            !self.is_hosted_auxiliary(doc_id),
+            "This buffer is saved by its host"
+        );
         // convert a channel of futures to pipe into main queue one by one
         // via stream.then() ? then push into main future
 
@@ -2591,9 +2604,13 @@ impl Editor {
         self.documents.get_mut(&id)
     }
 
+    /// Ordinary buffers. Host-owned auxiliary documents remain accessible by ID
+    /// but do not participate in buffer lists or workspace quit checks.
     #[inline]
     pub fn documents(&self) -> impl Iterator<Item = &Document> {
-        self.documents.values()
+        self.documents
+            .values()
+            .filter(|doc| !self.is_hosted_auxiliary(doc.id()))
     }
 
     #[inline]

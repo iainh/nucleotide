@@ -128,21 +128,24 @@ impl Workspace {
                         new_document,
                     } => {
                         let active = self.pane_host.layout.pane(pane).unwrap().active_tab();
-                        let tab = if *new_document || active.is_none() {
-                            let handle = self.handle.clone();
-                            let document = self.core.update(cx, |core, _| {
-                                let _guard = handle.enter();
-                                let document =
-                                    core.editor.new_file(helix_view::editor::Action::Load);
-                                // Host owns this placement. Suppress registration echo only.
-                                let _ = core.editor.drain_hosted_effects();
-                                document
-                            });
-                            TabId::Document(document)
-                        } else if let Some(TabId::Terminal(id)) = active {
-                            TabId::Terminal(self.duplicate_terminal(id, cx)?)
-                        } else {
-                            active.unwrap()
+                        let tab = match active.filter(|tab| !*new_document && *tab != TabId::Commit)
+                        {
+                            Some(TabId::Terminal(id)) => {
+                                TabId::Terminal(self.duplicate_terminal(id, cx)?)
+                            }
+                            Some(tab) => tab,
+                            None => {
+                                let handle = self.handle.clone();
+                                let document = self.core.update(cx, |core, _| {
+                                    let _guard = handle.enter();
+                                    let document =
+                                        core.editor.new_file(helix_view::editor::Action::Load);
+                                    // Host owns this placement. Suppress registration echo only.
+                                    let _ = core.editor.drain_hosted_effects();
+                                    document
+                                });
+                                TabId::Document(document)
+                            }
                         };
                         let edge = match action {
                             NativeFileOpenAction::HorizontalSplit => pane_layout::Edge::Bottom,

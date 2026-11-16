@@ -1259,6 +1259,14 @@ fn merge_nucleotide_helix_keybindings(config: &mut HelixConfig) -> anyhow::Resul
     let mut vcs_node = IndexMap::new();
     vcs_node.insert(r, KeyTrie::MappableCommand(reset_diff_change));
     vcs_node.insert(d, KeyTrie::MappableCommand(peek_diff_change));
+    vcs_node.insert(
+        KeyEvent::from_str("c")?,
+        KeyTrie::MappableCommand(MappableCommand::Typable {
+            name: "commit".into(),
+            args: String::new(),
+            doc: "Open Commit review".into(),
+        }),
+    );
 
     let mut space_node = IndexMap::new();
     space_node.insert(v, KeyTrie::Node(KeyTrieNode::new("VCS", vcs_node)));

@@ -8,6 +8,7 @@ pub mod cli;
 pub mod completion_interception;
 pub mod completions;
 pub mod config;
+mod diff;
 pub mod document;
 pub mod file_tree;
 mod helix_command;

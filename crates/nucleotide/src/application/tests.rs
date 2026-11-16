@@ -1,3 +1,5 @@
+#[path = "commit_review_tests.rs"]
+mod commit_review_tests;
 #[path = "shared_pane_contract_tests.rs"]
 mod shared_pane_contract_tests;
 

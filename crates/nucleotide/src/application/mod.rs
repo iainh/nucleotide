@@ -3610,6 +3610,9 @@ impl Application {
                 editor_input::NativeWorkspaceRequest::PeekDiffChange => {
                     self.emit_native_ui_update(crate::Update::PeekDiffChange, continuation, cx);
                 }
+                editor_input::NativeWorkspaceRequest::ShowCommit => {
+                    self.emit_native_ui_update(crate::Update::ShowCommit, continuation, cx);
+                }
                 editor_input::NativeWorkspaceRequest::OpenFiles { paths, action } => {
                     cx.emit(crate::Update::WorkspaceCommand {
                         request: editor_input::workspace_commands::WorkspaceCommandRequest {
@@ -4214,6 +4217,9 @@ impl Application {
         match event {
             EditorEvent::DocumentSaved(event) => {
                 self.handle_document_write(&event);
+                if let Err(error) = &event {
+                    cx.emit(crate::Update::DocumentSaveFailed(error.to_string()));
+                }
                 if let Ok(event) = event {
                     let v2_event = DocumentEvent::Saved {
                         doc_id: event.doc_id,

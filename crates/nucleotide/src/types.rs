@@ -191,6 +191,8 @@ pub enum Update {
     ToggleFileTree,
     /// Show or hide the inline diff of the change under the focused view's cursor.
     PeekDiffChange,
+    ShowCommit,
+    DocumentSaveFailed(String),
     SemanticShortcut(SemanticShortcutIntent),
 }
 
@@ -292,6 +294,8 @@ impl std::fmt::Debug for Update {
             Update::RunTask(task) => write!(f, "RunTask({:?})", task.label()),
             Update::ToggleFileTree => write!(f, "ToggleFileTree"),
             Update::PeekDiffChange => write!(f, "PeekDiffChange"),
+            Update::ShowCommit => write!(f, "ShowCommit"),
+            Update::DocumentSaveFailed(error) => write!(f, "DocumentSaveFailed({error})"),
             Update::SemanticShortcut(intent) => {
                 write!(f, "SemanticShortcut({intent:?})")
             }

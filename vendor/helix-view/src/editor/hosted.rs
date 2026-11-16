@@ -82,6 +82,26 @@ impl Editor {
         self.hosted.is_some()
     }
 
+    /// Host-owned editors are not ordinary file buffers. Keep their text and
+    /// history, but leave their placement, saving and lifetime to the host.
+    pub fn register_hosted_auxiliary(&mut self, document: DocumentId) -> Result<(), HostedError> {
+        self.validate_hosted_document(document)?;
+        self.documents.get_mut(&document).unwrap().hosted_auxiliary = true;
+        let host = self.hosted.as_mut().unwrap();
+        host.effects.retain(|effect| {
+            !matches!(effect,
+            HostedEffect::DocumentRegistered { document: id }
+                | HostedEffect::DocumentLoaded { document: id, .. } if *id == document)
+        });
+        Ok(())
+    }
+
+    pub fn is_hosted_auxiliary(&self, document: DocumentId) -> bool {
+        self.documents
+            .get(&document)
+            .is_some_and(|doc| doc.hosted_auxiliary)
+    }
+
     /// None means a content-only pane is focused (or no editor slot exists).
     /// Never route editing through `tree.focus` without checking this first.
     pub fn hosted_active_slot(&self) -> Option<ViewId> {

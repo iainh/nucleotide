@@ -490,6 +490,7 @@ pub(super) fn show_buffer_picker(
         let buffer_metas: Vec<BufferMeta> = editor
             .documents
             .iter()
+            .filter(|(id, _)| !editor.is_hosted_auxiliary(**id))
             .map(|(doc_id, doc)| BufferMeta {
                 doc_id: *doc_id,
                 path: doc.path().map(|p| p.to_path_buf()),

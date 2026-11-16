@@ -4,7 +4,8 @@ use std::path::{Path, PathBuf};
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    Context, FontWeight, IntoElement, ParentElement, Pixels, SharedString, Styled, Window, div, px,
+    Context, FontWeight, InteractiveElement, IntoElement, ParentElement, Pixels, SharedString,
+    StatefulInteractiveElement, Styled, Window, div, px,
 };
 use nucleotide_lsp::{LspStatusKind, LspStatusSummary};
 use nucleotide_ui::ThemedContext as UIThemedContext;
@@ -509,8 +510,12 @@ impl Workspace {
         &self,
         vcs_ref: &str,
         status_bar_tokens: &nucleotide_ui::tokens::StatusBarTokens,
+        cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         div()
+            .id("statusbar-commit")
+            .cursor_pointer()
+            .on_click(cx.listener(|this, _, _, cx| this.open_commit_tab(cx)))
             .h_full()
             .max_w(px(200.0))
             .px_2()
@@ -811,7 +816,7 @@ impl Workspace {
             .child(self.statusbar_mode_item(model, geometry, status_bar_tokens, cx))
             .when(model.density == StatusBarDensity::Wide, |content| {
                 content.when_some(model.vcs_ref.as_ref(), |content, vcs_ref| {
-                    content.child(self.statusbar_vcs_item(vcs_ref, status_bar_tokens))
+                    content.child(self.statusbar_vcs_item(vcs_ref, status_bar_tokens, cx))
                 })
             })
             .child(

@@ -412,6 +412,9 @@ impl TabBar {
     }
 
     fn base_document_label(&self, doc_info: &DocumentInfo) -> String {
+        if doc_info.id == TabId::Commit {
+            return "Commit".into();
+        }
         if let TabId::Terminal(id) = doc_info.id {
             return format!("Terminal {}", id.0);
         }

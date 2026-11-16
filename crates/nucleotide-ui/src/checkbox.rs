@@ -54,6 +54,7 @@ pub struct Checkbox {
     id: ElementId,
     label: SharedString,
     checked: bool,
+    indeterminate: bool,
     disabled: bool,
     size: CheckboxSize,
     focus_handle: Option<FocusHandle>,
@@ -66,6 +67,7 @@ impl Checkbox {
             id: id.into(),
             label: label.into(),
             checked: false,
+            indeterminate: false,
             disabled: false,
             size: CheckboxSize::default(),
             focus_handle: None,
@@ -75,6 +77,12 @@ impl Checkbox {
 
     pub fn checked(mut self, checked: bool) -> Self {
         self.checked = checked;
+        self
+    }
+
+    /// Mixed selection. Activating a mixed checkbox selects all children.
+    pub fn indeterminate(mut self, indeterminate: bool) -> Self {
+        self.indeterminate = indeterminate;
         self
     }
 
@@ -115,13 +123,13 @@ impl Checkbox {
     }
 
     fn toggled_checked(&self) -> bool {
-        !self.checked
+        self.indeterminate || !self.checked
     }
 
     fn icon_color(&self, tokens: &CheckboxTokens) -> gpui::Hsla {
         if self.disabled {
             tokens.disabled_text
-        } else if self.checked {
+        } else if self.checked || self.indeterminate {
             tokens.checked_background
         } else {
             tokens.text_secondary
@@ -151,7 +159,7 @@ impl RenderOnce for Checkbox {
             .flex_shrink_0();
         let icon = if let Some(c) = theme.tokens.chrome.contrast {
             // Avoid the duotone SVG's translucent fill in contrast mode.
-            let selected = self.checked && !disabled;
+            let selected = (self.checked || self.indeterminate) && !disabled;
             div()
                 .size(metrics.icon_size)
                 .flex_none()
@@ -166,7 +174,22 @@ impl RenderOnce for Checkbox {
                 } else {
                     c.gray_text
                 })
-                .when(self.checked, |icon| icon.child("✓"))
+                .when(self.checked || self.indeterminate, |icon| {
+                    icon.child(if self.indeterminate { "−" } else { "✓" })
+                })
+                .into_any_element()
+        } else if self.indeterminate {
+            div()
+                .size(metrics.icon_size)
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .border_1()
+                .rounded(theme.tokens.sizes.radius_sm)
+                .border_color(icon_color)
+                .text_color(icon_color)
+                .child("−")
                 .into_any_element()
         } else {
             icon.into_any_element()

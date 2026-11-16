@@ -186,6 +186,7 @@ pub enum TabId {
     Document(DocumentId),
     Image(ImageId),
     Terminal(nucleotide_events::terminal::TerminalId),
+    Commit,
 }
 
 impl From<DocumentId> for TabId {
@@ -206,6 +207,7 @@ impl std::fmt::Display for TabId {
             Self::Document(doc_id) => write!(f, "{doc_id}"),
             Self::Image(id) => write!(f, "image-{}", id.0),
             Self::Terminal(id) => write!(f, "terminal-{}", id.0),
+            Self::Commit => write!(f, "commit"),
         }
     }
 }
@@ -960,9 +962,13 @@ impl Tab {
         cx: &mut App,
     ) -> gpui::AnyElement {
         let icon_color = Tab::content_icon_color(tokens);
-        if matches!(doc_id, TabId::Terminal(_)) {
+        if matches!(doc_id, TabId::Terminal(_) | TabId::Commit) {
             return svg()
-                .path("icons/terminal.svg")
+                .path(if doc_id == TabId::Commit {
+                    "icons/git-branch.svg"
+                } else {
+                    "icons/terminal.svg"
+                })
                 .size(px(TAB_SLOT_ICON_SIZE))
                 .flex_none()
                 .text_color(icon_color)

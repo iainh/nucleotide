@@ -330,7 +330,10 @@ impl DocumentView {
     /// GPUI owns keyboard focus; entering a surface activates that Helix split.
     pub fn observe_focus(&self, window: &mut Window, cx: &mut Context<Self>) {
         cx.on_focus(&self.focus, window, |view, _window, cx| {
-            if view.core.read(cx).editor.tree.focus != view.view_id {
+            if view.core.read(cx).editor.tree.focus != view.view_id
+                || (view.core.read(cx).editor.is_hosted()
+                    && view.core.read(cx).editor.hosted_active_slot() != Some(view.view_id))
+            {
                 focus_editor_view(&view.core, view.view_id, cx);
             }
             cx.notify();
@@ -764,7 +767,11 @@ impl Render for DocumentView {
                 .try_get(self.view_id)
                 .and_then(|view| core.editor.documents.get(&view.doc))
                 .is_some_and(|doc| {
-                    should_show_empty_scratch_state(doc.path().is_some(), doc.text().len_chars())
+                    !core.editor.is_hosted_auxiliary(doc.id())
+                        && should_show_empty_scratch_state(
+                            doc.path().is_some(),
+                            doc.text().len_chars(),
+                        )
                 })
         };
 

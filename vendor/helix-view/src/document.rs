@@ -168,6 +168,9 @@ pub struct DocumentOpenMetadata {
 
 pub struct Document {
     pub(crate) id: DocumentId,
+    /// Session-only host content: edits retain history but are not file writes
+    /// pending on disk. The host owns persistence and draft lifetime.
+    pub(crate) hosted_auxiliary: bool,
     text: Rope,
     selections: HashMap<ViewId, Selection>,
     view_data: HashMap<ViewId, ViewData>,
@@ -945,6 +948,7 @@ impl Document {
             file_version: None,
             last_saved_revision: 0,
             modified_since_accessed: false,
+            hosted_auxiliary: false,
             language_servers: HashMap::new(),
             diff_handle: None,
             config,
@@ -2030,6 +2034,9 @@ impl Document {
 
     /// If there are unsaved modifications.
     pub fn is_modified(&self) -> bool {
+        if self.hosted_auxiliary {
+            return false;
+        }
         let history = self.history.take();
         let current_revision = history.current_revision();
         self.history.set(history);

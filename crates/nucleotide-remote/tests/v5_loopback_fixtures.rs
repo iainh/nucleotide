@@ -459,6 +459,48 @@ fn real_v5_helper_multiplexes_file_requests_while_process_is_running() {
     process_thread.join().unwrap();
 }
 
+/// Git staging writes file contents to `git hash-object --stdin`, so one-shot
+/// processes must receive stdin intact, including bodies larger than one frame.
+#[test]
+fn real_v5_helper_forwards_process_stdin() {
+    let temp = tempfile::tempdir().unwrap();
+    let helper = PathBuf::from(env!("CARGO_BIN_EXE_nucleotide-remote"));
+    let (backend, _hello) = spawn_child_process_workspace_backend(
+        RemoteWorkspaceIdentity {
+            kind: RemoteWorkspaceKind::Other("loopback-fixture".to_string()),
+            name: "loopback-fixture".to_string(),
+        },
+        &local_service_command(&helper, temp.path()),
+    )
+    .expect("real v5 helper should start over local stdio");
+
+    let stdin: Vec<u8> = (0..300_000u32).map(|index| (index % 251) as u8).collect();
+    let output = block_on(backend.run_process(ProcessSpec {
+        program: "git".to_string(),
+        args: vec!["hash-object".to_string(), "--stdin".to_string()],
+        cwd: temp.path().to_path_buf(),
+        env: BTreeMap::new(),
+        clear_env: false,
+        inherit_project_environment: false,
+        stdin: stdin.clone(),
+        max_output_bytes: Some(4096),
+        timeout_ms: Some(20_000),
+    }))
+    .expect("remote git hash-object should run");
+    assert!(output.success, "remote git hash-object failed: {output:?}");
+
+    let mut local = Command::new("git")
+        .args(["hash-object", "--stdin"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    local.stdin.take().unwrap().write_all(&stdin).unwrap();
+    let expected = local.wait_with_output().unwrap();
+    assert!(expected.status.success());
+    assert_eq!(output.stdout, expected.stdout);
+}
+
 fn required_helper_path(name: &str) -> PathBuf {
     std::env::var_os(name)
         .map(PathBuf::from)

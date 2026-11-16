@@ -12,6 +12,8 @@ use std::collections::HashMap;
 pub(super) struct PaneHost {
     pub layout: PaneLayout,
     pub slots: HashMap<PaneId, ViewId>,
+    pub commit_message: Option<(DocumentId, ViewId)>,
+    pub commit_message_focused: bool,
     transfers: HashMap<PaneId, (ViewId, Vec<TabId>)>,
 }
 
@@ -78,6 +80,8 @@ impl PaneHost {
         Self {
             layout,
             slots,
+            commit_message: None,
+            commit_message_focused: false,
             transfers: HashMap::new(),
         }
     }
@@ -104,6 +108,12 @@ impl PaneHost {
 
     pub fn active_slot(&self) -> Option<ViewId> {
         let pane = self.layout.active_pane();
+        if self.layout.pane(pane)?.active_tab() == Some(TabId::Commit) {
+            return self
+                .commit_message
+                .filter(|_| self.commit_message_focused)
+                .map(|(_, slot)| slot);
+        }
         matches!(
             self.layout.pane(pane)?.active_tab(),
             Some(TabId::Document(_))
@@ -162,7 +172,14 @@ impl PaneHost {
                     if reason == DocumentReplacementReason::DocumentClose {
                         continue;
                     }
-                    if let Some(pane) = self.pane_for_slot(slot) {
+                    // Buffer navigation from the embedded editor opens a normal
+                    // tab; projection restores the host-owned message slot.
+                    let pane = self.pane_for_slot(slot).or_else(|| {
+                        self.commit_message
+                            .filter(|(_, message_slot)| *message_slot == slot)
+                            .map(|_| self.layout.active_pane())
+                    });
+                    if let Some(pane) = pane {
                         self.layout
                             .open_tab(pane, TabId::Document(document), true)
                             .map_err(|error| format!("{error:?}"))?;
@@ -311,7 +328,15 @@ impl PaneHost {
             }
         }
         self.transfers.clear();
-        let retained: Vec<_> = self.slots.values().copied().collect();
+        let mut retained: Vec<_> = self.slots.values().copied().collect();
+        if let Some((document, slot)) = self.commit_message {
+            if editor.tree.get(slot).doc != document {
+                editor
+                    .project_hosted_replace(slot, document)
+                    .map_err(|error| format!("{error:?}"))?;
+            }
+            retained.push(slot);
+        }
         for slot in snapshots.keys().filter(|slot| !retained.contains(slot)) {
             if editor.tree.contains(*slot) {
                 editor

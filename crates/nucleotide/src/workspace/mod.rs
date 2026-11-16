@@ -1,6 +1,7 @@
 // ABOUTME: Workspace module decomposition for cleaner architecture
 // ABOUTME: Separates view management from workspace coordination logic
 
+mod commit;
 mod documentation;
 mod global_search;
 mod image_viewer;
@@ -455,6 +456,7 @@ pub struct Workspace {
     image_tabs: Vec<ImageTab>,
     image_presentations: ImagePresentations,
     next_image_tab_index: u64,
+    commit_review: commit::CommitReview,
     // File tree context menu state
     file_tree_context_menu: ContextMenuController,
     file_tree_popup_menu: Option<Entity<PopupMenu>>,
@@ -2779,6 +2781,7 @@ impl Workspace {
                 TabId::Document(doc_id) => document_ids.push(doc_id),
                 TabId::Image(image_id) => self.close_image_tab(image_id, None, cx),
                 TabId::Terminal(id) => self.close_terminal_tab(pane, id, false, cx),
+                TabId::Commit => self.close_commit_tab(cx),
             }
         }
 
@@ -2885,7 +2888,7 @@ impl Workspace {
                     doc_id,
                     activation_target: match activation_target {
                         Some(TabId::Document(doc_id)) => Some(doc_id),
-                        Some(TabId::Image(_) | TabId::Terminal(_)) | None => None,
+                        Some(TabId::Image(_) | TabId::Terminal(_) | TabId::Commit) | None => None,
                     },
                 },
                 vec![name],
@@ -3070,6 +3073,10 @@ impl Workspace {
     }
 
     fn tab_cm_action_close(&mut self, tab_id: TabId, cx: &mut Context<Self>) {
+        if tab_id == TabId::Commit {
+            self.close_commit_tab(cx);
+            return;
+        }
         if let TabId::Terminal(id) = tab_id {
             self.close_terminal_tab(self.focused_pane_id(), id, false, cx);
             return;
@@ -3146,6 +3153,7 @@ impl Workspace {
             Some(active_doc_id),
         ) {
             ActiveTabClosePlan::Activate(tab_id) => match tab_id {
+                TabId::Commit => self.open_commit_tab(cx),
                 TabId::Image(image_id) => self.switch_to_image_tab(image_id, cx),
                 TabId::Document(doc_id) => self.switch_to_tab_document(doc_id, cx),
                 TabId::Terminal(id) => self.activate_terminal_tab(self.focused_pane_id(), id, cx),
@@ -3160,6 +3168,7 @@ impl Workspace {
                     activate_on_close,
                 );
                 match tab_id {
+                    TabId::Commit => self.close_commit_tab(cx),
                     TabId::Image(image_id) => self.close_image_tab(image_id, activation_target, cx),
                     TabId::Terminal(id) => {
                         self.close_terminal_tab(self.focused_pane_id(), id, force, cx)
@@ -3179,7 +3188,7 @@ impl Workspace {
 
     fn tab_document_path(&self, tab_id: TabId, cx: &mut Context<Self>) -> Option<PathBuf> {
         match tab_id {
-            TabId::Terminal(_) => None,
+            TabId::Terminal(_) | TabId::Commit => None,
             TabId::Image(image_id) => self
                 .image_tabs
                 .iter()
@@ -3218,7 +3227,7 @@ impl Workspace {
 
         let tab_path = self.tab_document_path(tab_id, cx);
         let is_readonly = match tab_id {
-            TabId::Image(_) | TabId::Terminal(_) => false,
+            TabId::Image(_) | TabId::Terminal(_) | TabId::Commit => false,
             TabId::Document(doc_id) => {
                 let core = self.core.read(cx);
                 core.editor
@@ -3367,6 +3376,7 @@ impl Workspace {
                 }
             }
             TabDoubleClickPlan::Activate => match tab_id {
+                TabId::Commit => self.open_commit_tab(cx),
                 TabId::Image(image_id) => self.switch_to_image_tab(image_id, cx),
                 TabId::Document(doc_id) => self.switch_to_tab_document(doc_id, cx),
                 TabId::Terminal(id) => self.activate_terminal_tab(self.focused_pane_id(), id, cx),
@@ -3383,7 +3393,7 @@ impl Workspace {
                 TabId::Document(doc_id) => {
                     should_unpreview_retained_tab_after_close_others(tracker.is_preview_doc(doc_id))
                 }
-                TabId::Image(_) | TabId::Terminal(_) => false,
+                TabId::Image(_) | TabId::Terminal(_) | TabId::Commit => false,
             });
         if should_unpreview_retained_tab && let TabId::Document(doc_id) = tab_id {
             self.unregister_preview_document(doc_id, cx);
@@ -3425,7 +3435,7 @@ impl Workspace {
             visible_doc_ids
                 .into_iter()
                 .filter(|tab_id| match tab_id {
-                    TabId::Terminal(_) => false,
+                    TabId::Terminal(_) | TabId::Commit => false,
                     TabId::Image(_) => true,
                     TabId::Document(doc_id) => core
                         .editor
@@ -3711,6 +3721,15 @@ impl Workspace {
             workspace.handle_vcs_service_event(event, cx);
         })
         .detach();
+        let mut status_revision = vcs_service.read(cx).status_revision();
+        cx.observe(&vcs_service, move |workspace, service, cx| {
+            let revision = service.read(cx).status_revision();
+            if revision != status_revision {
+                status_revision = revision;
+                workspace.refresh_commit_review(cx);
+            }
+        })
+        .detach();
 
         let (file_tree_config, workspace_backend) = {
             let core = core.read(cx);
@@ -3800,6 +3819,7 @@ impl Workspace {
             pending_appearance: None,
             pane_drop_target: None,
             image_tabs: Vec::new(),
+            commit_review: commit::CommitReview::default(),
             image_presentations: ImagePresentations::default(),
             next_image_tab_index: 1,
             file_tree_context_menu: ContextMenuController::new(),
@@ -4334,7 +4354,7 @@ impl Workspace {
         let has_clean_items = {
             let core = self.core.read(cx);
             visible_doc_ids.iter().any(|tab_id| match tab_id {
-                TabId::Terminal(_) => false,
+                TabId::Terminal(_) | TabId::Commit => false,
                 TabId::Image(_) => true,
                 TabId::Document(doc_id) => core
                     .editor
@@ -5857,6 +5877,9 @@ impl Workspace {
     }
 
     fn handle_document_opened(&mut self, doc_id: helix_view::DocumentId, cx: &mut Context<Self>) {
+        if self.core.read(cx).editor.is_hosted_auxiliary(doc_id) {
+            return;
+        }
         // New document opened - the view will be created automatically
         info!("Document opened: {:?}", doc_id);
         self.ensure_document_in_order(doc_id);
@@ -5896,6 +5919,21 @@ impl Workspace {
 
     fn handle_view_focused(&mut self, view_id: helix_view::ViewId, cx: &mut Context<Self>) {
         info!("View focused: {:?}", view_id);
+        if self
+            .pane_host
+            .commit_message
+            .is_some_and(|(_, slot)| slot == view_id)
+        {
+            if let Some(pane) = self.commit_tab_pane() {
+                let _ = self.pane_host.layout.activate_pane(pane);
+                let _ = self.pane_host.layout.activate_tab(pane, TabId::Commit);
+                self.pane_host.commit_message_focused = true;
+                self.project_panes(cx);
+                self.update_document_views(cx);
+                cx.notify();
+            }
+            return;
+        }
         if let Some(pane) = self.pane_host.pane_for_slot(view_id) {
             let document = self
                 .core
@@ -6241,6 +6279,19 @@ impl Workspace {
             .update(cx, |overlay, cx| overlay.dismiss_all(cx));
 
         if self.handle_runnable_command(command, cx) {
+            return;
+        }
+
+        if command.trim().trim_start_matches(':') == "commit" {
+            if let Some(continuation) = continuation {
+                if !self.begin_command_completion(continuation.token, cx) {
+                    return;
+                }
+                self.open_commit_tab(cx);
+                self.resume_command_continuation(continuation.token, cx);
+            } else {
+                self.open_commit_tab(cx);
+            }
             return;
         }
 
@@ -7949,6 +8000,21 @@ impl Workspace {
                 }
                 cx.notify();
             }
+            crate::Update::ShowCommit => {
+                let continuation = self.ui_continuation.take();
+                if let Some(continuation) = continuation
+                    && !self.begin_command_completion(continuation.token, cx)
+                {
+                    return;
+                }
+                self.open_commit_tab(cx);
+                if let Some(continuation) = continuation {
+                    self.resume_command_continuation(continuation.token, cx);
+                }
+            }
+            crate::Update::DocumentSaveFailed(error) => {
+                self.commit_save_failed(error, cx);
+            }
             crate::Update::PeekDiffChange => {
                 let continuation = self.ui_continuation.take();
                 if let Some(continuation) = continuation
@@ -8183,14 +8249,14 @@ impl Workspace {
         } else {
             self.tab_bar_document_cache_misses += 1;
             let current_doc_ids: std::collections::HashSet<_> =
-                editor.documents.keys().copied().collect();
-            let mut current_tab_ids: std::collections::HashSet<_> = editor
-                .documents
-                .keys()
+                editor.documents().map(|doc| doc.id()).collect();
+            let mut current_tab_ids: std::collections::HashSet<_> = current_doc_ids
+                .iter()
                 .copied()
                 .map(TabId::Document)
                 .collect();
             current_tab_ids.extend(self.image_tabs.iter().map(|tab| TabId::Image(tab.id)));
+            current_tab_ids.insert(TabId::Commit);
             self.document_order
                 .retain(|doc_id| current_doc_ids.contains(doc_id));
             self.pinned_documents
@@ -8334,7 +8400,7 @@ impl Workspace {
             .tabs()
             .iter()
             .filter_map(|id| {
-                if let TabId::Terminal(_) = id {
+                if matches!(id, TabId::Terminal(_) | TabId::Commit) {
                     Some(DocumentInfo {
                         id: *id,
                         path: None,
@@ -8403,6 +8469,7 @@ impl Workspace {
                     workspace.update(cx, |workspace, cx| {
                         workspace.focus_tab_pane(pane_id, cx);
                         match doc_id {
+                            TabId::Commit => workspace.open_commit_tab(cx),
                             TabId::Terminal(id) => {
                                 workspace.activate_terminal_tab(pane_id, id, cx);
                             }
@@ -8442,6 +8509,7 @@ impl Workspace {
                             return;
                         }
                         match doc_id {
+                            TabId::Commit => workspace.close_commit_tab(cx),
                             TabId::Terminal(id) => {
                                 workspace.close_terminal_tab(pane_id, id, false, cx)
                             }
@@ -9179,6 +9247,9 @@ impl Workspace {
                 ..
             } => {
                 self.handle_document_changed(*doc_id, line_change, cx);
+                if !self.core.read(cx).editor.is_hosted_auxiliary(*doc_id) {
+                    self.refresh_commit_review(cx);
+                }
             }
             DocumentEvent::Opened { doc_id, .. } => {
                 self.handle_document_opened(*doc_id, cx);
@@ -9186,7 +9257,12 @@ impl Workspace {
             DocumentEvent::Closed { doc_id, .. } => {
                 self.handle_document_closed(*doc_id, cx);
             }
-            DocumentEvent::Saved { doc_id, path, .. } => {
+            DocumentEvent::Saved {
+                doc_id,
+                path,
+                revision,
+            } => {
+                self.commit_document_saved(*doc_id, *revision, cx);
                 self.invalidate_tab_bar_documents();
                 self.push_document_saved_notification(path.to_str(), cx);
                 self.update_specific_document_view(*doc_id, cx);
@@ -9871,6 +9947,8 @@ impl Workspace {
     /// Focus the main editor area
     pub fn focus_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(focus) = self.active_terminal_focus() {
+            window.focus(&focus, cx);
+        } else if let Some(focus) = self.active_commit_focus() {
             window.focus(&focus, cx);
         } else if self.pane_host.active_slot().is_some()
             && self.view_manager.get_focused_document_view().is_some()
@@ -10838,6 +10916,8 @@ impl Workspace {
         .and_then(|id| self.image_tabs.iter().find(|tab| tab.id == id).cloned());
         let content = if let Some(TabId::Terminal(id)) = active {
             self.render_terminal_content(pane_id, id, geometry.rect, cx)
+        } else if active == Some(TabId::Commit) {
+            self.render_commit_review(cx)
         } else if let Some(image) = image {
             self.render_image_viewer(pane_id, image, cx)
         } else {
@@ -11068,7 +11148,13 @@ impl Workspace {
 
             // Real slots are retained even when another content tab is active.
             // Their existence does not create GUI tiles.
-            for view_id in self.pane_host.slots.values().copied() {
+            for view_id in self
+                .pane_host
+                .slots
+                .values()
+                .copied()
+                .chain(self.pane_host.commit_message.map(|(_, slot)| slot))
+            {
                 let Some(view) = editor.tree.try_get(view_id) else {
                     continue;
                 };
@@ -11389,6 +11475,7 @@ impl Render for Workspace {
         if window_is_active && !self.window_was_active {
             self.update_controller
                 .update(cx, |controller, cx| controller.check_if_stale(cx));
+            self.refresh_commit_review(cx);
         }
         self.window_was_active = window_is_active;
 

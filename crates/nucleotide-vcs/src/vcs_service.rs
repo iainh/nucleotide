@@ -8,8 +8,9 @@ use imara_diff::{Algorithm, Diff, Hunk, IndentHeuristic, IndentLevel, InternedIn
 use nucleotide_logging::{debug, error, info};
 use nucleotide_types::{DiffChangeType, DiffHunkInfo, VcsStatus};
 use nucleotide_workspace::{
-    FileKind, GitStatusEntry, GitStatusKind, GitStatusOptions, ProcessSpec, ReadOptions,
-    WorkspaceBackendHandle, WorkspaceIdentity, absolutize_workspace_path, local_workspace_backend,
+    FileKind, GitStatusEntry, GitStatusKind, GitStatusOptions, GitStatusResult, ProcessSpec,
+    ReadOptions, WorkspaceBackendHandle, WorkspaceIdentity, absolutize_workspace_path,
+    local_workspace_backend,
 };
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
@@ -163,6 +164,8 @@ pub struct VcsService {
     monitoring_generation: u64,
     /// Current VCS status cache
     status_cache: HashMap<PathBuf, VcsStatus>,
+    /// Raw `git status` entries, which keep staged and unstaged changes apart.
+    status_entries: Vec<GitStatusEntry>,
     /// Monotonic revision for presentation caches that consume status data.
     status_revision: u64,
     /// Timestamp of last cache update for each path
@@ -211,6 +214,7 @@ impl VcsService {
             workspace_backend: local_workspace_backend(),
             monitoring_generation: 0,
             status_cache: HashMap::new(),
+            status_entries: Vec::new(),
             status_revision: 0,
             cache_timestamps: HashMap::new(),
             diff_provider: DiffProviderRegistry::default(),
@@ -306,6 +310,7 @@ impl VcsService {
             self.status_cache.clear();
             self.status_revision = self.status_revision.wrapping_add(1);
         }
+        self.status_entries.clear();
         self.diff_tasks.clear();
         self.diff_hunks_cache.clear();
         self.diff_access_order.clear();
@@ -342,6 +347,15 @@ impl VcsService {
     /// Get all files with VCS status
     pub fn get_all_status(&self) -> &HashMap<PathBuf, VcsStatus> {
         &self.status_cache
+    }
+
+    /// `git status` entries with separate index and working-tree states, and
+    /// paths relative to the repository root. A change that only moves lines
+    /// between staged and unstaged leaves `get_all_status` unchanged, so it
+    /// bumps `status_revision` and notifies observers without a `StatusUpdated`
+    /// event.
+    pub fn status_entries(&self) -> &[GitStatusEntry] {
+        &self.status_entries
     }
 
     pub fn status_revision(&self) -> u64 {
@@ -790,6 +804,15 @@ impl VcsService {
         self.refresh_status_async(cx);
     }
 
+    /// Refresh after the app itself changed the repository, such as by
+    /// staging or committing. Unlike `force_refresh`, this is never rate
+    /// limited; changes to `.git` are not watched.
+    pub fn refresh_now(&mut self, cx: &mut Context<Self>) {
+        if self.is_monitoring {
+            self.refresh_status_async(cx);
+        }
+    }
+
     /// Check if a repository is being monitored
     pub fn is_monitoring(&self) -> bool {
         self.is_monitoring && self.root_path.is_some()
@@ -852,6 +875,7 @@ impl VcsService {
                             );
                             service.update_repository_state(refresh.head, refresh.display_ref, cx);
                             service.update_status_cache(refresh.status, cx);
+                            service.update_status_entries(refresh.entries, cx);
                         }
                         Err(error) => {
                             error!(error = %error, "VCS: Failed to get async git status");
@@ -971,6 +995,14 @@ impl VcsService {
         }
     }
 
+    fn update_status_entries(&mut self, entries: Vec<GitStatusEntry>, cx: &mut Context<Self>) {
+        if self.status_entries != entries {
+            self.status_entries = entries;
+            self.status_revision = self.status_revision.wrapping_add(1);
+            cx.notify();
+        }
+    }
+
     /// Schedule the next status check
     fn schedule_next_check(&self) {
         // For now, we'll only refresh on demand to avoid async complexity
@@ -981,6 +1013,7 @@ impl VcsService {
 
 struct GitRefreshResult {
     status: HashMap<PathBuf, VcsStatus>,
+    entries: Vec<GitStatusEntry>,
     head: Option<String>,
     display_ref: Option<String>,
 }
@@ -1092,10 +1125,21 @@ async fn run_git_refresh_with_backend(
         .git_head(root_path)
         .await
         .map_err(|error| format!("Workspace git head failed: {error}"))?;
-    let status = run_git_status_with_backend(backend, root_path, max_files).await?;
+    let GitStatusResult { root, entries, .. } =
+        run_git_status_with_backend(backend, root_path, max_files).await?;
+    let status = entries
+        .iter()
+        .map(|entry| {
+            (
+                root.join(&entry.relative_path),
+                vcs_status_from_workspace_entry(entry),
+            )
+        })
+        .collect();
 
     Ok(GitRefreshResult {
         status,
+        entries,
         head: head.head,
         display_ref: head.display_ref,
     })
@@ -1105,32 +1149,25 @@ async fn run_git_status_with_backend(
     backend: WorkspaceBackendHandle,
     root_path: &Path,
     max_files: usize,
-) -> Result<HashMap<PathBuf, VcsStatus>, String> {
-    let status = match backend
+) -> Result<GitStatusResult, String> {
+    match backend
         .git_status(root_path, GitStatusOptions::with_limit(max_files))
         .await
     {
-        Ok(status) => status,
+        Ok(status) => Ok(status),
         Err(error) if git_error_is_not_repository(&error.to_string()) => {
             debug!(
                 root_path = %root_path.display(),
                 "VCS: Monitored workspace root is not inside a git repository"
             );
-            return Ok(HashMap::new());
+            Ok(GitStatusResult {
+                root: root_path.to_path_buf(),
+                entries: Vec::new(),
+                truncated: false,
+            })
         }
-        Err(error) => return Err(format!("Workspace git status failed: {error}")),
-    };
-
-    Ok(status
-        .entries
-        .into_iter()
-        .map(|entry| {
-            (
-                status.root.join(&entry.relative_path),
-                vcs_status_from_workspace_entry(&entry),
-            )
-        })
-        .collect())
+        Err(error) => Err(format!("Workspace git status failed: {error}")),
+    }
 }
 
 fn vcs_status_from_workspace_entry(entry: &GitStatusEntry) -> VcsStatus {
@@ -1540,6 +1577,47 @@ mod tests {
         });
     }
 
+    #[gpui::test]
+    fn staging_right_after_a_refresh_updates_status_entries(cx: &mut gpui::TestAppContext) {
+        let temp = test_repository();
+        std::fs::write(temp.path().join("file.txt"), "changed\n").unwrap();
+        let service = cx.new(|_| VcsService::new(VcsConfig::default()));
+        service.update(cx, |service, cx| {
+            service.start_monitoring(temp.path().to_path_buf(), cx)
+        });
+        cx.run_until_parked();
+        let entry = |service: &VcsService| {
+            let [entry] = service.status_entries() else {
+                panic!("expected one entry: {:?}", service.status_entries());
+            };
+            (entry.index_status, entry.working_tree_status)
+        };
+        let revision = service.read_with(cx, |service, _| {
+            assert_eq!(
+                entry(service),
+                (GitStatusKind::Unmodified, GitStatusKind::Modified)
+            );
+            service.status_revision()
+        });
+
+        // Within force_refresh's rate limit, and without changing the merged
+        // `Modified` status.
+        git(temp.path(), &["add", "file.txt"]);
+        service.update(cx, |service, cx| service.refresh_now(cx));
+        cx.run_until_parked();
+        service.read_with(cx, |service, _| {
+            assert_eq!(
+                entry(service),
+                (GitStatusKind::Modified, GitStatusKind::Unmodified)
+            );
+            assert_eq!(
+                service.get_status(&temp.path().join("file.txt")),
+                Some(VcsStatus::Modified)
+            );
+            assert_ne!(service.status_revision(), revision);
+        });
+    }
+
     #[gpui::test(iterations = 10)]
     fn refresh_requested_during_status_read_runs_after_success_or_error(
         cx: &mut gpui::TestAppContext,
@@ -1752,7 +1830,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(status.is_empty());
+        assert!(status.entries.is_empty());
     }
 
     #[tokio::test]
