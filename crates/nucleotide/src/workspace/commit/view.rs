@@ -12,10 +12,12 @@ fn button(id: impl Into<gpui::ElementId>, label: impl Into<SharedString>) -> But
 }
 
 /// Diff rows use the editor's line height, which is also set as the text line
-/// height so that word highlights fill exactly one row.
+/// height so that word highlights fill exactly one row. Rows are never shorter
+/// than a small checkbox, so staging controls fit with small editor fonts.
 pub(super) fn row_height(cx: &App) -> Pixels {
     let font = cx.global::<nucleotide_types::EditorFontConfig>();
-    px((font.size * font.line_height).round())
+    let checkbox = cx.global::<nucleotide_ui::Theme>().tokens.sizes.space_6;
+    px((font.size * font.line_height).round()).max(checkbox)
 }
 
 pub(super) fn line_text(bytes: &[u8]) -> String {

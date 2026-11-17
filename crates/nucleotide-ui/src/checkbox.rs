@@ -13,6 +13,9 @@ use std::sync::Arc;
 
 type CheckboxChangeHandler = Arc<dyn Fn(bool, &mut Window, &mut App)>;
 
+/// The Phosphor square spans 192 of the icon's 256 units.
+const BOX_SCALE: f32 = 0.75;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum CheckboxSize {
     Small,
@@ -33,14 +36,15 @@ fn checkbox_metrics(size: CheckboxSize, tokens: &crate::DesignTokens) -> Checkbo
     match size {
         CheckboxSize::Small => CheckboxMetrics {
             height: tokens.sizes.space_6,
-            icon_size: tokens.sizes.text_lg,
+            // Fills the row, so the drawn box is as large as the control allows.
+            icon_size: tokens.sizes.space_6,
             gap: tokens.sizes.space_1,
             padding_x: tokens.sizes.space_1,
             font_size: tokens.sizes.text_sm,
         },
         CheckboxSize::Medium => CheckboxMetrics {
             height: tokens.sizes.button_height_md,
-            icon_size: tokens.sizes.text_xl,
+            icon_size: tokens.sizes.space_7,
             gap: tokens.sizes.space_2,
             padding_x: tokens.sizes.space_2,
             font_size: tokens.sizes.text_md,
@@ -157,40 +161,50 @@ impl RenderOnce for Checkbox {
             .size(metrics.icon_size)
             .text_color(icon_color)
             .flex_shrink_0();
+        // Drawn boxes match the SVG square and keep the label where the icon puts it.
+        let drawn_box = |content: gpui::Div| {
+            div()
+                .size(metrics.icon_size)
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(content.size(metrics.icon_size * BOX_SCALE))
+                .into_any_element()
+        };
         let icon = if let Some(c) = theme.tokens.chrome.contrast {
             // Avoid the duotone SVG's translucent fill in contrast mode.
             let selected = (self.checked || self.indeterminate) && !disabled;
-            div()
-                .size(metrics.icon_size)
-                .flex_none()
-                .flex()
-                .items_center()
-                .justify_center()
-                .border_1()
-                .border_color(if disabled { c.gray_text } else { c.button_text })
-                .bg(if selected { c.highlight } else { c.button_face })
-                .text_color(if selected {
-                    c.highlight_text
-                } else {
-                    c.gray_text
-                })
-                .when(self.checked || self.indeterminate, |icon| {
-                    icon.child(if self.indeterminate { "−" } else { "✓" })
-                })
-                .into_any_element()
+            drawn_box(
+                div()
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .border_1()
+                    .border_color(if disabled { c.gray_text } else { c.button_text })
+                    .bg(if selected { c.highlight } else { c.button_face })
+                    .text_color(if selected {
+                        c.highlight_text
+                    } else {
+                        c.gray_text
+                    })
+                    .when(self.checked || self.indeterminate, |icon| {
+                        icon.child(if self.indeterminate { "−" } else { "✓" })
+                    }),
+            )
         } else if self.indeterminate {
-            div()
-                .size(metrics.icon_size)
-                .flex_none()
-                .flex()
-                .items_center()
-                .justify_center()
-                .border_1()
-                .rounded(theme.tokens.sizes.radius_sm)
-                .border_color(icon_color)
-                .text_color(icon_color)
-                .child("−")
-                .into_any_element()
+            drawn_box(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .border_1()
+                    .rounded(theme.tokens.sizes.radius_sm)
+                    .border_color(icon_color)
+                    .text_color(icon_color)
+                    .child("−"),
+            )
         } else {
             icon.into_any_element()
         };

@@ -646,12 +646,13 @@ impl Workspace {
         let checkbox_size = tokens.sizes.space_6;
         let hunk_checkboxes = blocks.into_iter().filter_map(|block| {
             let [old, new] = &block.rows;
-            let center = row * ((old.start + old.end + new.start + new.end) as f32 / 4.0);
+            // Sit in the row holding the ribbon's midpoint rather than across two rows.
+            let middle = (old.start + old.end + new.start + new.end) as f32 / 4.0;
             Some(
                 div()
                     .absolute()
                     .left(gutter + (ribbon - checkbox_size) * 0.5)
-                    .top(center - checkbox_size * 0.5)
+                    .top(row * middle.floor() + (row - checkbox_size) * 0.5)
                     .child(block.checkbox?),
             )
         });
