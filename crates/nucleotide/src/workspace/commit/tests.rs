@@ -38,6 +38,7 @@ async fn stale_worktree_or_index_never_applies_a_reviewed_selection() {
             local_workspace_backend(),
             root.path().into(),
             HashMap::new(),
+            None,
         )
         .await
         .unwrap();
@@ -85,6 +86,7 @@ async fn review_retains_divergent_index_and_limits_special_files_to_whole_file_a
         local_workspace_backend(),
         root.path().into(),
         HashMap::new(),
+        None,
     )
     .await
     .unwrap();
@@ -117,6 +119,7 @@ async fn review_retains_divergent_index_and_limits_special_files_to_whole_file_a
             local_workspace_backend(),
             root.path().into(),
             HashMap::new(),
+            None,
         )
         .await
         .unwrap();

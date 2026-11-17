@@ -1,5 +1,6 @@
 //! Commit review state and save-before-stage coordination. Git work never runs on the UI thread.
 mod message;
+mod split;
 mod submit;
 #[cfg(test)]
 mod tests;
@@ -29,6 +30,10 @@ pub(super) struct CommitReview {
     collapse_prefix: bool,
     messages: HashMap<(WorkspaceIdentity, PathBuf), CommitDraft>,
     operation: Option<&'static str>,
+    /// Stack removals above additions instead of showing HEAD and the working tree side by side.
+    unified: bool,
+    /// Unfolded unchanged runs of side-by-side diffs: file, staged preview, first HEAD line.
+    expanded: HashSet<(PathBuf, bool, u32)>,
 }
 
 struct CommitDraft {
@@ -63,6 +68,8 @@ struct FileContent {
     changes: FileChanges,
     selection: Option<Selection>,
     staged_diff: Option<FileChanges>,
+    /// Syntax highlights of the HEAD, index (with `staged_diff`) and working-tree lines.
+    highlights: [Option<split::LineHighlights>; 3],
 }
 
 impl ReviewFile {
@@ -149,6 +156,7 @@ async fn load_content(
     backend: &WorkspaceBackendHandle,
     entry: &GitStatusEntry,
     buffer: Option<&Vec<u8>>,
+    loader: Option<&helix_core::syntax::Loader>,
 ) -> Result<FileContent, String> {
     if [entry.index_status, entry.working_tree_status]
         .iter()
@@ -201,6 +209,14 @@ async fn load_content(
             index.as_deref().unwrap_or_default(),
         )
     });
+    let highlight = |text: Option<&Vec<u8>>| {
+        split::line_highlights(text.map_or(&[][..], Vec::as_slice), path, loader?)
+    };
+    let highlights = [
+        highlight(head.as_ref()),
+        staged_diff.as_ref().and_then(|_| highlight(index.as_ref())),
+        highlight(Some(&worktree)),
+    ];
     Ok(FileContent {
         head,
         index,
@@ -208,6 +224,7 @@ async fn load_content(
         changes,
         selection,
         staged_diff,
+        highlights,
     })
 }
 
@@ -215,6 +232,7 @@ async fn load_review(
     backend: WorkspaceBackendHandle,
     directory: PathBuf,
     buffers: HashMap<PathBuf, Vec<u8>>,
+    loader: Option<Arc<helix_core::syntax::Loader>>,
 ) -> Result<ReviewSnapshot, String> {
     let repository = GitRepository::discover(backend.clone(), &directory)
         .await?
@@ -250,7 +268,7 @@ async fn load_review(
     let mut files = Vec::new();
     for entry in status.entries {
         let buffer = buffers.get(&repository.root().join(&entry.relative_path));
-        let content = load_content(&repository, &backend, &entry, buffer).await;
+        let content = load_content(&repository, &backend, &entry, buffer, loader.as_deref()).await;
         files.push(Arc::new(ReviewFile {
             entry,
             unsaved: buffer.is_some(),
@@ -302,7 +320,8 @@ impl PendingStage {
             if let StageChange::File(_) = change {
                 if let Ok(content) = &file.content {
                     let current =
-                        load_content(&self.repository, &self.backend, &file.entry, None).await?;
+                        load_content(&self.repository, &self.backend, &file.entry, None, None)
+                            .await?;
                     if content.head != current.head
                         || content.index != current.index
                         || (file.unsaved && content.worktree != current.worktree)
@@ -317,7 +336,8 @@ impl PendingStage {
                 continue;
             }
             let content = file.content.as_ref().map_err(Clone::clone)?;
-            let current = load_content(&self.repository, &self.backend, &file.entry, None).await?;
+            let current =
+                load_content(&self.repository, &self.backend, &file.entry, None, None).await?;
             if content.head != current.head
                 || content.index != current.index
                 || content.worktree != current.worktree
@@ -552,6 +572,7 @@ impl Workspace {
             return;
         };
         let backend = core.workspace_backend.clone();
+        let loader = Some(core.editor.syn_loader.load_full());
         let buffers = core
             .editor
             .documents
@@ -580,10 +601,12 @@ impl Workspace {
         self.commit_review.busy = true;
         let handle = self.handle.clone();
         cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move { handle.block_on(load_review(backend, directory, buffers)) })
-                .await;
+            let result =
+                cx.background_executor()
+                    .spawn(async move {
+                        handle.block_on(load_review(backend, directory, buffers, loader))
+                    })
+                    .await;
             let _ = this.update(cx, |this, cx| {
                 this.commit_review.busy = false;
                 match result {

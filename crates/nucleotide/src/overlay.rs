@@ -77,7 +77,7 @@ struct PickerPreviewCache {
     task: Option<gpui::Task<()>>,
 }
 
-fn picker_preview_highlights(
+pub(crate) fn picker_preview_highlights(
     text: &str,
     path: Option<&std::path::Path>,
     loader: &helix_core::syntax::Loader,

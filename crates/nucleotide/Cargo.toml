@@ -78,6 +78,7 @@ arc-swap.workspace = true
 tokio.workspace = true
 futures-util.workspace = true
 futures-executor = "0.3"
+imara-diff = "0.2"
 
 tracing.workspace = true
 once_cell.workspace = true

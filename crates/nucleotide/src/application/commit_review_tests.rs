@@ -334,6 +334,14 @@ fn commit_review_saves_buffer_before_staging_only_the_clicked_line(cx: &mut gpui
         fs::read_to_string(&path).unwrap(),
         "first\nsecond\nalpha\nbeta\n"
     );
+
+    // The unified layout stages the same line as the default side-by-side one.
+    click_line(cx, "commit-layout-unified");
+    pump(&core, cx);
+    click_line(cx, "commit-row-0-false-0");
+    wait_for(&core, cx, |_| {
+        git(root.path(), &["show", ":file.txt"]) == "first\nalpha\nbeta\n"
+    });
 }
 
 #[gpui::test]

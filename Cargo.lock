@@ -5553,6 +5553,7 @@ dependencies = [
  "helix-view",
  "ignore",
  "image",
+ "imara-diff",
  "indexmap",
  "notify",
  "nucleotide-appearance",

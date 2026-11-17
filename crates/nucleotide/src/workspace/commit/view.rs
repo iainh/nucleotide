@@ -1,3 +1,4 @@
+use super::split::SplitDiff;
 use super::*;
 use crate::diff::{DiffStyle, diff_lines, render_diff_line};
 use nucleotide_ui::{Checkbox, CheckboxSize};
@@ -10,7 +11,14 @@ fn button(id: impl Into<gpui::ElementId>, label: impl Into<SharedString>) -> But
         .size(ButtonSize::Small)
 }
 
-fn line_text(bytes: &[u8]) -> String {
+/// Diff rows use the editor's line height, which is also set as the text line
+/// height so that word highlights fill exactly one row.
+pub(super) fn row_height(cx: &App) -> Pixels {
+    let font = cx.global::<nucleotide_types::EditorFontConfig>();
+    px((font.size * font.line_height).round())
+}
+
+pub(super) fn line_text(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes)
         .trim_end_matches(['\r', '\n'])
         .to_string()
@@ -74,7 +82,7 @@ impl Workspace {
         }
     }
 
-    fn review_checkbox(
+    pub(super) fn review_checkbox(
         &mut self,
         index: usize,
         label: String,
@@ -300,6 +308,28 @@ impl Workspace {
                                     cx,
                                 );
                             })),
+                    )
+                    .children(
+                        [
+                            ("commit-layout-split", "Side by side", false),
+                            ("commit-layout-unified", "Unified", true),
+                        ]
+                        .map(|(id, label, unified)| {
+                            div()
+                                .when(cfg!(test), |view| view.debug_selector(|| id.into()))
+                                .child(
+                                    button(id, label)
+                                        .variant(if self.commit_review.unified == unified {
+                                            ButtonVariant::Secondary
+                                        } else {
+                                            ButtonVariant::Ghost
+                                        })
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.commit_review.unified = unified;
+                                            cx.notify();
+                                        })),
+                                )
+                        }),
                     ),
             )
             .child(self.render_commit_message(cx))
@@ -503,204 +533,293 @@ impl Workspace {
                         section = section.child(div().p(tokens.sizes.space_3).text_color(tokens.editor.warning)
                             .child("Staged version differs from working tree. Stage the whole file to replace it, or unstage it."));
                     }
+                    let unified = self.commit_review.unified;
                     if let Some(staged) = &content.staged_diff {
-                        let mut preview = div()
-                            .id(SharedString::from(format!("commit-staged-{index}")))
-                            .overflow_x_scroll()
-                            .font_family(style.font_family.clone())
-                            .text_size(style.font_size)
-                            .child(
-                                div()
-                                    .p(tokens.sizes.space_2)
-                                    .text_color(style.text_secondary)
-                                    .child("Staged changes · read-only"),
-                            );
-                        let mut remaining = MAX_VISIBLE_LINES;
-                        for hunk in staged.hunks() {
-                            let removed: Vec<_> = hunk
-                                .before
-                                .clone()
-                                .take(remaining)
-                                .map(|n| line_text(staged.head_line(n)))
-                                .collect();
-                            remaining -= removed.len();
-                            let added: Vec<_> = hunk
-                                .after
-                                .clone()
-                                .take(remaining)
-                                .map(|n| line_text(staged.worktree_line(n)))
-                                .collect();
-                            remaining -= added.len();
-                            preview = preview.children(
-                                diff_lines(&removed, &added, style)
-                                    .into_iter()
-                                    .map(|row| render_diff_line(row, tokens.sizes.space_6)),
-                            );
-                            if remaining == 0 {
-                                break;
-                            }
-                        }
-                        section = section.child(preview).child(
+                        section = section.child(
+                            div()
+                                .p(tokens.sizes.space_2)
+                                .text_color(style.text_secondary)
+                                .child("Staged changes · read-only"),
+                        );
+                        section = section.child(if unified {
+                            self.render_unified_staged(index, staged, style, cx)
+                        } else {
+                            self.render_split_diff(
+                                SplitDiff {
+                                    id: format!("commit-staged-{index}"),
+                                    path: &file.entry.relative_path,
+                                    staged: true,
+                                    titles: ["HEAD", "Staged"],
+                                    changes: staged,
+                                    old_len: line_count(content.head.as_deref()),
+                                    highlights: [
+                                        content.highlights[0].as_ref(),
+                                        content.highlights[1].as_ref(),
+                                    ],
+                                    staging: None,
+                                },
+                                style,
+                                cx,
+                            )
+                        });
+                        section = section.child(
                             div()
                                 .p(tokens.sizes.space_2)
                                 .text_color(style.text_secondary)
                                 .child("Working-tree changes · line staging unavailable"),
                         );
                     }
-                    let mut body = div()
-                        .id(SharedString::from(format!("commit-diff-{index}")))
-                        .overflow_x_scroll()
-                        .font_family(style.font_family.clone())
-                        .text_size(style.font_size);
-                    let mut visible = 0;
-                    for (hunk_index, hunk) in content.changes.hunks().iter().enumerate() {
-                        if visible >= MAX_VISIBLE_LINES {
-                            break;
-                        }
-                        let state = content
-                            .selection
-                            .as_ref()
-                            .map(|s| s.hunk_state(hunk))
-                            .unwrap_or(SelectionState::Unstaged);
-                        let header = self
-                            .review_checkbox(
-                                index,
-                                format!(
-                                    "@@ −{},{} +{},{} @@",
-                                    hunk.before.start + 1,
-                                    hunk.before.len(),
-                                    hunk.after.start + 1,
-                                    hunk.after.len()
-                                ),
-                                state,
-                                file.clone(),
-                                StageChange::Hunk(hunk_index, state != SelectionState::Staged),
-                                cx,
-                            )
-                            .disabled(self.commit_review.busy || content.selection.is_none());
-                        body = body.child(
-                            div()
-                                .bg(style.surface)
-                                .px(tokens.sizes.space_3)
-                                .child(header),
-                        );
-                        let context_line = |line: u32, bytes: &[u8]| {
-                            div()
-                                .flex()
-                                .text_color(style.text_secondary)
-                                .child(
-                                    div()
-                                        .w(tokens.sizes.space_10)
-                                        .text_right()
-                                        .child((line + 1).to_string()),
-                                )
-                                .child(
-                                    div()
-                                        .px(tokens.sizes.space_3)
-                                        .whitespace_nowrap()
-                                        .child(crate::diff::expand_tabs(&line_text(bytes))),
-                                )
-                        };
-                        for line in hunk.before.start.saturating_sub(3)..hunk.before.start {
-                            body = body.child(context_line(line, content.changes.head_line(line)));
-                        }
-                        let removed: Vec<_> = hunk
-                            .before
-                            .clone()
-                            .take(MAX_VISIBLE_LINES - visible)
-                            .map(|line| line_text(content.changes.head_line(line)))
-                            .collect();
-                        let added: Vec<_> = hunk
-                            .after
-                            .clone()
-                            .take((MAX_VISIBLE_LINES - visible).saturating_sub(removed.len()))
-                            .map(|line| line_text(content.changes.worktree_line(line)))
-                            .collect();
-                        let locations = hunk
-                            .before
-                            .clone()
-                            .take(removed.len())
-                            .map(|line| (true, line))
-                            .chain(
-                                hunk.after
-                                    .clone()
-                                    .take(added.len())
-                                    .map(|line| (false, line)),
-                            );
-                        for ((removal, line), row) in
-                            locations.zip(diff_lines(&removed, &added, style))
-                        {
-                            visible += 1;
-                            let staged = content.selection.as_ref().is_some_and(|s| {
-                                if removal {
-                                    s.is_removal_staged(line)
-                                } else {
-                                    s.is_addition_staged(line)
-                                }
-                            });
-                            let checkbox = self
-                                .review_checkbox(
-                                    index,
-                                    String::new(),
-                                    if staged {
-                                        SelectionState::Staged
-                                    } else {
-                                        SelectionState::Unstaged
-                                    },
-                                    file.clone(),
-                                    StageChange::Line {
-                                        removal,
-                                        line,
-                                        staged: !staged,
-                                    },
-                                    cx,
-                                )
-                                .disabled(self.commit_review.busy || content.selection.is_none());
-                            body = body.child(
-                                div()
-                                    .when(cfg!(test), |row| {
-                                        row.debug_selector(move || {
-                                            format!("commit-row-{index}-{removal}-{line}")
-                                        })
-                                    })
-                                    .flex()
-                                    .items_center()
-                                    .flex_none()
-                                    .child(checkbox)
-                                    .child(
-                                        div()
-                                            .w(tokens.sizes.space_9)
-                                            .flex_none()
-                                            .text_right()
-                                            .text_color(style.text_secondary)
-                                            .child((line + 1).to_string()),
-                                    )
-                                    .child(render_diff_line(row, tokens.sizes.space_6)),
-                            );
-                        }
-                        let end = content
-                            .changes
-                            .hunks()
-                            .get(hunk_index + 1)
-                            .map(|next| next.after.start)
-                            .unwrap_or_else(|| {
-                                content.worktree.split_inclusive(|b| *b == b'\n').count() as u32
-                            });
-                        for line in hunk.after.end..end.min(hunk.after.end + 3) {
-                            body =
-                                body.child(context_line(line, content.changes.worktree_line(line)));
-                        }
-                    }
-                    if visible == MAX_VISIBLE_LINES {
-                        body = body.child(div().p(tokens.sizes.space_3).child("Preview limited to 400 changed lines. Whole-file actions include all changes."));
-                    }
                     if content.changes.hunks().is_empty() {
-                        body = body.child(div().p(tokens.sizes.space_3).child("No text changes against HEAD. Use whole-file actions for staged-only or mode changes."));
+                        section = section.child(div().p(tokens.sizes.space_3).child("No text changes against HEAD. Use whole-file actions for staged-only or mode changes."));
+                    } else if unified {
+                        section = section
+                            .child(self.render_unified_diff(index, &file, content, style, cx));
+                    } else {
+                        section = section.child(self.render_split_diff(
+                            SplitDiff {
+                                id: format!("commit-diff-{index}"),
+                                path: &file.entry.relative_path,
+                                staged: false,
+                                titles: ["HEAD", "Working tree"],
+                                changes: &content.changes,
+                                old_len: line_count(content.head.as_deref()),
+                                highlights: [
+                                    content.highlights[0].as_ref(),
+                                    content.highlights[2].as_ref(),
+                                ],
+                                staging: Some((index, &file, content)),
+                            },
+                            style,
+                            cx,
+                        ));
                     }
-                    section = section.child(body);
                 }
             }
         }
         section.into_any_element()
+    }
+}
+
+/// Number of lines in a version of a file.
+fn line_count(text: Option<&[u8]>) -> u32 {
+    text.unwrap_or_default()
+        .split_inclusive(|b| *b == b'\n')
+        .count() as u32
+}
+
+impl Workspace {
+    fn render_unified_staged(
+        &mut self,
+        index: usize,
+        staged: &FileChanges,
+        style: &DiffStyle,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let row_height = row_height(cx);
+        let mut preview = div()
+            .id(SharedString::from(format!("commit-staged-{index}")))
+            .overflow_x_scroll()
+            .font_family(style.font_family.clone())
+            .text_size(style.font_size)
+            .line_height(row_height);
+        let mut remaining = MAX_VISIBLE_LINES;
+        for hunk in staged.hunks() {
+            let removed: Vec<_> = hunk
+                .before
+                .clone()
+                .take(remaining)
+                .map(|n| line_text(staged.head_line(n)))
+                .collect();
+            remaining -= removed.len();
+            let added: Vec<_> = hunk
+                .after
+                .clone()
+                .take(remaining)
+                .map(|n| line_text(staged.worktree_line(n)))
+                .collect();
+            remaining -= added.len();
+            preview = preview.children(
+                diff_lines(&removed, &added, style)
+                    .into_iter()
+                    .map(|row| render_diff_line(row, row_height)),
+            );
+            if remaining == 0 {
+                break;
+            }
+        }
+        preview.into_any_element()
+    }
+
+    fn render_unified_diff(
+        &mut self,
+        index: usize,
+        file: &Arc<ReviewFile>,
+        content: &FileContent,
+        style: &DiffStyle,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let tokens = cx.global::<nucleotide_ui::Theme>().tokens;
+        let row_height = row_height(cx);
+        let busy = self.commit_review.busy;
+        let mut body = div()
+            .id(SharedString::from(format!("commit-diff-{index}")))
+            .overflow_x_scroll()
+            .font_family(style.font_family.clone())
+            .text_size(style.font_size)
+            .line_height(row_height);
+        // Fixed gutters keep code aligned between context and changed rows.
+        let checkbox_width = tokens.sizes.space_7;
+        let line_number = |line: u32| {
+            div()
+                .w(tokens.sizes.space_9)
+                .flex_none()
+                .text_right()
+                .text_color(style.text_secondary)
+                .child((line + 1).to_string())
+        };
+        let context_line = |line: u32, bytes: &[u8]| {
+            div()
+                .flex()
+                .items_center()
+                .h(row_height)
+                .text_color(style.text_secondary)
+                .child(div().w(checkbox_width).flex_none())
+                .child(line_number(line))
+                // Matches the sign column of changed rows.
+                .child(div().w(px(24.0)).flex_none())
+                .child(
+                    div()
+                        .whitespace_nowrap()
+                        .child(crate::diff::expand_tabs(&line_text(bytes))),
+                )
+        };
+        let mut visible = 0;
+        let hunks = content.changes.hunks();
+        for (hunk_index, hunk) in hunks.iter().enumerate() {
+            if visible >= MAX_VISIBLE_LINES {
+                break;
+            }
+            let state = content
+                .selection
+                .as_ref()
+                .map(|s| s.hunk_state(hunk))
+                .unwrap_or(SelectionState::Unstaged);
+            let header = self
+                .review_checkbox(
+                    index,
+                    format!(
+                        "@@ −{},{} +{},{} @@",
+                        hunk.before.start + 1,
+                        hunk.before.len(),
+                        hunk.after.start + 1,
+                        hunk.after.len()
+                    ),
+                    state,
+                    file.clone(),
+                    StageChange::Hunk(hunk_index, state != SelectionState::Staged),
+                    cx,
+                )
+                .disabled(busy || content.selection.is_none());
+            body = body.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .h(row_height)
+                    .bg(style.surface)
+                    .px(tokens.sizes.space_3)
+                    .child(header),
+            );
+            // Skip lines the previous hunk already shows as trailing context.
+            let context_start = hunk_index
+                .checked_sub(1)
+                .map(|prev| {
+                    let end = hunks[prev].before.end;
+                    end + (hunk.before.start - end).min(3)
+                })
+                .unwrap_or(0)
+                .max(hunk.before.start.saturating_sub(3));
+            for old in context_start..hunk.before.start {
+                body = body.child(context_line(old, content.changes.head_line(old)));
+            }
+            let removed: Vec<_> = hunk
+                .before
+                .clone()
+                .take(MAX_VISIBLE_LINES - visible)
+                .map(|line| line_text(content.changes.head_line(line)))
+                .collect();
+            let added: Vec<_> = hunk
+                .after
+                .clone()
+                .take((MAX_VISIBLE_LINES - visible).saturating_sub(removed.len()))
+                .map(|line| line_text(content.changes.worktree_line(line)))
+                .collect();
+            let locations = hunk
+                .before
+                .clone()
+                .take(removed.len())
+                .map(|line| (true, line))
+                .chain(
+                    hunk.after
+                        .clone()
+                        .take(added.len())
+                        .map(|line| (false, line)),
+                );
+            for ((removal, line), row) in locations.zip(diff_lines(&removed, &added, style)) {
+                visible += 1;
+                let staged = content.selection.as_ref().is_some_and(|s| {
+                    if removal {
+                        s.is_removal_staged(line)
+                    } else {
+                        s.is_addition_staged(line)
+                    }
+                });
+                let checkbox = self
+                    .review_checkbox(
+                        index,
+                        String::new(),
+                        if staged {
+                            SelectionState::Staged
+                        } else {
+                            SelectionState::Unstaged
+                        },
+                        file.clone(),
+                        StageChange::Line {
+                            removal,
+                            line,
+                            staged: !staged,
+                        },
+                        cx,
+                    )
+                    .disabled(busy || content.selection.is_none());
+                body = body.child(
+                    div()
+                        .when(cfg!(test), |cell| {
+                            cell.debug_selector(move || {
+                                format!("commit-row-{index}-{removal}-{line}")
+                            })
+                        })
+                        .flex()
+                        .items_center()
+                        .flex_none()
+                        .h(row_height)
+                        .child(div().w(checkbox_width).flex_none().child(checkbox))
+                        .child(line_number(line))
+                        .child(render_diff_line(row, row_height)),
+                );
+            }
+            let end = hunks
+                .get(hunk_index + 1)
+                .map(|next| next.after.start)
+                .unwrap_or_else(|| line_count(Some(&content.worktree)));
+            for new in hunk.after.end..end.min(hunk.after.end + 3) {
+                body = body.child(context_line(new, content.changes.worktree_line(new)));
+            }
+        }
+        if visible == MAX_VISIBLE_LINES {
+            body = body.child(div().p(tokens.sizes.space_3).child(
+                "Preview limited to 400 changed lines. Whole-file actions include all changes.",
+            ));
+        }
+        body.into_any_element()
     }
 }
