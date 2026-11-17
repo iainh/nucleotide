@@ -345,9 +345,7 @@ fn commit_review_saves_buffer_before_staging_only_the_clicked_line(cx: &mut gpui
 }
 
 #[gpui::test]
-fn commit_review_virtualizes_files_without_losing_offscreen_keyboard_actions(
-    cx: &mut gpui::TestAppContext,
-) {
+fn commit_review_shows_one_file_and_brackets_move_between_files(cx: &mut gpui::TestAppContext) {
     let _runtime = TEST_RUNTIME.enter();
     let root = repository();
     for index in 0..20 {
@@ -364,14 +362,15 @@ fn commit_review_virtualizes_files_without_losing_offscreen_keyboard_actions(
     });
     assert!(
         cx.debug_bounds("commit-row-19-false-0").is_none(),
-        "offscreen diffs must not be laid out on each message keystroke"
+        "only the selected file's diff is laid out"
     );
     for _ in 0..19 {
         cx.simulate_keystrokes("]");
     }
     pump(&core, cx);
     assert!(cx.debug_bounds("commit-row-19-false-1").is_some());
-    // File -> hunk -> first line -> second line, even when the file began offscreen.
+    assert!(cx.debug_bounds("commit-row-0-false-0").is_none());
+    // File -> hunk -> first line -> second line of the newly selected file.
     cx.simulate_keystrokes("j j j space");
     wait_for(&core, cx, |_| {
         git(root.path(), &["diff", "--cached", "--name-only"]).trim() == "change-19.txt"
@@ -390,7 +389,6 @@ fn commit_review_virtualizes_files_without_losing_offscreen_keyboard_actions(
         ..Default::default()
     });
     pump(&core, cx);
-    assert!(cx.debug_bounds("commit-row-0-false-0").is_some());
     cx.simulate_keystrokes("[ space");
     wait_for(&core, cx, |_| {
         git(root.path(), &["diff", "--cached", "--name-only"]).trim()
@@ -418,6 +416,41 @@ fn commit_review_virtualizes_files_without_losing_offscreen_keyboard_actions(
             "fix: responsive review\n\nKeep the exact message.\n"
         );
     });
+}
+
+#[gpui::test]
+fn changes_sidebar_selects_the_shown_file_and_stages_whole_files(cx: &mut gpui::TestAppContext) {
+    let _runtime = TEST_RUNTIME.enter();
+    let root = repository();
+    fs::write(root.path().join("gone.txt"), "old\n").unwrap();
+    git(root.path(), &["add", "gone.txt"]);
+    git(root.path(), &["commit", "-qm", "gone"]);
+    fs::remove_file(root.path().join("gone.txt")).unwrap();
+    fs::write(root.path().join("added.txt"), "new\n").unwrap();
+    fs::write(root.path().join("file.txt"), "alpha\nchanged\n").unwrap();
+    let (core, _, cx) = new_test_workspace(cx, &root.path().join("file.txt"));
+    core.update(cx, |_, cx| cx.emit(crate::Update::ShowCommit));
+    // Files are listed by path: added.txt, file.txt, gone.txt.
+    wait_for(&core, cx, |cx| {
+        cx.debug_bounds("changes-row-2").is_some() && cx.debug_bounds("commit-shown-0").is_some()
+    });
+    assert!(cx.debug_bounds("commit-shown-1").is_none());
+
+    click_line(cx, "changes-row-1");
+    wait_for(&core, cx, |cx| cx.debug_bounds("commit-shown-1").is_some());
+    assert!(cx.debug_bounds("commit-shown-0").is_none());
+    assert!(cx.debug_bounds("commit-row-1-false-1").is_some());
+
+    // The sidebar checkbox stages its own file, not the one being shown.
+    click_line(cx, "changes-stage-0");
+    wait_for(&core, cx, |_| {
+        git(root.path(), &["diff", "--cached", "--name-only"]).trim() == "added.txt"
+    });
+    click_line(cx, "changes-stage-2");
+    wait_for(&core, cx, |_| {
+        git(root.path(), &["diff", "--cached", "--name-only"]).trim() == "added.txt\ngone.txt"
+    });
+    assert!(cx.debug_bounds("commit-shown-1").is_some());
 }
 
 #[gpui::test]

@@ -137,3 +137,51 @@ async fn review_retains_divergent_index_and_limits_special_files_to_whole_file_a
         );
     }
 }
+
+#[tokio::test]
+async fn deletions_and_renames_keep_whole_file_staging_with_a_read_only_diff() {
+    let root = fixture();
+    std::fs::write(root.path().join("moved"), "kept\n").unwrap();
+    git(root.path(), &["add", "moved"]);
+    git(root.path(), &["commit", "-qm", "moved"]);
+    std::fs::remove_file(root.path().join("file")).unwrap();
+    git(root.path(), &["mv", "moved", "renamed"]);
+    std::fs::write(root.path().join("renamed"), "kept\nadded\n").unwrap();
+    let snapshot = load_review(
+        local_workspace_backend(),
+        root.path().into(),
+        HashMap::new(),
+        None,
+    )
+    .await
+    .unwrap();
+    let file = |path: &str| {
+        snapshot
+            .files
+            .iter()
+            .find(|f| f.entry.relative_path == Path::new(path))
+            .unwrap()
+    };
+    let deleted = file("file");
+    assert!(deleted.content.is_err());
+    let preview = deleted.preview.as_ref().unwrap();
+    assert_eq!(preview.old_len, 1);
+    assert_eq!(
+        preview.changes.hunks(),
+        [nucleotide_vcs::staging::StagingHunk {
+            before: 0..1,
+            after: 0..0
+        }]
+    );
+    // A rename compares the original path in HEAD with the new file on disk.
+    let renamed = file("renamed");
+    assert!(renamed.content.is_err());
+    let preview = renamed.preview.as_ref().unwrap();
+    assert_eq!(
+        preview.changes.hunks(),
+        [nucleotide_vcs::staging::StagingHunk {
+            before: 1..1,
+            after: 1..2
+        }]
+    );
+}

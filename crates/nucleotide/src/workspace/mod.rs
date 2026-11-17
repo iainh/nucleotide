@@ -12738,15 +12738,28 @@ impl Render for Workspace {
                     .when(!content_islands, |tree| {
                         tree.border_r_1().border_color(file_tree_tokens.border)
                     });
-                if let Some(file_tree) = &self.file_tree {
+                if let Some(file_tree) = self.file_tree.clone() {
+                    let content = if self.commit_review.sidebar {
+                        self.render_changes_sidebar(cx)
+                    } else {
+                        file_tree.into_any_element()
+                    };
                     file_tree_container = file_tree_container.child(
-                        div().size_full().overflow_hidden().flex().flex_col().child(
-                            div()
-                                .flex_1()
-                                .min_h(px(0.0))
-                                .overflow_hidden()
-                                .child(file_tree.clone()),
-                        ),
+                        div()
+                            .size_full()
+                            .overflow_hidden()
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_h(px(0.0))
+                                    .overflow_hidden()
+                                    .flex()
+                                    .flex_col()
+                                    .child(content),
+                            )
+                            .child(self.render_sidebar_switch(cx)),
                     );
                 } else {
                     // No directory open: offer local and remote workspace choices.

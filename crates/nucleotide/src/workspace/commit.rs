@@ -1,4 +1,5 @@
 //! Commit review state and save-before-stage coordination. Git work never runs on the UI thread.
+mod changes;
 mod message;
 mod split;
 mod submit;
@@ -34,6 +35,12 @@ pub(super) struct CommitReview {
     unified: bool,
     /// Unfolded unchanged runs of side-by-side diffs: file, staged preview, first HEAD line.
     expanded: HashSet<(PathBuf, bool, u32)>,
+    /// The file whose diff is shown. The first file when unset or no longer changed.
+    selected: Option<PathBuf>,
+    /// The file the diff list was last laid out for, to reset its scroll on a new selection.
+    shown: Option<PathBuf>,
+    /// The sidebar lists changed files instead of the project tree.
+    pub(super) sidebar: bool,
 }
 
 struct CommitDraft {
@@ -59,6 +66,53 @@ struct ReviewFile {
     entry: GitStatusEntry,
     unsaved: bool,
     content: Result<FileContent, String>,
+    /// Read-only diff of a file staged only as a whole, such as a deletion or rename.
+    preview: Option<Preview>,
+}
+
+struct Preview {
+    changes: FileChanges,
+    old_len: u32,
+    highlights: [Option<split::LineHighlights>; 2],
+}
+
+/// HEAD against what a deletion or rename leaves, when both are text.
+async fn load_preview(
+    repository: &GitRepository,
+    backend: &WorkspaceBackendHandle,
+    entry: &GitStatusEntry,
+    loader: Option<&helix_core::syntax::Loader>,
+) -> Option<Preview> {
+    let path = &entry.relative_path;
+    let deleted = [entry.index_status, entry.working_tree_status].contains(&Status::Deleted);
+    let renamed_from = entry.original_relative_path.as_deref();
+    if !deleted && renamed_from.is_none() {
+        return None;
+    }
+    let old = repository
+        .read_head(renamed_from.unwrap_or(path))
+        .await
+        .ok()??;
+    let new = if deleted {
+        Vec::new()
+    } else {
+        match read_worktree(backend, &repository.root().join(path)).await {
+            Ok(bytes) => bytes,
+            Err(_) => repository.read_index(path).await.ok()??,
+        }
+    };
+    if !supports_line_staging(&[&old, &new])
+        || std::str::from_utf8(&old).is_err()
+        || std::str::from_utf8(&new).is_err()
+    {
+        return None;
+    }
+    let highlight = |text: &[u8]| split::line_highlights(text, path, loader?);
+    Some(Preview {
+        changes: FileChanges::new(&old, &new),
+        old_len: old.split_inclusive(|b| *b == b'\n').count() as u32,
+        highlights: [highlight(&old), highlight(&new)],
+    })
 }
 
 struct FileContent {
@@ -269,10 +323,15 @@ async fn load_review(
     for entry in status.entries {
         let buffer = buffers.get(&repository.root().join(&entry.relative_path));
         let content = load_content(&repository, &backend, &entry, buffer, loader.as_deref()).await;
+        let preview = match content {
+            Ok(_) => None,
+            Err(_) => load_preview(&repository, &backend, &entry, loader.as_deref()).await,
+        };
         files.push(Arc::new(ReviewFile {
             entry,
             unsaved: buffer.is_some(),
             content,
+            preview,
         }));
     }
     if repository.index_signature().await? != index_signature
@@ -454,32 +513,36 @@ impl Workspace {
             return;
         }
         let current = index.unwrap_or(0);
-        if matches!(key, "j" | "k" | "down" | "up" | "[" | "]") {
+        if matches!(key, "[" | "]") {
+            // Files are shown one at a time; move the selection and focus its checkbox.
+            if let Some((selected, _)) = self.selected_review_file() {
+                let next = if key == "]" {
+                    selected + 1
+                } else {
+                    selected.wrapping_sub(1)
+                };
+                if let Some(file) = self
+                    .commit_review
+                    .snapshot
+                    .as_ref()
+                    .and_then(|s| s.files.get(next))
+                {
+                    self.commit_review.selected = Some(file.entry.relative_path.clone());
+                    let focus = self
+                        .commit_review
+                        .control_focus
+                        .entry(StageChange::File(true).control_id(next))
+                        .or_insert_with(|| cx.focus_handle())
+                        .clone();
+                    window.focus(&focus, cx);
+                }
+            }
+        } else if matches!(key, "j" | "k" | "down" | "up") {
             let next = match key {
                 "k" | "up" => current.saturating_sub(1),
-                "j" | "down" => index.map_or(0, |i| (i + 1).min(count - 1)),
-                "]" => ((current + 1)..count)
-                    .find(|i| matches!(self.commit_review.controls[*i].2, StageChange::File(_)))
-                    .unwrap_or(current),
-                _ => (0..current)
-                    .rev()
-                    .find(|i| matches!(self.commit_review.controls[*i].2, StageChange::File(_)))
-                    .unwrap_or(current),
+                _ => index.map_or(0, |i| (i + 1).min(count - 1)),
             };
-            let (focus, file, _) = &self.commit_review.controls[next];
-            window.focus(focus, cx);
-            if let Some(snapshot) = &self.commit_review.snapshot
-                && let Some(index) = snapshot
-                    .files
-                    .iter()
-                    .position(|f| f.entry.relative_path == file.entry.relative_path)
-                && let Some(scroll) = &self.commit_review.scroll
-            {
-                scroll.scroll_to(gpui::ListOffset {
-                    item_ix: index,
-                    offset_in_item: px(0.0),
-                });
-            }
+            window.focus(&self.commit_review.controls[next].0, cx);
         } else {
             let (_, file, change) = self.commit_review.controls[current].clone();
             match key {
@@ -530,7 +593,26 @@ impl Workspace {
         })
     }
 
+    /// The changed file whose diff the Commit tab shows, with its index in the review.
+    fn selected_review_file(&self) -> Option<(usize, Arc<ReviewFile>)> {
+        let files = &self.commit_review.snapshot.as_ref()?.files;
+        let index = self
+            .commit_review
+            .selected
+            .as_ref()
+            .and_then(|path| files.iter().position(|f| &f.entry.relative_path == path))
+            .unwrap_or(0);
+        Some((index, files.get(index)?.clone()))
+    }
+
     pub(super) fn open_commit_tab(&mut self, cx: &mut Context<Self>) {
+        self.show_commit_tab(cx);
+        self.refresh_commit_review(cx);
+    }
+
+    /// Activates the Commit tab, opening it when needed, without reloading the review.
+    fn show_commit_tab(&mut self, cx: &mut Context<Self>) {
+        self.commit_review.sidebar = true;
         self.commit_review
             .focus
             .get_or_insert_with(|| cx.focus_handle());
@@ -544,11 +626,11 @@ impl Workspace {
         self.update_document_views(cx);
         self.invalidate_tab_bar_documents();
         self.defer_focus_editor(cx);
-        self.refresh_commit_review(cx);
         cx.notify();
     }
 
     pub(super) fn close_commit_tab(&mut self, cx: &mut Context<Self>) {
+        self.commit_review.sidebar = false;
         if let Some(pane) = self.commit_tab_pane() {
             let _ = self.pane_host.layout.close_tab(pane, TabId::Commit);
         }

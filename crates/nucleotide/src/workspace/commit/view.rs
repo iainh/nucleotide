@@ -28,9 +28,9 @@ pub(super) fn line_text(bytes: &[u8]) -> String {
 
 impl Workspace {
     // Keyboard navigation includes offscreen controls without building their UI.
-    fn review_controls(&mut self, files: &[Arc<ReviewFile>], cx: &mut Context<Self>) {
+    fn review_controls(&mut self, files: &[(usize, Arc<ReviewFile>)], cx: &mut Context<Self>) {
         self.commit_review.controls.clear();
-        for (index, file) in files.iter().enumerate() {
+        for (index, file) in files.iter().map(|(index, file)| (*index, file)) {
             let mut changes = vec![StageChange::File(file.state() != SelectionState::Staged)];
             if !self
                 .commit_review
@@ -173,9 +173,12 @@ impl Workspace {
                     })
             })
         });
-        self.review_controls(&files, cx);
-        let section_focus: Vec<_> = (0..files.len())
-            .map(|index| {
+        // One file is shown at a time; the sidebar's Changes list picks which.
+        let shown: Vec<_> = self.selected_review_file().into_iter().collect();
+        self.review_controls(&shown, cx);
+        let section_focus: Vec<_> = shown
+            .iter()
+            .map(|(index, _)| {
                 self.commit_review
                     .control_focus
                     .entry(format!("commit-section-{index}"))
@@ -183,11 +186,14 @@ impl Workspace {
                     .clone()
             })
             .collect();
+        let shown_path = shown.first().map(|(_, f)| f.entry.relative_path.clone());
+        let new_file = self.commit_review.shown != shown_path;
+        self.commit_review.shown = shown_path;
         let scroll = self
             .commit_review
             .scroll
             .get_or_insert_with(|| gpui::ListState::new(0, gpui::ListAlignment::Top, px(0.0)));
-        if scroll.item_count() != files.len() {
+        if new_file || scroll.item_count() != shown.len() {
             scroll.reset(0);
             // Keep a focused file in the dispatch tree even after mouse scrolling.
             scroll.splice_focusable(0..0, section_focus.into_iter().map(Some));
@@ -197,18 +203,13 @@ impl Workspace {
             scroll.remeasure();
         }
         let workspace = cx.entity();
-        let visible_files = files.clone();
         let list_style = style.clone();
-        let virtual_list = gpui::list(scroll.clone(), move |index, _, cx| {
+        let virtual_list = gpui::list(scroll.clone(), move |item, _, cx| {
+            let (index, file) = shown[item].clone();
             workspace.update(cx, |workspace, cx| {
                 div()
                     .pb(tokens.sizes.space_3)
-                    .child(workspace.render_review_file(
-                        index,
-                        visible_files[index].clone(),
-                        &list_style,
-                        cx,
-                    ))
+                    .child(workspace.render_review_file(index, file, &list_style, cx))
                     .into_any_element()
             })
         })
@@ -459,6 +460,9 @@ impl Workspace {
         };
         let unstage_file = file.clone();
         let mut section = div()
+            .when(cfg!(test), |section| {
+                section.debug_selector(move || format!("commit-shown-{index}"))
+            })
             .track_focus(&self.commit_review.control_focus[&format!("commit-section-{index}")])
             .flex_none()
             .min_w_0()
@@ -528,7 +532,30 @@ impl Workspace {
                             .p(tokens.sizes.space_3)
                             .text_color(style.text_secondary)
                             .child(reason.clone()),
-                    )
+                    );
+                    if let Some(preview) = &file.preview {
+                        section = section.child(if self.commit_review.unified {
+                            self.render_unified_staged(index, &preview.changes, style, cx)
+                        } else {
+                            self.render_split_diff(
+                                SplitDiff {
+                                    id: format!("commit-preview-{index}"),
+                                    path: &file.entry.relative_path,
+                                    staged: false,
+                                    titles: ["HEAD", "Working tree"],
+                                    changes: &preview.changes,
+                                    old_len: preview.old_len,
+                                    highlights: [
+                                        preview.highlights[0].as_ref(),
+                                        preview.highlights[1].as_ref(),
+                                    ],
+                                    staging: None,
+                                },
+                                style,
+                                cx,
+                            )
+                        });
+                    }
                 }
                 Ok(content) => {
                     if content.selection.is_none() {
