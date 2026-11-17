@@ -17,9 +17,66 @@ fn line_text(bytes: &[u8]) -> String {
 }
 
 impl Workspace {
+    // Keyboard navigation includes offscreen controls without building their UI.
+    fn review_controls(&mut self, files: &[Arc<ReviewFile>], cx: &mut Context<Self>) {
+        self.commit_review.controls.clear();
+        for (index, file) in files.iter().enumerate() {
+            let mut changes = vec![StageChange::File(file.state() != SelectionState::Staged)];
+            if !self
+                .commit_review
+                .collapsed
+                .contains(&file.entry.relative_path)
+                && let Ok(content) = &file.content
+            {
+                let mut remaining = MAX_VISIBLE_LINES;
+                for (hunk_index, hunk) in content.changes.hunks().iter().enumerate() {
+                    if remaining == 0 {
+                        break;
+                    }
+                    let selection = content.selection.as_ref();
+                    changes.push(StageChange::Hunk(
+                        hunk_index,
+                        selection.is_none_or(|s| s.hunk_state(hunk) != SelectionState::Staged),
+                    ));
+                    for (removal, line) in hunk
+                        .before
+                        .clone()
+                        .map(|line| (true, line))
+                        .chain(hunk.after.clone().map(|line| (false, line)))
+                        .take(remaining)
+                    {
+                        changes.push(StageChange::Line {
+                            removal,
+                            line,
+                            staged: !selection.is_some_and(|s| {
+                                if removal {
+                                    s.is_removal_staged(line)
+                                } else {
+                                    s.is_addition_staged(line)
+                                }
+                            }),
+                        });
+                    }
+                    remaining = remaining.saturating_sub(hunk.before.len() + hunk.after.len());
+                }
+            }
+            for change in changes {
+                let focus = self
+                    .commit_review
+                    .control_focus
+                    .entry(change.control_id(index))
+                    .or_insert_with(|| cx.focus_handle())
+                    .clone();
+                self.commit_review
+                    .controls
+                    .push((focus, file.clone(), change));
+            }
+        }
+    }
+
     fn review_checkbox(
         &mut self,
-        id: String,
+        index: usize,
         label: String,
         state: SelectionState,
         file: Arc<ReviewFile>,
@@ -27,15 +84,8 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> Checkbox {
         let workspace = cx.entity().downgrade();
-        let focus = self
-            .commit_review
-            .control_focus
-            .entry(id.clone())
-            .or_insert_with(|| cx.focus_handle())
-            .clone();
-        self.commit_review
-            .controls
-            .push((focus.clone(), file.clone(), change.clone()));
+        let id = change.control_id(index);
+        let focus = self.commit_review.control_focus[&id].clone();
         Checkbox::new(SharedString::from(id), label)
             .focus_handle(focus.clone())
             .size(CheckboxSize::Small)
@@ -113,7 +163,47 @@ impl Workspace {
                     })
             })
         });
-        self.commit_review.controls.clear();
+        self.review_controls(&files, cx);
+        let section_focus: Vec<_> = (0..files.len())
+            .map(|index| {
+                self.commit_review
+                    .control_focus
+                    .entry(format!("commit-section-{index}"))
+                    .or_insert_with(|| cx.focus_handle())
+                    .clone()
+            })
+            .collect();
+        let scroll = self
+            .commit_review
+            .scroll
+            .get_or_insert_with(|| gpui::ListState::new(0, gpui::ListAlignment::Top, px(0.0)));
+        if scroll.item_count() != files.len() {
+            scroll.reset(0);
+            // Keep a focused file in the dispatch tree even after mouse scrolling.
+            scroll.splice_focusable(0..0, section_focus.into_iter().map(Some));
+        } else {
+            // Content, folding and font metrics can change between renders.
+            // Retain the scroll anchor, but only lay out visible file sections.
+            scroll.remeasure();
+        }
+        let workspace = cx.entity();
+        let visible_files = files.clone();
+        let list_style = style.clone();
+        let virtual_list = gpui::list(scroll.clone(), move |index, _, cx| {
+            workspace.update(cx, |workspace, cx| {
+                div()
+                    .pb(tokens.sizes.space_3)
+                    .child(workspace.render_review_file(
+                        index,
+                        visible_files[index].clone(),
+                        &list_style,
+                        cx,
+                    ))
+                    .into_any_element()
+            })
+        })
+        .flex_1()
+        .min_h_0();
         let mut list = div()
             .id("commit-files")
             .on_mouse_down(
@@ -126,15 +216,11 @@ impl Workspace {
             )
             .flex_1()
             .min_h_0()
-            .overflow_y_scroll()
-            .track_scroll(&self.commit_review.scroll)
+            .overflow_hidden()
             .p(tokens.sizes.space_3)
             .flex()
             .flex_col()
-            .gap(tokens.sizes.space_3);
-        for (index, file) in files.iter().enumerate() {
-            list = list.child(self.render_review_file(index, file.clone(), &style, cx));
-        }
+            .when(!files.is_empty(), |list| list.child(virtual_list));
         if files.is_empty() && !busy && self.commit_review.error.is_none() {
             list = list.child(
                 div()
@@ -341,6 +427,7 @@ impl Workspace {
         };
         let unstage_file = file.clone();
         let mut section = div()
+            .track_focus(&self.commit_review.control_focus[&format!("commit-section-{index}")])
             .flex_none()
             .min_w_0()
             .border_1()
@@ -368,7 +455,7 @@ impl Workspace {
                         })),
                     )
                     .child(self.review_checkbox(
-                        format!("commit-file-{index}"),
+                        index,
                         file.entry.relative_path.display().to_string(),
                         state,
                         file.clone(),
@@ -477,7 +564,7 @@ impl Workspace {
                             .unwrap_or(SelectionState::Unstaged);
                         let header = self
                             .review_checkbox(
-                                format!("commit-hunk-{index}-{hunk_index}"),
+                                index,
                                 format!(
                                     "@@ −{},{} +{},{} @@",
                                     hunk.before.start + 1,
@@ -553,7 +640,7 @@ impl Workspace {
                             });
                             let checkbox = self
                                 .review_checkbox(
-                                    format!("commit-line-{index}-{removal}-{line}"),
+                                    index,
                                     String::new(),
                                     if staged {
                                         SelectionState::Staged

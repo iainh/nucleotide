@@ -21,7 +21,7 @@ pub(super) struct CommitReview {
     pending: Option<PendingStage>,
     error: Option<String>,
     collapsed: HashSet<PathBuf>,
-    scroll: ScrollHandle,
+    scroll: Option<gpui::ListState>,
     refresh_again: bool,
     focus: Option<FocusHandle>,
     control_focus: HashMap<String, FocusHandle>,
@@ -103,6 +103,16 @@ enum StageChange {
         line: u32,
         staged: bool,
     },
+}
+
+impl StageChange {
+    fn control_id(&self, file: usize) -> String {
+        match self {
+            Self::File(_) => format!("commit-file-{file}"),
+            Self::Hunk(hunk, _) => format!("commit-hunk-{file}-{hunk}"),
+            Self::Line { removal, line, .. } => format!("commit-line-{file}-{removal}-{line}"),
+        }
+    }
 }
 
 struct PendingStage {
@@ -443,8 +453,12 @@ impl Workspace {
                     .files
                     .iter()
                     .position(|f| f.entry.relative_path == file.entry.relative_path)
+                && let Some(scroll) = &self.commit_review.scroll
             {
-                self.commit_review.scroll.scroll_to_item(index);
+                scroll.scroll_to(gpui::ListOffset {
+                    item_ix: index,
+                    offset_in_item: px(0.0),
+                });
             }
         } else {
             let (_, file, change) = self.commit_review.controls[current].clone();

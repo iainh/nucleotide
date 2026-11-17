@@ -337,6 +337,82 @@ fn commit_review_saves_buffer_before_staging_only_the_clicked_line(cx: &mut gpui
 }
 
 #[gpui::test]
+fn commit_review_virtualizes_files_without_losing_offscreen_keyboard_actions(
+    cx: &mut gpui::TestAppContext,
+) {
+    let _runtime = TEST_RUNTIME.enter();
+    let root = repository();
+    for index in 0..20 {
+        let text = (0..40)
+            .map(|line| format!("file {index} line {line}\n"))
+            .collect::<String>();
+        fs::write(root.path().join(format!("change-{index:02}.txt")), text).unwrap();
+    }
+    let (core, _, cx) = new_test_workspace(cx, &root.path().join("file.txt"));
+    install_commit_language(&core, cx);
+    core.update(cx, |_, cx| cx.emit(crate::Update::ShowCommit));
+    wait_for(&core, cx, |cx| {
+        cx.debug_bounds("commit-row-0-false-0").is_some()
+    });
+    assert!(
+        cx.debug_bounds("commit-row-19-false-0").is_none(),
+        "offscreen diffs must not be laid out on each message keystroke"
+    );
+    for _ in 0..19 {
+        cx.simulate_keystrokes("]");
+    }
+    pump(&core, cx);
+    assert!(cx.debug_bounds("commit-row-19-false-1").is_some());
+    // File -> hunk -> first line -> second line, even when the file began offscreen.
+    cx.simulate_keystrokes("j j j space");
+    wait_for(&core, cx, |_| {
+        git(root.path(), &["diff", "--cached", "--name-only"]).trim() == "change-19.txt"
+    });
+    assert_eq!(
+        git(root.path(), &["show", ":change-19.txt"]),
+        "file 19 line 1\n"
+    );
+
+    // Mouse scrolling must not orphan the focused file's key dispatch path.
+    cx.simulate_keystrokes("k k k");
+    let position = cx.debug_bounds("commit-row-19-false-1").unwrap().center();
+    cx.simulate_event(gpui::ScrollWheelEvent {
+        position,
+        delta: gpui::ScrollDelta::Pixels(point(px(0.0), px(50_000.0))),
+        ..Default::default()
+    });
+    pump(&core, cx);
+    assert!(cx.debug_bounds("commit-row-0-false-0").is_some());
+    cx.simulate_keystrokes("[ space");
+    wait_for(&core, cx, |_| {
+        git(root.path(), &["diff", "--cached", "--name-only"]).trim()
+            == "change-18.txt\nchange-19.txt"
+    });
+    assert_eq!(
+        git(root.path(), &["show", ":change-18.txt"]),
+        fs::read_to_string(root.path().join("change-18.txt")).unwrap()
+    );
+
+    // Folding changes item heights without dropping navigation or the draft.
+    cx.simulate_keystrokes("] z a");
+    pump(&core, cx);
+    assert!(cx.debug_bounds("commit-row-19-false-1").is_none());
+    cx.simulate_keystrokes("z a c i");
+    cx.simulate_input("fix: responsive review\n\nKeep the exact message.");
+    cx.simulate_keystrokes("escape");
+    core.read_with(cx, |core, _| {
+        let doc = core
+            .editor
+            .document(core.editor.tree.get(core.editor.tree.focus).doc)
+            .unwrap();
+        assert_eq!(
+            doc.text().to_string(),
+            "fix: responsive review\n\nKeep the exact message.\n"
+        );
+    });
+}
+
+#[gpui::test]
 fn commit_review_save_failure_leaves_index_untouched(cx: &mut gpui::TestAppContext) {
     let _runtime = TEST_RUNTIME.enter();
     let root = repository();
