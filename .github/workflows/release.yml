@@ -179,6 +179,10 @@ jobs:
 
   build-macos:
     name: Build macOS ARM64
+    # Disabled: hosted macOS arm64 runners are not being acquired, so the job
+    # is cancelled after 15 minutes and blocks the release. Releases ship
+    # Linux and Windows only until this is re-enabled.
+    if: ${{ false }}
     runs-on: macos-15
     needs: [prepare-release, build-linux]
     
@@ -771,7 +775,7 @@ jobs:
   create-release:
     name: Create Release
     runs-on: ubuntu-latest
-    needs: [prepare-release, build-linux, package-macos, build-windows]
+    needs: [prepare-release, build-linux, build-windows]
     permissions:
       actions: read
       contents: write
@@ -807,7 +811,6 @@ jobs:
           cp artifacts/linux-remote-helpers/nucleotide-remote-linux-* release/
 
           cp release/* attest/
-          find artifacts/macos-velopack -maxdepth 1 -type f -exec cp {} attest/ \;
           find artifacts/windows-build -maxdepth 1 -type f -exec cp {} attest/ \;
           (
             cd attest
@@ -841,20 +844,6 @@ jobs:
             done
           fi
 
-      - name: Upload macOS update assets to draft release
-        env:
-          VPK_TOKEN: ${{ github.token }}
-        run: |
-          vpk upload github \
-            --repoUrl "https://github.com/${GITHUB_REPOSITORY}" \
-            --token "${VPK_TOKEN}" \
-            --outputDir artifacts/macos-velopack \
-            --channel macos \
-            --tag "${{ needs.prepare-release.outputs.version }}" \
-            --releaseName "Nucleotide ${{ needs.prepare-release.outputs.version }}" \
-            --targetCommitish "${{ needs.prepare-release.outputs.release_sha }}" \
-            --merge
-
       - name: Merge Windows update assets into draft release
         env:
           VPK_TOKEN: ${{ github.token }}
@@ -886,14 +875,10 @@ jobs:
           assets="$(jq -r '.assets[].name' <<<"${release_json}")"
           version="${RELEASE_VERSION#v}"
           for required in \
-            releases.macos.json \
             releases.windows.json \
             nucleotide-linux-x86_64.tar.gz \
             nucleotide-remote-linux-x86_64 \
             nucleotide-remote-linux-aarch64 \
-            "org.spiralpoint.nucleotide.macos-${version}-macos-full.nupkg" \
-            org.spiralpoint.nucleotide.macos-macos-Portable.zip \
-            org.spiralpoint.nucleotide.macos-macos-Setup.pkg \
             "org.spiralpoint.nucleotide.windows-${version}-windows-full.nupkg" \
             org.spiralpoint.nucleotide.windows-windows-Portable.zip \
             SHA256SUMS; do
