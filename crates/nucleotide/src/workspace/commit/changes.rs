@@ -39,6 +39,39 @@ impl Workspace {
     ) -> gpui::AnyElement {
         let tokens = cx.global::<nucleotide_ui::Theme>().tokens;
         let changes = self.commit_review.sidebar;
+        // The VCS service watches the repository, so the count stays current
+        // even while the Commit tab, and with it the review, is closed.
+        let count = cx
+            .global::<nucleotide_vcs::VcsServiceHandle>()
+            .service()
+            .read(cx)
+            .status_entries()
+            .len();
+        // A pill after the Changes label, hidden when nothing has changed.
+        let pill = (count > 0).then(|| {
+            div()
+                .when(cfg!(test), |view| {
+                    view.debug_selector(|| "sidebar-changes-count".into())
+                })
+                .flex_none()
+                .min_w(tokens.sizes.space_6)
+                .px(tokens.sizes.space_3)
+                .py(px(1.0))
+                .flex()
+                .justify_center()
+                .rounded(tokens.sizes.radius_full)
+                .bg(tokens.editor.vcs_modified)
+                .text_color(tokens.editor.background)
+                .text_size(tokens.sizes.text_xs)
+                .font_weight(FontWeight::SEMIBOLD)
+                .line_height(relative(1.2))
+                .child(if count > 99 {
+                    "99+".to_string()
+                } else {
+                    count.to_string()
+                })
+        });
+        let mut pill = Some(pill);
         div()
             .flex()
             .flex_none()
@@ -53,11 +86,26 @@ impl Workspace {
                     ("sidebar-changes", "Changes", true),
                 ]
                 .map(|(id, label, show_changes)| {
+                    let pill = if show_changes {
+                        pill.take().flatten()
+                    } else {
+                        None
+                    };
                     div()
                         .when(cfg!(test), |view| view.debug_selector(|| id.into()))
                         .child(
                             Button::new(id, label)
                                 .size(ButtonSize::Small)
+                                .when_some(pill, |button, pill| {
+                                    button.content(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap(tokens.sizes.space_2)
+                                            .child(label)
+                                            .child(pill),
+                                    )
+                                })
                                 .variant(if changes == show_changes {
                                     ButtonVariant::Secondary
                                 } else {

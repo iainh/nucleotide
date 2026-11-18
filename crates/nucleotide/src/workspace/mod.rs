@@ -3727,6 +3727,8 @@ impl Workspace {
             if revision != status_revision {
                 status_revision = revision;
                 workspace.refresh_commit_review(cx);
+                // The sidebar's Changes button shows the changed-file count.
+                cx.notify();
             }
         })
         .detach();
