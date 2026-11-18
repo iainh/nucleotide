@@ -102,8 +102,9 @@ fn open_markdown_link(core: &Entity<Core>, view_id: ViewId, url: &str, cx: &mut 
             ));
         }),
         MarkdownLinkTarget::External(url) => cx.open_url(&url),
+        // The preview scrolls to headings it has; anything left names none.
         MarkdownLinkTarget::Fragment(fragment) => {
-            nucleotide_logging::debug!(fragment = %fragment, "Ignoring Markdown heading link");
+            nucleotide_logging::debug!(fragment = %fragment, "No heading for Markdown link");
         }
         MarkdownLinkTarget::Unsupported => {
             nucleotide_logging::warn!(url = %url, "Cannot open Markdown link");
@@ -1232,6 +1233,7 @@ impl DocumentView {
                             format!("markdown-selection-{}-{:?}", snapshot.doc_id, self.view_id),
                             focus,
                         )
+                        .scroll_handle(&self.markdown_scroll_handle)
                         .on_link_click(move |url, _window, cx| {
                             open_markdown_link(&link_core, view_id, url, cx);
                         })

@@ -200,6 +200,13 @@ impl MarkdownElement {
         self.style.links.on_hover = Some(Rc::new(handler));
         self
     }
+
+    /// Scroll `handle`, the container this Markdown scrolls in, to the heading a
+    /// `#heading` link names. Headings take GitHub's anchors, such as `#getting-started`.
+    pub fn scroll_handle(mut self, handle: &gpui::ScrollHandle) -> Self {
+        self.style.links.scroll = Some(handle.clone());
+        self
+    }
 }
 
 struct MarkdownParseCache {
@@ -247,7 +254,7 @@ impl RenderOnce for MarkdownElement {
             (id, focus, selection)
         });
         let links = &self.style.links;
-        let layout = links.on_hover.is_some().then(|| {
+        let layout = (links.on_hover.is_some() || links.scroll.is_some()).then(|| {
             let state =
                 window.use_keyed_state(self.id.clone(), cx, |_, _| MarkdownLinkLayout::default());
             let layout = state.read(cx).clone();
@@ -255,6 +262,8 @@ impl RenderOnce for MarkdownElement {
                 let mut state = layout.0.borrow_mut();
                 state.targets.clear();
                 state.image = None;
+                state.anchors.clear();
+                state.anchor_counts.clear();
             }
             self.style.links.layout = Some(layout.clone());
             layout
@@ -285,6 +294,8 @@ type LinkHoverHandler = Rc<dyn Fn(Option<&str>, &mut Window, &mut gpui::App)>;
 struct MarkdownLinks {
     on_click: Option<LinkClickHandler>,
     on_hover: Option<LinkHoverHandler>,
+    /// Scrolled by `#heading` links.
+    scroll: Option<gpui::ScrollHandle>,
     layout: Option<MarkdownLinkLayout>,
 }
 
@@ -313,9 +324,27 @@ struct MarkdownLinkLayoutState {
     /// URL of a linked image under the pointer, reported by the image itself.
     image: Option<SharedString>,
     current: Option<SharedString>,
+    /// Heading anchors in document order, with bounds once painted.
+    anchors: Vec<(String, Option<gpui::Bounds<Pixels>>)>,
+    /// Headings seen per base slug, for GitHub's `-1`, `-2` suffixes.
+    anchor_counts: std::collections::HashMap<String, usize>,
 }
 
 impl MarkdownLinkLayoutState {
+    /// Register a heading in document order and return its index in `anchors`.
+    fn add_anchor(&mut self, heading: &str) -> usize {
+        let base = heading_anchor_slug(heading);
+        let count = self.anchor_counts.entry(base.clone()).or_default();
+        let slug = if *count == 0 {
+            base
+        } else {
+            format!("{base}-{count}")
+        };
+        *count += 1;
+        self.anchors.push((slug, None));
+        self.anchors.len() - 1
+    }
+
     fn text_link_at(&self, point: gpui::Point<Pixels>) -> Option<SharedString> {
         self.targets.iter().find_map(|(layout, links)| {
             if !layout.bounds().contains(&point) {
@@ -382,8 +411,85 @@ fn link_hover_tracker(
     )
 }
 
+/// GitHub's heading anchor: lowercase, punctuation dropped, spaces as hyphens.
+fn heading_anchor_slug(heading: &str) -> String {
+    heading
+        .trim()
+        .chars()
+        .filter_map(|ch| match ch {
+            ' ' => Some('-'),
+            '-' | '_' => Some(ch),
+            ch if ch.is_alphanumeric() => Some(ch),
+            _ => None,
+        })
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+/// Decode the percent escapes the parser applied to link destinations.
+fn unescape_commonmark_url(url: &str) -> String {
+    let bytes = url.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        let hex = bytes
+            .get(index + 1..index + 3)
+            .and_then(|hex| std::str::from_utf8(hex).ok())
+            .and_then(|hex| u8::from_str_radix(hex, 16).ok());
+        match (bytes[index], hex) {
+            (b'%', Some(byte)) => {
+                decoded.push(byte);
+                index += 3;
+            }
+            (byte, _) => {
+                decoded.push(byte);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&decoded).into_owned()
+}
+
+/// Scroll to the heading a `#fragment` link names; false when there is none.
+fn scroll_to_markdown_anchor(
+    links: &MarkdownLinks,
+    url: &str,
+    window: &mut Window,
+    cx: &mut gpui::App,
+) -> bool {
+    let (Some(fragment), Some(scroll), Some(layout)) =
+        (url.strip_prefix('#'), &links.scroll, &links.layout)
+    else {
+        return false;
+    };
+    let fragment = unescape_commonmark_url(fragment).to_lowercase();
+    let Some(top) = layout
+        .0
+        .borrow()
+        .anchors
+        .iter()
+        .find(|(slug, _)| *slug == fragment)
+        .and_then(|(_, bounds)| bounds.map(|bounds| bounds.top()))
+    else {
+        return false;
+    };
+    let offset = scroll.offset();
+    // `set_offset` does not clamp, so keep the target within the scrollable range.
+    let y = (offset.y - (top - scroll.bounds().top())).clamp(-scroll.max_offset().y, px(0.0));
+    scroll.set_offset(gpui::point(offset.x, y));
+    window.refresh();
+    // The link scrolled out from under a pointer that has not moved.
+    if let Some(on_hover) = &links.on_hover {
+        report_link_hover(layout, on_hover, None, window, cx);
+    }
+    true
+}
+
 /// Activate a link with the instance's handler, or the system URL handler by default.
 fn open_markdown_link(links: &MarkdownLinks, url: &str, window: &mut Window, cx: &mut gpui::App) {
+    if scroll_to_markdown_anchor(links, url, window, cx) {
+        return;
+    }
     match &links.on_click {
         Some(on_click) => on_click(url, window, cx),
         None => cx.open_url(url),
@@ -1960,6 +2066,10 @@ fn render_blocks(
             .when(style.preview, |this| this.mb(px(10.0)))
             .into_any_element(),
             MarkdownBlock::Heading { level, text } => {
+                let anchor = style.links.layout.clone().map(|layout| {
+                    let index = layout.0.borrow_mut().add_anchor(&text.plain_text());
+                    (layout, index)
+                });
                 let heading = render_rich_text(
                     text,
                     style,
@@ -1967,7 +2077,21 @@ fn render_blocks(
                     format!("{id_prefix}-heading-{block_index}"),
                 )
                 .font_weight(FontWeight::BOLD)
-                .line_height(relative(1.3));
+                .line_height(relative(1.3))
+                .when_some(anchor, |heading, (layout, index)| {
+                    heading.relative().child(
+                        gpui::canvas(
+                            move |bounds, _, _| {
+                                layout.0.borrow_mut().anchors[index].1 = Some(bounds);
+                            },
+                            |_, _, _, _| {},
+                        )
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full(),
+                    )
+                });
 
                 if style.preview {
                     heading
@@ -5446,6 +5570,92 @@ plain"#,
                 "hover -",
                 "click other.md",
             ]
+        );
+        assert_eq!(cx.opened_url(), None);
+    }
+
+    #[test]
+    fn heading_anchors_follow_github_slugs() {
+        let mut state = MarkdownLinkLayoutState::default();
+        for heading in [
+            "Getting Started",
+            "What's new in v2.0?",
+            "snake_case & kebab-case",
+            "Café Déjà",
+            "Getting Started",
+            "Getting Started",
+        ] {
+            state.add_anchor(heading);
+        }
+        let slugs: Vec<_> = state
+            .anchors
+            .iter()
+            .map(|(slug, _)| slug.as_str())
+            .collect();
+        assert_eq!(
+            slugs,
+            [
+                "getting-started",
+                "whats-new-in-v20",
+                "snake_case--kebab-case",
+                "café-déjà",
+                "getting-started-1",
+                "getting-started-2",
+            ]
+        );
+        assert_eq!(unescape_commonmark_url("caf%C3%A9%2"), "café%2");
+    }
+
+    #[gpui::test]
+    fn heading_links_scroll_the_container_to_the_heading(cx: &mut gpui::TestAppContext) {
+        use gpui::{Context, Modifiers, Render, ScrollHandle, point};
+
+        struct Fixture {
+            style: MarkdownStyle,
+            scroll: ScrollHandle,
+            source: SharedString,
+        }
+
+        impl Render for Fixture {
+            fn render(
+                &mut self,
+                _window: &mut Window,
+                _cx: &mut Context<Self>,
+            ) -> impl IntoElement {
+                div()
+                    .id("scroll")
+                    .w(px(240.0))
+                    .h(px(100.0))
+                    .overflow_y_scroll()
+                    .track_scroll(&self.scroll)
+                    .child(
+                        markdown(self.source.clone(), self.style.clone())
+                            .on_link_click(|url, _, _| panic!("handled by scrolling: {url}"))
+                            .scroll_handle(&self.scroll),
+                    )
+            }
+        }
+
+        // The second "Target" is the one `#target-1` names.
+        let filler = "filler\n\n".repeat(30);
+        let source = format!("[jump](#Target-1)\n\n# Target\n\n{filler}# Target\n\n{filler}");
+        let scroll = ScrollHandle::new();
+        let style = MarkdownStyle::from_tokens(&DesignTokens::dark()).compact();
+        let fixture_scroll = scroll.clone();
+        let (_view, cx) = cx.add_window_view(move |_, _| Fixture {
+            style,
+            scroll: fixture_scroll,
+            source: source.into(),
+        });
+        cx.run_until_parked();
+        cx.simulate_click(point(px(12.0), px(8.0)), Modifiers::default());
+        cx.run_until_parked();
+
+        let y = scroll.offset().y;
+        assert!(y < px(-200.0), "should scroll past the filler, got {y:?}");
+        assert!(
+            y > -scroll.max_offset().y,
+            "should stop short of the end, got {y:?}"
         );
         assert_eq!(cx.opened_url(), None);
     }
