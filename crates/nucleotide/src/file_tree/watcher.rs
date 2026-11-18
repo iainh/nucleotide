@@ -19,6 +19,9 @@ pub struct FileTreeWatcher {
     event_receiver: mpsc::UnboundedReceiver<Result<Event, notify::Error>>,
     /// Root path being watched
     root_path: PathBuf,
+    /// `root_path` with symlinks resolved, when that differs. The OS reports
+    /// event paths under it, such as `/private/tmp` for macOS `/tmp`.
+    resolved_root: Option<PathBuf>,
     /// Converted paths still to deliver from a batched notify event.
     pending_events: VecDeque<FileTreeEvent>,
 }
@@ -39,10 +42,15 @@ impl FileTreeWatcher {
             .watch(&root_path, RecursiveMode::Recursive)
             .with_context(|| format!("Failed to watch directory: {}", root_path.display()))?;
 
+        let resolved_root = std::fs::canonicalize(&root_path)
+            .ok()
+            .filter(|resolved| *resolved != root_path);
+
         Ok(Self {
             _watcher: watcher,
             event_receiver: rx,
             root_path,
+            resolved_root,
             pending_events: VecDeque::new(),
         })
     }
@@ -96,7 +104,16 @@ impl FileTreeWatcher {
     }
 
     /// Convert every relevant path, preserving rename endpoints before filtering.
-    fn convert_event(&self, event: Event) -> Vec<FileTreeEvent> {
+    fn convert_event(&self, mut event: Event) -> Vec<FileTreeEvent> {
+        // Report paths under the root the tree was opened with, so they match its entries.
+        if let Some(resolved_root) = &self.resolved_root {
+            for path in &mut event.paths {
+                if let Ok(relative) = path.strip_prefix(resolved_root) {
+                    *path = self.root_path.join(relative);
+                }
+            }
+        }
+
         let visible =
             |path: &Path| path.starts_with(&self.root_path) && !self.should_hide_path(path);
 
@@ -315,6 +332,29 @@ mod tests {
             deliver(&mut watcher, Event::new(EventKind::Any))
                 .await
                 .is_empty()
+        );
+    }
+
+    // macOS reports `/tmp/repo` events as `/private/tmp/repo`.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn events_under_a_symlinked_root_use_the_root_as_opened() {
+        let temp_dir = TempDir::new().unwrap();
+        let real_root = temp_dir.path().canonicalize().unwrap().join("real");
+        fs::create_dir(&real_root).unwrap();
+        let link_root = temp_dir.path().join("link");
+        std::os::unix::fs::symlink(&real_root, &link_root).unwrap();
+        let mut watcher = FileTreeWatcher::new(link_root.clone()).unwrap();
+
+        let event = Event::new(EventKind::Create(CreateKind::File))
+            .add_path(real_root.join("new.txt"))
+            .add_path(real_root.join(".git/index"));
+        assert_eq!(
+            deliver(&mut watcher, event).await,
+            vec![FileTreeEvent::FileSystemChanged {
+                path: link_root.join("new.txt"),
+                kind: FileSystemEventKind::Created,
+            }]
         );
     }
 
