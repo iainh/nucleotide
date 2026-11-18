@@ -90,6 +90,12 @@ ignore = [
     "RUSTSEC-2026-0370",
     "RUSTSEC-2026-0371",
     "RUSTSEC-2026-0372",
+    # chrono is unmaintained with no safe upgrade. helix-core requires it for
+    # date increment, and vendored GPUI uses it in its scheduler clock and zlog
+    # timestamps. Our crates use it only for log and event timestamps
+    # (nucleotide, nucleotide-lsp, nucleotide-lsp-proxy), which could move to
+    # jiff; the exception stays until Helix and GPUI drop it.
+    "RUSTSEC-2026-0543",
 ]
 
 # This section is considered when running `cargo deny check licenses`
