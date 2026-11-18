@@ -15,6 +15,12 @@ pub enum Event {
     FileOpRequested {
         intent: FileOpIntent,
     },
+
+    /// Open a file in the editor, such as a link target, at an optional 0-based line.
+    OpenFileRequested {
+        path: PathBuf,
+        line: Option<usize>,
+    },
 }
 
 /// File operation intent kinds initiated from UI (e.g., context menu)

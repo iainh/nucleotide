@@ -521,6 +521,8 @@ pub struct Workspace {
     next_background_activity_id: u64,
     background_activities: Vec<BackgroundActivity>,
     vcs_refresh_activity: Option<BackgroundActivityId>,
+    /// URI of the Markdown preview link under the pointer, shown in the status bar.
+    hovered_markdown_link: Option<SharedString>,
     // Debug: color major panes when enabled via env
     debug_colors_enabled: bool,
     // Height of the bottom (terminal) pane in basic layout mode
@@ -3879,6 +3881,7 @@ impl Workspace {
             next_background_activity_id: 1,
             background_activities: Vec::new(),
             vcs_refresh_activity: None,
+            hovered_markdown_link: None,
             debug_colors_enabled: matches!(
                 std::env::var("NUCL_DEBUG_COLORS")
                     .map(|v| v.to_ascii_lowercase())
@@ -7034,6 +7037,31 @@ impl Workspace {
         self.open_file_internal(path, true, false, Some(position), cx);
     }
 
+    /// Open a link target. A missing local file warns instead of opening an empty buffer.
+    fn open_requested_file(
+        &mut self,
+        path: &std::path::Path,
+        line: Option<usize>,
+        cx: &mut Context<Self>,
+    ) {
+        // The pointer was on the link, but navigation replaces the preview under it.
+        self.set_hovered_markdown_link(None, cx);
+        let local = matches!(
+            self.core.read(cx).workspace_backend.identity(),
+            WorkspaceIdentity::Local
+        );
+        if local && !path.exists() {
+            self.set_run_status(
+                format!("Link target not found: {}", path.display()),
+                Severity::Warning,
+                cx,
+            );
+            return;
+        }
+        let position = line.map(|line| Position::new(line, 0));
+        self.open_file_internal(path, true, false, position, cx);
+    }
+
     /// Open the nucleotide.toml settings file
     pub fn open_settings_file(&mut self, cx: &mut Context<Self>) {
         // Get the Helix config directory path
@@ -8135,10 +8163,17 @@ impl Workspace {
                             // Other selection sources
                         }
                     }
+                } else if let crate::types::WorkspaceEvent::OpenFileRequested { path, line } =
+                    workspace_event
+                {
+                    self.open_requested_file(path, *line, cx);
                 }
             }
             crate::Update::Ui(crate::types::UiEvent::SystemAppearanceChanged { appearance }) => {
                 self.handle_system_appearance_changed(*appearance, cx);
+            }
+            crate::Update::Ui(crate::types::UiEvent::MarkdownLinkHovered { uri }) => {
+                self.set_hovered_markdown_link(uri.as_deref(), cx);
             }
             crate::Update::Document(doc_event) => {
                 self.handle_document_domain_event(doc_event, cx);

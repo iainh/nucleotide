@@ -1,5 +1,7 @@
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
@@ -80,6 +82,44 @@ fn focus_editor_view(core: &Entity<Core>, view_id: ViewId, cx: &mut App) {
     });
 }
 
+/// Follow a link clicked in this view's rendered Markdown.
+fn open_markdown_link(core: &Entity<Core>, view_id: ViewId, url: &str, cx: &mut App) {
+    use crate::markdown_links::{MarkdownLinkTarget, resolve_markdown_link};
+
+    // Read the path at click time so a renamed document resolves from its new home.
+    let markdown_path = {
+        let core = core.read(cx);
+        core.editor
+            .tree
+            .try_get(view_id)
+            .and_then(|view| core.editor.documents.get(&view.doc))
+            .and_then(|doc| doc.path().map(Path::to_path_buf))
+    };
+    match resolve_markdown_link(url, markdown_path.as_deref()) {
+        MarkdownLinkTarget::File { path, line } => core.update(cx, |_core, cx| {
+            cx.emit(crate::Update::Workspace(
+                crate::types::WorkspaceEvent::OpenFileRequested { path, line },
+            ));
+        }),
+        MarkdownLinkTarget::External(url) => cx.open_url(&url),
+        MarkdownLinkTarget::Fragment(fragment) => {
+            nucleotide_logging::debug!(fragment = %fragment, "Ignoring Markdown heading link");
+        }
+        MarkdownLinkTarget::Unsupported => {
+            nucleotide_logging::warn!(url = %url, "Cannot open Markdown link");
+        }
+    }
+}
+
+fn report_markdown_link_hover(core: &Entity<Core>, uri: Option<&str>, cx: &mut App) {
+    let uri = uri.map(str::to_owned);
+    core.update(cx, |_core, cx| {
+        cx.emit(crate::Update::Ui(
+            crate::types::UiEvent::MarkdownLinkHovered { uri },
+        ));
+    });
+}
+
 fn request_file_picker(core: &Entity<Core>, cx: &mut App) {
     core.update(cx, |_core, cx| cx.emit(crate::Update::ShowFilePicker));
 }
@@ -123,6 +163,9 @@ pub struct DocumentView {
     diff_peek: Option<diff_peek::DiffPeek>,
     /// Primary cursor line when the panel last changed, so only cursor moves retarget it.
     diff_peek_cursor_line: Option<usize>,
+    /// Whether this view last reported a hovered Markdown link, so it can clear
+    /// the status bar when the preview it came from stops rendering.
+    markdown_link_hovered: Rc<Cell<bool>>,
 }
 
 impl DocumentView {
@@ -157,6 +200,7 @@ impl DocumentView {
             native_input: native_input::NativeInput::default(),
             diff_peek: None,
             diff_peek_cursor_line: None,
+            markdown_link_hovered: Rc::default(),
         }
     }
 
@@ -1006,6 +1050,9 @@ impl Render for DocumentView {
             None
         };
 
+        if rendered_markdown.is_none() && self.markdown_link_hovered.replace(false) {
+            report_markdown_link_hover(&self.core, None, cx);
+        }
         let content = if let Some(snapshot) = rendered_markdown.as_ref() {
             self.render_markdown_document(snapshot, cx)
         } else {
@@ -1160,6 +1207,9 @@ impl DocumentView {
         let click_focus = focus.clone();
         let core = self.core.clone();
         let view_id = self.view_id;
+        let link_core = core.clone();
+        let hover_core = core.clone();
+        let link_hovered = self.markdown_link_hovered.clone();
         let scroll_content = div()
             .id(SharedString::from(format!(
                 "markdown-rendered-content-{:?}",
@@ -1175,12 +1225,22 @@ impl DocumentView {
             })
             .px(tokens.sizes.space_8)
             .py(tokens.sizes.space_8)
-            .child(div().w_full().max_w(reading_width).mx_auto().child(
-                markdown_extended(snapshot.source.clone(), markdown_style).selectable(
-                    format!("markdown-selection-{}-{:?}", snapshot.doc_id, self.view_id),
-                    focus,
+            .child(
+                div().w_full().max_w(reading_width).mx_auto().child(
+                    markdown_extended(snapshot.source.clone(), markdown_style)
+                        .selectable(
+                            format!("markdown-selection-{}-{:?}", snapshot.doc_id, self.view_id),
+                            focus,
+                        )
+                        .on_link_click(move |url, _window, cx| {
+                            open_markdown_link(&link_core, view_id, url, cx);
+                        })
+                        .on_link_hover(move |uri, _window, cx| {
+                            link_hovered.set(uri.is_some());
+                            report_markdown_link_hover(&hover_core, uri, cx);
+                        }),
                 ),
-            ));
+            );
 
         div()
             .id(SharedString::from(format!(

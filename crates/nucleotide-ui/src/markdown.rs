@@ -57,6 +57,7 @@ pub struct MarkdownStyle {
     pub alert_caution_color: Hsla,
     selection: Option<MarkdownSelection>,
     selection_color: Hsla,
+    links: MarkdownLinks,
 }
 
 impl MarkdownStyle {
@@ -85,6 +86,7 @@ impl MarkdownStyle {
             alert_caution_color: tokens.editor.error,
             selection: None,
             selection_color: tokens.editor.selection_primary,
+            links: MarkdownLinks::default(),
         }
     }
 
@@ -180,6 +182,24 @@ impl MarkdownElement {
         self.selection = Some((id, focus));
         self
     }
+
+    /// Handle link activation instead of opening every URL with the system handler.
+    pub fn on_link_click(
+        mut self,
+        handler: impl Fn(&str, &mut Window, &mut gpui::App) + 'static,
+    ) -> Self {
+        self.style.links.on_click = Some(Rc::new(handler));
+        self
+    }
+
+    /// Report the URL under the pointer as it moves onto and off links.
+    pub fn on_link_hover(
+        mut self,
+        handler: impl Fn(Option<&str>, &mut Window, &mut gpui::App) + 'static,
+    ) -> Self {
+        self.style.links.on_hover = Some(Rc::new(handler));
+        self
+    }
 }
 
 struct MarkdownParseCache {
@@ -226,15 +246,172 @@ impl RenderOnce for MarkdownElement {
             self.style.selection = Some(selection.clone());
             (id, focus, selection)
         });
+        let links = &self.style.links;
+        let layout = links.on_hover.is_some().then(|| {
+            let state =
+                window.use_keyed_state(self.id.clone(), cx, |_, _| MarkdownLinkLayout::default());
+            let layout = state.read(cx).clone();
+            {
+                let mut state = layout.0.borrow_mut();
+                state.targets.clear();
+                state.image = None;
+            }
+            self.style.links.layout = Some(layout.clone());
+            layout
+        });
+        let hover = layout.zip(self.style.links.on_hover.clone());
         // Scope every child ID, including deferred Mermaid keyed state, to this
         // instance. Child block IDs only need to be unique within this root.
         let content = render_document(&document, self.style).id(self.id);
-        if let Some((id, focus, selection)) = selection {
+        let content = if let Some((id, focus, selection)) = selection {
             selectable_document(content, id, focus, selection).into_any_element()
         } else {
             content.into_any_element()
+        };
+        match hover {
+            Some((hover, on_hover)) => {
+                link_hover_tracker(content, hover, on_hover).into_any_element()
+            }
+            None => content,
         }
     }
+}
+
+type LinkClickHandler = Rc<dyn Fn(&str, &mut Window, &mut gpui::App)>;
+type LinkHoverHandler = Rc<dyn Fn(Option<&str>, &mut Window, &mut gpui::App)>;
+
+/// Link callbacks carried through rendering alongside the style.
+#[derive(Clone, Default)]
+struct MarkdownLinks {
+    on_click: Option<LinkClickHandler>,
+    on_hover: Option<LinkHoverHandler>,
+    layout: Option<MarkdownLinkLayout>,
+}
+
+impl PartialEq for MarkdownLinks {
+    fn eq(&self, _other: &Self) -> bool {
+        // Handlers are rebuilt every frame and never change painting. Comparing
+        // them would make style-diffing views such as Mermaid redraw forever.
+        true
+    }
+}
+
+impl std::fmt::Debug for MarkdownLinks {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MarkdownLinks").finish_non_exhaustive()
+    }
+}
+
+/// Link text laid out this frame, hit-tested by one document-wide listener:
+/// `InteractiveText::on_hover` does not report the pointer leaving the text.
+#[derive(Clone, Default)]
+struct MarkdownLinkLayout(Rc<RefCell<MarkdownLinkLayoutState>>);
+
+#[derive(Default)]
+struct MarkdownLinkLayoutState {
+    targets: Vec<(gpui::TextLayout, Vec<(Range<usize>, SharedString)>)>,
+    /// URL of a linked image under the pointer, reported by the image itself.
+    image: Option<SharedString>,
+    current: Option<SharedString>,
+}
+
+impl MarkdownLinkLayoutState {
+    fn text_link_at(&self, point: gpui::Point<Pixels>) -> Option<SharedString> {
+        self.targets.iter().find_map(|(layout, links)| {
+            if !layout.bounds().contains(&point) {
+                return None;
+            }
+            let index = layout.index_for_position(point).ok()?;
+            links
+                .iter()
+                .find(|(range, _)| range.contains(&index))
+                .map(|(_, url)| url.clone())
+        })
+    }
+}
+
+/// Report `hit` when it differs from the last reported link.
+fn report_link_hover(
+    hover: &MarkdownLinkLayout,
+    on_hover: &LinkHoverHandler,
+    hit: Option<SharedString>,
+    window: &mut Window,
+    cx: &mut gpui::App,
+) {
+    {
+        let mut state = hover.0.borrow_mut();
+        if state.current == hit {
+            return;
+        }
+        state.current = hit.clone();
+    }
+    on_hover(hit.as_deref(), window, cx);
+}
+
+fn link_hover_tracker(
+    content: gpui::AnyElement,
+    hover: MarkdownLinkLayout,
+    on_hover: LinkHoverHandler,
+) -> impl IntoElement {
+    div().relative().w_full().child(content).child(
+        gpui::canvas(
+            |bounds, window, _| window.insert_hitbox(bounds, gpui::HitboxBehavior::Normal),
+            move |_, hitbox, window, _| {
+                window.on_mouse_event(move |event: &gpui::MouseMoveEvent, phase, window, cx| {
+                    if phase != gpui::DispatchPhase::Bubble {
+                        return;
+                    }
+                    // The hitbox carries the scroll container's mask, so text
+                    // scrolled out of view never matches.
+                    let hit = if hitbox.is_hovered(window) {
+                        let state = hover.0.borrow();
+                        state
+                            .text_link_at(event.position)
+                            .or_else(|| state.image.clone())
+                    } else {
+                        None
+                    };
+                    report_link_hover(&hover, &on_hover, hit, window, cx);
+                });
+            },
+        )
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full(),
+    )
+}
+
+/// Activate a link with the instance's handler, or the system URL handler by default.
+fn open_markdown_link(links: &MarkdownLinks, url: &str, window: &mut Window, cx: &mut gpui::App) {
+    match &links.on_click {
+        Some(on_click) => on_click(url, window, cx),
+        None => cx.open_url(url),
+    }
+}
+
+/// Track a linked image's hover state for the document-wide link hover.
+fn image_link_hover<E: StatefulInteractiveElement>(
+    element: E,
+    links: &MarkdownLinks,
+    url: &SharedString,
+) -> E {
+    let (Some(hover), Some(on_hover)) = (links.layout.clone(), links.on_hover.clone()) else {
+        return element;
+    };
+    let url = url.clone();
+    element.on_hover(move |hovered, window, cx| {
+        let hit = {
+            let mut state = hover.0.borrow_mut();
+            if *hovered {
+                state.image = Some(url.clone());
+            } else if state.image.as_ref() == Some(&url) {
+                state.image = None;
+            }
+            state.image.clone()
+        };
+        report_link_hover(&hover, &on_hover, hit, window, cx);
+    })
 }
 
 #[derive(Clone, Default)]
@@ -1941,9 +2118,19 @@ fn render_rich_text_fragment(
         let tooltip_links = parts.links;
         let tooltip_style = style.clone();
         let selection = style.selection.clone();
+        let links = style.links.clone();
+        if let Some(hover) = &links.layout {
+            hover.0.borrow_mut().targets.push((
+                text.layout().clone(),
+                tooltip_links
+                    .iter()
+                    .map(|link| (link.range.clone(), link.url.clone()))
+                    .collect(),
+            ));
+        }
 
         InteractiveText::new(element_id, text)
-            .on_click(click_ranges, move |range_ix, _window, cx| {
+            .on_click(click_ranges, move |range_ix, window, cx| {
                 if selection.as_ref().is_some_and(|selection| {
                     let state = selection.0.borrow();
                     state.anchor != state.head
@@ -1959,7 +2146,7 @@ fn render_rich_text_fragment(
                     url = %url,
                     "Markdown documentation link click received"
                 );
-                cx.open_url(&url);
+                open_markdown_link(&links, &url, window, cx);
             })
             .tooltip(move |index, _window, cx| {
                 tooltip_links
@@ -3156,11 +3343,12 @@ fn render_image_block(
             })
         })
         .when_some(link_url, |this, link_url| {
-            let link_url = link_url.to_string();
-            this.cursor_pointer()
-                .on_mouse_down(MouseButton::Left, move |_event, _window, cx| {
+            let links = style.links.clone();
+            image_link_hover(this, &links, &link_url)
+                .cursor_pointer()
+                .on_mouse_down(MouseButton::Left, move |_event, window, cx| {
                     cx.stop_propagation();
-                    cx.open_url(&link_url);
+                    open_markdown_link(&links, &link_url, window, cx);
                 })
         })
         .child(
@@ -3207,11 +3395,12 @@ fn render_inline_image(
             })
         })
         .when_some(link_url, |this, link_url| {
-            let link_url = link_url.to_string();
-            this.cursor_pointer()
-                .on_mouse_down(MouseButton::Left, move |_event, _window, cx| {
+            let links = style.links.clone();
+            image_link_hover(this, &links, &link_url)
+                .cursor_pointer()
+                .on_mouse_down(MouseButton::Left, move |_event, window, cx| {
                     cx.stop_propagation();
-                    cx.open_url(&link_url);
+                    open_markdown_link(&links, &link_url, window, cx);
                 })
         })
         .child(
@@ -5191,6 +5380,74 @@ plain"#,
         cx.simulate_click(point(px(12.0), px(12.0)), Modifiers::default());
 
         assert_eq!(cx.opened_url().as_deref(), Some("https://example.com"));
+    }
+
+    #[gpui::test]
+    fn markdown_link_handlers_report_hover_and_replace_open_url(cx: &mut gpui::TestAppContext) {
+        use gpui::{Context, Modifiers, Render, point};
+        use std::cell::RefCell;
+
+        type Log = Rc<RefCell<Vec<String>>>;
+
+        struct Fixture {
+            style: MarkdownStyle,
+            log: Log,
+        }
+
+        impl Render for Fixture {
+            fn render(
+                &mut self,
+                _window: &mut Window,
+                _cx: &mut Context<Self>,
+            ) -> impl IntoElement {
+                let clicks = self.log.clone();
+                let hovers = self.log.clone();
+                div().w(px(240.0)).h(px(48.0)).child(
+                    markdown("[docs](other.md) plain", self.style.clone())
+                        .on_link_click(move |url, _, _| {
+                            clicks.borrow_mut().push(format!("click {url}"));
+                        })
+                        .on_link_hover(move |url, _, _| {
+                            hovers
+                                .borrow_mut()
+                                .push(format!("hover {}", url.unwrap_or("-")));
+                        }),
+                )
+            }
+        }
+
+        let log = Log::default();
+        let style = MarkdownStyle::from_tokens(&DesignTokens::dark()).compact();
+        let fixture_log = log.clone();
+        let (_view, cx) = cx.add_window_view(move |_, _| Fixture {
+            style,
+            log: fixture_log,
+        });
+        cx.run_until_parked();
+
+        let on_link = point(px(12.0), px(12.0));
+        // Past "plain" on the same line, then outside the document entirely.
+        for position in [
+            on_link,
+            point(px(200.0), px(12.0)),
+            on_link,
+            point(px(12.0), px(200.0)),
+        ] {
+            cx.simulate_mouse_move(position, None, Modifiers::default());
+        }
+        cx.simulate_click(on_link, Modifiers::default());
+
+        assert_eq!(
+            *log.borrow(),
+            [
+                "hover other.md",
+                "hover -",
+                "hover other.md",
+                "hover -",
+                "click other.md",
+            ]
+        );
+        assert_eq!(cx.opened_url(), None);
     }
 
     struct SelectableMarkdownFixture {

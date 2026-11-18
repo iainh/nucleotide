@@ -93,6 +93,7 @@ struct StatusBarModel {
     lsp: Option<LspStatusSummary>,
     notification: Option<StatusBarNotification>,
     background_activity: Option<String>,
+    hovered_link: Option<SharedString>,
     density: StatusBarDensity,
 }
 
@@ -234,6 +235,13 @@ pub(super) fn statusbar_lsp_summary_for_state(
 }
 
 impl Workspace {
+    pub(super) fn set_hovered_markdown_link(&mut self, uri: Option<&str>, cx: &mut Context<Self>) {
+        if self.hovered_markdown_link.as_deref() != uri {
+            self.hovered_markdown_link = uri.map(|uri| SharedString::from(uri.to_string()));
+            cx.notify();
+        }
+    }
+
     pub(super) fn start_background_activity(
         &mut self,
         message: impl Into<String>,
@@ -442,6 +450,7 @@ impl Workspace {
             background_activity: self
                 .current_background_activity()
                 .map(|activity| activity.message.clone()),
+            hovered_link: self.hovered_markdown_link.clone(),
             density,
         }
     }
@@ -825,6 +834,7 @@ impl Workspace {
                     .min_w_0()
                     .px_3()
                     .child(self.statusbar_message_slot(
+                        model.hovered_link.clone(),
                         model.file_name.clone(),
                         model.notification.clone(),
                         model.background_activity.clone(),
@@ -838,12 +848,32 @@ impl Workspace {
 
     fn statusbar_message_slot(
         &self,
+        hovered_link: Option<SharedString>,
         file_name: String,
         notification: Option<StatusBarNotification>,
         background_activity: Option<String>,
         status_bar_tokens: &nucleotide_ui::tokens::StatusBarTokens,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
+        // A hovered link is what the user is looking at, and lasts only while hovered.
+        if let Some(uri) = hovered_link {
+            return gpui::div()
+                .when(cfg!(test), |view| {
+                    view.debug_selector(|| "statusbar-hovered-link".into())
+                })
+                .flex_1()
+                .min_w_0()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .text_color(status_bar_tokens.text_primary)
+                .child(shorten_statusbar_text(
+                    &uri,
+                    STATUSBAR_NOTIFICATION_MESSAGE_MAX_CHARS,
+                ))
+                .into_any_element();
+        }
+
         if let Some(activity_message) = background_activity {
             let notification_tokens = cx.theme().tokens.notification_tokens();
             let message =

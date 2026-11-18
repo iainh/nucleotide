@@ -14,6 +14,7 @@ pub mod file_tree;
 mod helix_command;
 pub mod input_coordinator;
 pub mod lsp_traffic_logger;
+mod markdown_links;
 pub mod overlay;
 pub mod picker_capability;
 mod remote_connection_manager;

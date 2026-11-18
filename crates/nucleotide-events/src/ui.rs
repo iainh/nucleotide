@@ -3,7 +3,13 @@
 
 #[derive(Debug, Clone)]
 pub enum Event {
-    SystemAppearanceChanged { appearance: SystemAppearance },
+    SystemAppearanceChanged {
+        appearance: SystemAppearance,
+    },
+    /// The pointer moved onto a link in rendered Markdown (`Some`) or off it (`None`).
+    MarkdownLinkHovered {
+        uri: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
