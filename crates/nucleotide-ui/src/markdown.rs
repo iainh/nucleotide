@@ -207,6 +207,14 @@ impl MarkdownElement {
         self.style.links.scroll = Some(handle.clone());
         self
     }
+
+    /// Scroll to the heading anchor in `request` once it is laid out, then clear
+    /// it. Lets a caller land on a heading in a document it just opened; needs
+    /// [`Self::scroll_handle`].
+    pub fn scroll_to_anchor(mut self, request: Rc<RefCell<Option<String>>>) -> Self {
+        self.style.links.anchor_request = Some(request);
+        self
+    }
 }
 
 struct MarkdownParseCache {
@@ -268,7 +276,7 @@ impl RenderOnce for MarkdownElement {
             self.style.links.layout = Some(layout.clone());
             layout
         });
-        let hover = layout.zip(self.style.links.on_hover.clone());
+        let links = self.style.links.clone();
         // Scope every child ID, including deferred Mermaid keyed state, to this
         // instance. Child block IDs only need to be unique within this root.
         let content = render_document(&document, self.style).id(self.id);
@@ -277,10 +285,8 @@ impl RenderOnce for MarkdownElement {
         } else {
             content.into_any_element()
         };
-        match hover {
-            Some((hover, on_hover)) => {
-                link_hover_tracker(content, hover, on_hover).into_any_element()
-            }
+        match layout {
+            Some(layout) => link_layout_tracker(content, layout, links).into_any_element(),
             None => content,
         }
     }
@@ -296,6 +302,8 @@ struct MarkdownLinks {
     on_hover: Option<LinkHoverHandler>,
     /// Scrolled by `#heading` links.
     scroll: Option<gpui::ScrollHandle>,
+    /// A heading to scroll to once laid out, set by the caller.
+    anchor_request: Option<Rc<RefCell<Option<String>>>>,
     layout: Option<MarkdownLinkLayout>,
 }
 
@@ -377,15 +385,27 @@ fn report_link_hover(
     on_hover(hit.as_deref(), window, cx);
 }
 
-fn link_hover_tracker(
+/// Hover hit-testing and requested anchor scrolls, run after the document's
+/// prepaint has recorded link and heading positions for this frame.
+fn link_layout_tracker(
     content: gpui::AnyElement,
     hover: MarkdownLinkLayout,
-    on_hover: LinkHoverHandler,
+    links: MarkdownLinks,
 ) -> impl IntoElement {
     div().relative().w_full().child(content).child(
         gpui::canvas(
             |bounds, window, _| window.insert_hitbox(bounds, gpui::HitboxBehavior::Normal),
-            move |_, hitbox, window, _| {
+            move |_, hitbox, window, cx| {
+                let requested = links
+                    .anchor_request
+                    .as_ref()
+                    .and_then(|request| request.borrow_mut().take());
+                if let Some(anchor) = requested {
+                    scroll_to_anchor(&links, &anchor, window, cx);
+                }
+                let Some(on_hover) = links.on_hover.clone() else {
+                    return;
+                };
                 window.on_mouse_event(move |event: &gpui::MouseMoveEvent, phase, window, cx| {
                     if phase != gpui::DispatchPhase::Bubble {
                         return;
@@ -450,16 +470,14 @@ fn unescape_commonmark_url(url: &str) -> String {
     String::from_utf8_lossy(&decoded).into_owned()
 }
 
-/// Scroll to the heading a `#fragment` link names; false when there is none.
-fn scroll_to_markdown_anchor(
+/// Scroll to the heading `fragment` (without `#`) names; false when there is none.
+fn scroll_to_anchor(
     links: &MarkdownLinks,
-    url: &str,
+    fragment: &str,
     window: &mut Window,
     cx: &mut gpui::App,
 ) -> bool {
-    let (Some(fragment), Some(scroll), Some(layout)) =
-        (url.strip_prefix('#'), &links.scroll, &links.layout)
-    else {
+    let (Some(scroll), Some(layout)) = (&links.scroll, &links.layout) else {
         return false;
     };
     let fragment = unescape_commonmark_url(fragment).to_lowercase();
@@ -487,7 +505,9 @@ fn scroll_to_markdown_anchor(
 
 /// Activate a link with the instance's handler, or the system URL handler by default.
 fn open_markdown_link(links: &MarkdownLinks, url: &str, window: &mut Window, cx: &mut gpui::App) {
-    if scroll_to_markdown_anchor(links, url, window, cx) {
+    if let Some(fragment) = url.strip_prefix('#')
+        && scroll_to_anchor(links, fragment, window, cx)
+    {
         return;
     }
     match &links.on_click {
@@ -5658,6 +5678,55 @@ plain"#,
             "should stop short of the end, got {y:?}"
         );
         assert_eq!(cx.opened_url(), None);
+    }
+
+    #[gpui::test]
+    fn requested_anchor_scrolls_once_laid_out(cx: &mut gpui::TestAppContext) {
+        use gpui::{Context, Render, ScrollHandle};
+
+        struct Fixture {
+            scroll: ScrollHandle,
+            request: Rc<RefCell<Option<String>>>,
+            source: SharedString,
+        }
+
+        impl Render for Fixture {
+            fn render(
+                &mut self,
+                _window: &mut Window,
+                _cx: &mut Context<Self>,
+            ) -> impl IntoElement {
+                let style = MarkdownStyle::from_tokens(&DesignTokens::dark()).compact();
+                div()
+                    .id("scroll")
+                    .w(px(240.0))
+                    .h(px(100.0))
+                    .overflow_y_scroll()
+                    .track_scroll(&self.scroll)
+                    .child(
+                        markdown(self.source.clone(), style)
+                            .scroll_handle(&self.scroll)
+                            .scroll_to_anchor(self.request.clone()),
+                    )
+            }
+        }
+
+        let filler = "filler\n\n".repeat(30);
+        let source = format!("# Top\n\n{filler}## Café notes\n\n{filler}");
+        let scroll = ScrollHandle::new();
+        // Requested as a link would name it: percent-encoded, any case.
+        let request = Rc::new(RefCell::new(Some("Caf%C3%A9-notes".to_string())));
+        let (fixture_scroll, fixture_request) = (scroll.clone(), request.clone());
+        let (_view, cx) = cx.add_window_view(move |_, _| Fixture {
+            scroll: fixture_scroll,
+            request: fixture_request,
+            source: source.into(),
+        });
+        cx.run_until_parked();
+
+        let y = scroll.offset().y;
+        assert!(y < px(-200.0), "should scroll to the heading, got {y:?}");
+        assert!(request.borrow().is_none(), "request is consumed");
     }
 
     struct SelectableMarkdownFixture {

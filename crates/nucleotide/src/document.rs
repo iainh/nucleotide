@@ -1,4 +1,4 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -82,25 +82,57 @@ fn focus_editor_view(core: &Entity<Core>, view_id: ViewId, cx: &mut App) {
     });
 }
 
+/// A heading to scroll to once a linked Markdown file opens in this view.
+struct PendingMarkdownAnchor {
+    /// The document the link was clicked in, shown until the target opens.
+    source_doc: DocumentId,
+    path: PathBuf,
+    anchor: String,
+}
+
 /// Follow a link clicked in this view's rendered Markdown.
-fn open_markdown_link(core: &Entity<Core>, view_id: ViewId, url: &str, cx: &mut App) {
+fn open_markdown_link(
+    view: &gpui::WeakEntity<DocumentView>,
+    core: &Entity<Core>,
+    view_id: ViewId,
+    url: &str,
+    cx: &mut App,
+) {
     use crate::markdown_links::{MarkdownLinkTarget, resolve_markdown_link};
 
     // Read the path at click time so a renamed document resolves from its new home.
-    let markdown_path = {
+    let (source_doc, markdown_path) = {
         let core = core.read(cx);
-        core.editor
-            .tree
-            .try_get(view_id)
-            .and_then(|view| core.editor.documents.get(&view.doc))
-            .and_then(|doc| doc.path().map(Path::to_path_buf))
+        let Some(view) = core.editor.tree.try_get(view_id) else {
+            return;
+        };
+        let path = core
+            .editor
+            .documents
+            .get(&view.doc)
+            .and_then(|doc| doc.path().map(Path::to_path_buf));
+        (view.doc, path)
     };
     match resolve_markdown_link(url, markdown_path.as_deref()) {
-        MarkdownLinkTarget::File { path, line } => core.update(cx, |_core, cx| {
-            cx.emit(crate::Update::Workspace(
-                crate::types::WorkspaceEvent::OpenFileRequested { path, line },
-            ));
-        }),
+        MarkdownLinkTarget::File { path, line, anchor } => {
+            // The target opens in this view, which scrolls once it renders it.
+            if let Some(anchor) = anchor.filter(|_| is_markdown_document_path(&path)) {
+                let pending = PendingMarkdownAnchor {
+                    source_doc,
+                    path: path.clone(),
+                    anchor,
+                };
+                let _ = view.update(cx, |view, cx| {
+                    view.pending_markdown_anchor = Some(pending);
+                    cx.notify();
+                });
+            }
+            core.update(cx, |_core, cx| {
+                cx.emit(crate::Update::Workspace(
+                    crate::types::WorkspaceEvent::OpenFileRequested { path, line },
+                ));
+            });
+        }
         MarkdownLinkTarget::External(url) => cx.open_url(&url),
         // The preview scrolls to headings it has; anything left names none.
         MarkdownLinkTarget::Fragment(fragment) => {
@@ -167,6 +199,10 @@ pub struct DocumentView {
     /// Whether this view last reported a hovered Markdown link, so it can clear
     /// the status bar when the preview it came from stops rendering.
     markdown_link_hovered: Rc<Cell<bool>>,
+    /// Set by a link to a heading in another Markdown file until that file shows here.
+    pending_markdown_anchor: Option<PendingMarkdownAnchor>,
+    /// Handed to the preview, which scrolls to the heading and clears it.
+    markdown_anchor_request: Rc<RefCell<Option<String>>>,
 }
 
 impl DocumentView {
@@ -202,6 +238,8 @@ impl DocumentView {
             diff_peek: None,
             diff_peek_cursor_line: None,
             markdown_link_hovered: Rc::default(),
+            pending_markdown_anchor: None,
+            markdown_anchor_request: Rc::default(),
         }
     }
 
@@ -505,6 +543,33 @@ impl DocumentView {
         true
     }
 
+    /// Once a linked file shows in this view, preview it and scroll to its heading.
+    fn apply_pending_markdown_anchor(&mut self, cx: &mut Context<Self>) {
+        let Some(pending) = self.pending_markdown_anchor.as_ref() else {
+            return;
+        };
+        let (doc_id, path) = {
+            let core = self.core.read(cx);
+            let Some(view) = core.editor.tree.try_get(self.view_id) else {
+                return;
+            };
+            let path = core
+                .editor
+                .documents
+                .get(&view.doc)
+                .and_then(|doc| doc.path().map(Path::to_path_buf));
+            (view.doc, path)
+        };
+        if path.is_some_and(|path| same_file(&path, &pending.path)) {
+            let anchor = self.pending_markdown_anchor.take().map(|p| p.anchor);
+            self.set_markdown_mode(doc_id, MarkdownDisplayMode::Rendered);
+            *self.markdown_anchor_request.borrow_mut() = anchor;
+        } else if doc_id != pending.source_doc {
+            // Something else opened here instead, such as when the target was missing.
+            self.pending_markdown_anchor = None;
+        }
+    }
+
     fn markdown_document_snapshot(
         &mut self,
         cx: &mut Context<Self>,
@@ -798,6 +863,7 @@ impl Render for DocumentView {
         self.editor_state
             .set_gutter_run_button_lines(runnable_tasks_by_line.keys().copied());
 
+        self.apply_pending_markdown_anchor(cx);
         let markdown_document = markdown_document_info(&self.core, self.view_id, cx);
         let markdown_mode = markdown_document
             .as_ref()
@@ -1181,6 +1247,13 @@ fn markdown_document_info(
     Some(MarkdownDocumentInfo { doc_id: view.doc })
 }
 
+fn same_file(a: &Path, b: &Path) -> bool {
+    a == b
+        || std::fs::canonicalize(a)
+            .ok()
+            .is_some_and(|a| std::fs::canonicalize(b).is_ok_and(|b| a == b))
+}
+
 fn is_markdown_document_path(path: &Path) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
@@ -1211,6 +1284,7 @@ impl DocumentView {
         let link_core = core.clone();
         let hover_core = core.clone();
         let link_hovered = self.markdown_link_hovered.clone();
+        let link_view = cx.entity().downgrade();
         let scroll_content = div()
             .id(SharedString::from(format!(
                 "markdown-rendered-content-{:?}",
@@ -1234,8 +1308,9 @@ impl DocumentView {
                             focus,
                         )
                         .scroll_handle(&self.markdown_scroll_handle)
+                        .scroll_to_anchor(self.markdown_anchor_request.clone())
                         .on_link_click(move |url, _window, cx| {
-                            open_markdown_link(&link_core, view_id, url, cx);
+                            open_markdown_link(&link_view, &link_core, view_id, url, cx);
                         })
                         .on_link_hover(move |uri, _window, cx| {
                             link_hovered.set(uri.is_some());

@@ -7,10 +7,12 @@ use url::Url;
 /// Where a clicked Markdown link leads.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum MarkdownLinkTarget {
-    /// A file to open in the editor, with an optional 0-based line.
+    /// A file to open in the editor, with an optional 0-based line or, for
+    /// any other fragment, a heading anchor (still percent-encoded).
     File {
         path: PathBuf,
         line: Option<usize>,
+        anchor: Option<String>,
     },
     /// A URL for the system handler, such as a browser or mail client.
     External(String),
@@ -22,7 +24,7 @@ pub(crate) enum MarkdownLinkTarget {
 /// Resolve `url` as written in the Markdown file at `markdown_path`.
 ///
 /// Relative links resolve from the file's directory, as on GitHub. File links
-/// may name a line as `path:12` or `path#L12`; other fragments are ignored.
+/// may name a line as `path:12` or `path#L12`; other fragments name a heading.
 pub(crate) fn resolve_markdown_link(url: &str, markdown_path: Option<&Path>) -> MarkdownLinkTarget {
     let url = url.trim();
     if url.is_empty() {
@@ -49,10 +51,15 @@ pub(crate) fn resolve_markdown_link(url: &str, markdown_path: Option<&Path>) -> 
     let Ok(path) = resolved.to_file_path() else {
         return MarkdownLinkTarget::Unsupported;
     };
+    let fragment = resolved.fragment().filter(|fragment| !fragment.is_empty());
     if line.is_none() {
-        line = resolved.fragment().and_then(fragment_line);
+        line = fragment.and_then(fragment_line);
     }
-    MarkdownLinkTarget::File { path, line }
+    let anchor = line
+        .is_none()
+        .then(|| fragment.map(str::to_string))
+        .flatten();
+    MarkdownLinkTarget::File { path, line, anchor }
 }
 
 /// Split a trailing `:N` (1-based) from a path-like link.
@@ -97,6 +104,15 @@ mod tests {
         MarkdownLinkTarget::File {
             path: PathBuf::from(path),
             line,
+            anchor: None,
+        }
+    }
+
+    fn heading(path: &str, anchor: &str) -> MarkdownLinkTarget {
+        MarkdownLinkTarget::File {
+            path: PathBuf::from(path),
+            line: None,
+            anchor: Some(anchor.into()),
         }
     }
 
@@ -104,7 +120,12 @@ mod tests {
     fn file_links_resolve_from_the_markdown_directory() {
         for (url, expected) in [
             ("other.md", file("/docs/other.md", None)),
-            ("guide/intro.md#intro", file("/docs/guide/intro.md", None)),
+            (
+                "guide/intro.md#intro",
+                heading("/docs/guide/intro.md", "intro"),
+            ),
+            ("other.md#", file("/docs/other.md", None)),
+            ("other.md#caf%C3%A9", heading("/docs/other.md", "caf%C3%A9")),
             ("../x.rs", file("/x.rs", None)),
             ("/abs/a.md", file("/abs/a.md", None)),
             ("file:///abs/path", file("/abs/path", None)),
@@ -126,8 +147,8 @@ mod tests {
             ("src/x.rs#L12-L20", file("/docs/src/x.rs", Some(11))),
             ("src/x.rs#L3C7", file("/docs/src/x.rs", Some(2))),
             // Not line anchors.
-            ("x.rs#L0", file("/docs/x.rs", None)),
-            ("x.rs#Lede", file("/docs/x.rs", None)),
+            ("x.rs#L0", heading("/docs/x.rs", "L0")),
+            ("x.rs#Lede", heading("/docs/x.rs", "Lede")),
         ] {
             assert_eq!(resolve(url), expected, "{url}");
         }
