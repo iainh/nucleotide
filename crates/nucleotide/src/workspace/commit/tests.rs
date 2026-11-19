@@ -18,6 +18,8 @@ fn fixture() -> tempfile::TempDir {
     let root = tempfile::tempdir().unwrap();
     git(root.path(), &["init", "-q"]);
     git(root.path(), &["config", "user.name", "Test"]);
+    // Windows runners enable autocrlf globally; these fixtures write LF files.
+    git(root.path(), &["config", "core.autocrlf", "false"]);
     git(
         root.path(),
         &["config", "user.email", "test@example.invalid"],

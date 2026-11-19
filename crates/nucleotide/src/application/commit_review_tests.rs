@@ -17,10 +17,14 @@ fn git(root: &Path, args: &[&str]) -> String {
 }
 
 fn repository() -> tempfile::TempDir {
-    let root = tempdir().unwrap();
+    // Helix normalizes document paths (on Windows, it expands 8.3 short names
+    // such as RUNNER~1), so the project directory must use the same spelling.
+    let root = tempfile::tempdir_in(helix_stdx::path::normalize(std::env::temp_dir())).unwrap();
     git(root.path(), &["init", "-q"]);
     git(root.path(), &["config", "user.name", "Test"]);
     git(root.path(), &["config", "commit.gpgsign", "false"]);
+    // Windows runners enable autocrlf globally; these fixtures write LF files.
+    git(root.path(), &["config", "core.autocrlf", "false"]);
     git(
         root.path(),
         &["config", "user.email", "test@example.invalid"],
