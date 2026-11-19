@@ -1573,7 +1573,10 @@ impl Application {
             });
         }
 
-        if !classify_workspace_location(&workspace_root).is_remote()
+        // The working directory is process-wide, so tests must not move it into
+        // their temporary workspaces: later tests would inherit a deleted path.
+        if !cfg!(test)
+            && !classify_workspace_location(&workspace_root).is_remote()
             && let Err(error) = self.editor.set_cwd(&workspace_root)
         {
             warn!(%error, workspace_root = %workspace_root.display(), "Failed to update Editor working directory");
