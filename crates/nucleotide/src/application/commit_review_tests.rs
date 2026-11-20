@@ -793,3 +793,71 @@ fn commit_template_and_amend_preserve_the_original_draft(cx: &mut gpui::TestAppC
         "Amend must never silently switch to an external commit"
     );
 }
+
+#[gpui::test]
+fn side_by_side_divider_drags_and_double_click_recentres(cx: &mut gpui::TestAppContext) {
+    let _runtime = TEST_RUNTIME.enter();
+    let root = repository();
+    fs::write(root.path().join("file.txt"), "alpha\nchanged\nbeta\n").unwrap();
+    let (core, _, cx) = new_test_workspace(cx, &root.path().join("file.txt"));
+    install_commit_language(&core, cx);
+    core.update(cx, |_, cx| cx.emit(crate::Update::ShowCommit));
+    wait_for(&core, cx, |cx| {
+        cx.debug_bounds("commit-diff-0-split").is_some()
+    });
+    let widths = |cx: &mut gpui::VisualTestContext| {
+        [
+            cx.debug_bounds("commit-diff-0-old").unwrap().size.width,
+            cx.debug_bounds("commit-diff-0-new").unwrap().size.width,
+        ]
+    };
+    let [old, new] = widths(cx);
+    assert!((old - new).abs() < px(1.0), "columns start equal");
+
+    // Grab above the hunk checkbox, which sits in the middle of the ribbon.
+    let grab = |cx: &mut gpui::VisualTestContext| {
+        let bounds = cx.debug_bounds("commit-diff-0-split").unwrap();
+        point(bounds.center().x, bounds.top() + px(4.0))
+    };
+    let start = grab(cx);
+    let end = point(start.x + px(80.0), start.y);
+    cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::none());
+    cx.simulate_mouse_move(
+        point(start.x + px(10.0), start.y),
+        MouseButton::Left,
+        Modifiers::none(),
+    );
+    cx.simulate_mouse_move(end, MouseButton::Left, Modifiers::none());
+    cx.simulate_mouse_up(end, MouseButton::Left, Modifiers::none());
+    pump(&core, cx);
+    let [dragged_old, dragged_new] = widths(cx);
+    // The divider follows the pointer, so HEAD gains what the working tree loses.
+    assert!(
+        (dragged_old - old - px(80.0)).abs() < px(1.0),
+        "{dragged_old:?}"
+    );
+    assert!(
+        (new - dragged_new - px(80.0)).abs() < px(1.0),
+        "{dragged_new:?}"
+    );
+    let handle = grab(cx);
+    assert!((handle.x - end.x).abs() < px(1.0));
+
+    cx.simulate_click(handle, Modifiers::none());
+    cx.simulate_event(gpui::MouseDownEvent {
+        position: handle,
+        modifiers: Modifiers::none(),
+        button: MouseButton::Left,
+        click_count: 2,
+        first_mouse: false,
+    });
+    cx.simulate_event(gpui::MouseUpEvent {
+        position: handle,
+        modifiers: Modifiers::none(),
+        button: MouseButton::Left,
+        click_count: 2,
+    });
+    pump(&core, cx);
+    let [old, new] = widths(cx);
+    assert!((old - new).abs() < px(1.0), "double click recentres");
+}

@@ -283,6 +283,12 @@ struct Side {
     markers: Vec<(usize, Hsla)>,
 }
 
+/// Drag payload of a side-by-side diff's divider, naming the diff it belongs to.
+struct SplitHandle(String);
+
+/// Neither side of a side-by-side diff can be dragged narrower than this share.
+const MIN_SPLIT: f32 = 0.15;
+
 struct Block {
     rows: [Range<usize>; 2],
     color: Hsla,
@@ -656,39 +662,92 @@ impl Workspace {
                     .child(block.checkbox?),
             )
         });
-        let column = |code: Vec<gpui::AnyElement>, markers: Vec<(usize, Hsla)>, name: &str| {
-            let mut column = div().id(SharedString::from(format!("{}-{name}", diff.id)));
-            // A vertical wheel scrolls the file list, not the code sideways.
-            column.style().restrict_scroll_to_axis = Some(true);
-            column.flex_1().min_w_0().flex().overflow_x_scroll().child(
-                div()
-                    .relative()
-                    .flex_none()
-                    .min_w_full()
+        let split = self.commit_review.split.unwrap_or(0.5);
+        let shares = [split, 1.0 - split];
+        let column =
+            |code: Vec<gpui::AnyElement>, markers: Vec<(usize, Hsla)>, name: &str, share: f32| {
+                let mut column = div().id(SharedString::from(format!("{}-{name}", diff.id)));
+                // A vertical wheel scrolls the file list, not the code sideways.
+                column.style().restrict_scroll_to_axis = Some(true);
+                column
+                    .when(cfg!(test), |column| {
+                        let selector = format!("{}-{name}", diff.id);
+                        column.debug_selector(move || selector)
+                    })
+                    .flex_basis(gpui::relative(0.0))
+                    .flex_grow(share)
+                    .min_w_0()
                     .flex()
-                    .flex_col()
-                    .children(code)
-                    .children(markers.into_iter().map(|(at, color)| {
+                    .overflow_x_scroll()
+                    .child(
                         div()
-                            .absolute()
-                            .left_0()
-                            .right_0()
-                            .top(row * at as f32 - px(0.5))
-                            .h(px(1.0))
-                            .bg(color.opacity(MARKER_TINT))
-                    })),
-            )
-        };
+                            .relative()
+                            .flex_none()
+                            .min_w_full()
+                            .flex()
+                            .flex_col()
+                            .children(code)
+                            .children(markers.into_iter().map(|(at, color)| {
+                                div()
+                                    .absolute()
+                                    .left_0()
+                                    .right_0()
+                                    .top(row * at as f32 - px(0.5))
+                                    .h(px(1.0))
+                                    .bg(color.opacity(MARKER_TINT))
+                            })),
+                    )
+            };
         let gutter_column = |rows: Vec<gpui::AnyElement>| {
             div().w(gutter).flex_none().flex().flex_col().children(rows)
         };
-        let title = |text: &'static str| {
+        let title = |text: &'static str, share: f32| {
             div()
-                .flex_1()
+                .flex_basis(gpui::relative(0.0))
+                .flex_grow(share)
                 .min_w_0()
                 .px(tokens.sizes.space_3)
                 .child(text)
         };
+        // The ribbon between the line numbers is the divider: dragging it moves
+        // the middle strip with the pointer, and a double click recentres it.
+        let middle = gutter * 2.0 + ribbon;
+        let handle_id = diff.id.clone();
+        let handle = div()
+            .id(SharedString::from(format!("{}-split", diff.id)))
+            .when(cfg!(test), |handle| {
+                let selector = format!("{}-split", diff.id);
+                handle.debug_selector(move || selector)
+            })
+            .w(ribbon)
+            .flex_none()
+            .cursor(gpui::CursorStyle::ResizeLeftRight)
+            .on_drag(SplitHandle(diff.id.clone()), |_, _, _, cx| {
+                cx.new(|_| gpui::Empty)
+            })
+            .on_click(cx.listener(|this, event: &gpui::ClickEvent, _, cx| {
+                if event.click_count() >= 2 {
+                    this.commit_review.split = None;
+                    cx.notify();
+                }
+            }));
+        let resize = cx.listener(
+            move |this, event: &gpui::DragMoveEvent<SplitHandle>, _, cx| {
+                if event.drag(cx).0 != handle_id {
+                    return;
+                }
+                let available = event.bounds.size.width - middle;
+                if available <= px(0.0) {
+                    return;
+                }
+                let old = event.event.position.x - event.bounds.origin.x - middle * 0.5;
+                let split = (old / available).clamp(MIN_SPLIT, 1.0 - MIN_SPLIT);
+                if this.commit_review.split != Some(split) {
+                    this.commit_review.split = Some(split);
+                    cx.notify();
+                }
+            },
+        );
         div()
             .flex()
             .flex_col()
@@ -698,9 +757,9 @@ impl Workspace {
                     .py(tokens.sizes.space_1)
                     .bg(style.surface)
                     .text_color(style.text_secondary)
-                    .child(title(diff.titles[0]))
-                    .child(div().w(gutter * 2.0 + ribbon).flex_none())
-                    .child(title(diff.titles[1])),
+                    .child(title(diff.titles[0], shares[0]))
+                    .child(div().w(middle).flex_none())
+                    .child(title(diff.titles[1], shares[1])),
             )
             .child(
                 div()
@@ -708,7 +767,8 @@ impl Workspace {
                     .font_family(style.font_family.clone())
                     .text_size(style.font_size)
                     .line_height(row)
-                    .child(column(old.code, old.markers, "old"))
+                    .on_drag_move(resize)
+                    .child(column(old.code, old.markers, "old", shares[0]))
                     .child(
                         div()
                             .relative()
@@ -718,11 +778,11 @@ impl Workspace {
                             .text_color(style.text_secondary)
                             .child(paint)
                             .child(gutter_column(old_gutter))
-                            .child(div().w(ribbon).flex_none())
+                            .child(handle)
                             .child(gutter_column(new_gutter))
                             .children(hunk_checkboxes),
                     )
-                    .child(column(new.code, new.markers, "new")),
+                    .child(column(new.code, new.markers, "new", shares[1])),
             )
             .when(limited, |view| {
                 view.child(div().p(tokens.sizes.space_3).child(
