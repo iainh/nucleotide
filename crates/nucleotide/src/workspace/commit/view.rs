@@ -352,21 +352,27 @@ impl Workspace {
                         .child(error),
                 )
             })
-            .when(busy, |view| {
-                view.child(
-                    div()
-                        .px(tokens.sizes.space_3)
-                        .py(tokens.sizes.space_1)
-                        .text_color(style.text_secondary)
-                        .child(if let Some(operation) = self.commit_review.operation {
-                            operation
-                        } else if self.commit_review.pending.is_some() {
-                            "Saving buffers before staging…"
-                        } else {
-                            "Refreshing repository…"
-                        }),
-                )
-            })
+            // A stage or the refresh after it would otherwise shift the diff on every click.
+            .when(
+                busy && (self.commit_review.operation.is_some()
+                    || self.commit_review.pending.is_some()
+                    || self.commit_review.snapshot.is_none()),
+                |view| {
+                    view.child(
+                        div()
+                            .px(tokens.sizes.space_3)
+                            .py(tokens.sizes.space_1)
+                            .text_color(style.text_secondary)
+                            .child(if let Some(operation) = self.commit_review.operation {
+                                operation
+                            } else if self.commit_review.pending.is_some() {
+                                "Saving buffers before staging…"
+                            } else {
+                                "Refreshing repository…"
+                            }),
+                    )
+                },
+            )
             .child(list)
             .child(
                 div()
@@ -582,8 +588,8 @@ impl Workspace {
                                     changes: staged,
                                     old_len: line_count(content.head.as_deref()),
                                     highlights: [
-                                        content.highlights[0].as_ref(),
-                                        content.highlights[1].as_ref(),
+                                        content.highlights[0].as_deref(),
+                                        content.highlights[1].as_deref(),
                                     ],
                                     staging: None,
                                 },
@@ -613,8 +619,8 @@ impl Workspace {
                                 changes: &content.changes,
                                 old_len: line_count(content.head.as_deref()),
                                 highlights: [
-                                    content.highlights[0].as_ref(),
-                                    content.highlights[2].as_ref(),
+                                    content.highlights[0].as_deref(),
+                                    content.highlights[2].as_deref(),
                                 ],
                                 staging: Some((index, &file, content)),
                             },
@@ -689,7 +695,8 @@ impl Workspace {
     ) -> gpui::AnyElement {
         let tokens = cx.global::<nucleotide_ui::Theme>().tokens;
         let row_height = row_height(cx);
-        let busy = self.commit_review.busy;
+        // Lines and hunks stay clickable while a stage runs; clicks queue behind it.
+        let locked = self.commit_review.operation.is_some();
         let mut body = div()
             .id(SharedString::from(format!("commit-diff-{index}")))
             .overflow_x_scroll()
@@ -748,7 +755,7 @@ impl Workspace {
                     StageChange::Hunk(hunk_index, state != SelectionState::Staged),
                     cx,
                 )
-                .disabled(busy || content.selection.is_none());
+                .disabled(locked || content.selection.is_none());
             body = body.child(
                 div()
                     .flex()
@@ -819,7 +826,7 @@ impl Workspace {
                         },
                         cx,
                     )
-                    .disabled(busy || content.selection.is_none());
+                    .disabled(locked || content.selection.is_none());
                 body = body.child(
                     div()
                         .when(cfg!(test), |cell| {

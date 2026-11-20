@@ -102,6 +102,7 @@ fn set_member(set: &mut BTreeSet<u32>, line: u32, present: bool) {
 /// A file's changes from HEAD to the working tree, split into lines that can
 /// be staged one at a time. Lines keep their terminators, so CRLF endings and
 /// a missing final newline survive staging byte for byte.
+#[derive(Clone)]
 pub struct FileChanges {
     head: Text,
     worktree: Text,
@@ -316,6 +317,7 @@ impl FileChanges {
     }
 }
 
+#[derive(Clone)]
 struct Text {
     bytes: Vec<u8>,
     line_starts: Vec<usize>,

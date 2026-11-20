@@ -332,7 +332,8 @@ impl Workspace {
         let regions = regions(hunks, diff.old_len, |line| {
             self.commit_review.expanded.contains(&fold_key(line))
         });
-        let busy = self.commit_review.busy;
+        // Lines and hunks stay clickable while a stage runs; clicks queue behind it.
+        let locked = self.commit_review.operation.is_some();
 
         let mut sides = [Side::default(), Side::default()];
         let mut blocks = Vec::new();
@@ -524,7 +525,7 @@ impl Workspace {
                                     },
                                     cx,
                                 )
-                                .disabled(busy || content.selection.is_none());
+                                .disabled(locked || content.selection.is_none());
                             div()
                                 .when(cfg!(test), |cell| {
                                     cell.debug_selector(move || {
@@ -551,7 +552,7 @@ impl Workspace {
                         StageChange::Hunk(hunk_index, state != SelectionState::Staged),
                         cx,
                     )
-                    .disabled(busy || content.selection.is_none())
+                    .disabled(locked || content.selection.is_none())
                     .into_any_element()
                 });
                 blocks.push(Block {

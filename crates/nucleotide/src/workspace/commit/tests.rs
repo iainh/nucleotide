@@ -41,6 +41,7 @@ async fn stale_worktree_or_index_never_applies_a_reviewed_selection() {
             root.path().into(),
             HashMap::new(),
             None,
+            Vec::new(),
         )
         .await
         .unwrap();
@@ -57,11 +58,15 @@ async fn stale_worktree_or_index_never_applies_a_reviewed_selection() {
             head: snapshot.head,
             files: vec![(
                 snapshot.files[0].clone(),
-                StageChange::Line {
-                    removal: false,
-                    line: 1,
-                    staged: true,
-                },
+                StageTarget::Selection(
+                    StageChange::Line {
+                        removal: false,
+                        line: 1,
+                        staged: true,
+                    }
+                    .select(snapshot.files[0].content.as_ref().unwrap())
+                    .unwrap(),
+                ),
             )],
             saves: HashMap::new(),
         };
@@ -89,6 +94,7 @@ async fn review_retains_divergent_index_and_limits_special_files_to_whole_file_a
         root.path().into(),
         HashMap::new(),
         None,
+        Vec::new(),
     )
     .await
     .unwrap();
@@ -122,6 +128,7 @@ async fn review_retains_divergent_index_and_limits_special_files_to_whole_file_a
             root.path().into(),
             HashMap::new(),
             None,
+            Vec::new(),
         )
         .await
         .unwrap();
@@ -154,6 +161,7 @@ async fn deletions_and_renames_keep_whole_file_staging_with_a_read_only_diff() {
         root.path().into(),
         HashMap::new(),
         None,
+        Vec::new(),
     )
     .await
     .unwrap();

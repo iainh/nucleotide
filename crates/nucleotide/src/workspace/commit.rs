@@ -8,7 +8,9 @@ mod tests;
 mod view;
 
 use super::*;
-use nucleotide_vcs::repository::{CommitMessageContext, GitRepository, UpstreamState};
+use nucleotide_vcs::repository::{
+    CommitMessageContext, FileVersions, GitRepository, UpstreamState,
+};
 use nucleotide_vcs::staging::{
     FileChanges, MAX_LINE_STAGING_BYTES, Selection, SelectionState, supports_line_staging,
 };
@@ -43,6 +45,42 @@ pub(super) struct CommitReview {
     shown: Option<PathBuf>,
     /// The sidebar lists changed files instead of the project tree.
     pub(super) sidebar: bool,
+    /// Line selections shown at once but not yet written to the index, by file.
+    /// They are staged when the operation in progress finishes.
+    selections: HashMap<PathBuf, Selection>,
+}
+
+impl CommitReview {
+    /// Shows unstaged selections over a freshly read review. A selection is
+    /// dropped once the index holds it, or when the HEAD or working-tree text
+    /// its line numbers refer to has changed.
+    fn keep_selections(&mut self, snapshot: &mut ReviewSnapshot) {
+        let shown = self.snapshot.as_ref();
+        self.selections.retain(|path, selection| {
+            let Some(file) = snapshot
+                .files
+                .iter_mut()
+                .find(|file| &file.entry.relative_path == path)
+            else {
+                return false;
+            };
+            let before = shown
+                .and_then(|s| s.files.iter().find(|f| &f.entry.relative_path == path))
+                .and_then(|f| f.content.as_ref().ok());
+            let keep = match (before, &file.content) {
+                (Some(before), Ok(now)) => {
+                    before.head == now.head
+                        && before.worktree == now.worktree
+                        && now.selection.as_ref().is_some_and(|now| now != selection)
+                }
+                _ => false,
+            };
+            if keep {
+                *file = file.with_selection(selection.clone());
+            }
+            keep
+        });
+    }
 }
 
 struct CommitDraft {
@@ -117,6 +155,7 @@ async fn load_preview(
     })
 }
 
+#[derive(Clone)]
 struct FileContent {
     head: Option<Vec<u8>>,
     index: Option<Vec<u8>>,
@@ -125,7 +164,7 @@ struct FileContent {
     selection: Option<Selection>,
     staged_diff: Option<FileChanges>,
     /// Syntax highlights of the HEAD, index (with `staged_diff`) and working-tree lines.
-    highlights: [Option<split::LineHighlights>; 3],
+    highlights: [Option<Arc<split::LineHighlights>>; 3],
 }
 
 impl ReviewFile {
@@ -146,6 +185,19 @@ impl ReviewFile {
         } else {
             SelectionState::Partial
         }
+    }
+
+    /// This file as shown with `selection` staged, before the index holds it.
+    fn with_selection(&self, selection: Selection) -> Arc<Self> {
+        Arc::new(Self {
+            entry: self.entry.clone(),
+            unsaved: self.unsaved,
+            content: self.content.clone().map(|content| FileContent {
+                selection: Some(selection),
+                ..content
+            }),
+            preview: None,
+        })
     }
 
     fn paths(&self) -> Vec<&Path> {
@@ -169,6 +221,29 @@ enum StageChange {
 }
 
 impl StageChange {
+    /// The selection after this line or hunk change, or `None` for a file
+    /// change or a file that cannot be staged line by line.
+    fn select(&self, content: &FileContent) -> Option<Selection> {
+        let mut selection = content.selection.clone()?;
+        match *self {
+            Self::File(_) => return None,
+            Self::Hunk(index, staged) => {
+                selection.set_hunk(&content.changes.hunks()[index], staged)
+            }
+            Self::Line {
+                removal: true,
+                line,
+                staged,
+            } => selection.set_removal(line, staged),
+            Self::Line {
+                removal: false,
+                line,
+                staged,
+            } => selection.set_addition(line, staged),
+        }
+        Some(selection)
+    }
+
     fn control_id(&self, file: usize) -> String {
         match self {
             Self::File(_) => format!("commit-file-{file}"),
@@ -178,12 +253,20 @@ impl StageChange {
     }
 }
 
+/// What a stage writes for one file.
+enum StageTarget {
+    /// Stage or unstage the whole file.
+    File(bool),
+    /// Make the index hold exactly these changed lines.
+    Selection(Selection),
+}
+
 struct PendingStage {
     repository: GitRepository,
     backend: WorkspaceBackendHandle,
     directory: PathBuf,
     head: Option<String>,
-    files: Vec<(Arc<ReviewFile>, StageChange)>,
+    files: Vec<(Arc<ReviewFile>, StageTarget)>,
     saves: HashMap<DocumentId, u64>,
 }
 
@@ -207,38 +290,85 @@ async fn read_worktree(backend: &WorkspaceBackendHandle, path: &Path) -> Result<
     Ok(read.bytes)
 }
 
+/// Line-staging contents of each entry, reading Git with a fixed number of
+/// processes. Highlights are reused from `previous` where the text is unchanged.
+async fn load_contents(
+    repository: &GitRepository,
+    backend: &WorkspaceBackendHandle,
+    entries: &[&GitStatusEntry],
+    buffers: &HashMap<PathBuf, Vec<u8>>,
+    loader: Option<&helix_core::syntax::Loader>,
+    previous: &[Arc<ReviewFile>],
+) -> Vec<Result<FileContent, String>> {
+    let whole_file = |entry: &GitStatusEntry| {
+        [entry.index_status, entry.working_tree_status]
+            .iter()
+            .any(|s| {
+                matches!(
+                    s,
+                    Status::Deleted
+                        | Status::Renamed
+                        | Status::Copied
+                        | Status::TypeChanged
+                        | Status::Conflicted
+                )
+            })
+    };
+    let paths: Vec<_> = entries
+        .iter()
+        .filter(|entry| !whole_file(entry))
+        .map(|entry| entry.relative_path.as_path())
+        .collect();
+    let mut versions = match repository.read_versions(&paths).await {
+        Ok(versions) => versions.into_iter(),
+        Err(error) => vec![Err(error); paths.len()].into_iter(),
+    };
+    let mut contents = Vec::new();
+    for entry in entries {
+        if whole_file(entry) {
+            contents.push(Err(
+                "Whole-file staging only (deletion, rename, type change or conflict)".into(),
+            ));
+            continue;
+        }
+        let versions = versions.next().expect("one version per path");
+        let previous = previous
+            .iter()
+            .find(|file| file.entry.relative_path == entry.relative_path)
+            .and_then(|file| file.content.as_ref().ok());
+        let buffer = buffers.get(&repository.root().join(&entry.relative_path));
+        contents.push(
+            load_content(
+                repository, backend, entry, versions, buffer, loader, previous,
+            )
+            .await,
+        );
+    }
+    contents
+}
+
 async fn load_content(
     repository: &GitRepository,
     backend: &WorkspaceBackendHandle,
     entry: &GitStatusEntry,
+    versions: Result<FileVersions, String>,
     buffer: Option<&Vec<u8>>,
     loader: Option<&helix_core::syntax::Loader>,
+    previous: Option<&FileContent>,
 ) -> Result<FileContent, String> {
-    if [entry.index_status, entry.working_tree_status]
-        .iter()
-        .any(|s| {
-            matches!(
-                s,
-                Status::Deleted
-                    | Status::Renamed
-                    | Status::Copied
-                    | Status::TypeChanged
-                    | Status::Conflicted
-            )
-        })
-    {
-        return Err("Whole-file staging only (deletion, rename, type change or conflict)".into());
-    }
     let path = &entry.relative_path;
     let stat = backend
         .stat(&repository.root().join(path))
         .await
         .map_err(|e| e.to_string())?;
-    if stat.kind != FileKind::File || repository.has_mode_change(path).await? {
+    let FileVersions {
+        head,
+        index,
+        mode_changed,
+    } = versions?;
+    if stat.kind != FileKind::File || mode_changed {
         return Err("Whole-file staging only (file mode change or non-regular file)".into());
     }
-    let head = repository.read_head(path).await?;
-    let index = repository.read_index(path).await?;
     let worktree = match buffer {
         Some(bytes) => bytes.clone(),
         None => read_worktree(backend, &repository.root().join(path)).await?,
@@ -265,13 +395,27 @@ async fn load_content(
             index.as_deref().unwrap_or_default(),
         )
     });
-    let highlight = |text: Option<&Vec<u8>>| {
-        split::line_highlights(text.map_or(&[][..], Vec::as_slice), path, loader?)
+    // Staging changes only the index, so the HEAD and working-tree highlights
+    // usually carry over from the previous review.
+    let highlight = |side: usize, text: Option<&Vec<u8>>| {
+        if let Some(previous) = previous {
+            let old = [
+                previous.head.as_ref(),
+                previous.index.as_ref(),
+                Some(&previous.worktree),
+            ];
+            if old[side] == text && (side != 1 || previous.highlights[1].is_some()) {
+                return previous.highlights[side].clone();
+            }
+        }
+        split::line_highlights(text.map_or(&[][..], Vec::as_slice), path, loader?).map(Arc::new)
     };
     let highlights = [
-        highlight(head.as_ref()),
-        staged_diff.as_ref().and_then(|_| highlight(index.as_ref())),
-        highlight(Some(&worktree)),
+        highlight(0, head.as_ref()),
+        staged_diff
+            .as_ref()
+            .and_then(|_| highlight(1, index.as_ref())),
+        highlight(2, Some(&worktree)),
     ];
     Ok(FileContent {
         head,
@@ -289,6 +433,7 @@ async fn load_review(
     directory: PathBuf,
     buffers: HashMap<PathBuf, Vec<u8>>,
     loader: Option<Arc<helix_core::syntax::Loader>>,
+    previous: Vec<Arc<ReviewFile>>,
 ) -> Result<ReviewSnapshot, String> {
     let repository = GitRepository::discover(backend.clone(), &directory)
         .await?
@@ -321,17 +466,26 @@ async fn load_review(
     status
         .entries
         .sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+    let entries: Vec<_> = status.entries.iter().collect();
+    let contents = load_contents(
+        &repository,
+        &backend,
+        &entries,
+        &buffers,
+        loader.as_deref(),
+        &previous,
+    )
+    .await;
     let mut files = Vec::new();
-    for entry in status.entries {
-        let buffer = buffers.get(&repository.root().join(&entry.relative_path));
-        let content = load_content(&repository, &backend, &entry, buffer, loader.as_deref()).await;
+    for (entry, content) in status.entries.into_iter().zip(contents) {
+        let unsaved = buffers.contains_key(&repository.root().join(&entry.relative_path));
         let preview = match content {
             Ok(_) => None,
             Err(_) => load_preview(&repository, &backend, &entry, loader.as_deref()).await,
         };
         files.push(Arc::new(ReviewFile {
             entry,
-            unsaved: buffer.is_some(),
+            unsaved,
             content,
             preview,
         }));
@@ -375,14 +529,22 @@ impl PendingStage {
             return Err("HEAD changed. Review the refreshed changes before staging.".into());
         }
         // Validate all partial selections before making any index writes.
+        let entries: Vec<_> = self.files.iter().map(|(file, _)| &file.entry).collect();
+        let currents = load_contents(
+            &self.repository,
+            &self.backend,
+            &entries,
+            &HashMap::new(),
+            None,
+            &[],
+        )
+        .await;
         let mut replacements = Vec::new();
-        for (file, change) in &self.files {
+        for ((file, target), current) in self.files.iter().zip(currents) {
             let path = &file.entry.relative_path;
-            if let StageChange::File(_) = change {
+            let StageTarget::Selection(selection) = target else {
                 if let Ok(content) = &file.content {
-                    let current =
-                        load_content(&self.repository, &self.backend, &file.entry, None, None)
-                            .await?;
+                    let current = current?;
                     if content.head != current.head
                         || content.index != current.index
                         || (file.unsaved && content.worktree != current.worktree)
@@ -395,10 +557,9 @@ impl PendingStage {
                 }
                 replacements.push(None);
                 continue;
-            }
+            };
             let content = file.content.as_ref().map_err(Clone::clone)?;
-            let current =
-                load_content(&self.repository, &self.backend, &file.entry, None, None).await?;
+            let current = current?;
             if content.head != current.head
                 || content.index != current.index
                 || content.worktree != current.worktree
@@ -408,36 +569,16 @@ impl PendingStage {
                     path.display()
                 ));
             }
-            let mut selection = content
-                .selection
-                .clone()
-                .ok_or("Staged version differs from working tree")?;
-            match change {
-                StageChange::Hunk(index, staged) => {
-                    selection.set_hunk(&content.changes.hunks()[*index], *staged)
-                }
-                StageChange::Line {
-                    removal: true,
-                    line,
-                    staged,
-                } => selection.set_removal(*line, *staged),
-                StageChange::Line {
-                    removal: false,
-                    line,
-                    staged,
-                } => selection.set_addition(*line, *staged),
-                StageChange::File(_) => unreachable!(),
-            }
             replacements.push(Some((
-                content.changes.index_content(&selection),
-                content.changes.selection_state(&selection),
+                content.changes.index_content(selection),
+                content.changes.selection_state(selection),
             )));
         }
-        for ((file, change), replacement) in self.files.iter().zip(replacements) {
+        for ((file, target), replacement) in self.files.iter().zip(replacements) {
             let path = &file.entry.relative_path;
-            match (change, replacement) {
-                (StageChange::File(true), _) => self.repository.stage(&file.paths()).await?,
-                (StageChange::File(false), _) => self.repository.unstage(&file.paths()).await?,
+            match (target, replacement) {
+                (StageTarget::File(true), _) => self.repository.stage(&file.paths()).await?,
+                (StageTarget::File(false), _) => self.repository.unstage(&file.paths()).await?,
                 (_, Some((_, SelectionState::Unstaged)))
                     if file.content.as_ref().is_ok_and(|c| c.head.is_none()) =>
                 {
@@ -492,10 +633,10 @@ impl Workspace {
             self.focus_commit_message(window, cx);
             return;
         }
-        if self.commit_review.busy {
-            return;
-        }
         if key == "r" {
+            if self.commit_review.busy {
+                return;
+            }
             self.commit_review.error = None;
             self.refresh_commit_review(cx);
             return;
@@ -683,14 +824,20 @@ impl Workspace {
             self.update_document_views(cx);
         }
         self.commit_review.busy = true;
+        let previous = self
+            .commit_review
+            .snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.files.clone())
+            .unwrap_or_default();
         let handle = self.handle.clone();
         cx.spawn(async move |this, cx| {
-            let result =
-                cx.background_executor()
-                    .spawn(async move {
-                        handle.block_on(load_review(backend, directory, buffers, loader))
-                    })
-                    .await;
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    handle.block_on(load_review(backend, directory, buffers, loader, previous))
+                })
+                .await;
             let _ = this.update(cx, |this, cx| {
                 this.commit_review.busy = false;
                 match result {
@@ -717,11 +864,14 @@ impl Workspace {
                                 }
                             }
                             this.ensure_commit_message(&snapshot, cx);
+                            let mut snapshot = snapshot;
+                            this.commit_review.keep_selections(&mut snapshot);
                             this.commit_review.snapshot = Some(snapshot);
                         }
                     }
                     Err(error) => {
                         this.commit_review.snapshot = None;
+                        this.commit_review.selections.clear();
                         this.commit_review.error = Some(error);
                         this.pane_host.commit_message_focused = false;
                         this.project_panes(cx);
@@ -731,6 +881,7 @@ impl Workspace {
                 if std::mem::take(&mut this.commit_review.refresh_again) {
                     this.refresh_commit_review(cx);
                 }
+                this.stage_selections(cx);
                 cx.notify();
             });
         })
@@ -743,6 +894,67 @@ impl Workspace {
         files: Vec<(Arc<ReviewFile>, StageChange)>,
         cx: &mut Context<Self>,
     ) {
+        if let [(file, change)] = files.as_slice()
+            && !matches!(change, StageChange::File(_))
+        {
+            self.select_review_lines(file.entry.relative_path.clone(), change, cx);
+            return;
+        }
+        let files = files
+            .into_iter()
+            .filter_map(|(file, change)| match change {
+                StageChange::File(staged) => Some((file, StageTarget::File(staged))),
+                _ => None,
+            })
+            .collect();
+        self.start_stage(files, cx);
+    }
+
+    /// Shows a line or hunk change at once and stages it, after the operation
+    /// in progress when there is one. Clicks made meanwhile fold into one write.
+    fn select_review_lines(&mut self, path: PathBuf, change: &StageChange, cx: &mut Context<Self>) {
+        if self.commit_review.operation.is_some() {
+            return;
+        }
+        let Some(file) = self
+            .commit_review
+            .snapshot
+            .as_mut()
+            .and_then(|s| s.files.iter_mut().find(|f| f.entry.relative_path == path))
+        else {
+            return;
+        };
+        // Build on the shown selection, which includes clicks not yet staged.
+        let Some(selection) = file.content.as_ref().ok().and_then(|c| change.select(c)) else {
+            return;
+        };
+        *file = file.with_selection(selection.clone());
+        self.commit_review.selections.insert(path, selection);
+        self.stage_selections(cx);
+        cx.notify();
+    }
+
+    fn stage_selections(&mut self, cx: &mut Context<Self>) {
+        if self.commit_review.busy || self.commit_review.selections.is_empty() {
+            return;
+        }
+        let Some(snapshot) = &self.commit_review.snapshot else {
+            return;
+        };
+        let files = std::mem::take(&mut self.commit_review.selections)
+            .into_iter()
+            .filter_map(|(path, selection)| {
+                let file = snapshot
+                    .files
+                    .iter()
+                    .find(|f| f.entry.relative_path == path)?;
+                Some((file.clone(), StageTarget::Selection(selection)))
+            })
+            .collect();
+        self.start_stage(files, cx);
+    }
+
+    fn start_stage(&mut self, files: Vec<(Arc<ReviewFile>, StageTarget)>, cx: &mut Context<Self>) {
         if self.commit_review.busy || files.is_empty() {
             return;
         }
@@ -868,6 +1080,8 @@ impl Workspace {
         self.commit_review.refresh_again = false;
         self.commit_review.error = result.err();
         if let Some(error) = &self.commit_review.error {
+            // Show what the index holds rather than clicks that may no longer apply.
+            self.commit_review.selections.clear();
             self.core
                 .update(cx, |core, _| core.editor.set_error(error.clone()));
         }

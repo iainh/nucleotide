@@ -1,7 +1,7 @@
 // ABOUTME: Git index, commit and push operations, each run as a git process through the workspace backend
 // ABOUTME: Works the same in local, WSL and remote workspaces; paths are relative to the repository root
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use nucleotide_workspace::{ProcessOutput, ProcessSpec, WorkspaceBackendHandle};
@@ -31,6 +31,15 @@ pub struct CommitMessageContext {
     pub seed: String,
     pub last_message: Option<String>,
     pub comment_prefix: String,
+}
+
+/// A file's HEAD and index contents in working-tree form, `None` when absent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileVersions {
+    pub head: Option<Vec<u8>>,
+    pub index: Option<Vec<u8>>,
+    /// The file mode differs between HEAD and the index or the working tree.
+    pub mode_changed: bool,
 }
 
 /// A git repository reached through a workspace backend.
@@ -98,7 +107,9 @@ impl GitRepository {
         if entry.is_empty() {
             return Ok(None);
         }
-        self.read_blob(format!("{head}:{path}")).await.map(Some)
+        self.read_blob(format!("{head}:{path}"), None)
+            .await
+            .map(Some)
     }
 
     /// A regular file's staged contents in working-tree form, or `None` when
@@ -108,47 +119,238 @@ impl GitRepository {
         if self.index_mode(&path).await?.is_none() {
             return Ok(None);
         }
-        self.read_blob(format!(":0:{path}")).await.map(Some)
+        self.read_blob(format!(":0:{path}"), None).await.map(Some)
     }
 
-    /// Mode changes need whole-file staging; line selections cannot express them.
-    pub async fn has_mode_change(&self, path: &Path) -> Result<bool, String> {
-        let path = git_path(path)?;
-        if self
-            .optional_line(&["rev-parse", "--verify", "--quiet", "HEAD"])
-            .await?
-            .is_none()
-        {
-            return Ok(false);
+    /// HEAD and index contents of each path, as `read_head` and `read_index`
+    /// return them, and whether its file mode changed. Uses a fixed number of
+    /// git processes however many paths there are. Unsupported paths and
+    /// unreadable entries fail individually; git failures fail the whole read.
+    pub async fn read_versions(
+        &self,
+        paths: &[&Path],
+    ) -> Result<Vec<Result<FileVersions, String>>, String> {
+        let names: Vec<_> = paths.iter().map(|path| git_path(path)).collect();
+        let valid: Vec<&str> = names.iter().flatten().map(String::as_str).collect();
+        if valid.is_empty() {
+            // Without paths, git would list every file.
+            return Ok(names
+                .into_iter()
+                .map(|name| Err(name.err().unwrap_or_default()))
+                .collect());
         }
-        for cached in [false, true] {
-            let mut args = vec![
-                "--literal-pathspecs",
-                "diff",
-                "--raw",
-                "-z",
-                "--no-ext-diff",
-                "--no-renames",
-            ];
-            if cached {
-                args.push("--cached");
+        let head = self
+            .optional_line(&["rev-parse", "--verify", "--quiet", "HEAD"])
+            .await?;
+        // Object, or why it cannot be read line by line, of each path in HEAD and the index.
+        let mut head_objects: HashMap<String, Result<String, String>> = HashMap::new();
+        let mut index_objects: HashMap<String, Result<String, String>> = HashMap::new();
+        let mut mode_changed = HashSet::new();
+        if let Some(head) = &head {
+            let mut args = vec!["--literal-pathspecs", "ls-tree", "-z", head, "--"];
+            args.extend(&valid);
+            let tree = self.read_paths(&args).await?;
+            for (header, path) in tab_records(&tree) {
+                // "<mode> <type> <object>"
+                let fields: Vec<_> = header.split(' ').collect();
+                if let [_, kind, object] = fields.as_slice() {
+                    head_objects.insert(
+                        path.to_string(),
+                        (*kind == "blob")
+                            .then(|| object.to_string())
+                            .ok_or_else(|| format!("{path} in HEAD is not a file")),
+                    );
+                }
             }
-            args.extend(["HEAD", "--", &path]);
-            let raw = self.git(&args, READ_TIMEOUT_MS).await?;
-            // With --no-renames every record is a header followed by one path.
-            for record in raw.split(|b| *b == 0).collect::<Vec<_>>().chunks(2) {
-                let header = String::from_utf8_lossy(record[0]);
-                let mut fields = header.trim_start_matches(':').split_whitespace();
-                if let (Some(before), Some(after)) = (fields.next(), fields.next())
-                    && before != "000000"
-                    && after != "000000"
-                    && before != after
-                {
-                    return Ok(true);
+            for cached in [false, true] {
+                let mut args = vec![
+                    "--literal-pathspecs",
+                    "diff",
+                    "--raw",
+                    "-z",
+                    "--no-ext-diff",
+                    "--no-renames",
+                ];
+                if cached {
+                    args.push("--cached");
+                }
+                args.extend([head.as_str(), "--"]);
+                args.extend(&valid);
+                let raw = self.read_paths(&args).await?;
+                for (header, path) in raw_diff_records(&raw) {
+                    let header = String::from_utf8_lossy(header);
+                    let mut fields = header.trim_start_matches(':').split_whitespace();
+                    if let (Some(before), Some(after)) = (fields.next(), fields.next())
+                        && before != "000000"
+                        && after != "000000"
+                        && before != after
+                    {
+                        mode_changed.insert(String::from_utf8_lossy(path).into_owned());
+                    }
                 }
             }
         }
-        Ok(false)
+        let mut args = vec!["--literal-pathspecs", "ls-files", "--stage", "-z", "--"];
+        args.extend(&valid);
+        let index = self.read_paths(&args).await?;
+        for (header, path) in tab_records(&index) {
+            // "<mode> <object> <stage>". Never replace conflict stages or a
+            // symlink/submodule with contents from a text diff.
+            let fields: Vec<_> = header.split(' ').collect();
+            let object = match fields.as_slice() {
+                [mode, object, "0"] if matches!(*mode, "100644" | "100755") => {
+                    Ok(object.to_string())
+                }
+                _ => Err(format!(
+                    "{path} is not a merged regular file; stage it as a whole file"
+                )),
+            };
+            // Conflicts list one entry per stage.
+            let object = match index_objects.contains_key(path) {
+                true => Err(format!("{path} has conflicts; stage it as a whole file")),
+                false => object,
+            };
+            index_objects.insert(path.to_string(), object);
+        }
+        let mut blobs = Vec::new();
+        for path in &valid {
+            for object in [head_objects.get(*path), index_objects.get(*path)]
+                .into_iter()
+                .flatten()
+                .flatten()
+            {
+                blobs.push((object.as_str(), *path));
+            }
+        }
+        // HEAD and the index often hold the same blob.
+        blobs.sort_unstable();
+        blobs.dedup();
+        let contents = self.read_blobs(&blobs).await?;
+        let blob = |object: Option<&Result<String, String>>, path: &str| match object {
+            None => Ok(None),
+            Some(Err(error)) => Err(error.clone()),
+            Some(Ok(object)) => contents
+                .get(&(object.clone(), path.to_string()))
+                .cloned()
+                .unwrap_or_else(|| Err(format!("Could not read {path}")))
+                .map(Some),
+        };
+        Ok(names
+            .into_iter()
+            .map(|name| {
+                let name = name?;
+                Ok(FileVersions {
+                    head: blob(head_objects.get(name.as_str()), &name)?,
+                    index: blob(index_objects.get(name.as_str()), &name)?,
+                    mode_changed: mode_changed.contains(&name),
+                })
+            })
+            .collect())
+    }
+
+    /// The stdout of a read that lists many paths.
+    async fn read_paths(&self, args: &[&str]) -> Result<Vec<u8>, String> {
+        let output = self
+            .run_limited(args, READ_TIMEOUT_MS, 16 * 1024 * 1024)
+            .await?;
+        if !output.success || output.stdout_truncated {
+            return Err(command_error(args[1], &output));
+        }
+        Ok(output.stdout)
+    }
+
+    /// Blobs in working-tree form, read by `(object, path)` with two git
+    /// processes. Blobs too large to stage line by line fail individually.
+    async fn read_blobs(
+        &self,
+        blobs: &[(&str, &str)],
+    ) -> Result<HashMap<(String, String), Result<Vec<u8>, String>>, String> {
+        let mut contents = HashMap::new();
+        // Batch input is one line per blob; read any other path on its own.
+        let (batch, single): (Vec<_>, Vec<_>) =
+            blobs.iter().partition(|(_, path)| !path.contains('\n'));
+        for (object, path) in single {
+            let content = self.read_blob(object.to_string(), Some(path)).await;
+            contents.insert((object.to_string(), path.to_string()), content);
+        }
+        if batch.is_empty() {
+            return Ok(contents);
+        }
+        let objects: String = batch
+            .iter()
+            .map(|(object, _)| format!("{object}\n"))
+            .collect();
+        let sizes = self
+            .run(
+                &["cat-file", "--batch-check=%(objectsize)"],
+                objects.into_bytes(),
+                READ_TIMEOUT_MS,
+            )
+            .await?;
+        if !sizes.success || sizes.stdout_truncated {
+            return Err(command_error("cat-file", &sizes));
+        }
+        let sizes: Vec<usize> = String::from_utf8_lossy(&sizes.stdout)
+            .lines()
+            .map(|line| line.parse().unwrap_or(usize::MAX))
+            .collect();
+        let mut input = String::new();
+        let mut limit = 0;
+        let mut read = Vec::new();
+        for ((object, path), size) in batch.into_iter().zip(sizes) {
+            if size > MAX_LINE_STAGING_BYTES {
+                contents.insert(
+                    (object.to_string(), path.to_string()),
+                    Err(format!("{path} is too large to stage line by line")),
+                );
+            } else {
+                input.push_str(&format!("{object} {path}\n"));
+                // Smudge filters such as CRLF conversion can double the size.
+                limit += 2 * size + 128;
+                read.push((object, path, size));
+            }
+        }
+        if read.is_empty() {
+            return Ok(contents);
+        }
+        let output = self
+            .run_process(
+                &["cat-file", "--batch", "--filters"],
+                input.into_bytes(),
+                READ_TIMEOUT_MS,
+                limit,
+            )
+            .await?;
+        if !output.success || output.stdout_truncated {
+            return Err(command_error("cat-file", &output));
+        }
+        // Each blob is "<object> blob <size>\n<contents>\n", but the header
+        // gives the size before filters. Use the batch only when every
+        // boundary falls where the unfiltered sizes put it, which means no
+        // filter changed a size; otherwise read each blob on its own.
+        let mut rest = output.stdout.as_slice();
+        let mut filtered = Vec::new();
+        for (object, _, size) in &read {
+            let Some(blob) = rest
+                .strip_prefix(format!("{object} blob {size}\n").as_bytes())
+                .filter(|blob| blob.get(*size) == Some(&b'\n'))
+            else {
+                break;
+            };
+            filtered.push(blob[..*size].to_vec());
+            rest = &blob[size + 1..];
+        }
+        if filtered.len() != read.len() || !rest.is_empty() {
+            for (object, path, _) in read {
+                let content = self.read_blob(object.to_string(), Some(path)).await;
+                contents.insert((object.to_string(), path.to_string()), content);
+            }
+            return Ok(contents);
+        }
+        for ((object, path, _), content) in read.into_iter().zip(filtered) {
+            contents.insert((object.to_string(), path.to_string()), Ok(content));
+        }
+        Ok(contents)
     }
 
     /// Replaces a file's staged contents. `contents` is in working-tree form;
@@ -517,13 +719,14 @@ impl GitRepository {
         }
     }
 
-    async fn read_blob(&self, object: String) -> Result<Vec<u8>, String> {
+    /// A blob in working-tree form. `path` selects the filters for a bare object.
+    async fn read_blob(&self, object: String, path: Option<&str>) -> Result<Vec<u8>, String> {
+        let path = path.map(|path| format!("--path={path}"));
+        let mut args = vec!["cat-file", "--filters"];
+        args.extend(path.as_deref());
+        args.push(&object);
         let output = self
-            .run_limited(
-                &["cat-file", "--filters", &object],
-                READ_TIMEOUT_MS,
-                MAX_LINE_STAGING_BYTES,
-            )
+            .run_limited(&args, READ_TIMEOUT_MS, MAX_LINE_STAGING_BYTES)
             .await?;
         if output.stdout_truncated {
             return Err(format!("{object} is too large to stage line by line"));
@@ -630,6 +833,24 @@ impl GitRepository {
     }
 }
 
+/// The `(header, path)` records of a `--raw -z --no-renames` diff. Without
+/// renames every header is followed by one path.
+fn raw_diff_records(raw: &[u8]) -> impl Iterator<Item = (&[u8], &[u8])> {
+    let mut fields = raw.split(|b| *b == 0);
+    std::iter::from_fn(move || {
+        let header = fields.next().filter(|header| !header.is_empty())?;
+        Some((header, fields.next()?))
+    })
+}
+
+/// The `(header, path)` records of `ls-tree -z` and `ls-files --stage -z`.
+fn tab_records(raw: &[u8]) -> impl Iterator<Item = (&str, &str)> {
+    raw.split(|b| *b == 0).filter_map(|record| {
+        let record = std::str::from_utf8(record).ok()?;
+        record.split_once('\t')
+    })
+}
+
 fn command_error(operation: &str, output: &ProcessOutput) -> String {
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stderr = stderr.trim();
@@ -726,6 +947,53 @@ mod tests {
         repo.write_index(path, changes.index_content(&selection))
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn batched_reads_match_reading_each_path() {
+        let temp = repository_with(&[
+            (".gitattributes", "crlf.txt eol=crlf\n"),
+            ("crlf.txt", "one\ntwo\n"),
+            ("with space.txt", "head\n"),
+            ("same.txt", "same\n"),
+        ]);
+        let root = temp.path();
+        std::fs::write(root.join("with space.txt"), "staged\n").unwrap();
+        std::fs::write(root.join("new.txt"), "new\n").unwrap();
+        git(root, &["add", "with space.txt", "new.txt"]);
+        std::fs::write(root.join("with space.txt"), "worktree\n").unwrap();
+        std::fs::write(root.join("untracked.txt"), "untracked\n").unwrap();
+        let repo = open(root).await;
+        // Unfiltered files come from one batch; a filter that changes sizes
+        // makes the batch fall back to reading each blob.
+        for paths in [
+            &["with space.txt", "same.txt", "new.txt", "untracked.txt"][..],
+            &["crlf.txt", "same.txt"],
+        ] {
+            let paths: Vec<_> = paths.iter().map(Path::new).collect();
+            let versions = repo.read_versions(&paths).await.unwrap();
+            for (path, versions) in paths.iter().zip(versions) {
+                assert_eq!(
+                    versions.unwrap(),
+                    FileVersions {
+                        head: repo.read_head(path).await.unwrap(),
+                        index: repo.read_index(path).await.unwrap(),
+                        mode_changed: false,
+                    },
+                    "{}",
+                    path.display()
+                );
+            }
+        }
+        assert_eq!(
+            repo.read_head(Path::new("crlf.txt"))
+                .await
+                .unwrap()
+                .unwrap(),
+            b"one\r\ntwo\r\n"
+        );
+        // Without paths git would read every file.
+        assert!(repo.read_versions(&[]).await.unwrap().is_empty());
     }
 
     #[tokio::test]
