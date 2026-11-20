@@ -61,7 +61,7 @@ blur_dark_themes = false
 # Chrome background opacity, from 0.0 to 1.0. Default: 1.0 (opaque).
 # Try 0.92 for subtle translucency in titlebar, file tree, tabs and status bar.
 # Text, code, terminal content and floating pickers/completion stay opaque.
-# Windows/macOS system-look content islands remain opaque regardless of this setting.
+# Windows system-look content islands and the macOS system-look workspace stay opaque.
 # Desktop transparency needs compositor support; blur is platform-dependent.
 chrome_opacity = 1.0
 
@@ -104,15 +104,19 @@ appearance_follows_theme = true
 # On Windows, "system" uses a Fluent palette and the Mica window backdrop.
 # Document tabs use rounded Fluent styling with the selected tab joining the
 # editor surface, neutral hover states and the configured UI font.
-# On macOS, "system" uses continuous Liquid Glass across the titlebar, sidebar,
-# gutters and footer on macOS 26 or later, with AppKit vibrancy on older versions.
-# The material remains when the sidebar is hidden. The rounded editor island,
-# including document tabs and editor-attached panels, stays opaque. The sidebar
-# has no card border; status content stays aligned beneath the editor.
+# On macOS, "system" confines Liquid Glass to the full-height sidebar column on
+# macOS 26 or later, with AppKit vibrancy on older versions. The solid workspace
+# extends to the top and bottom window edges without an inset editor card.
+# Tabs meet the top edge with no window-title row. Native traffic lights and the
+# update indicator sit above the sidebar, or beside the tabs when it is hidden.
+# Tabs use neutral selection, short separators and compact system-font labels,
+# while retaining the configured close-button position and file icons.
+# Hiding the sidebar leaves a fully solid window.
+# Status content stays aligned beneath the editor as the sidebar resizes or hides.
 # Native traffic lights and the system menu bar remain.
-# On both platforms, the tab strip fills the editor island's top and side insets.
+# On Windows, the tab strip fills the editor island's top and side insets.
 # The titlebar and footer have no divider lines; the footer uses an inset mode
-# badge and editor tabs stay inside the editor island.
+# badge on both platforms.
 look = "theme"
 
 # Font used for menus, prompts, pickers and other UI chrome.
@@ -182,7 +186,8 @@ show_pinned_tabs_in_separate_row = false
 
 [tabs]
 # Tabs use flat, contiguous surfaces with subtle separators and a bottom accent
-# on the active tab. Unsaved dots and diagnostic markers sit after the label;
+# on the active tab. The macOS system look marks the active tab with a neutral
+# face instead of the accent, and dims it in unfocused panes and windows. Unsaved dots and diagnostic markers sit after the label;
 # the configured close or pin control remains separate from these indicators.
 
 # Show git status decorations on tabs. Default: false.

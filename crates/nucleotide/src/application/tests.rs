@@ -1858,7 +1858,7 @@ fn new_test_workspace_with_runtime<'a>(
 
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 #[gpui::test]
-fn native_islands_keep_editor_bounds_in_sync_when_resized_or_sidebar_hidden(
+fn system_chrome_keeps_editor_bounds_in_sync_when_resized_or_sidebar_hidden(
     cx: &mut gpui::TestAppContext,
 ) {
     use gpui::{point, px, size};
@@ -1878,23 +1878,46 @@ fn native_islands_keep_editor_bounds_in_sync_when_resized_or_sidebar_hidden(
     workspace.update(cx, |workspace, cx| {
         workspace.set_titlebar(cx.new(|cx| nucleotide_ui::titlebar::TitleBar::new("titlebar", cx)));
     });
-    // macOS reserves its native traffic lights above the islands.
-    let titlebar_height = if cfg!(target_os = "macos") { 32.0 } else { 0.0 };
+    // macOS tabs now meet the top edge; only the sidebar reserves a header.
+    let titlebar_height = 0.0;
     let slot = core.update(cx, |core, cx| {
         core.config.gui.ui.look = crate::config::UiLook::System;
+        let mut config = (**core.helix_config_arc.load()).clone();
+        config.editor.bufferline = helix_view::editor::BufferLine::Always;
+        core.helix_config_arc.store(Arc::new(config));
         cx.emit(crate::Update::Redraw);
         core.editor.tree.focus
     });
     let pane = workspace.read_with(cx, |workspace, _| workspace.pane_id_for_slot(slot).unwrap());
     let selector = Box::leak(format!("editor-pane-{pane:?}").into_boxed_str());
+    let body_selector = Box::leak(format!("pane-drop-body-{pane:?}").into_boxed_str());
 
-    for (width, height, sidebar_width) in [
-        (900.0, 600.0, 240.0),
-        (400.0, 300.0, 192.0),
-        (900.0, 600.0, 0.0),
+    let mut sidebar_visible = true;
+    for (width, height, sidebar_width, show_tabs) in [
+        (900.0, 600.0, 240.0, true),
+        // Leave at least 200px for the editor; only Windows reserves outer
+        // shell margins before applying that limit.
+        (
+            400.0,
+            300.0,
+            if cfg!(target_os = "macos") {
+                200.0
+            } else {
+                192.0
+            },
+            true,
+        ),
+        (900.0, 600.0, 0.0, true),
+        (900.0, 600.0, 0.0, false),
+        (900.0, 600.0, 240.0, true),
     ] {
-        if sidebar_width == 0.0 {
+        core.update(cx, |core, cx| {
+            core.config.gui.tab_bar.show = show_tabs;
+            cx.emit(crate::Update::Redraw);
+        });
+        if sidebar_visible != (sidebar_width > 0.0) {
             cx.dispatch_action(crate::actions::workspace::ToggleFileTree);
+            sidebar_visible = sidebar_width > 0.0;
         }
         cx.simulate_resize(size(px(width), px(height)));
         cx.run_until_parked();
@@ -1906,28 +1929,51 @@ fn native_islands_keep_editor_bounds_in_sync_when_resized_or_sidebar_hidden(
                 .statusbar_height
         });
         let bounds = cx.debug_bounds(selector).expect("editor pane rendered");
-        let half_gutter = if sidebar_width > 0.0 { 2.0 } else { 0.0 };
-        // Shell margin 4 + border 1, with no padding inside the clipped island.
+        // Windows retains its 4px shell margin and 1px island border.
+        // macOS joins the sidebar directly, with no outer editor inset.
+        let inset = if cfg!(target_os = "windows") {
+            5.0
+        } else {
+            0.0
+        };
+        let half_gutter = if cfg!(target_os = "windows") && sidebar_visible {
+            2.0
+        } else {
+            0.0
+        };
         assert_eq!(
             bounds.origin,
             point(
-                px(sidebar_width + 5.0 + half_gutter),
-                px(titlebar_height + 5.0)
+                px(sidebar_width + inset + half_gutter),
+                px(titlebar_height + inset)
             )
         );
         assert_eq!(
             bounds.size,
             size(
-                px(width - sidebar_width - 10.0 - half_gutter),
-                px(height - titlebar_height - 10.0) - status_height
+                px(width - sidebar_width - inset * 2.0 - half_gutter),
+                px(height - titlebar_height - inset * 2.0) - status_height
             )
         );
         let (offset, overlay_titlebar_height) = cx.update(|_, cx| {
             let layout = cx.global::<crate::overlay::WorkspaceLayoutInfo>();
             (layout.content_offset, layout.title_bar_height)
         });
-        assert_eq!(offset, point(px(5.0 + half_gutter), px(5.0)));
+        assert_eq!(offset, point(px(inset + half_gutter), px(inset)));
         assert_eq!(overlay_titlebar_height, px(titlebar_height));
+        let body = cx
+            .debug_bounds(body_selector)
+            .expect("editor body rendered");
+        let header_height = if show_tabs {
+            36.0
+        } else if cfg!(target_os = "macos") && !sidebar_visible {
+            // Disabling tabs must not expose editor text beneath the lights,
+            // and keeps the tab row's height so the lights stay centred.
+            36.0
+        } else {
+            0.0
+        };
+        assert_eq!(body.top(), bounds.top() + px(header_height));
     }
 }
 

@@ -340,6 +340,7 @@ pub fn render_project_tree_row(
     let on_right_mouse_down = Arc::clone(&on_mouse_down);
     let windows_system = cfg!(target_os = "windows")
         && theme.tokens.chrome.style == nucleotide_appearance::UiChromeStyle::System;
+    let macos_system = theme.tokens.chrome.is_macos_system();
     let contrast = theme.tokens.chrome.contrast;
 
     div()
@@ -359,6 +360,11 @@ pub fn render_project_tree_row(
             // interactive while insetting only its visual surface.
             row.px(theme.tokens.sizes.space_2)
                 .py(theme.tokens.sizes.space_1)
+        })
+        .when(macos_system, |row| {
+            // Inset the rounded selection from the window edge and sidebar
+            // divider, as macOS source lists do.
+            row.px(theme.tokens.sizes.space_2)
         })
         .can_drop(move |dragged, _, _| {
             dragged

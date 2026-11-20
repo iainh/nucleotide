@@ -68,18 +68,22 @@ impl Render for TabTooltip {
         let tokens = cx.theme().tokens;
         let tooltip_tokens = tokens.tooltip_tokens();
 
-        div()
-            .max_w(px(420.0))
-            .px(tokens.sizes.space_2)
-            .py(tokens.sizes.space_1)
-            .rounded(tokens.sizes.radius_sm)
-            .border_1()
-            .border_color(tooltip_tokens.border)
-            .bg(tooltip_tokens.background)
-            .shadow(vec![tokens.chrome.shadow_md.to_box_shadow(false)])
-            .text_size(tokens.sizes.text_sm)
-            .text_color(tooltip_tokens.text)
-            .child(self.text.clone())
+        // GPUI anchors tooltips at the pointer. Drop below it, as native
+        // tooltips do, so the hovered tab and neighbouring controls stay visible.
+        div().pt(px(TAB_TOOLTIP_POINTER_CLEARANCE)).child(
+            div()
+                .max_w(px(420.0))
+                .px(tokens.sizes.space_2)
+                .py(tokens.sizes.space_1)
+                .rounded(tokens.sizes.radius_sm)
+                .border_1()
+                .border_color(tooltip_tokens.border)
+                .bg(tooltip_tokens.background)
+                .shadow(vec![tokens.chrome.shadow_md.to_box_shadow(false)])
+                .text_size(tokens.sizes.text_sm)
+                .text_color(tooltip_tokens.text)
+                .child(self.text.clone()),
+        )
     }
 }
 
@@ -88,30 +92,32 @@ impl Render for TabMetaTooltip {
         let tokens = cx.theme().tokens;
         let tooltip_tokens = tokens.tooltip_tokens();
 
-        div()
-            .max_w(px(420.0))
-            .px(tokens.sizes.space_2)
-            .py(tokens.sizes.space_1)
-            .rounded(tokens.sizes.radius_sm)
-            .border_1()
-            .border_color(tooltip_tokens.border)
-            .bg(tooltip_tokens.background)
-            .shadow(vec![tokens.chrome.shadow_md.to_box_shadow(false)])
-            .flex()
-            .flex_col()
-            .gap(tokens.sizes.space_1)
-            .child(
-                div()
-                    .text_size(tokens.sizes.text_sm)
-                    .text_color(tooltip_tokens.text)
-                    .child(self.title.clone()),
-            )
-            .child(
-                div()
-                    .text_size(tokens.sizes.text_xs)
-                    .text_color(tokens.tab_bar_tokens().tab_text_inactive)
-                    .child(self.detail.clone()),
-            )
+        div().pt(px(TAB_TOOLTIP_POINTER_CLEARANCE)).child(
+            div()
+                .max_w(px(420.0))
+                .px(tokens.sizes.space_2)
+                .py(tokens.sizes.space_1)
+                .rounded(tokens.sizes.radius_sm)
+                .border_1()
+                .border_color(tooltip_tokens.border)
+                .bg(tooltip_tokens.background)
+                .shadow(vec![tokens.chrome.shadow_md.to_box_shadow(false)])
+                .flex()
+                .flex_col()
+                .gap(tokens.sizes.space_1)
+                .child(
+                    div()
+                        .text_size(tokens.sizes.text_sm)
+                        .text_color(tooltip_tokens.text)
+                        .child(self.title.clone()),
+                )
+                .child(
+                    div()
+                        .text_size(tokens.sizes.text_xs)
+                        .text_color(tokens.tab_bar_tokens().tab_text_inactive)
+                        .child(self.detail.clone()),
+                ),
+        )
     }
 }
 
@@ -129,6 +135,7 @@ const MODIFIED_TAB_SLOT_SIZE: f32 = 12.0;
 const END_TAB_SLOT_SIZE: f32 = 16.0;
 const TAB_SLOT_ICON_SIZE: f32 = nucleotide_ui::tokens::SMALL_ICON_SIZE;
 const TAB_MIN_WIDTH: f32 = 112.0;
+const TAB_TOOLTIP_POINTER_CLEARANCE: f32 = 20.0;
 const TAB_MAX_WIDTH: f32 = 280.0;
 const ACTIVE_TAB_HIGHLIGHT_HEIGHT: f32 = 2.0;
 
@@ -267,6 +274,11 @@ pub struct Tab {
     show_file_icons: bool,
     /// Whether tab text should be deemphasized because the editor pane is not focused
     deemphasized: bool,
+    /// Whether a separator follows this tab. The strip hides it beside the
+    /// selected tab and after the last tab.
+    trailing_separator: bool,
+    /// Upper bound from the visible strip width, when known
+    max_width: Option<gpui::Pixels>,
     /// Disabled state
     disabled: bool,
     /// Tooltip text
@@ -366,6 +378,8 @@ impl Tab {
             close_position: TabClosePosition::default(),
             show_file_icons: true,
             deemphasized: false,
+            trailing_separator: true,
+            max_width: None,
             disabled: false,
             tooltip: None,
             on_click: Arc::new(on_click),
@@ -418,6 +432,16 @@ impl Tab {
 
     pub fn deemphasized(mut self, deemphasized: bool) -> Self {
         self.deemphasized = deemphasized;
+        self
+    }
+
+    pub fn max_width(mut self, max_width: Option<gpui::Pixels>) -> Self {
+        self.max_width = max_width;
+        self
+    }
+
+    pub fn trailing_separator(mut self, trailing_separator: bool) -> Self {
+        self.trailing_separator = trailing_separator;
         self
     }
 
@@ -474,6 +498,11 @@ impl Tab {
     #[cfg(test)]
     pub(crate) fn is_deemphasized(&self) -> bool {
         self.deemphasized
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_trailing_separator(&self) -> bool {
+        self.trailing_separator
     }
 
     #[cfg(test)]
@@ -625,6 +654,8 @@ impl ComponentFactory for Tab {
             close_position: TabClosePosition::default(),
             show_file_icons: true,
             deemphasized: false,
+            trailing_separator: true,
+            max_width: None,
             disabled: false,
             tooltip: None,
             on_click: Arc::new(|_, _, _| {}),
@@ -637,7 +668,7 @@ impl ComponentFactory for Tab {
 }
 
 impl RenderOnce for Tab {
-    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         // Use ThemedContext trait for consistent theme access
         let theme = cx.theme();
         let tokens = theme.tokens; // DesignTokens is Copy
@@ -650,6 +681,7 @@ impl RenderOnce for Tab {
         let tab_tokens = tokens.tab_bar_tokens();
         let contrast = tokens.chrome.contrast;
         let fluent_tabs = fluent_tabs_enabled(cx);
+        let macos_tabs = tokens.chrome.is_macos_system();
         let inactive_bg = Tab::inactive_background_color(tab_tokens);
         let inactive_hover_bg = Tab::inactive_hover_background_color(tab_tokens);
         let (bg_color, text_color, hover_bg) = match component_state {
@@ -683,8 +715,12 @@ impl RenderOnce for Tab {
             TabSize::Medium => tab_container_height(tokens),
             TabSize::Large => tokens.sizes.button_height_lg,
         };
-        let min_width = px(TAB_MIN_WIDTH);
-        let max_width = px(TAB_MAX_WIDTH);
+        // Never wider than the strip that shows it, so revealing a tab in a
+        // narrow pane brings its whole label and close button into view.
+        let max_width = self
+            .max_width
+            .map_or(px(TAB_MAX_WIDTH), |max| max.min(px(TAB_MAX_WIDTH)));
+        let min_width = px(TAB_MIN_WIDTH).min(max_width);
         let height = if fluent_tabs {
             height - tokens.sizes.space_1
         } else {
@@ -705,7 +741,20 @@ impl RenderOnce for Tab {
         let is_pinned = self.is_pinned;
         let is_preview = self.is_preview;
         let is_loading = self.is_loading;
-        let deemphasized = self.deemphasized && contrast.is_none();
+        // macOS dims tab labels in background windows, as it does toolbar items.
+        let deemphasized =
+            (self.deemphasized || (macos_tabs && !window.is_window_active())) && contrast.is_none();
+        // Without an accent underline, a quieter face marks the selected tab
+        // of an unfocused pane or window.
+        let (bg_color, hover_bg) = if macos_tabs && is_active && deemphasized {
+            (
+                tab_tokens.tab_hover_background,
+                tab_tokens.tab_hover_background,
+            )
+        } else {
+            (bg_color, hover_bg)
+        };
+        let trailing_separator = self.trailing_separator;
         // WinUI's OnPointerOver mode keeps the selected tab's close affordance
         // visible. An explicit Hidden preference still wins.
         let close_button_visibility = if fluent_tabs
@@ -774,7 +823,7 @@ impl RenderOnce for Tab {
                     }
                 })
             })
-            .when(!disabled && !fluent_tabs, |tab| {
+            .when(!disabled && !fluent_tabs && !macos_tabs, |tab| {
                 tab.cursor(CursorStyle::PointingHand)
             })
             .when(fluent_tabs, |tab| {
@@ -806,7 +855,27 @@ impl RenderOnce for Tab {
                         )
                     })
             })
-            .when(!fluent_tabs, |tab| {
+            .when(macos_tabs, |tab| {
+                // macOS identifies selection with a neutral face, not the
+                // editor theme's accent underline or full-height tab boxes.
+                // The tab bar draws one baseline over every tab.
+                tab.when(is_active, |tab| {
+                    tab.rounded_tl(tokens.sizes.radius_sm)
+                        .rounded_tr(tokens.sizes.radius_sm)
+                })
+                .when(!is_active && trailing_separator, |tab| {
+                    tab.child(
+                        div()
+                            .absolute()
+                            .right_0()
+                            .top(tokens.sizes.space_3)
+                            .bottom(tokens.sizes.space_3)
+                            .w(px(1.0))
+                            .bg(tokens.chrome.border_muted),
+                    )
+                })
+            })
+            .when(!fluent_tabs && !macos_tabs, |tab| {
                 tab.border_color(nucleotide_ui::tokens::with_alpha(
                     tab_tokens.tab_separator,
                     0.5,
@@ -1147,13 +1216,18 @@ impl Tab {
         let mut label = div()
             .min_w(px(0.0))
             .max_w(px(150.0))
-            .flex_shrink_0()
+            // Ellipsize rather than clip when the tab is held to a narrow strip.
+            .flex_shrink(1.0)
             .overflow_hidden()
             .whitespace_nowrap()
             .text_ellipsis()
             .text_color(text_color)
-            .text_size(tokens.sizes.text_md);
-        if is_active {
+            .text_size(if tokens.chrome.is_macos_system() {
+                tokens.sizes.text_sm
+            } else {
+                tokens.sizes.text_md
+            });
+        if is_active && !tokens.chrome.is_macos_system() {
             label = label.font_weight(gpui::FontWeight::MEDIUM);
         }
         if is_preview {
@@ -1292,7 +1366,11 @@ impl Tab {
                 .child(
                     svg()
                         .path("icons/close.svg")
-                        .size(px(TAB_SLOT_ICON_SIZE))
+                        .size(if tokens.chrome.is_macos_system() {
+                            tokens.sizes.text_md
+                        } else {
+                            px(TAB_SLOT_ICON_SIZE)
+                        })
                         .text_color(props.text_color),
                 )
                 .when(!props.disabled, |button| {

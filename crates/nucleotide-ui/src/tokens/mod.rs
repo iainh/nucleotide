@@ -685,6 +685,11 @@ impl EditorTokens {
 }
 
 impl ChromeTokens {
+    /// Whether chrome should use macOS system geometry and interaction states.
+    pub fn is_macos_system(&self) -> bool {
+        cfg!(target_os = "macos") && self.style == UiChromeStyle::System
+    }
+
     /// Whether controls should use Windows system geometry and interaction states.
     pub fn is_windows_system(&self) -> bool {
         cfg!(target_os = "windows") && self.style == UiChromeStyle::System

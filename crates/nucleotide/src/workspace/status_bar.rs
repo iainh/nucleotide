@@ -41,7 +41,9 @@ pub(super) enum StatusBarDensity {
 
 impl StatusBarDensity {
     pub(super) fn for_available_width(available_width: f32) -> Self {
-        if available_width >= 780.0 {
+        // Wide fits mode, branch, position, document metadata, LSP and
+        // diagnostics, while the file name or message lane ellipsizes.
+        if available_width >= 640.0 {
             Self::Wide
         } else if available_width >= 400.0 {
             Self::Medium
@@ -973,11 +975,13 @@ impl Workspace {
         };
         let viewport_width = f32::from(window.viewport_size().width);
         let (shell_margin, _) = self.content_island_insets(cx);
-        let quiet_shell = shell_margin > px(0.0);
-        // Match the editor island's left edge without painting status content
-        // over the native sidebar material. Include its half of the gutter.
+        let quiet_shell = nucleotide_appearance::content_islands_enabled(
+            cx.global::<crate::ThemeManager>().ui_chrome_style(),
+        );
+        // Align status content with the solid workspace, leaving the native
+        // sidebar column clear through the bottom of the window.
         let sidebar_width = if cfg!(target_os = "macos") && quiet_shell && self.show_file_tree {
-            px(self.file_tree_width) + shell_margin * 0.5
+            px(self.file_tree_width)
         } else {
             px(0.0)
         };

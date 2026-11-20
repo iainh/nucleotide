@@ -1,14 +1,19 @@
-//! Continuous native chrome material below GPUI's opaque editor surface.
+//! Native sidebar material beside GPUI's opaque workspace surface.
 
 use objc2::{MainThreadMarker, MainThreadOnly, rc::Retained, runtime::AnyClass};
 use objc2_app_kit::{
     NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua,
-    NSGlassEffectView, NSView, NSVisualEffectBlendingMode, NSVisualEffectMaterial,
+    NSColor, NSGlassEffectView, NSView, NSVisualEffectBlendingMode, NSVisualEffectMaterial,
     NSVisualEffectState, NSVisualEffectView, NSWindowOrderingMode,
 };
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
-/// Owns one continuous native material behind the window's GPUI view.
+/// Glass tints as (white level, alpha), chosen for at least 4.5:1 label
+/// contrast over both white and black windows behind the sidebar.
+const SIDEBAR_GLASS_DARK_TINT: (f64, f64) = (0.12, 0.6);
+const SIDEBAR_GLASS_LIGHT_TINT: (f64, f64) = (0.97, 0.6);
+
+/// Owns a full-height sidebar material behind the window's GPUI view.
 /// Like GPUI windows, this must be updated and dropped on the main thread.
 #[derive(Default)]
 pub struct ChromeMaterial {
@@ -17,16 +22,15 @@ pub struct ChromeMaterial {
 }
 
 impl ChromeMaterial {
-    /// Cover the GPUI frame when enabled, or hide the material for themed chrome.
-    /// Returns whether native material is visible. All content stays in GPUI;
-    /// the editor island paints its own opaque surface above this backdrop.
+    /// Cover the sidebar column, or hide the material when its width is zero.
+    /// Returns whether native material is visible. All content stays in GPUI.
     pub fn sync(
         &mut self,
         window: &gpui::Window,
-        enabled: bool,
+        sidebar_width: gpui::Pixels,
         is_dark: bool,
     ) -> Result<bool, String> {
-        if !enabled {
+        if sidebar_width <= gpui::px(0.0) {
             if let Some(view) = &self.view {
                 view.setHidden(true);
             }
@@ -44,7 +48,8 @@ impl ChromeMaterial {
         // SAFETY: The live window owns this hierarchy; retain the parent before
         // doing any AppKit work that could change its subviews.
         let parent = unsafe { gpui_view.superview() }.ok_or("GPUI view has no superview")?;
-        let frame = gpui_view.frame();
+        let mut frame = gpui_view.frame();
+        frame.size.width = f64::from(f32::from(sidebar_width)).min(frame.size.width);
 
         let view = self.view.get_or_insert_with(|| {
             // Query the runtime before referencing this macOS 26+ class. Older
@@ -87,6 +92,17 @@ impl ChromeMaterial {
             let appearance =
                 NSAppearance::appearanceNamed(name).ok_or("AppKit appearance unavailable")?;
             view.setAppearance(Some(&appearance));
+            if let Some(glass) = view.downcast_ref::<NSGlassEffectView>() {
+                // Untinted glass takes its tone from whatever is behind the
+                // window, so bright windows washed dark-mode labels out. A tint
+                // keeps sidebar text legible over any backdrop.
+                let (white, alpha) = if is_dark {
+                    SIDEBAR_GLASS_DARK_TINT
+                } else {
+                    SIDEBAR_GLASS_LIGHT_TINT
+                };
+                glass.setTintColor(Some(&NSColor::colorWithWhite_alpha(white, alpha)));
+            }
             self.is_dark = Some(is_dark);
         }
         view.setHidden(false);

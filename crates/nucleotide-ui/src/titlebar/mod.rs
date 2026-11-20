@@ -51,6 +51,10 @@ const WINDOWS_UI_FONT_FAMILY: &str = "Segoe UI Variable";
 const TITLEBAR_ACTION_LANE_WIDTH: f32 = 32.0;
 const TITLEBAR_ACTION_RIGHT_INSET: f32 = 8.0;
 
+/// Native macOS traffic lights plus the application's trailing action lane.
+pub const MACOS_CONTROLS_WIDTH: f32 =
+    82.0 + TITLEBAR_ACTION_LANE_WIDTH + TITLEBAR_ACTION_RIGHT_INSET;
+
 #[cfg(target_os = "windows")]
 fn windows_caption_controls_width() -> f32 {
     WINDOWS_CONTROL_BUTTON_SIZE * WINDOWS_CONTROL_BUTTON_COUNT
@@ -131,9 +135,18 @@ impl Render for TitleBar {
         #[cfg(not(target_os = "windows"))]
         let _ = window;
 
+        #[cfg(target_os = "macos")]
+        let show_title = !cx
+            .try_global::<crate::theme_manager::ThemeManager>()
+            .is_some_and(|manager| {
+                manager.ui_chrome_style() == nucleotide_appearance::UiChromeStyle::System
+            });
+
         // Update platform titlebar with content
         self.platform_titlebar.update(cx, |titlebar, _cx| {
             titlebar.set_title(self.filename.clone());
+            #[cfg(target_os = "macos")]
+            titlebar.set_show_title(show_title);
             #[cfg(any(target_os = "linux", target_os = "windows"))]
             titlebar.set_show_title(false);
         });

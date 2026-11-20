@@ -736,11 +736,11 @@ fn statusbar_lsp_width_is_stable_within_each_breakpoint() {
 #[test]
 fn statusbar_breakpoints_follow_research_priority() {
     assert_eq!(
-        StatusBarDensity::for_available_width(780.0),
+        StatusBarDensity::for_available_width(640.0),
         StatusBarDensity::Wide
     );
     assert_eq!(
-        StatusBarDensity::for_available_width(779.0),
+        StatusBarDensity::for_available_width(639.0),
         StatusBarDensity::Medium
     );
     assert_eq!(

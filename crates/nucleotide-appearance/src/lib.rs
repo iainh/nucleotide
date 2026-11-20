@@ -533,6 +533,15 @@ pub fn set_native_window_theme(window: &gpui::Window, is_dark: bool) -> Result<(
             button.setAppearance(Some(&appearance));
         }
     }
+    // Full screen moves the titlebar into a separate AppKit window that slides
+    // in as an opaque strip. Theme that window so the strip matches the theme.
+    if let Some(titlebar_window) = native_window
+        .standardWindowButton(NSWindowButton::CloseButton)
+        .and_then(|button| button.window())
+        .filter(|titlebar_window| !std::ptr::eq(&**titlebar_window, &*native_window))
+    {
+        titlebar_window.setAppearance(Some(&appearance));
+    }
     Ok(())
 }
 

@@ -65,6 +65,47 @@ fn should_render_pinned_scroll_separator(max_scroll_x: Pixels, scroll_offset_x: 
     max_scroll_x > px(2.0) && scroll_offset_x < px(0.0)
 }
 
+/// Whether tabs are clipped before the strip's start and past its end.
+fn tab_strip_overflow(max_scroll_x: Pixels, scroll_offset_x: Pixels) -> (bool, bool) {
+    (
+        scroll_offset_x < px(-1.0),
+        max_scroll_x > px(1.0) && -scroll_offset_x < max_scroll_x - px(1.0),
+    )
+}
+
+fn tab_strip_edge_fade(background: gpui::Hsla, at_end: bool) -> gpui::Div {
+    let clear = background.opacity(0.0);
+    let (from, to) = if at_end {
+        (clear, background)
+    } else {
+        (background, clear)
+    };
+    div()
+        .absolute()
+        .top_0()
+        .bottom_0()
+        .when(at_end, |fade| fade.right_0())
+        .when(!at_end, |fade| fade.left_0())
+        .w(px(24.0))
+        .bg(gpui::linear_gradient(
+            90.0,
+            gpui::linear_color_stop(from, 0.0),
+            gpui::linear_color_stop(to, 1.0),
+        ))
+}
+
+/// One baseline across the whole bar, drawn last so translucent separators
+/// never stack into a darker line beneath some tabs.
+fn tab_bar_baseline(color: gpui::Hsla) -> gpui::Div {
+    div()
+        .absolute()
+        .left_0()
+        .right_0()
+        .bottom_0()
+        .h(px(1.0))
+        .bg(color)
+}
+
 fn tab_bar_control_gap(tokens: &nucleotide_ui::tokens::DesignTokens) -> Pixels {
     tokens.sizes.space_2
 }
@@ -209,6 +250,8 @@ pub struct TabBar {
     deemphasized: bool,
     /// Scroll handle used to keep the active tab visible and preserve user scroll state
     scroll_handle: Option<ScrollHandle>,
+    /// Empty space before the first row, reserved for native window controls
+    leading_inset: Pixels,
     /// Controls rendered before the scrollable tab strip
     start_children: Vec<AnyElement>,
     /// Controls rendered after the scrollable tab strip
@@ -263,6 +306,7 @@ impl TabBar {
             show_diagnostics: TabDiagnosticsVisibility::default(),
             deemphasized: false,
             scroll_handle: None,
+            leading_inset: px(0.0),
             start_children: Vec::new(),
             end_children: Vec::new(),
             loading_documents: HashSet::new(),
@@ -286,6 +330,13 @@ impl TabBar {
 
     pub fn track_scroll(mut self, scroll_handle: &ScrollHandle) -> Self {
         self.scroll_handle = Some(scroll_handle.clone());
+        self
+    }
+
+    /// Reserve empty tab-bar space before the first row's controls. The bar's
+    /// background and baseline continue beneath it.
+    pub fn leading_inset(mut self, inset: Pixels) -> Self {
+        self.leading_inset = inset;
         self
     }
 
@@ -515,7 +566,7 @@ impl RenderOnce for TabBar {
         }
         let ui_font = cx
             .try_global::<crate::types::UiFontConfig>()
-            .filter(|_| fluent_tabs)
+            .filter(|_| fluent_tabs || tokens.chrome.is_macos_system())
             .map(|font| font.family.clone());
 
         let pinned_count = documents.iter().take_while(|doc| doc.is_pinned).count();
@@ -562,6 +613,12 @@ impl TabBar {
             .iter()
             .position(|doc| self.active_doc_id == Some(doc.id));
         let tab_count = documents.len();
+        // The last laid-out width of the scrolling strip, once known.
+        let strip_width = self
+            .scroll_handle
+            .as_ref()
+            .map(|scroll_handle| scroll_handle.bounds().size.width)
+            .filter(|width| *width > px(0.0));
 
         documents
             .iter()
@@ -610,6 +667,8 @@ impl TabBar {
                     },
                 )
                 .with_position(position)
+                .trailing_separator(index + 1 < tab_count && active_index != Some(index + 1))
+                .max_width(strip_width)
                 .detail(label.detail.clone())
                 .with_close_button_visibility(self.show_close_button)
                 .with_close_position(self.close_position)
@@ -661,6 +720,8 @@ impl TabBar {
     ) -> gpui::AnyElement {
         let tabbar_bg = tab_bar_tokens.container_background;
         let border_color = tab_bar_tokens.tab_separator;
+        let single_baseline = tokens.chrome.is_macos_system();
+        let leading_inset = self.leading_inset;
         let active_doc_id = self.active_doc_id;
         let has_active_unpinned_tab = self
             .documents
@@ -678,6 +739,14 @@ impl TabBar {
                 scroll_handle.offset().x,
             )
         });
+        // Fade tabs clipped by the strip edges instead of cutting labels.
+        let (fade_start, fade_end) = scroll_handle.as_ref().filter(|_| single_baseline).map_or(
+            (false, false),
+            |scroll_handle| {
+                tab_strip_overflow(scroll_handle.max_offset().x, scroll_handle.offset().x)
+            },
+        );
+        let fade_start = fade_start && pinned_tabs.is_empty();
 
         let tab_strip = Self::render_tab_strip(TabStripOptions {
             id: "tabs",
@@ -694,11 +763,15 @@ impl TabBar {
         div()
             .id("tab-bar")
             .group("tab_bar")
+            .relative()
             .flex()
             .flex_none()
             .w_full()
             .h(tab_container_height(*tokens))
             .bg(tabbar_bg)
+            .when(leading_inset > px(0.0), |bar| {
+                bar.child(div().flex_none().w(leading_inset).h_full())
+            })
             .when(!start_children.is_empty(), |bar| {
                 bar.child(
                     div()
@@ -708,10 +781,11 @@ impl TabBar {
                         .h_full()
                         .gap(tab_bar_control_gap(tokens))
                         .px(tab_bar_control_padding_x())
-                        .border_b_1()
-                        .when(!tokens.chrome.is_windows_system(), |controls| {
-                            controls.border_r_1()
-                        })
+                        .when(!single_baseline, |controls| controls.border_b_1())
+                        .when(
+                            !tokens.chrome.is_windows_system() && !tokens.chrome.is_macos_system(),
+                            |controls| controls.border_r_1(),
+                        )
                         .border_color(border_color)
                         .children(start_children),
                 )
@@ -724,15 +798,17 @@ impl TabBar {
                     .min_w(px(0.0))
                     .h_full()
                     .overflow_x_hidden()
-                    .child(
-                        div()
-                            .absolute()
-                            .top_0()
-                            .left_0()
-                            .size_full()
-                            .border_b_1()
-                            .border_color(border_color),
-                    )
+                    .when(!single_baseline, |strip| {
+                        strip.child(
+                            div()
+                                .absolute()
+                                .top_0()
+                                .left_0()
+                                .size_full()
+                                .border_b_1()
+                                .border_color(border_color),
+                        )
+                    })
                     .when(!pinned_tabs.is_empty(), |bar| {
                         bar.child(
                             div()
@@ -755,7 +831,13 @@ impl TabBar {
                                 .children(pinned_tabs),
                         )
                     })
-                    .child(tab_strip),
+                    .child(tab_strip)
+                    .when(fade_start, |strip| {
+                        strip.child(tab_strip_edge_fade(tabbar_bg, false))
+                    })
+                    .when(fade_end, |strip| {
+                        strip.child(tab_strip_edge_fade(tabbar_bg, true))
+                    }),
             )
             .when(!end_children.is_empty(), |bar| {
                 bar.child(
@@ -766,13 +848,17 @@ impl TabBar {
                         .h_full()
                         .gap(tab_bar_control_gap(tokens))
                         .px(tab_bar_control_padding_x())
-                        .border_b_1()
-                        .when(!tokens.chrome.is_windows_system(), |controls| {
-                            controls.border_l_1()
-                        })
+                        .when(!single_baseline, |controls| controls.border_b_1())
+                        .when(
+                            !tokens.chrome.is_windows_system() && !tokens.chrome.is_macos_system(),
+                            |controls| controls.border_l_1(),
+                        )
                         .border_color(border_color)
                         .children(end_children),
                 )
+            })
+            .when(single_baseline, |bar| {
+                bar.child(tab_bar_baseline(border_color))
             })
             .into_any_element()
     }
@@ -780,17 +866,23 @@ impl TabBar {
     fn render_tab_bar_row(
         id: &'static str,
         tab_strip: gpui::AnyElement,
+        leading_inset: Pixels,
         start_children: Vec<AnyElement>,
         end_children: Vec<AnyElement>,
         tokens: &nucleotide_ui::tokens::DesignTokens,
         border_color: gpui::Hsla,
     ) -> gpui::AnyElement {
+        let single_baseline = tokens.chrome.is_macos_system();
         div()
             .id(id)
+            .relative()
             .flex()
             .flex_none()
             .w_full()
             .h(tab_container_height(*tokens))
+            .when(leading_inset > px(0.0), |bar| {
+                bar.child(div().flex_none().w(leading_inset).h_full())
+            })
             .when(!start_children.is_empty(), |bar| {
                 bar.child(
                     div()
@@ -800,10 +892,11 @@ impl TabBar {
                         .h_full()
                         .gap(tab_bar_control_gap(tokens))
                         .px(tab_bar_control_padding_x())
-                        .border_b_1()
-                        .when(!tokens.chrome.is_windows_system(), |controls| {
-                            controls.border_r_1()
-                        })
+                        .when(!single_baseline, |controls| controls.border_b_1())
+                        .when(
+                            !tokens.chrome.is_windows_system() && !tokens.chrome.is_macos_system(),
+                            |controls| controls.border_r_1(),
+                        )
                         .border_color(border_color)
                         .children(start_children),
                 )
@@ -815,15 +908,17 @@ impl TabBar {
                     .min_w(px(0.0))
                     .h_full()
                     .overflow_x_hidden()
-                    .child(
-                        div()
-                            .absolute()
-                            .top_0()
-                            .left_0()
-                            .size_full()
-                            .border_b_1()
-                            .border_color(border_color),
-                    )
+                    .when(!single_baseline, |strip| {
+                        strip.child(
+                            div()
+                                .absolute()
+                                .top_0()
+                                .left_0()
+                                .size_full()
+                                .border_b_1()
+                                .border_color(border_color),
+                        )
+                    })
                     .child(tab_strip),
             )
             .when(!end_children.is_empty(), |bar| {
@@ -835,13 +930,17 @@ impl TabBar {
                         .h_full()
                         .gap(tab_bar_control_gap(tokens))
                         .px(tab_bar_control_padding_x())
-                        .border_b_1()
-                        .when(!tokens.chrome.is_windows_system(), |controls| {
-                            controls.border_l_1()
-                        })
+                        .when(!single_baseline, |controls| controls.border_b_1())
+                        .when(
+                            !tokens.chrome.is_windows_system() && !tokens.chrome.is_macos_system(),
+                            |controls| controls.border_l_1(),
+                        )
                         .border_color(border_color)
                         .children(end_children),
                 )
+            })
+            .when(single_baseline, |bar| {
+                bar.child(tab_bar_baseline(border_color))
             })
             .into_any_element()
     }
@@ -868,6 +967,7 @@ impl TabBar {
         let start_children = self.start_children;
         let end_children = self.end_children;
         let row_height = tab_container_height(*tokens);
+        let leading_inset = self.leading_inset;
         let on_drop = self.pane_drag_drop.map(|(_, on_drop)| on_drop);
 
         let pinned_strip = Self::render_tab_strip(TabStripOptions {
@@ -906,6 +1006,7 @@ impl TabBar {
             .child(Self::render_tab_bar_row(
                 "pinned-tabs-row",
                 pinned_strip,
+                leading_inset,
                 start_children,
                 end_children,
                 tokens,
@@ -914,6 +1015,7 @@ impl TabBar {
             .child(Self::render_tab_bar_row(
                 "unpinned-tabs-row",
                 unpinned_strip,
+                px(0.0),
                 Vec::new(),
                 Vec::new(),
                 tokens,
@@ -966,7 +1068,9 @@ impl TabBar {
             .flex_grow(1.0)
             .overflow_hidden()
             .bg(Self::empty_tab_bar_background(tokens))
-            .border_b_1()
+            .when(!tokens.chrome.is_macos_system(), |target| {
+                target.border_b_1()
+            })
             .border_color(border_color)
             .child("")
             .when(
@@ -1210,6 +1314,32 @@ mod tests {
             tabs[0].close_button_visibility(),
             TabCloseButtonVisibility::Always
         );
+    }
+
+    #[test]
+    fn build_tabs_omit_separators_beside_selected_tab_and_after_last_tab() {
+        let ids = (0..4)
+            .map(|id| TabId::Terminal(nucleotide_events::terminal::TerminalId(id)))
+            .collect::<Vec<_>>();
+        let documents = ids
+            .iter()
+            .enumerate()
+            .map(|(order, id)| DocumentInfo {
+                id: *id,
+                ..doc(None, order)
+            })
+            .collect();
+        let tab_bar = TabBar::new(documents, Some(ids[2]), None, |_, _, _| {}, |_, _, _| {});
+
+        let documents = tab_bar.ordered_documents();
+        let labels = tab_bar.document_labels(documents);
+        let separators = tab_bar
+            .build_tabs(documents, &labels, 0)
+            .iter()
+            .map(Tab::has_trailing_separator)
+            .collect::<Vec<_>>();
+
+        assert_eq!(separators, [true, false, true, false]);
     }
 
     #[test]

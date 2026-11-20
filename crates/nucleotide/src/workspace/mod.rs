@@ -545,12 +545,16 @@ pub struct Workspace {
     pending_remote_open: Option<PendingRemoteOpen>,
     remote_open_generation: u64,
     last_remote_open_target: Option<RemoteOpenTarget>,
+    /// Native full-screen state from the last render, for layout helpers
+    /// without a window.
+    window_fullscreen: bool,
 }
 
 #[derive(Default)]
 struct PanePresentation {
     scroll: ScrollHandle,
     last_scrolled: Option<TabId>,
+    last_strip_width: Pixels,
     suppress_auto_scroll: bool,
     split_button_bounds: Option<Bounds<Pixels>>,
 }
@@ -3908,6 +3912,7 @@ impl Workspace {
             pending_remote_open: None,
             remote_open_generation: 0,
             last_remote_open_target: None,
+            window_fullscreen: false,
         };
 
         // Compute initial theme-derived colors once
@@ -5077,7 +5082,9 @@ impl Workspace {
             return;
         };
 
-        let filename = if self.content_island_insets(cx).0 > px(0.0) {
+        let filename = if nucleotide_appearance::content_islands_enabled(
+            self.core.read(cx).config.ui_chrome_style(),
+        ) {
             self.current_project_root
                 .as_deref()
                 .and_then(Path::file_name)
@@ -8241,7 +8248,7 @@ impl Workspace {
             debug!("Tab bar hidden, returning empty div");
             return div()
                 .id("tab-bar-hidden")
-                .h(px(0.0)) // Explicitly set height to 0 to ensure no space is taken
+                .h(self.pane_tab_bar_height(pane_id, cx))
                 .into_any_element();
         }
 
@@ -8465,7 +8472,17 @@ impl Workspace {
         let documents: Arc<[DocumentInfo]> = documents.into();
         let scroll_handle = pane.scroll.clone();
         let visible_doc_ids = documents.iter().map(|doc| doc.id).collect::<Vec<_>>();
-        if should_scroll_active_tab(pane.suppress_auto_scroll, pane.last_scrolled, active_doc_id)
+        // Resizing a window, sidebar or split can push the selected tab out of
+        // view without changing selection, so a new strip width reveals it too.
+        let strip_width = scroll_handle.bounds().size.width;
+        let strip_resized = pane.last_strip_width != strip_width;
+        pane.last_strip_width = strip_width;
+        if (strip_resized
+            || should_scroll_active_tab(
+                pane.suppress_auto_scroll,
+                pane.last_scrolled,
+                active_doc_id,
+            ))
             && let Some(active_doc_id) = active_doc_id
             && let Some(active_index) = active_unpinned_tab_scroll_index(
                 &visible_doc_ids,
@@ -8575,6 +8592,7 @@ impl Workspace {
         .loading_documents(self.loading_documents.keys().copied().map(TabId::Document))
         .deemphasized(!editor_pane_focused)
         .track_scroll(&scroll_handle)
+        .leading_inset(self.macos_pane_controls_inset(pane_id, cx))
         .with_pane_drag_drop(pane_id, {
             let workspace = cx.entity().clone();
             move |dragged, before, window, cx| {
@@ -11304,8 +11322,29 @@ impl Workspace {
         focused_file_name
     }
 
+    fn macos_system_shell(&self, cx: &Context<Self>) -> bool {
+        cfg!(target_os = "macos")
+            && self.core.read(cx).config.ui_chrome_style()
+                == nucleotide_appearance::UiChromeStyle::System
+    }
+
+    fn macos_pane_controls_inset(&self, pane: PaneId, cx: &Context<Self>) -> Pixels {
+        // Full screen hides the traffic lights until the titlebar is revealed
+        // over the content, so the tabs keep the leading space.
+        if self.macos_system_shell(cx)
+            && self.titlebar.is_some()
+            && !self.show_file_tree
+            && !self.window_fullscreen
+            && self.pane_host.layout.main_panes().first() == Some(&pane)
+        {
+            px(nucleotide_ui::titlebar::MACOS_CONTROLS_WIDTH)
+        } else {
+            px(0.0)
+        }
+    }
+
     fn rendered_titlebar_height(&self, window: &Window, cx: &Context<Self>) -> Pixels {
-        if self.titlebar.is_some() {
+        if self.titlebar.is_some() && !self.macos_system_shell(cx) {
             nucleotide_ui::titlebar::TitleBar::height(window, cx)
         } else {
             px(0.0)
@@ -11314,9 +11353,11 @@ impl Workspace {
 
     /// Shell spacing and the border inset inside clipped, zero-padding islands.
     fn content_island_insets(&self, cx: &Context<Self>) -> (Pixels, Pixels) {
-        if nucleotide_appearance::content_islands_enabled(
-            self.core.read(cx).config.ui_chrome_style(),
-        ) {
+        if cfg!(target_os = "windows")
+            && nucleotide_appearance::content_islands_enabled(
+                self.core.read(cx).config.ui_chrome_style(),
+            )
+        {
             let sizes = &cx.theme().tokens.sizes;
             (sizes.space_2, px(1.0))
         } else {
@@ -11343,7 +11384,7 @@ impl Workspace {
         let has_unpinned_tabs = tabs
             .iter()
             .any(|tab_id| !self.pinned_documents.contains(tab_id));
-        tab_bar_height_for_editor(
+        let height = tab_bar_height_for_editor(
             core.config.gui.tab_bar.show,
             &editor.config().bufferline,
             tabs.len(),
@@ -11351,7 +11392,15 @@ impl Workspace {
             core.config.gui.tab_bar.show_pinned_tabs_in_separate_row,
             has_pinned_tabs,
             has_unpinned_tabs,
-        )
+        );
+        if self.macos_pane_controls_inset(pane, cx) > px(0.0) {
+            // Even with tabs disabled, never place editor content under the
+            // native traffic lights or the update indicator. Match the tab row
+            // so the traffic lights stay centred in either state.
+            height.max(crate::tab::tab_container_height(cx.theme().tokens))
+        } else {
+            height
+        }
     }
 
     /// Update global workspace layout information for UI positioning
@@ -11596,7 +11645,14 @@ impl Render for Workspace {
             self.recompute_theme_colors(cx);
         }
         let bg_color = self.cached_bg_color;
-        let rendered_titlebar = self.titlebar.clone();
+        let macos_system_shell = self.macos_system_shell(cx);
+        let window_fullscreen = window.is_fullscreen();
+        if window_fullscreen != self.window_fullscreen {
+            self.window_fullscreen = window_fullscreen;
+            // Full screen hosts the titlebar in a new AppKit window; theme it.
+            self.schedule_window_appearance_update(cx);
+        }
+        let rendered_titlebar = self.titlebar.clone().filter(|_| !macos_system_shell);
 
         // Compute the editor content dimensions before reading Helix view areas,
         // so split panes use the current tree layout in this render pass.
@@ -11611,7 +11667,11 @@ impl Render for Workspace {
         let (island_margin, island_inset) = self.content_island_insets(cx);
         let content_islands = island_margin > px(0.0);
         let windows_system_shell = cfg!(target_os = "windows") && content_islands;
-        let macos_system_shell = cfg!(target_os = "macos") && content_islands;
+        let material_sidebar_width = if macos_system_shell && self.show_file_tree {
+            px(self.file_tree_width)
+        } else {
+            px(0.0)
+        };
         let bg_color = if macos_system_shell {
             bg_color.alpha(1.0)
         } else {
@@ -11621,7 +11681,7 @@ impl Render for Workspace {
         let native_material_visible =
             match self
                 .chrome_material
-                .sync(window, macos_system_shell, ui_theme.is_dark())
+                .sync(window, material_sidebar_width, ui_theme.is_dark())
             {
                 Ok(visible) => visible,
                 Err(error) => {
@@ -11895,12 +11955,23 @@ impl Render for Workspace {
             .w_full()
             .h_full()
             .relative() // Anchor for absolute-positioned resize hitboxes
-            // One native backdrop spans the shell; only the editor island
-            // paints an opaque surface, so no seam crosses titlebar or footer.
+            // Only the sidebar exposes native material. The workspace surface
+            // runs uninterrupted behind its titlebar, content and footer.
             .bg(if native_material_visible {
                 gpui::transparent_black()
             } else {
                 bg_color
+            })
+            .when(macos_system_shell, |workspace| {
+                workspace.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .left(material_sidebar_width)
+                        .right_0()
+                        .bg(bg_color),
+                )
             })
             .focusable()
             .capture_drop(
@@ -12772,6 +12843,9 @@ impl Render for Workspace {
                     .w_full()
                     .h_full()
                     .min_h(px(0.0))
+                    .when(macos_system_shell && self.titlebar.is_some(), |tree| {
+                        tree.pt(nucleotide_ui::titlebar::TitleBar::height(window, cx))
+                    })
                     .when(!content_islands, |tree| {
                         tree.border_r_1().border_color(file_tree_tokens.border)
                     });
@@ -12864,12 +12938,12 @@ impl Render for Workspace {
                                 .size_full()
                                 // Keep the content inset when removing the card
                                 // border; editor sizing and tree hitboxes stay put.
-                                .padding(if windows_system_shell || macos_system_shell {
+                                .padding(if windows_system_shell {
                                     island_inset
                                 } else {
                                     px(0.0)
                                 })
-                                .border(!windows_system_shell && !macos_system_shell)
+                                .border(!windows_system_shell)
                                 .when(windows_system_shell, |panel| {
                                     panel.rounded_none().bg(file_tree_background)
                                 })
@@ -12877,11 +12951,7 @@ impl Render for Workspace {
                                     panel
                                         .rounded(island_radius)
                                         .border_color(island_border_color)
-                                        .bg(if macos_system_shell {
-                                            file_tree_background
-                                        } else {
-                                            file_tree_background.alpha(1.0)
-                                        })
+                                        .bg(file_tree_background.alpha(1.0))
                                 })
                                 .overflow_hidden()
                                 .child(file_tree_container),
@@ -12977,6 +13047,27 @@ impl Render for Workspace {
                             .child(content_area),
                     )
                     .child(self.render_unified_status_bar(window, cx)), // Unified bottom status bar pinned at bottom
+            )
+            // Hidden full-screen traffic lights need no band beside the tabs.
+            .when(
+                macos_system_shell && (self.show_file_tree || !self.window_fullscreen),
+                |root| {
+                root.children(self.titlebar.clone().map(|titlebar| {
+                    // Only the sidebar's header occupies the native titlebar
+                    // band. Editor tabs start at the window's top edge.
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .w(if self.show_file_tree {
+                            px(self.file_tree_width)
+                        } else {
+                            px(nucleotide_ui::titlebar::MACOS_CONTROLS_WIDTH)
+                        })
+                        .h(nucleotide_ui::titlebar::TitleBar::height(window, cx))
+                        .child(titlebar)
+                }))
+                },
             )
             // Modal overlays belong to the workspace, not the clipped editor island.
             // Cursor-anchored completions remain in the editor container above.
