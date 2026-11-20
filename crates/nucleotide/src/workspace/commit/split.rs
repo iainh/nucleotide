@@ -295,6 +295,75 @@ struct Block {
     checkbox: Option<gpui::AnyElement>,
 }
 
+/// A part of a diff, rendered as its own list item so that only the parts
+/// on screen are laid out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum DiffPart {
+    /// The side-by-side column titles.
+    Titles,
+    /// A side-by-side region and the fold before it, which starts at
+    /// `shown_from`. `visible` changed lines are shown before it.
+    Region {
+        index: usize,
+        shown_from: u32,
+        visible: usize,
+    },
+    /// The fold after the last side-by-side region.
+    Tail { from: u32 },
+    /// A unified hunk, with `visible` changed lines shown before it.
+    Hunk { index: usize, visible: usize },
+    /// The notice that the preview stops at `MAX_VISIBLE_LINES`.
+    Limited,
+}
+
+/// The unified parts of `changes`: one per hunk until the line limit.
+pub(super) fn unified_parts(changes: &FileChanges) -> Vec<DiffPart> {
+    let mut parts = Vec::new();
+    let mut visible = 0;
+    for (index, hunk) in changes.hunks().iter().enumerate() {
+        if visible >= MAX_VISIBLE_LINES {
+            parts.push(DiffPart::Limited);
+            return parts;
+        }
+        parts.push(DiffPart::Hunk { index, visible });
+        visible += hunk.before.len() + hunk.after.len();
+    }
+    if visible > MAX_VISIBLE_LINES {
+        parts.push(DiffPart::Limited);
+    }
+    parts
+}
+
+/// Display columns of a line once tabs expand, as `expand_tabs_mapped` lays it out.
+fn line_columns(line: &[u8]) -> u32 {
+    let mut column = 0;
+    for ch in String::from_utf8_lossy(line)
+        .trim_end_matches(['\r', '\n'])
+        .chars()
+    {
+        column += if ch == '\t' { 4 - column % 4 } else { 1 };
+    }
+    column
+}
+
+/// Columns of the widest HEAD and newer line within `ranges`. Every part of
+/// a diff is this wide, so the parts scroll sideways together.
+pub(super) fn widest(
+    changes: &FileChanges,
+    ranges: impl Iterator<Item = (Range<u32>, Range<u32>)>,
+) -> [u32; 2] {
+    let mut widest = [0; 2];
+    for (old, new) in ranges {
+        for line in old {
+            widest[0] = widest[0].max(line_columns(changes.head_line(line)));
+        }
+        for line in new {
+            widest[1] = widest[1].max(line_columns(changes.worktree_line(line)));
+        }
+    }
+    widest
+}
+
 /// A side-by-side diff of `changes`, from HEAD on the left to a newer version.
 pub(super) struct SplitDiff<'a> {
     pub id: String,
@@ -310,9 +379,70 @@ pub(super) struct SplitDiff<'a> {
 }
 
 impl Workspace {
-    pub(super) fn render_split_diff(
+    pub(super) fn split_regions(&self, diff: &SplitDiff) -> Vec<Region> {
+        regions(diff.changes.hunks(), diff.old_len, |line| {
+            self.commit_review
+                .expanded
+                .contains(&(diff.path.to_path_buf(), diff.staged, line))
+        })
+    }
+
+    /// The side-by-side parts of `diff`, up to the line limit.
+    pub(super) fn split_parts(&self, diff: &SplitDiff) -> Vec<DiffPart> {
+        let hunks = diff.changes.hunks();
+        let mut parts = vec![DiffPart::Titles];
+        let (mut visible, mut shown_to) = (0, 0);
+        for (index, region) in self.split_regions(diff).iter().enumerate() {
+            if visible >= MAX_VISIBLE_LINES {
+                parts.push(DiffPart::Limited);
+                return parts;
+            }
+            parts.push(DiffPart::Region {
+                index,
+                shown_from: shown_to,
+                visible,
+            });
+            for hunk in &hunks[region.hunks.clone()] {
+                visible += hunk.before.len() + hunk.after.len();
+                if visible > MAX_VISIBLE_LINES {
+                    parts.push(DiffPart::Limited);
+                    return parts;
+                }
+            }
+            shown_to = region.old.end;
+        }
+        if diff.old_len > shown_to {
+            parts.push(DiffPart::Tail { from: shown_to });
+        }
+        parts
+    }
+
+    /// The scroll handles a diff's parts share, one per column.
+    pub(super) fn diff_scroll(&mut self, id: &str) -> [gpui::ScrollHandle; 2] {
+        self.commit_review
+            .scrolls
+            .entry(id.to_string())
+            .or_default()
+            .clone()
+    }
+
+    /// The pixel widths of `columns` in the diff font, padded like code rows.
+    pub(super) fn columns_width(columns: [u32; 2], style: &DiffStyle, cx: &App) -> [Pixels; 2] {
+        let text = cx.text_system();
+        let advance = text
+            .ch_advance(
+                text.resolve_font(&gpui::font(style.font_family.clone())),
+                style.font_size,
+            )
+            .unwrap_or(style.font_size * 0.6);
+        let padding = cx.global::<nucleotide_ui::Theme>().tokens.sizes.space_3 * 2.0;
+        columns.map(|columns| advance * columns as f32 + padding)
+    }
+
+    pub(super) fn render_split_part(
         &mut self,
         diff: SplitDiff,
+        part: DiffPart,
         style: &DiffStyle,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
@@ -327,11 +457,57 @@ impl Workspace {
             modified: tokens.editor.vcs_modified,
             deleted: tokens.editor.vcs_deleted,
         };
+        let split = self.commit_review.split.unwrap_or(0.5);
+        let shares = [split, 1.0 - split];
+        // The ribbon between the line numbers is the divider.
+        let middle = gutter * 2.0 + ribbon;
+        match part {
+            DiffPart::Titles => {
+                let title = |text: &'static str, share: f32| {
+                    div()
+                        .flex_basis(gpui::relative(0.0))
+                        .flex_grow(share)
+                        .min_w_0()
+                        .px(tokens.sizes.space_3)
+                        .child(text)
+                };
+                return div()
+                    .flex()
+                    .py(tokens.sizes.space_1)
+                    .bg(style.surface)
+                    .text_color(style.text_secondary)
+                    .child(title(diff.titles[0], shares[0]))
+                    .child(div().w(middle).flex_none())
+                    .child(title(diff.titles[1], shares[1]))
+                    .into_any_element();
+            }
+            DiffPart::Limited => {
+                return div()
+                    .p(tokens.sizes.space_3)
+                    .child(format!(
+                        "Preview limited to {MAX_VISIBLE_LINES} changed lines. Whole-file actions include all changes."
+                    ))
+                    .into_any_element();
+            }
+            _ => {}
+        }
+        // Parts of one diff share its scroll handles and selectors, not element ids.
+        let part_id = match part {
+            DiffPart::Region { index, .. } => format!("{}-{index}", diff.id),
+            _ => format!("{}-tail", diff.id),
+        };
         let hunks = diff.changes.hunks();
         let fold_key = |line| (diff.path.to_path_buf(), diff.staged, line);
-        let regions = regions(hunks, diff.old_len, |line| {
-            self.commit_review.expanded.contains(&fold_key(line))
-        });
+        let regions = self.split_regions(&diff);
+        let scroll = self.diff_scroll(&diff.id);
+        let widths = Self::columns_width(
+            widest(
+                diff.changes,
+                regions.iter().map(|r| (r.old.clone(), r.new.clone())),
+            ),
+            style,
+            cx,
+        );
         // Lines and hunks stay clickable while a stage runs; clicks queue behind it.
         let locked = self.commit_review.operation.is_some();
 
@@ -339,7 +515,6 @@ impl Workspace {
         let mut blocks = Vec::new();
         let mut folds = Vec::new();
         let mut visible = 0;
-        let mut limited = false;
 
         let number = |side: usize, line: u32| {
             div()
@@ -434,17 +609,149 @@ impl Workspace {
             }
         };
 
-        let mut shown_to = 0;
-        'regions: for region in &regions {
-            fold(&mut sides, shown_to, region.old.start - shown_to, cx);
-            let mut cursor = (region.old.start, region.new.start);
-            for hunk_index in region.hunks.clone() {
-                if visible >= MAX_VISIBLE_LINES {
-                    limited = true;
-                    break 'regions;
+        let (target, mut shown_to) = match part {
+            DiffPart::Region {
+                index,
+                shown_from,
+                visible: before,
+            } => {
+                visible = before;
+                (Some(index), shown_from)
+            }
+            DiffPart::Tail { from } => (None, from),
+            _ => (None, diff.old_len),
+        };
+        if let Some(region) = target.and_then(|index| regions.get(index)) {
+            'regions: {
+                fold(&mut sides, shown_to, region.old.start - shown_to, cx);
+                let mut cursor = (region.old.start, region.new.start);
+                for hunk_index in region.hunks.clone() {
+                    if visible >= MAX_VISIBLE_LINES {
+                        break 'regions;
+                    }
+                    let hunk = &hunks[hunk_index];
+                    for (old, new) in (cursor.0..hunk.before.start).zip(cursor.1..) {
+                        for (side, line) in [(0, old), (1, new)] {
+                            let text = code_text(
+                                cx,
+                                &line_of(side, line),
+                                highlights(side, line),
+                                &[],
+                                colors,
+                            );
+                            sides[side].code.push(code_row(text, None));
+                            sides[side].gutter.push(gutter_row(side, line, None));
+                        }
+                    }
+                    let color = match (hunk.before.is_empty(), hunk.after.is_empty()) {
+                        (true, _) => colors.added,
+                        (_, true) => colors.deleted,
+                        _ => colors.modified,
+                    };
+                    let removed = hunk.before.clone().take(MAX_VISIBLE_LINES - visible);
+                    let added = hunk
+                        .after
+                        .clone()
+                        .take((MAX_VISIBLE_LINES - visible).saturating_sub(removed.len()));
+                    let lines = [removed.collect::<Vec<_>>(), added.collect::<Vec<_>>()];
+                    visible += lines[0].len() + lines[1].len();
+                    let texts: [Vec<String>; 2] = [
+                        lines[0].iter().map(|&n| line_of(0, n)).collect(),
+                        lines[1].iter().map(|&n| line_of(1, n)).collect(),
+                    ];
+                    // Whole-line insertions and deletions need no word highlights.
+                    let edits = if texts[0].is_empty() || texts[1].is_empty() {
+                        [
+                            vec![Vec::new(); texts[0].len()],
+                            vec![Vec::new(); texts[1].len()],
+                        ]
+                    } else {
+                        let refs = texts
+                            .each_ref()
+                            .map(|t| t.iter().map(String::as_str).collect::<Vec<_>>());
+                        word_edits(&refs[0], &refs[1])
+                    };
+                    let start = [sides[0].code.len(), sides[1].code.len()];
+                    for side in 0..2 {
+                        if lines[side].is_empty() {
+                            sides[side].markers.push((start[side], color));
+                        }
+                        for (offset, &line) in lines[side].iter().enumerate() {
+                            let text = code_text(
+                                cx,
+                                &texts[side][offset],
+                                highlights(side, line),
+                                &edits[side][offset],
+                                colors,
+                            );
+                            sides[side].code.push(code_row(text, Some(color)));
+                            let checkbox = diff.staging.map(|(index, file, content)| {
+                                let removal = side == 0;
+                                let staged = content.selection.as_ref().is_some_and(|s| {
+                                    if removal {
+                                        s.is_removal_staged(line)
+                                    } else {
+                                        s.is_addition_staged(line)
+                                    }
+                                });
+                                let checkbox = self
+                                    .review_checkbox(
+                                        index,
+                                        String::new(),
+                                        if staged {
+                                            SelectionState::Staged
+                                        } else {
+                                            SelectionState::Unstaged
+                                        },
+                                        file.clone(),
+                                        StageChange::Line {
+                                            removal,
+                                            line,
+                                            staged: !staged,
+                                        },
+                                        cx,
+                                    )
+                                    .disabled(locked || content.selection.is_none());
+                                div()
+                                    .when(cfg!(test), |cell| {
+                                        cell.debug_selector(move || {
+                                            format!("commit-row-{index}-{removal}-{line}")
+                                        })
+                                    })
+                                    .child(checkbox)
+                                    .into_any_element()
+                            });
+                            sides[side].gutter.push(gutter_row(side, line, checkbox));
+                        }
+                    }
+                    let checkbox = diff.staging.map(|(index, file, content)| {
+                        let state = content
+                            .selection
+                            .as_ref()
+                            .map(|s| s.hunk_state(hunk))
+                            .unwrap_or(SelectionState::Unstaged);
+                        self.review_checkbox(
+                            index,
+                            String::new(),
+                            state,
+                            file.clone(),
+                            StageChange::Hunk(hunk_index, state != SelectionState::Staged),
+                            cx,
+                        )
+                        .disabled(locked || content.selection.is_none())
+                        .into_any_element()
+                    });
+                    blocks.push(Block {
+                        rows: [start[0]..sides[0].code.len(), start[1]..sides[1].code.len()],
+                        color,
+                        checkbox,
+                    });
+                    if lines[0].len() < hunk.before.len() || lines[1].len() < hunk.after.len() {
+                        break 'regions;
+                    }
+                    cursor = (hunk.before.end, hunk.after.end);
                 }
-                let hunk = &hunks[hunk_index];
-                for (old, new) in (cursor.0..hunk.before.start).zip(cursor.1..) {
+                for (old, new) in (cursor.0..region.old.end).zip(cursor.1..) {
                     for (side, line) in [(0, old), (1, new)] {
                         let text = code_text(
                             cx,
@@ -457,131 +764,15 @@ impl Workspace {
                         sides[side].gutter.push(gutter_row(side, line, None));
                     }
                 }
-                let color = match (hunk.before.is_empty(), hunk.after.is_empty()) {
-                    (true, _) => colors.added,
-                    (_, true) => colors.deleted,
-                    _ => colors.modified,
-                };
-                let removed = hunk.before.clone().take(MAX_VISIBLE_LINES - visible);
-                let added = hunk
-                    .after
-                    .clone()
-                    .take((MAX_VISIBLE_LINES - visible).saturating_sub(removed.len()));
-                let lines = [removed.collect::<Vec<_>>(), added.collect::<Vec<_>>()];
-                visible += lines[0].len() + lines[1].len();
-                let texts: [Vec<String>; 2] = [
-                    lines[0].iter().map(|&n| line_of(0, n)).collect(),
-                    lines[1].iter().map(|&n| line_of(1, n)).collect(),
-                ];
-                // Whole-line insertions and deletions need no word highlights.
-                let edits = if texts[0].is_empty() || texts[1].is_empty() {
-                    [
-                        vec![Vec::new(); texts[0].len()],
-                        vec![Vec::new(); texts[1].len()],
-                    ]
-                } else {
-                    let refs = texts
-                        .each_ref()
-                        .map(|t| t.iter().map(String::as_str).collect::<Vec<_>>());
-                    word_edits(&refs[0], &refs[1])
-                };
-                let start = [sides[0].code.len(), sides[1].code.len()];
-                for side in 0..2 {
-                    if lines[side].is_empty() {
-                        sides[side].markers.push((start[side], color));
-                    }
-                    for (offset, &line) in lines[side].iter().enumerate() {
-                        let text = code_text(
-                            cx,
-                            &texts[side][offset],
-                            highlights(side, line),
-                            &edits[side][offset],
-                            colors,
-                        );
-                        sides[side].code.push(code_row(text, Some(color)));
-                        let checkbox = diff.staging.map(|(index, file, content)| {
-                            let removal = side == 0;
-                            let staged = content.selection.as_ref().is_some_and(|s| {
-                                if removal {
-                                    s.is_removal_staged(line)
-                                } else {
-                                    s.is_addition_staged(line)
-                                }
-                            });
-                            let checkbox = self
-                                .review_checkbox(
-                                    index,
-                                    String::new(),
-                                    if staged {
-                                        SelectionState::Staged
-                                    } else {
-                                        SelectionState::Unstaged
-                                    },
-                                    file.clone(),
-                                    StageChange::Line {
-                                        removal,
-                                        line,
-                                        staged: !staged,
-                                    },
-                                    cx,
-                                )
-                                .disabled(locked || content.selection.is_none());
-                            div()
-                                .when(cfg!(test), |cell| {
-                                    cell.debug_selector(move || {
-                                        format!("commit-row-{index}-{removal}-{line}")
-                                    })
-                                })
-                                .child(checkbox)
-                                .into_any_element()
-                        });
-                        sides[side].gutter.push(gutter_row(side, line, checkbox));
-                    }
-                }
-                let checkbox = diff.staging.map(|(index, file, content)| {
-                    let state = content
-                        .selection
-                        .as_ref()
-                        .map(|s| s.hunk_state(hunk))
-                        .unwrap_or(SelectionState::Unstaged);
-                    self.review_checkbox(
-                        index,
-                        String::new(),
-                        state,
-                        file.clone(),
-                        StageChange::Hunk(hunk_index, state != SelectionState::Staged),
-                        cx,
-                    )
-                    .disabled(locked || content.selection.is_none())
-                    .into_any_element()
-                });
-                blocks.push(Block {
-                    rows: [start[0]..sides[0].code.len(), start[1]..sides[1].code.len()],
-                    color,
-                    checkbox,
-                });
-                if lines[0].len() < hunk.before.len() || lines[1].len() < hunk.after.len() {
-                    limited = true;
-                    break 'regions;
-                }
-                cursor = (hunk.before.end, hunk.after.end);
+                shown_to = region.old.end;
             }
-            for (old, new) in (cursor.0..region.old.end).zip(cursor.1..) {
-                for (side, line) in [(0, old), (1, new)] {
-                    let text = code_text(
-                        cx,
-                        &line_of(side, line),
-                        highlights(side, line),
-                        &[],
-                        colors,
-                    );
-                    sides[side].code.push(code_row(text, None));
-                    sides[side].gutter.push(gutter_row(side, line, None));
-                }
-            }
-            shown_to = region.old.end;
         }
-        let trailing = if limited { 0 } else { diff.old_len - shown_to };
+        // A region pads its columns to the same length; the tail is one fold.
+        let trailing = if target.is_none() {
+            diff.old_len - shown_to
+        } else {
+            0
+        };
         fold(&mut sides, shown_to, trailing, cx);
 
         let rows = sides[0].code.len();
@@ -663,11 +854,11 @@ impl Workspace {
                     .child(block.checkbox?),
             )
         });
-        let split = self.commit_review.split.unwrap_or(0.5);
-        let shares = [split, 1.0 - split];
         let column =
-            |code: Vec<gpui::AnyElement>, markers: Vec<(usize, Hsla)>, name: &str, share: f32| {
-                let mut column = div().id(SharedString::from(format!("{}-{name}", diff.id)));
+            |code: Vec<gpui::AnyElement>, markers: Vec<(usize, Hsla)>, side: usize, name: &str| {
+                let mut column = div()
+                    .id(SharedString::from(format!("{part_id}-{name}")))
+                    .track_scroll(&scroll[side]);
                 // A vertical wheel scrolls the file list, not the code sideways.
                 column.style().restrict_scroll_to_axis = Some(true);
                 column
@@ -676,7 +867,7 @@ impl Workspace {
                         column.debug_selector(move || selector)
                     })
                     .flex_basis(gpui::relative(0.0))
-                    .flex_grow(share)
+                    .flex_grow(shares[side])
                     .min_w_0()
                     .flex()
                     .overflow_x_scroll()
@@ -687,6 +878,8 @@ impl Workspace {
                             .min_w_full()
                             .flex()
                             .flex_col()
+                            // As wide as the widest line in any part.
+                            .child(div().w(widths[side]))
                             .children(code)
                             .children(markers.into_iter().map(|(at, color)| {
                                 div()
@@ -702,20 +895,11 @@ impl Workspace {
         let gutter_column = |rows: Vec<gpui::AnyElement>| {
             div().w(gutter).flex_none().flex().flex_col().children(rows)
         };
-        let title = |text: &'static str, share: f32| {
-            div()
-                .flex_basis(gpui::relative(0.0))
-                .flex_grow(share)
-                .min_w_0()
-                .px(tokens.sizes.space_3)
-                .child(text)
-        };
-        // The ribbon between the line numbers is the divider: dragging it moves
-        // the middle strip with the pointer, and a double click recentres it.
-        let middle = gutter * 2.0 + ribbon;
+        // Dragging the divider moves the middle strip with the pointer, and a
+        // double click recentres it.
         let handle_id = diff.id.clone();
         let handle = div()
-            .id(SharedString::from(format!("{}-split", diff.id)))
+            .id(SharedString::from(format!("{part_id}-split")))
             .when(cfg!(test), |handle| {
                 let selector = format!("{}-split", diff.id);
                 handle.debug_selector(move || selector)
@@ -751,45 +935,25 @@ impl Workspace {
         );
         div()
             .flex()
-            .flex_col()
+            .font_family(style.font_family.clone())
+            .text_size(style.font_size)
+            .line_height(row)
+            .on_drag_move(resize)
+            .child(column(old.code, old.markers, 0, "old"))
             .child(
                 div()
+                    .relative()
+                    .flex_none()
                     .flex()
-                    .py(tokens.sizes.space_1)
-                    .bg(style.surface)
+                    .h(row * rows as f32)
                     .text_color(style.text_secondary)
-                    .child(title(diff.titles[0], shares[0]))
-                    .child(div().w(middle).flex_none())
-                    .child(title(diff.titles[1], shares[1])),
+                    .child(paint)
+                    .child(gutter_column(old_gutter))
+                    .child(handle)
+                    .child(gutter_column(new_gutter))
+                    .children(hunk_checkboxes),
             )
-            .child(
-                div()
-                    .flex()
-                    .font_family(style.font_family.clone())
-                    .text_size(style.font_size)
-                    .line_height(row)
-                    .on_drag_move(resize)
-                    .child(column(old.code, old.markers, "old", shares[0]))
-                    .child(
-                        div()
-                            .relative()
-                            .flex_none()
-                            .flex()
-                            .h(row * rows as f32)
-                            .text_color(style.text_secondary)
-                            .child(paint)
-                            .child(gutter_column(old_gutter))
-                            .child(handle)
-                            .child(gutter_column(new_gutter))
-                            .children(hunk_checkboxes),
-                    )
-                    .child(column(new.code, new.markers, "new", shares[1])),
-            )
-            .when(limited, |view| {
-                view.child(div().p(tokens.sizes.space_3).child(
-                    "Preview limited to 400 changed lines. Whole-file actions include all changes.",
-                ))
-            })
+            .child(column(new.code, new.markers, 1, "new"))
             .into_any_element()
     }
 }

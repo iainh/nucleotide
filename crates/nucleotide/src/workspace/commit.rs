@@ -57,6 +57,12 @@ pub(super) struct CommitReview {
     stale: bool,
     /// Waits for edits to pause before reloading.
     debounce: Option<gpui::Task<()>>,
+    /// Horizontal scroll of each diff's columns, shared by all its list items.
+    scrolls: HashMap<String, [gpui::ScrollHandle; 2]>,
+    /// The list item holding each working-tree hunk of the shown file.
+    hunk_items: Vec<usize>,
+    /// The items and row height the list last measured.
+    laid_out: (Vec<view::ReviewItem>, Pixels),
 }
 
 impl CommitReview {
@@ -748,7 +754,15 @@ impl Workspace {
                 "k" | "up" => current.saturating_sub(1),
                 _ => index.map_or(0, |i| (i + 1).min(count - 1)),
             };
-            window.focus(&self.commit_review.controls[next].0, cx);
+            // Its list item may be off screen and not yet rendered.
+            let (focus, file, change) = &self.commit_review.controls[next];
+            if let (Some(item), Some(scroll)) = (
+                self.review_item_of(file, change),
+                &self.commit_review.scroll,
+            ) {
+                scroll.scroll_to_reveal_item(item);
+            }
+            window.focus(&focus.clone(), cx);
         } else {
             let (_, file, change) = self.commit_review.controls[current].clone();
             match key {
@@ -788,6 +802,23 @@ impl Workspace {
             }
         }
         cx.notify();
+    }
+
+    /// The list item that shows a control of the shown file.
+    fn review_item_of(&self, file: &ReviewFile, change: &StageChange) -> Option<usize> {
+        let hunks = file.content.as_ref().ok()?.changes.hunks();
+        let hunk = match *change {
+            StageChange::File(_) => return Some(0),
+            StageChange::Hunk(hunk, _) => hunk,
+            StageChange::Line { removal, line, .. } => hunks.iter().position(|hunk| {
+                if removal {
+                    hunk.before.contains(&line)
+                } else {
+                    hunk.after.contains(&line)
+                }
+            })?,
+        };
+        self.commit_review.hunk_items.get(hunk).copied()
     }
 
     pub(super) fn commit_tab_pane(&self) -> Option<PaneId> {

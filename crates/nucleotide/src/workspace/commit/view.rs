@@ -1,6 +1,7 @@
-use super::split::SplitDiff;
+use super::split::{DiffPart, SplitDiff, unified_parts};
 use super::*;
 use crate::diff::{DiffStyle, diff_lines, render_diff_line};
+use gpui::Hsla;
 use nucleotide_ui::{Checkbox, CheckboxSize};
 
 pub(super) const MAX_VISIBLE_LINES: usize = 400;
@@ -26,9 +27,203 @@ pub(super) fn line_text(bytes: &[u8]) -> String {
         .to_string()
 }
 
+/// Which diff of a file a list item belongs to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum DiffKind {
+    /// HEAD against what a deletion or rename leaves.
+    Preview,
+    /// HEAD against an index that line staging cannot express.
+    Staged,
+    /// HEAD against the working tree, with staging controls.
+    Working,
+}
+
+/// One item of the shown file's list. Each is laid out only when on screen,
+/// so a long diff costs no more per frame than a short one.
+#[derive(Clone, PartialEq)]
+pub(super) enum ReviewItem {
+    Header,
+    Note {
+        text: SharedString,
+        color: Hsla,
+        small: bool,
+    },
+    Split(DiffKind, DiffPart),
+    Unified(DiffPart),
+    /// A read-only unified diff, short enough to show as one item.
+    UnifiedStaged(DiffKind),
+}
+
 impl Workspace {
+    fn split_diff<'a>(
+        index: usize,
+        file: &'a Arc<ReviewFile>,
+        kind: DiffKind,
+    ) -> Option<SplitDiff<'a>> {
+        let path = &file.entry.relative_path;
+        Some(match (kind, &file.content) {
+            (DiffKind::Preview, _) => {
+                let preview = file.preview.as_ref()?;
+                SplitDiff {
+                    id: format!("commit-preview-{index}"),
+                    path,
+                    staged: false,
+                    titles: ["HEAD", "Working tree"],
+                    changes: &preview.changes,
+                    old_len: preview.old_len,
+                    highlights: [
+                        preview.highlights[0].as_ref(),
+                        preview.highlights[1].as_ref(),
+                    ],
+                    staging: None,
+                }
+            }
+            (DiffKind::Staged, Ok(content)) => SplitDiff {
+                id: format!("commit-staged-{index}"),
+                path,
+                staged: true,
+                titles: ["HEAD", "Staged"],
+                changes: content.staged_diff.as_ref()?,
+                old_len: line_count(content.head.as_deref()),
+                highlights: [
+                    content.highlights[0].as_deref(),
+                    content.highlights[1].as_deref(),
+                ],
+                staging: None,
+            },
+            (DiffKind::Working, Ok(content)) => SplitDiff {
+                id: format!("commit-diff-{index}"),
+                path,
+                staged: false,
+                titles: ["HEAD", "Working tree"],
+                changes: &content.changes,
+                old_len: line_count(content.head.as_deref()),
+                highlights: [
+                    content.highlights[0].as_deref(),
+                    content.highlights[2].as_deref(),
+                ],
+                staging: Some((index, file, content)),
+            },
+            _ => return None,
+        })
+    }
+
+    /// The list items of the shown file, and the item holding each working-tree
+    /// hunk, so keyboard navigation can scroll a control into view.
+    fn review_items(
+        &self,
+        index: usize,
+        file: &Arc<ReviewFile>,
+        style: &DiffStyle,
+        cx: &App,
+    ) -> (Vec<ReviewItem>, Vec<usize>) {
+        let tokens = cx.global::<nucleotide_ui::Theme>().tokens;
+        let mut items = vec![ReviewItem::Header];
+        let mut hunk_items = Vec::new();
+        if self
+            .commit_review
+            .collapsed
+            .contains(&file.entry.relative_path)
+        {
+            return (items, hunk_items);
+        }
+        let note = |text: &str, color: Hsla, small: bool| ReviewItem::Note {
+            text: text.to_string().into(),
+            color,
+            small,
+        };
+        let unified = self.commit_review.unified;
+        let diff = |items: &mut Vec<ReviewItem>, kind: DiffKind| {
+            if unified {
+                items.push(ReviewItem::UnifiedStaged(kind));
+            } else if let Some(diff) = Self::split_diff(index, file, kind) {
+                items.extend(
+                    self.split_parts(&diff)
+                        .into_iter()
+                        .map(|part| ReviewItem::Split(kind, part)),
+                );
+            }
+        };
+        match &file.content {
+            Err(reason) => {
+                items.push(note(reason, style.text_secondary, false));
+                if file.preview.is_some() {
+                    diff(&mut items, DiffKind::Preview);
+                }
+            }
+            Ok(content) => {
+                if content.selection.is_none() {
+                    items.push(note(
+                        "Staged version differs from working tree. Stage the whole file to replace it, or unstage it.",
+                        tokens.editor.warning,
+                        false,
+                    ));
+                }
+                if content.staged_diff.is_some() {
+                    items.push(note(
+                        "Staged changes · read-only",
+                        style.text_secondary,
+                        true,
+                    ));
+                    diff(&mut items, DiffKind::Staged);
+                    items.push(note(
+                        "Working-tree changes · line staging unavailable",
+                        style.text_secondary,
+                        true,
+                    ));
+                }
+                if content.changes.hunks().is_empty() {
+                    items.push(note(
+                        "No text changes against HEAD. Use whole-file actions for staged-only or mode changes.",
+                        style.text,
+                        false,
+                    ));
+                } else {
+                    let parts = if unified {
+                        unified_parts(&content.changes)
+                    } else {
+                        Self::split_diff(index, file, DiffKind::Working)
+                            .map(|diff| self.split_parts(&diff))
+                            .unwrap_or_default()
+                    };
+                    let regions = (!unified)
+                        .then(|| {
+                            Self::split_diff(index, file, DiffKind::Working)
+                                .map(|diff| self.split_regions(&diff))
+                        })
+                        .flatten()
+                        .unwrap_or_default();
+                    hunk_items = vec![0; content.changes.hunks().len()];
+                    for part in parts {
+                        let item = items.len();
+                        match part {
+                            DiffPart::Hunk { index, .. } => hunk_items[index] = item,
+                            DiffPart::Region { index, .. } => {
+                                for hunk in regions[index].hunks.clone() {
+                                    hunk_items[hunk] = item;
+                                }
+                            }
+                            _ => {}
+                        }
+                        items.push(if unified {
+                            ReviewItem::Unified(part)
+                        } else {
+                            ReviewItem::Split(DiffKind::Working, part)
+                        });
+                    }
+                }
+            }
+        }
+        (items, hunk_items)
+    }
+
     // Keyboard navigation includes offscreen controls without building their UI.
-    fn review_controls(&mut self, files: &[(usize, Arc<ReviewFile>)], cx: &mut Context<Self>) {
+    fn review_controls(
+        &mut self,
+        files: &[(usize, Arc<ReviewFile>)],
+        parts: usize,
+        cx: &mut Context<Self>,
+    ) {
         self.commit_review.controls.clear();
         let mut live = HashSet::new();
         for (index, file) in files.iter().map(|(index, file)| (*index, file)) {
@@ -72,6 +267,7 @@ impl Workspace {
                 }
             }
             live.insert(format!("commit-section-{index}"));
+            live.extend((1..parts).map(|part| format!("commit-part-{index}-{part}")));
             for change in changes {
                 let id = change.control_id(index);
                 let focus = self
@@ -189,42 +385,92 @@ impl Workspace {
             })
         });
         // One file is shown at a time; the sidebar's Changes list picks which.
-        let shown: Vec<_> = self.selected_review_file().into_iter().collect();
-        self.review_controls(&shown, cx);
-        let section_focus: Vec<_> = shown
+        let shown = self.selected_review_file();
+        let (items, hunk_items) = shown
+            .as_ref()
+            .map(|(index, file)| self.review_items(*index, file, &style, cx))
+            .unwrap_or_default();
+        self.commit_review.hunk_items = hunk_items;
+        self.review_controls(&Vec::from_iter(shown.clone()), items.len(), cx);
+        // Each item keeps focus handle, so a focused control stays in the
+        // dispatch tree after it scrolls out of view.
+        let item_focus: Vec<_> = shown
             .iter()
-            .map(|(index, _)| {
+            .flat_map(|(index, _)| {
+                (0..items.len()).map(move |part| match part {
+                    0 => format!("commit-section-{index}"),
+                    _ => format!("commit-part-{index}-{part}"),
+                })
+            })
+            .map(|id| {
                 self.commit_review
                     .control_focus
-                    .entry(format!("commit-section-{index}"))
+                    .entry(id)
                     .or_insert_with(|| cx.focus_handle())
                     .clone()
             })
             .collect();
-        let shown_path = shown.first().map(|(_, f)| f.entry.relative_path.clone());
+        let shown_path = shown.as_ref().map(|(_, f)| f.entry.relative_path.clone());
         let new_file = self.commit_review.shown != shown_path;
         self.commit_review.shown = shown_path;
         let scroll = self
             .commit_review
             .scroll
-            .get_or_insert_with(|| gpui::ListState::new(0, gpui::ListAlignment::Top, px(0.0)));
-        if new_file || scroll.item_count() != shown.len() {
+            // The list can only scroll as far as it has measured, so measure
+            // well past the viewport for each wheel step to land on laid-out items.
+            .get_or_insert_with(|| gpui::ListState::new(0, gpui::ListAlignment::Top, px(1000.0)));
+        let count = scroll.item_count();
+        let layout = (items.clone(), row_height(cx));
+        if new_file {
             scroll.reset(0);
-            // Keep a focused file in the dispatch tree even after mouse scrolling.
-            scroll.splice_focusable(0..0, section_focus.into_iter().map(Some));
-        } else {
-            // Content, folding and font metrics can change between renders.
-            // Retain the scroll anchor, but only lay out visible file sections.
+            scroll.splice_focusable(0..0, item_focus.into_iter().map(Some));
+        } else if self.commit_review.laid_out != layout {
+            if count != item_focus.len() {
+                // Keep the items before the change, and the scroll position with them.
+                let common = count.min(item_focus.len());
+                scroll
+                    .splice_focusable(common..count, item_focus.into_iter().skip(common).map(Some));
+            }
+            // Folding, layout and font metrics change item heights. Visible
+            // items are laid out every frame anyway; this refreshes the rest.
             scroll.remeasure();
         }
+        self.commit_review.laid_out = layout;
         let workspace = cx.entity();
         let list_style = style.clone();
+        let last = items.len().saturating_sub(1);
         let virtual_list = gpui::list(scroll.clone(), move |item, _, cx| {
-            let (index, file) = shown[item].clone();
+            let Some((index, file)) = shown.clone() else {
+                return div().into_any_element();
+            };
             workspace.update(cx, |workspace, cx| {
+                let body =
+                    workspace.render_review_item(index, &file, &items[item], &list_style, cx);
+                let focus = workspace.commit_review.control_focus[&if item == 0 {
+                    format!("commit-section-{index}")
+                } else {
+                    format!("commit-part-{index}-{item}")
+                }]
+                    .clone();
+                // The items together draw one bordered box around the file.
                 div()
-                    .pb(tokens.sizes.space_3)
-                    .child(workspace.render_review_file(index, file, &list_style, cx))
+                    .when(item == last, |item| item.pb(tokens.sizes.space_3))
+                    .child(
+                        div()
+                            .track_focus(&focus)
+                            .min_w_0()
+                            .overflow_hidden()
+                            .border_l_1()
+                            .border_r_1()
+                            .border_color(list_style.border)
+                            .when(item == 0, |item| {
+                                item.border_t_1().rounded_t(tokens.sizes.radius_md)
+                            })
+                            .when(item == last, |item| {
+                                item.border_b_1().rounded_b(tokens.sizes.radius_md)
+                            })
+                            .child(body),
+                    )
                     .into_any_element()
             })
         })
@@ -465,10 +711,10 @@ impl Workspace {
             .into_any_element()
     }
 
-    fn render_review_file(
+    fn render_review_header(
         &mut self,
         index: usize,
-        file: Arc<ReviewFile>,
+        file: &Arc<ReviewFile>,
         style: &DiffStyle,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
@@ -482,17 +728,10 @@ impl Workspace {
             SelectionState::Staged => "Staged",
         };
         let unstage_file = file.clone();
-        let mut section = div()
+        div()
             .when(cfg!(test), |section| {
                 section.debug_selector(move || format!("commit-shown-{index}"))
             })
-            .track_focus(&self.commit_review.control_focus[&format!("commit-section-{index}")])
-            .flex_none()
-            .min_w_0()
-            .border_1()
-            .border_color(style.border)
-            .rounded(tokens.sizes.radius_md)
-            .overflow_hidden()
             .child(
                 div()
                     .flex()
@@ -546,109 +785,50 @@ impl Workspace {
                             )),
                         )
                     }),
-            );
-        if !collapsed {
-            match &file.content {
-                Err(reason) => {
-                    section = section.child(
-                        div()
-                            .p(tokens.sizes.space_3)
-                            .text_color(style.text_secondary)
-                            .child(reason.clone()),
-                    );
-                    if let Some(preview) = &file.preview {
-                        section = section.child(if self.commit_review.unified {
-                            self.render_unified_staged(index, &preview.changes, style, cx)
-                        } else {
-                            self.render_split_diff(
-                                SplitDiff {
-                                    id: format!("commit-preview-{index}"),
-                                    path: &file.entry.relative_path,
-                                    staged: false,
-                                    titles: ["HEAD", "Working tree"],
-                                    changes: &preview.changes,
-                                    old_len: preview.old_len,
-                                    highlights: [
-                                        preview.highlights[0].as_ref(),
-                                        preview.highlights[1].as_ref(),
-                                    ],
-                                    staging: None,
-                                },
-                                style,
-                                cx,
-                            )
-                        });
-                    }
-                }
-                Ok(content) => {
-                    if content.selection.is_none() {
-                        section = section.child(div().p(tokens.sizes.space_3).text_color(tokens.editor.warning)
-                            .child("Staged version differs from working tree. Stage the whole file to replace it, or unstage it."));
-                    }
-                    let unified = self.commit_review.unified;
-                    if let Some(staged) = &content.staged_diff {
-                        section = section.child(
-                            div()
-                                .p(tokens.sizes.space_2)
-                                .text_color(style.text_secondary)
-                                .child("Staged changes · read-only"),
-                        );
-                        section = section.child(if unified {
-                            self.render_unified_staged(index, staged, style, cx)
-                        } else {
-                            self.render_split_diff(
-                                SplitDiff {
-                                    id: format!("commit-staged-{index}"),
-                                    path: &file.entry.relative_path,
-                                    staged: true,
-                                    titles: ["HEAD", "Staged"],
-                                    changes: staged,
-                                    old_len: line_count(content.head.as_deref()),
-                                    highlights: [
-                                        content.highlights[0].as_deref(),
-                                        content.highlights[1].as_deref(),
-                                    ],
-                                    staging: None,
-                                },
-                                style,
-                                cx,
-                            )
-                        });
-                        section = section.child(
-                            div()
-                                .p(tokens.sizes.space_2)
-                                .text_color(style.text_secondary)
-                                .child("Working-tree changes · line staging unavailable"),
-                        );
-                    }
-                    if content.changes.hunks().is_empty() {
-                        section = section.child(div().p(tokens.sizes.space_3).child("No text changes against HEAD. Use whole-file actions for staged-only or mode changes."));
-                    } else if unified {
-                        section = section
-                            .child(self.render_unified_diff(index, &file, content, style, cx));
-                    } else {
-                        section = section.child(self.render_split_diff(
-                            SplitDiff {
-                                id: format!("commit-diff-{index}"),
-                                path: &file.entry.relative_path,
-                                staged: false,
-                                titles: ["HEAD", "Working tree"],
-                                changes: &content.changes,
-                                old_len: line_count(content.head.as_deref()),
-                                highlights: [
-                                    content.highlights[0].as_deref(),
-                                    content.highlights[2].as_deref(),
-                                ],
-                                staging: Some((index, &file, content)),
-                            },
-                            style,
-                            cx,
-                        ));
-                    }
+            )
+            .into_any_element()
+    }
+
+    fn render_review_item(
+        &mut self,
+        index: usize,
+        file: &Arc<ReviewFile>,
+        item: &ReviewItem,
+        style: &DiffStyle,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let tokens = cx.global::<nucleotide_ui::Theme>().tokens;
+        match item {
+            ReviewItem::Header => self.render_review_header(index, file, style, cx),
+            ReviewItem::Note { text, color, small } => div()
+                .p(if *small {
+                    tokens.sizes.space_2
+                } else {
+                    tokens.sizes.space_3
+                })
+                .text_color(*color)
+                .child(text.clone())
+                .into_any_element(),
+            ReviewItem::Split(kind, part) => match Self::split_diff(index, file, *kind) {
+                Some(diff) => self.render_split_part(diff, *part, style, cx),
+                None => div().into_any_element(),
+            },
+            ReviewItem::Unified(part) => match &file.content {
+                Ok(content) => self.render_unified_part(index, file, content, *part, style, cx),
+                Err(_) => div().into_any_element(),
+            },
+            ReviewItem::UnifiedStaged(kind) => {
+                let changes = match (kind, &file.content) {
+                    (DiffKind::Preview, _) => file.preview.as_ref().map(|p| &p.changes),
+                    (_, Ok(content)) => content.staged_diff.as_ref(),
+                    _ => None,
+                };
+                match changes {
+                    Some(changes) => self.render_unified_staged(index, changes, style, cx),
+                    None => div().into_any_element(),
                 }
             }
         }
-        section.into_any_element()
     }
 }
 
@@ -702,11 +882,13 @@ impl Workspace {
         preview.into_any_element()
     }
 
-    fn render_unified_diff(
+    /// One hunk of the unified working-tree diff, with its context.
+    fn render_unified_part(
         &mut self,
         index: usize,
         file: &Arc<ReviewFile>,
         content: &FileContent,
+        part: DiffPart,
         style: &DiffStyle,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
@@ -714,14 +896,45 @@ impl Workspace {
         let row_height = row_height(cx);
         // Lines and hunks stay clickable while a stage runs; clicks queue behind it.
         let locked = self.commit_review.operation.is_some();
-        let mut body = div()
-            .id(SharedString::from(format!("commit-diff-{index}")))
-            .overflow_x_scroll()
+        let (shown_hunk, mut visible) = match part {
+            DiffPart::Hunk { index, visible } => (index, visible),
+            DiffPart::Limited => {
+                return div()
+                    .p(tokens.sizes.space_3)
+                    .child(format!(
+                        "Preview limited to {MAX_VISIBLE_LINES} changed lines. Whole-file actions include all changes."
+                    ))
+                    .into_any_element();
+            }
+            _ => return div().into_any_element(),
+        };
+        let hunks = content.changes.hunks();
+        let worktree_len = line_count(Some(&content.worktree));
+        // Every hunk is as wide as the widest line, so they scroll sideways together.
+        let [old, new] = super::split::widest(
+            &content.changes,
+            hunks.iter().map(|hunk| {
+                (
+                    hunk.before.start.saturating_sub(3)..hunk.before.end,
+                    hunk.after.start..(hunk.after.end + 3).min(worktree_len),
+                )
+            }),
+        );
+        let [width, _] = Self::columns_width([old.max(new), 0], style, cx);
+        let scroll = self.diff_scroll(&format!("commit-diff-{index}"));
+        let body = div()
+            .id(SharedString::from(format!(
+                "commit-diff-{index}-{shown_hunk}"
+            )))
+            .track_scroll(&scroll[0])
             .font_family(style.font_family.clone())
             .text_size(style.font_size)
             .line_height(row_height);
         // Fixed gutters keep code aligned between context and changed rows.
         let checkbox_width = tokens.sizes.space_7;
+        let mut body =
+            body.child(div().w(checkbox_width + tokens.sizes.space_9 + px(24.0) + width));
+        body.style().restrict_scroll_to_axis = Some(true);
         let line_number = |line: u32| {
             div()
                 .w(tokens.sizes.space_9)
@@ -746,9 +959,7 @@ impl Workspace {
                         .child(crate::diff::expand_tabs(&line_text(bytes))),
                 )
         };
-        let mut visible = 0;
-        let hunks = content.changes.hunks();
-        for (hunk_index, hunk) in hunks.iter().enumerate() {
+        for (hunk_index, hunk) in hunks.iter().enumerate().skip(shown_hunk).take(1) {
             if visible >= MAX_VISIBLE_LINES {
                 break;
             }
@@ -863,15 +1074,10 @@ impl Workspace {
             let end = hunks
                 .get(hunk_index + 1)
                 .map(|next| next.after.start)
-                .unwrap_or_else(|| line_count(Some(&content.worktree)));
+                .unwrap_or(worktree_len);
             for new in hunk.after.end..end.min(hunk.after.end + 3) {
                 body = body.child(context_line(new, content.changes.worktree_line(new)));
             }
-        }
-        if visible == MAX_VISIBLE_LINES {
-            body = body.child(div().p(tokens.sizes.space_3).child(
-                "Preview limited to 400 changed lines. Whole-file actions include all changes.",
-            ));
         }
         body.into_any_element()
     }

@@ -403,6 +403,53 @@ fn commit_review_stages_a_file_clicked_while_a_line_stage_runs(cx: &mut gpui::Te
 }
 
 #[gpui::test]
+fn long_diffs_scroll_to_their_last_change_in_both_layouts(cx: &mut gpui::TestAppContext) {
+    let _runtime = TEST_RUNTIME.enter();
+    let root = repository();
+    let path = root.path().join("file.txt");
+    let lines = |changed: bool| -> String {
+        (0..600)
+            .map(|i| match changed && i % 12 == 0 {
+                true => format!("changed {i}\n"),
+                false => format!("line {i}\n"),
+            })
+            .collect()
+    };
+    fs::write(&path, lines(false)).unwrap();
+    git(root.path(), &["commit", "-qam", "long"]);
+    fs::write(&path, lines(true)).unwrap();
+    let (core, _, cx) = new_test_workspace(cx, &path);
+    core.update(cx, |_, cx| cx.emit(crate::Update::ShowCommit));
+    wait_for(&core, cx, |cx| {
+        cx.debug_bounds("commit-row-0-false-0").is_some()
+    });
+    // Each change is laid out only once it scrolls into view.
+    for layout in ["commit-layout-split", "commit-layout-unified"] {
+        click_line(cx, layout);
+        pump(&core, cx);
+        assert!(cx.debug_bounds("commit-row-0-false-588").is_none());
+        let header = cx.debug_bounds("commit-shown-0").unwrap();
+        let position = point(header.center().x, header.bottom() + px(40.0));
+        for direction in [-1.0, 1.0] {
+            for _ in 0..60 {
+                cx.simulate_event(gpui::ScrollWheelEvent {
+                    position,
+                    delta: gpui::ScrollDelta::Pixels(point(px(0.0), px(400.0 * direction))),
+                    ..Default::default()
+                });
+                cx.update(|window, cx| window.draw(cx).clear());
+            }
+            let row = if direction < 0.0 {
+                "commit-row-0-false-588"
+            } else {
+                "commit-row-0-false-0"
+            };
+            assert!(cx.debug_bounds(row).is_some(), "{layout}: {row}");
+        }
+    }
+}
+
+#[gpui::test]
 fn commit_review_shows_one_file_and_brackets_move_between_files(cx: &mut gpui::TestAppContext) {
     let _runtime = TEST_RUNTIME.enter();
     let root = repository();
