@@ -95,12 +95,7 @@ impl KeyHintView {
         labels
     }
 
-    fn render_keycap(
-        theme: &Theme,
-        key_font: &gpui::Font,
-        text_size: f32,
-        label: String,
-    ) -> AnyElement {
+    fn render_keycap(theme: &Theme, key_font: &gpui::Font, label: String) -> AnyElement {
         let tokens = &theme.tokens;
         let tooltip = tokens.tooltip_tokens();
         let key_bg = Self::keycap_background(theme);
@@ -109,17 +104,21 @@ impl KeyHintView {
 
         div()
             .min_w(px(min_width))
-            .h(px(20.0))
-            .px(px(if is_modifier { 5.0 } else { 4.0 }))
+            .h(tokens.sizes.space_6)
+            .px(if is_modifier {
+                tokens.sizes.space_2 + tokens.sizes.space_1 / 2.0
+            } else {
+                tokens.sizes.space_2
+            })
             .border_1()
             .border_color(tooltip.border)
-            .rounded_sm()
+            .rounded(tokens.sizes.radius_sm)
             .flex()
             .items_center()
             .justify_center()
             .text_align(gpui::TextAlign::Center)
             .font(key_font.clone())
-            .text_size(px((text_size - 2.0).max(9.0)))
+            .text_size(tokens.sizes.text_xs)
             .line_height(relative(1.0))
             .font_weight(gpui::FontWeight::MEDIUM)
             .text_color(tooltip.text)
@@ -140,23 +139,18 @@ impl KeyHintView {
         ColorTheory::with_alpha(background, tooltip.background.a.max(minimum_alpha))
     }
 
-    fn render_key_badges(
-        theme: &Theme,
-        key_font: &gpui::Font,
-        text_size: f32,
-        key: &str,
-    ) -> AnyElement {
+    fn render_key_badges(theme: &Theme, key_font: &gpui::Font, key: &str) -> AnyElement {
         let labels = Self::key_badge_labels(key);
 
         div()
             .flex()
             .items_center()
             .justify_end()
-            .gap(px(3.0))
+            .gap(theme.tokens.sizes.space_1)
             .children(
                 labels
                     .into_iter()
-                    .map(|label| Self::render_keycap(theme, key_font, text_size, label)),
+                    .map(|label| Self::render_keycap(theme, key_font, label)),
             )
             .into_any_element()
     }
@@ -172,13 +166,9 @@ impl KeyHintView {
         pairs
     }
 
-    fn render_line(
-        theme: &Theme,
-        key_font: &gpui::Font,
-        key_text_size: f32,
-        line: HintLine,
-    ) -> AnyElement {
-        let tooltip = theme.tokens.tooltip_tokens();
+    fn render_line(theme: &Theme, key_font: &gpui::Font, line: HintLine) -> AnyElement {
+        let tokens = &theme.tokens;
+        let tooltip = tokens.tooltip_tokens();
 
         div()
             .w(px(HINT_COLUMN_WIDTH))
@@ -186,17 +176,17 @@ impl KeyHintView {
             .min_w(px(0.0))
             .flex()
             .items_center()
-            .gap(px(8.0))
-            .px(px(4.0))
-            .py(px(2.0))
-            .rounded(px(4.0))
+            .gap(tokens.sizes.space_3)
+            .px(tokens.sizes.space_2)
+            .py(tokens.sizes.space_1)
+            .rounded(tokens.sizes.radius_sm)
             .child(div().w(px(HINT_KEY_SLOT_WIDTH)).flex_none().when_some(
                 line.key.as_deref(),
                 |slot, key| {
                     slot.flex()
                         .items_center()
                         .justify_end()
-                        .child(Self::render_key_badges(theme, key_font, key_text_size, key))
+                        .child(Self::render_key_badges(theme, key_font, key))
                 },
             ))
             .child(
@@ -212,7 +202,6 @@ impl KeyHintView {
     fn render_row(
         theme: &Theme,
         key_font: &gpui::Font,
-        key_text_size: f32,
         first: HintLine,
         second: Option<HintLine>,
     ) -> AnyElement {
@@ -224,7 +213,7 @@ impl KeyHintView {
                     .min_w(px(0.0))
                     .into_any_element()
             },
-            |line| Self::render_line(theme, key_font, key_text_size, line),
+            |line| Self::render_line(theme, key_font, line),
         );
 
         div()
@@ -233,7 +222,7 @@ impl KeyHintView {
             .items_start()
             .justify_start()
             .gap(px(HINT_COLUMN_GAP))
-            .child(Self::render_line(theme, key_font, key_text_size, first))
+            .child(Self::render_line(theme, key_font, first))
             .child(second)
             .into_any_element()
     }
@@ -243,11 +232,11 @@ impl Render for KeyHintView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(info) = &self.info {
             let theme = cx.global::<Theme>().clone();
-            let tooltip = theme.tokens.tooltip_tokens();
+            let tokens = &theme.tokens;
+            let tooltip = tokens.tooltip_tokens();
             let font_settings = cx.global::<nucleotide_types::FontSettings>();
             let ui_font: gpui::Font = font_settings.var_font.clone().into();
             let key_font: gpui::Font = font_settings.fixed_font.clone().into();
-            let ui_text_size = cx.global::<nucleotide_types::UiFontConfig>().size - 1.0;
             let clean_title = info.title.replace(['\n', '\r'], " ").trim().to_string();
             let lines = info
                 .text
@@ -258,20 +247,20 @@ impl Render for KeyHintView {
 
             div()
                 .absolute()
-                .bottom_4()
-                .right_4()
+                .bottom(tokens.sizes.space_4)
+                .right(tokens.sizes.space_4)
                 .w(px((HINT_COLUMN_WIDTH * 2.0) + HINT_COLUMN_GAP))
                 .bg(tooltip.background)
                 .border_1()
                 .border_color(tooltip.border)
-                .rounded(px(6.0))
-                .shadow(vec![theme.tokens.chrome.shadow_md.to_box_shadow(false)])
-                .p(px(8.0))
+                .rounded(tokens.sizes.radius_md)
+                .shadow(vec![tokens.chrome.shadow_md.to_box_shadow(false)])
+                .p(tokens.sizes.space_3)
                 .flex()
                 .flex_col()
-                .gap(px(4.0))
+                .gap(tokens.sizes.space_2)
                 .font(ui_font)
-                .text_size(px(ui_text_size))
+                .text_size(tokens.sizes.text_sm)
                 .when(!clean_title.is_empty(), |this| {
                     this.child(
                         div()
@@ -280,14 +269,15 @@ impl Render for KeyHintView {
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .border_b_1()
                             .border_color(tooltip.border)
-                            .pb(px(6.0))
-                            .mb(px(2.0))
+                            .pb(tokens.sizes.space_2)
+                            .mb(tokens.sizes.space_1)
                             .child(clean_title),
                     )
                 })
-                .children(rows.into_iter().map(|(first, second)| {
-                    Self::render_row(&theme, &key_font, ui_text_size, first, second)
-                }))
+                .children(
+                    rows.into_iter()
+                        .map(|(first, second)| Self::render_row(&theme, &key_font, first, second)),
+                )
         } else {
             div().w_0().h_0()
         }

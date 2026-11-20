@@ -232,17 +232,18 @@ impl Render for TerminalPanel {
                     .flex_1()
                     .min_h(px(0.0))
                     .flex()
-                    .flex_col()
                     .items_center()
                     .justify_center()
-                    .gap_2()
-                    .p_3()
-                    .text_color(tokens.chrome.text_chrome_secondary)
-                    .child("Terminal session not available")
                     .child(
-                        div()
-                            .text_size(tokens.sizes.text_xs)
-                            .child("The terminal runtime has not registered this session yet. If this persists, check logs for spawn or remote SSH errors."),
+                        nucleotide_ui::StateView::new(
+                            "terminal-panel-unavailable",
+                            "Terminal session not available",
+                        )
+                        .detail(
+                            "The terminal runtime has not registered this session yet. If this persists, check logs for spawn or remote SSH errors.",
+                        )
+                        .icon("icons/terminal.svg")
+                        .tone(nucleotide_ui::StateViewTone::Neutral),
                     ),
             );
         }

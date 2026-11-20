@@ -1,9 +1,10 @@
 // ABOUTME: Documentation system for completion items with async loading and markdown rendering
 // ABOUTME: Provides cached markdown rendering and side panel documentation display
 
+use gpui::prelude::FluentBuilder;
 use gpui::{
-    Context, InteractiveElement, IntoElement, ParentElement, Render, StatefulInteractiveElement,
-    Styled, Task, div, px,
+    Context, InteractiveElement, IntoElement, ParentElement, Render, ScrollHandle,
+    StatefulInteractiveElement, Styled, Task, div, px,
 };
 use std::collections::HashMap;
 use std::future::Future;
@@ -12,7 +13,9 @@ use std::time::{Duration, Instant};
 
 use crate::completion_v2::CompletionItem;
 use crate::markdown::{MarkdownStyle, markdown_extended};
-use crate::{StateView, StateViewTone};
+use crate::scrollbar::{Scrollbar, ScrollbarState};
+use crate::{StateView, StateViewTone, Toolbar};
+use nucleotide_types::scrollbar::SCROLLBAR_THICKNESS;
 
 /// Documentation content with metadata
 #[derive(Debug, Clone)]
@@ -420,6 +423,8 @@ pub struct DocumentationPanel {
     visible: bool,
     width: f32,
     scroll_position: f32,
+    scroll_handle: ScrollHandle,
+    scrollbar_state: ScrollbarState,
 }
 
 impl Default for DocumentationPanel {
@@ -430,20 +435,22 @@ impl Default for DocumentationPanel {
 
 impl DocumentationPanel {
     pub fn new() -> Self {
+        let scroll_handle = ScrollHandle::new();
+        let scrollbar_state = ScrollbarState::new(scroll_handle.clone());
         Self {
             content: None,
             visible: false,
             width: 300.0,
             scroll_position: 0.0,
+            scroll_handle,
+            scrollbar_state,
         }
     }
 
     pub fn set_content(&mut self, content: Option<DocumentationContent>) {
         self.content = content;
-        // Reset scroll position when content changes
         self.scroll_position = 0.0;
-        // Mark for UI refresh to apply scroll reset
-        // In a real implementation, this would trigger container scroll reset
+        self.scroll_handle.set_offset(gpui::point(px(0.0), px(0.0)));
     }
 
     pub fn set_visible(&mut self, visible: bool) {
@@ -463,6 +470,7 @@ impl Render for DocumentationPanel {
 
         let theme = cx.global::<crate::Theme>();
         let tokens = &theme.tokens;
+        let rendered_content = self.render_content(tokens);
 
         div()
             .id("documentation-panel")
@@ -470,44 +478,54 @@ impl Render for DocumentationPanel {
             .flex_col()
             .w(px(self.width))
             .h_full()
+            .min_h(px(0.0))
             .bg(tokens.chrome.surface_elevated)
             .border_l_1()
             .border_color(tokens.chrome.border_default)
             .child(
-                // Header
-                div()
-                    .flex()
-                    .items_center()
-                    .px_3()
-                    .py_2()
-                    .border_b_1()
+                Toolbar::new("documentation-panel-header")
+                    .compact(true)
                     .border_color(tokens.chrome.border_muted)
                     .child(
                         div()
-                            .text_sm()
+                            .text_size(tokens.sizes.text_sm)
                             .font_weight(gpui::FontWeight::MEDIUM)
                             .text_color(tokens.chrome.text_on_chrome)
                             .child("Documentation"),
                     ),
             )
             .child(
-                // Content area
                 div()
-                    .id("documentation-panel-scroll")
+                    .relative()
                     .flex_1()
-                    .overflow_y_scroll()
-                    .px_3()
-                    .py_2()
-                    .child(self.render_content(tokens)),
+                    .min_h(px(0.0))
+                    .overflow_hidden()
+                    .child(
+                        div()
+                            .id("documentation-panel-scroll")
+                            .size_full()
+                            .min_h(px(0.0))
+                            .overflow_y_scroll()
+                            .track_scroll(&self.scroll_handle)
+                            .px(tokens.sizes.space_4)
+                            .py(tokens.sizes.space_3)
+                            .child(rendered_content),
+                    )
+                    .when_some(
+                        Scrollbar::vertical(self.scrollbar_state.clone()),
+                        |container, scrollbar| {
+                            container.child(
+                                div()
+                                    .absolute()
+                                    .top_0()
+                                    .right_0()
+                                    .bottom_0()
+                                    .w(SCROLLBAR_THICKNESS)
+                                    .child(scrollbar),
+                            )
+                        },
+                    ),
             )
-    }
-}
-
-impl IntoElement for DocumentationPanel {
-    type Element = gpui::AnyElement;
-
-    fn into_element(self) -> Self::Element {
-        self.into_any_element()
     }
 }
 

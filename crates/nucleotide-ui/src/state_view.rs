@@ -122,7 +122,7 @@ impl RenderOnce for StateView {
             })
             .child(
                 div()
-                    .text_sm()
+                    .text_size(tokens.sizes.text_sm)
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(tokens.chrome.text_on_chrome)
                     .child(self.title),
@@ -131,7 +131,7 @@ impl RenderOnce for StateView {
                 view.child(
                     div()
                         .max_w(px(360.0))
-                        .text_xs()
+                        .text_size(tokens.sizes.text_xs)
                         .text_color(tokens.chrome.text_chrome_secondary)
                         .child(detail),
                 )

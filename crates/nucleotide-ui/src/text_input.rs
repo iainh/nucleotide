@@ -1134,8 +1134,8 @@ impl Render for TextInput {
                     } else {
                         theme.tokens.sizes.radius_md
                     })
-                    .px_2()
-                    .py_1()
+                    .px(theme.tokens.sizes.space_2)
+                    .py(theme.tokens.sizes.space_1)
             })
             .when(windows_system && !is_ghost, |this| {
                 this.min_h(px(match self.size {

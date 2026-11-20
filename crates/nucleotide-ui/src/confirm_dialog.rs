@@ -374,10 +374,14 @@ impl Render for ConfirmDialogView {
                 .bg(if windows_system {
                     tokens.chrome.surface_elevated.alpha(1.0)
                 } else {
-                    tokens.chrome.surface
+                    tokens.chrome.surface_elevated
                 })
                 .border_1()
-                .border_color(tokens.chrome.border_default)
+                .border_color(if windows_system {
+                    tokens.chrome.border_default
+                } else {
+                    tokens.chrome.border_strong
+                })
                 .rounded(tokens.sizes.radius_lg)
                 .when(tokens.chrome.contrast.is_none(), |this| {
                     this.shadow(vec![tokens.chrome.shadow_lg.to_box_shadow(false)])
@@ -386,10 +390,10 @@ impl Render for ConfirmDialogView {
                 .when(windows_system, |this| {
                     this.overflow_hidden().font_family("Segoe UI Variable")
                 })
-                .when(!windows_system, |this| this.p(tokens.sizes.space_4))
+                .when(!windows_system, |this| this.p(tokens.sizes.space_5))
                 .flex()
                 .flex_col()
-                .when(!windows_system, |this| this.gap(tokens.sizes.space_3))
+                .when(!windows_system, |this| this.gap(tokens.sizes.space_4))
                 .on_action(cx.listener(Self::confirm))
                 .on_action(cx.listener(Self::cancel))
                 .on_any_mouse_down(|_, _, cx| cx.stop_propagation())

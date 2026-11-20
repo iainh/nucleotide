@@ -703,12 +703,23 @@ pub fn soft_wrap_cursor_paint_plan(
 }
 
 pub fn cursor_foreground_color(cursor_style: &Style, has_reversed: bool, default_bg: Hsla) -> Hsla {
+    let fallback = || {
+        let cursor_bg_light = cursor_style
+            .bg
+            .and_then(helix_color_to_hsla)
+            .map_or(default_bg.l <= 0.5, |bg| bg.l > 0.5);
+        if cursor_bg_light {
+            gpui::black()
+        } else {
+            white()
+        }
+    };
     if has_reversed {
         default_bg
     } else if let Some(fg) = cursor_style.fg {
-        helix_color_to_hsla(fg).unwrap_or_else(white)
+        helix_color_to_hsla(fg).unwrap_or_else(fallback)
     } else {
-        white()
+        fallback()
     }
 }
 

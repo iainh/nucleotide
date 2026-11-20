@@ -148,26 +148,26 @@ impl<'a> StyleContext<'a> {
             "small" => {
                 style.padding_x = self.tokens.sizes.space_2;
                 style.padding_y = self.tokens.sizes.space_1;
-                style.font_size = px(12.0);
+                style.font_size = self.tokens.sizes.text_sm;
                 style.border_radius = self.tokens.sizes.radius_sm;
             }
             "medium" => {
                 style.padding_x = self.tokens.sizes.space_3;
                 style.padding_y = self.tokens.sizes.space_2;
-                style.font_size = px(14.0);
+                style.font_size = self.tokens.sizes.text_md;
                 style.border_radius = self.tokens.sizes.radius_md;
             }
             "large" => {
                 style.padding_x = self.tokens.sizes.space_4;
                 style.padding_y = self.tokens.sizes.space_3;
-                style.font_size = px(16.0);
+                style.font_size = self.tokens.sizes.text_lg;
                 style.border_radius = self.tokens.sizes.radius_lg;
             }
             _ => {
                 // Default to medium
                 style.padding_x = self.tokens.sizes.space_3;
                 style.padding_y = self.tokens.sizes.space_2;
-                style.font_size = px(14.0);
+                style.font_size = self.tokens.sizes.text_md;
                 style.border_radius = self.tokens.sizes.radius_md;
             }
         }
@@ -195,15 +195,14 @@ impl<'a> StyleContext<'a> {
 
         // Set border visibility and shadow for non-ghost variants
         if self.variant != "ghost" {
-            // Add subtle shadow for depth and visual hierarchy derived from tokens
-            let base_shadow = if self.is_dark_theme { 0.25 } else { 0.10 };
-            let shadow_color = with_alpha(self.tokens.chrome.text_on_chrome, base_shadow);
+            // Use the theme's calibrated chrome shadow token instead of tinting text_on_chrome
+            let shadow = self.tokens.chrome.shadow_sm;
             style.shadow = Some(BoxShadow {
-                offset_x: px(0.0),
-                offset_y: px(1.0),
-                blur_radius: px(1.5), // Reduced blur radius for crisper borders
-                spread_radius: px(0.0),
-                color: shadow_color,
+                offset_x: shadow.offset_x,
+                offset_y: shadow.offset_y,
+                blur_radius: shadow.blur_radius,
+                spread_radius: shadow.spread_radius,
+                color: shadow.color,
             });
         } else {
             // Ghost variants get transparent borders to maintain consistent box model
@@ -224,14 +223,13 @@ impl<'a> StyleContext<'a> {
 
                 // Enhance shadow on hover for non-ghost variants
                 if self.variant != "ghost" {
-                    let hover_shadow = if self.is_dark_theme { 0.30 } else { 0.15 };
-                    let shadow_color = with_alpha(self.tokens.chrome.text_on_chrome, hover_shadow);
+                    let shadow = self.tokens.chrome.shadow_md;
                     style.shadow = Some(BoxShadow {
-                        offset_x: px(0.0),
-                        offset_y: px(2.0),
-                        blur_radius: px(2.5), // Reduced blur radius for crisper borders
-                        spread_radius: px(0.0),
-                        color: shadow_color,
+                        offset_x: shadow.offset_x,
+                        offset_y: shadow.offset_y,
+                        blur_radius: shadow.blur_radius,
+                        spread_radius: shadow.spread_radius,
+                        color: shadow.color,
                     });
                 }
             }
@@ -242,14 +240,13 @@ impl<'a> StyleContext<'a> {
 
                 // Reduce shadow on active for pressed feeling
                 if self.variant != "ghost" {
-                    let active_shadow = if self.is_dark_theme { 0.40 } else { 0.20 };
-                    let shadow_color = with_alpha(self.tokens.chrome.text_on_chrome, active_shadow);
+                    let shadow = self.tokens.chrome.shadow_sm;
                     style.shadow = Some(BoxShadow {
-                        offset_x: px(0.0),
+                        offset_x: shadow.offset_x,
                         offset_y: px(0.5),
-                        blur_radius: px(1.0), // Minimal blur for active state
-                        spread_radius: px(0.0),
-                        color: shadow_color,
+                        blur_radius: px(1.0),
+                        spread_radius: shadow.spread_radius,
+                        color: shadow.color,
                     });
                 }
             }

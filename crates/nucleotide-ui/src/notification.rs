@@ -3,7 +3,7 @@ use std::time::Duration;
 use crate::Theme;
 use gpui::{
     App, Context, FontWeight, IntoElement, ParentElement, Render, RenderOnce, Result, Styled,
-    Window, div, prelude::FluentBuilder, px,
+    Window, div, prelude::FluentBuilder,
 };
 use helix_view::document::DocumentSavedEvent;
 use nucleotide_types::EditorStatus;
@@ -322,14 +322,15 @@ impl RenderOnce for BannerNotification {
             ),
         };
 
+        let tokens = &theme.tokens;
         div()
             .flex()
             .flex_col()
-            .gap_1()
-            .min_h(px(36.0))
+            .gap(tokens.sizes.space_1)
+            .min_h(tokens.sizes.button_height_md)
             .w_full()
-            .px_3()
-            .py_2()
+            .px(tokens.sizes.space_4)
+            .py(tokens.sizes.space_3)
             .bg(bg_color)
             .text_color(text_color)
             .border_b_1()
@@ -340,7 +341,7 @@ impl RenderOnce for BannerNotification {
                     .clone()
                     .into(),
             )
-            .text_size(px(cx.global::<nucleotide_types::UiFontConfig>().size - 1.0))
+            .text_size(tokens.sizes.text_sm)
             .child(
                 div()
                     .font_weight(FontWeight::BOLD)

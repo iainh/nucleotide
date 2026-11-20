@@ -438,7 +438,9 @@ where
 
 /// Whether non-essential UI motion is enabled for the current configuration.
 pub fn animations_enabled(cx: &App) -> bool {
-    get_config(cx).features.animations_enabled()
+    cx.try_global::<UIConfig>()
+        .map(|config| config.features.animations_enabled())
+        .unwrap_or(true)
 }
 
 /// Update the global theme

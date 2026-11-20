@@ -124,7 +124,7 @@ impl EditorSurface {
             horizontal_scrollbar_state,
             child: child.into_any_element(),
             focus: None,
-            scrollbar_thumb_color: hsla(0.0, 0.0, 0.72, 1.0),
+            scrollbar_thumb_color: hsla(0.0, 0.0, 0.50, 1.0),
             scrollbar_style: ScrollbarStyle::Themed,
             scrollbar_track_color: gpui::transparent_black(),
             scrollbar_contrast_disabled_color: None,

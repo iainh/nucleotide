@@ -893,13 +893,13 @@ impl PickerView {
                 Some(helix_core::diagnostic::Severity::Info) => "diagnostic-filter-info".into(),
                 Some(helix_core::diagnostic::Severity::Hint) => "diagnostic-filter-hint".into(),
             })
-            .h_7()
-            .px_2()
+            .h(tokens.sizes.button_height_sm)
+            .px(tokens.sizes.space_2)
             .flex()
             .flex_shrink_0()
             .items_center()
-            .gap_1()
-            .rounded_sm()
+            .gap(tokens.sizes.space_1)
+            .rounded(tokens.sizes.radius_sm)
             .border_1()
             .border_color(border)
             .cursor_pointer()
@@ -908,6 +908,10 @@ impl PickerView {
             .when(selected, |this| {
                 this.bg(selected_background)
                     .text_color(self.style.modal_style.selected_text)
+            })
+            .when(!selected, |this| {
+                let hover_bg = tokens.chrome.surface_hover;
+                this.hover(move |style| style.bg(hover_bg))
             })
             .when_some(severity, |this, severity| {
                 this.child(
@@ -1432,11 +1436,12 @@ impl PickerView {
         path: String,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
+        let sizes = cx.global::<crate::Theme>().tokens.sizes;
         div()
             .debug_selector(|| "diagnostic-file-header".into())
-            .h(px(28.0))
+            .h(sizes.button_height_sm)
             .w_full()
-            .px_3()
+            .px(sizes.space_4)
             .flex()
             .items_center()
             .flex_shrink_0()
@@ -1444,7 +1449,7 @@ impl PickerView {
             .border_color(self.style.modal_style.border)
             .truncate()
             .font_family(Self::ui_font_family(cx))
-            .text_size(cx.global::<crate::Theme>().tokens.sizes.text_xs)
+            .text_size(sizes.text_xs)
             .text_color(self.style.modal_style.prompt_text)
             .child(path)
             .into_any_element()
@@ -1503,6 +1508,10 @@ impl PickerView {
             .when(is_selected, |this| {
                 this.bg(self.style.modal_style.selected_background)
             })
+            .when(!is_selected, |this| {
+                let hover_bg = tokens.chrome.surface_hover;
+                this.hover(move |style| style.bg(hover_bg))
+            })
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |picker, _event, _window, cx| {
@@ -1526,14 +1535,13 @@ impl PickerView {
                     .flex_1()
                     .min_w(px(0.0))
                     .h_full()
-                    .pl_3()
-                    .pr_3()
+                    .px(tokens.sizes.space_4)
                     .flex()
                     .items_center()
-                    .gap_3()
+                    .gap(tokens.sizes.space_3)
                     .child(
                         div()
-                            .w(px(20.0))
+                            .w(tokens.sizes.space_6)
                             .flex()
                             .items_center()
                             .justify_center()
@@ -1541,7 +1549,7 @@ impl PickerView {
                             .child(
                                 svg()
                                     .path(icon_path.clone())
-                                    .size(px(16.0))
+                                    .size(tokens.sizes.space_5)
                                     .text_color(icon_color),
                             ),
                     )
@@ -1551,7 +1559,7 @@ impl PickerView {
                             .min_w(px(0.0))
                             .flex()
                             .flex_col()
-                            .gap_1()
+                            .gap(tokens.sizes.space_1)
                             .font_family(Self::ui_font_family(cx))
                             .child(
                                 div()
@@ -1572,10 +1580,10 @@ impl PickerView {
                     )
                     .children(tags.iter().map(|tag| {
                         div()
-                            .px_2()
-                            .py_0p5()
+                            .px(tokens.sizes.space_2)
+                            .py(tokens.sizes.space_1)
                             .flex_shrink_0()
-                            .rounded_sm()
+                            .rounded(tokens.sizes.radius_sm)
                             .border_1()
                             .border_color(self.style.modal_style.border)
                             .text_size(tokens.sizes.text_xs)
@@ -1637,7 +1645,7 @@ impl PickerView {
             .bg(self.style.modal_style.background)
             .border_1()
             .border_color(self.style.modal_style.border)
-            .rounded_md()
+            .rounded(ui_theme.tokens.sizes.radius_md)
             .shadow(vec![
                 ui_theme.tokens.chrome.shadow_lg.to_box_shadow(false),
                 ui_theme
@@ -1691,8 +1699,8 @@ impl PickerView {
             .when(is_diagnostic_picker, |this| {
                 this.child(
                     div()
-                        .h_9()
-                        .px_3()
+                        .h(ui_theme.tokens.sizes.button_height_md)
+                        .px(ui_theme.tokens.sizes.space_4)
                         .flex()
                         .items_center()
                         .border_b_1()
@@ -1708,9 +1716,9 @@ impl PickerView {
                     div()
                         .flex()
                         .items_center()
-                        .gap_2()
-                        .px_3()
-                        .h_11()
+                        .gap(ui_theme.tokens.sizes.space_2)
+                        .px(ui_theme.tokens.sizes.space_4)
+                        .h(ui_theme.tokens.sizes.button_height_lg)
                         .border_b_1()
                         .border_color(self.style.modal_style.border)
                         .child(
@@ -1746,9 +1754,9 @@ impl PickerView {
                     div()
                         .flex()
                         .items_center()
-                        .px_3()
+                        .px(ui_theme.tokens.sizes.space_4)
                         .gap(ui_theme.tokens.sizes.space_3)
-                        .h_12()
+                        .h(ui_theme.tokens.sizes.space_10)
                         .border_b_1()
                         .border_color(self.style.modal_style.border)
                         .child(
@@ -1791,18 +1799,18 @@ impl PickerView {
                         div()
                             .flex()
                             .items_center()
-                            .px_3()
-                            .py_1()
+                            .px(ui_theme.tokens.sizes.space_4)
+                            .py(ui_theme.tokens.sizes.space_1)
                             .border_b_1()
                             .border_color(self.style.modal_style.border)
                             .text_color(self.style.modal_style.prompt_text)
                             .font_family(Self::ui_font_family(cx))
-                            .text_size(cx.global::<crate::Theme>().tokens.sizes.text_sm)
+                            .text_size(ui_theme.tokens.sizes.text_sm)
                             .child(
                                 div()
                                     .flex()
                                     .w_full()
-                                    .gap_2()
+                                    .gap(ui_theme.tokens.sizes.space_2)
                                     .child(
                                         // ID header
                                         div().w(px(50.0)).child("id"),
@@ -2150,9 +2158,9 @@ impl PickerView {
                                                         (renderer)(doc_id, view_id, cx)
                                                     } else {
                                                     div()
-                                                        .px_3()
-                                                        .py_2()
-                                                        .text_size(cx.global::<crate::Theme>().tokens.sizes.text_sm)
+                                                        .px(ui_theme.tokens.sizes.space_4)
+                                                        .py(ui_theme.tokens.sizes.space_2)
+                                                        .text_size(ui_theme.tokens.sizes.text_sm)
                                                         .text_color(self.style.preview_text)
                                                         .font_family({
                                                             cx.global::<nucleotide_types::FontSettings>()
@@ -2167,9 +2175,9 @@ impl PickerView {
                                                     (renderer)(doc_id, view_id, cx)
                                                 } else {
                                                     div()
-                                                        .px_3()
-                                                        .py_2()
-                                                        .text_size(cx.global::<crate::Theme>().tokens.sizes.text_sm)
+                                                        .px(ui_theme.tokens.sizes.space_4)
+                                                        .py(ui_theme.tokens.sizes.space_2)
+                                                        .text_size(ui_theme.tokens.sizes.text_sm)
                                                         .text_color(self.style.preview_text)
                                                                                     .font_family({
                                                                                         cx.global::<nucleotide_types::FontSettings>()
@@ -2193,9 +2201,9 @@ impl PickerView {
                                             } else {
                                                 // Fallback: plain text preview content
                                                 div()
-                                                    .px_3()
-                                                    .py_2()
-                                                    .text_size(cx.global::<crate::Theme>().tokens.sizes.text_sm)
+                                                    .px(ui_theme.tokens.sizes.space_4)
+                                                    .py(ui_theme.tokens.sizes.space_2)
+                                                    .text_size(ui_theme.tokens.sizes.text_sm)
                                                     .text_color(self.style.preview_text)
                                                     .font_family({
                                                         cx.global::<nucleotide_types::FontSettings>()

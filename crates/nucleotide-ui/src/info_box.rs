@@ -2,7 +2,7 @@ use crate::Theme;
 use gpui::prelude::FluentBuilder;
 use gpui::{
     Context, DismissEvent, EventEmitter, FontWeight, IntoElement, ParentElement, Render,
-    SharedString, Styled, Window, div, px,
+    SharedString, Styled, Window, div,
 };
 use helix_view::info::Info;
 
@@ -41,24 +41,26 @@ impl EventEmitter<DismissEvent> for InfoBoxView {}
 impl Render for InfoBoxView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.global::<Theme>();
-        let tooltip_tokens = theme.tokens.tooltip_tokens();
+        let tokens = &theme.tokens;
+        let tooltip_tokens = tokens.tooltip_tokens();
+        let bottom_offset = tokens.sizes.statusbar_height + tokens.sizes.space_2;
 
         div()
             .absolute()
-            .bottom_7()
-            .right_1()
+            .bottom(bottom_offset)
+            .right(tokens.sizes.space_2)
             .flex()
             .flex_row()
             .child(
                 div()
-                    .rounded_sm()
-                    .shadow(vec![theme.tokens.chrome.shadow_sm.to_box_shadow(false)])
-                    .text_size(px(cx.global::<nucleotide_types::UiFontConfig>().size - 1.0))
+                    .rounded(tokens.sizes.radius_sm)
+                    .shadow(vec![tokens.chrome.shadow_sm.to_box_shadow(false)])
+                    .text_size(tokens.sizes.text_sm)
                     .bg(tooltip_tokens.background)
                     .text_color(tooltip_tokens.text)
                     .border_1()
                     .border_color(tooltip_tokens.border)
-                    .p_2()
+                    .p(tokens.sizes.space_3)
                     .flex()
                     .flex_row()
                     .content_end()
@@ -67,6 +69,7 @@ impl Render for InfoBoxView {
                             div()
                                 .flex()
                                 .flex_col()
+                                .gap(tokens.sizes.space_1)
                                 .child(
                                     div()
                                         .flex()

@@ -678,11 +678,27 @@ fn inline_diagnostic_colors(theme: &Theme) -> InlineDiagnosticColors {
 fn diagnostic_text_color(theme: &Theme, primary: &str, fallback: &str) -> Hsla {
     style_color(theme.get(primary))
         .or_else(|| style_color(theme.get(fallback)))
-        .unwrap_or_else(|| match primary {
-            "error" => gpui::rgb(0xff5f5f).into(),
-            "warning" => gpui::rgb(0xe5c07b).into(),
-            "info" => gpui::rgb(0x61afef).into(),
-            _ => gpui::rgb(0x98c379).into(),
+        .unwrap_or_else(|| {
+            let is_light = theme
+                .get("ui.background")
+                .bg
+                .and_then(helix_color_to_hsla)
+                .is_some_and(|bg| bg.l > 0.5);
+            if is_light {
+                match primary {
+                    "error" => gpui::rgb(0xc62828).into(),
+                    "warning" => gpui::rgb(0x9a5b00).into(),
+                    "info" => gpui::rgb(0x1565c0).into(),
+                    _ => gpui::rgb(0x2e7d32).into(),
+                }
+            } else {
+                match primary {
+                    "error" => gpui::rgb(0xff5f5f).into(),
+                    "warning" => gpui::rgb(0xe5c07b).into(),
+                    "info" => gpui::rgb(0x61afef).into(),
+                    _ => gpui::rgb(0x98c379).into(),
+                }
+            }
         })
 }
 

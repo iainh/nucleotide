@@ -547,13 +547,22 @@ impl RenderOnce for Scrollbar {
                         },
                     )
                 };
+                static WINDOWS_ICON_FONT: std::sync::OnceLock<&'static str> =
+                    std::sync::OnceLock::new();
+                let icon_font = *WINDOWS_ICON_FONT.get_or_init(|| {
+                    let names = window.text_system().all_font_names();
+                    ["Segoe Fluent Icons", "Segoe MDL2 Assets"]
+                        .into_iter()
+                        .find(|family| names.iter().any(|name| name == family))
+                        .unwrap_or("Segoe Fluent Icons")
+                });
                 let mut arrow = div()
                     .absolute()
                     .size(SCROLLBAR_THICKNESS)
                     .flex()
                     .items_center()
                     .justify_center()
-                    .font_family("Segoe Fluent Icons")
+                    .font_family(icon_font)
                     .line_height(gpui::relative(1.0))
                     .text_size(px(
                         if !disabled

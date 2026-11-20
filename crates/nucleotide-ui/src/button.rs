@@ -3,8 +3,8 @@
 
 use crate::icon as svg;
 use crate::{
-    ComponentFactory, Composable, Interactive, Slotted, StyleSize, StyleState, StyleVariant,
-    Styled as UIStyled, ThemedContext, Tooltipped,
+    ComponentFactory, Composable, IndeterminateProgressIndicator, Interactive, Slotted, StyleSize,
+    StyleState, StyleVariant, Styled as UIStyled, ThemedContext, Tooltipped,
     styling::{ComputedStyle, TimingFunction, Transition, TransitionProperty},
     tokens::{ButtonTokens, DesignTokens},
 };
@@ -287,11 +287,27 @@ type ButtonClickHandler = Arc<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'stat
 
 pub struct TextTooltip {
     text: SharedString,
+    detail: Option<SharedString>,
+    pointer_clearance: Option<Pixels>,
 }
 
 impl TextTooltip {
     pub fn new(text: impl Into<SharedString>) -> Self {
-        Self { text: text.into() }
+        Self {
+            text: text.into(),
+            detail: None,
+            pointer_clearance: None,
+        }
+    }
+
+    pub fn detail(mut self, detail: impl Into<SharedString>) -> Self {
+        self.detail = Some(detail.into());
+        self
+    }
+
+    pub fn pointer_clearance(mut self, clearance: Pixels) -> Self {
+        self.pointer_clearance = Some(clearance);
+        self
     }
 }
 
@@ -300,7 +316,7 @@ impl Render for TextTooltip {
         let tokens = cx.theme().tokens;
         let tooltip_tokens = tokens.tooltip_tokens();
 
-        div()
+        let body = div()
             .max_w(px(420.0))
             .px(tokens.sizes.space_2)
             .py(tokens.sizes.space_1)
@@ -309,9 +325,29 @@ impl Render for TextTooltip {
             .border_color(tooltip_tokens.border)
             .bg(tooltip_tokens.background)
             .shadow(vec![tokens.chrome.shadow_md.to_box_shadow(false)])
-            .text_size(tokens.sizes.text_sm)
-            .text_color(tooltip_tokens.text)
-            .child(self.text.clone())
+            .flex()
+            .flex_col()
+            .gap(tokens.sizes.space_1)
+            .child(
+                div()
+                    .text_size(tokens.sizes.text_sm)
+                    .text_color(tooltip_tokens.text)
+                    .child(self.text.clone()),
+            )
+            .when_some(self.detail.clone(), |tooltip, detail| {
+                tooltip.child(
+                    div()
+                        .text_size(tokens.sizes.text_xs)
+                        .text_color(tooltip_tokens.text_secondary)
+                        .child(detail),
+                )
+            });
+
+        if let Some(clearance) = self.pointer_clearance {
+            div().pt(clearance).child(body).into_any_element()
+        } else {
+            body.into_any_element()
+        }
     }
 }
 
@@ -905,6 +941,7 @@ impl RenderOnce for Button {
         // pseudo-state can otherwise read as latched after the action runs.
         let apply_active_style = !activate_on_mouse_down;
 
+        let loading_id = SharedString::from(format!("{}-spinner", self.id));
         #[cfg(test)]
         let debug_id = self.id.to_string();
         let mut button = div()
@@ -1057,8 +1094,11 @@ impl RenderOnce for Button {
 
         // Add loading spinner if in loading state
         if self.loading {
-            // Simple loading indicator - could be enhanced with actual spinner
-            button = button.child("⟳").child(" ");
+            button = button.child(
+                IndeterminateProgressIndicator::new(loading_id)
+                    .size(f32::from(metrics.icon_size))
+                    .text_color(computed_style.foreground),
+            );
         }
 
         if let Some(content) = self.content {

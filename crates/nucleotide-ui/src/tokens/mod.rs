@@ -2359,11 +2359,17 @@ pub struct DropdownTokens {
     // Icons and indicators
     pub icon_color: Hsla,
     pub icon_color_disabled: Hsla,
+
+    // Semantic status accents calibrated for container_background
+    pub status_info: Hsla,
+    pub status_success: Hsla,
+    pub status_warning: Hsla,
+    pub status_error: Hsla,
 }
 
 impl DropdownTokens {
     /// Create dropdown tokens using hybrid color approach
-    pub fn from_tokens(chrome: &ChromeTokens, _editor: &EditorTokens) -> Self {
+    pub fn from_tokens(chrome: &ChromeTokens, editor: &EditorTokens) -> Self {
         use crate::styling::color_theory::ColorTheory;
 
         if let Some(c) = chrome.contrast {
@@ -2386,6 +2392,10 @@ impl DropdownTokens {
                 separator: c.window_text,
                 icon_color: c.window_text,
                 icon_color_disabled: c.gray_text,
+                status_info: c.window_text,
+                status_success: c.window_text,
+                status_warning: c.window_text,
+                status_error: c.window_text,
             };
         }
         // Dense menu text uses the transient surface's steady backing colour.
@@ -2453,6 +2463,10 @@ impl DropdownTokens {
             separator,
             icon_color,
             icon_color_disabled,
+            status_info: ColorTheory::ensure_contrast(container_bg, editor.info, 4.5),
+            status_success: ColorTheory::ensure_contrast(container_bg, editor.success, 4.5),
+            status_warning: ColorTheory::ensure_contrast(container_bg, editor.warning, 4.5),
+            status_error: ColorTheory::ensure_contrast(container_bg, editor.error, 4.5),
         }
     }
 }
@@ -2762,6 +2776,11 @@ impl ChromeTokens {
         let warning_bg = ColorTheory::with_alpha(editor.warning, 0.15);
         let error_bg = ColorTheory::with_alpha(editor.error, 0.15);
 
+        // Evaluate text contrast against the composited surface behind the translucent tint
+        let success_surface = ColorTheory::mix(self.surface_elevated, editor.success, 0.15);
+        let warning_surface = ColorTheory::mix(self.surface_elevated, editor.warning, 0.15);
+        let error_surface = ColorTheory::mix(self.surface_elevated, editor.error, 0.15);
+
         NotificationTokens {
             // Background colors
             info_background: info_bg,
@@ -2769,11 +2788,11 @@ impl ChromeTokens {
             warning_background: warning_bg,
             error_background: error_bg,
 
-            // Text colors - ensure contrast
+            // Text colors - ensure contrast against the actual composited background
             info_text: ColorTheory::ensure_contrast(info_bg, self.text_on_chrome, 4.5),
-            success_text: ColorTheory::ensure_contrast(success_bg, editor.success, 4.5),
-            warning_text: ColorTheory::ensure_contrast(warning_bg, editor.warning, 4.5),
-            error_text: ColorTheory::ensure_contrast(error_bg, editor.error, 4.5),
+            success_text: ColorTheory::ensure_contrast(success_surface, editor.success, 4.5),
+            warning_text: ColorTheory::ensure_contrast(warning_surface, editor.warning, 4.5),
+            error_text: ColorTheory::ensure_contrast(error_surface, editor.error, 4.5),
 
             // Border colors - match semantic colors
             info_border: self.border_shadow,

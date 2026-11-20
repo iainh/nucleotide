@@ -2,8 +2,8 @@
 // ABOUTME: Provides minimize, maximize/restore, and close buttons with platform-specific styling
 
 use gpui::{
-    App, AppContext, Context, Hsla, InteractiveElement, IntoElement, MouseButton, ParentElement,
-    Render, RenderOnce, Rgba, StatefulInteractiveElement, Styled, Window, WindowControlArea,
+    App, AppContext, Hsla, InteractiveElement, IntoElement, MouseButton, ParentElement, RenderOnce,
+    Rgba, StatefulInteractiveElement, Styled, Window, WindowControlArea,
 };
 
 use crate::icon as svg;
@@ -42,30 +42,6 @@ impl WindowControlType {
 
 const WINDOWS_CAPTION_BUTTON_WIDTH: f32 = 46.0;
 const WINDOWS_CAPTION_ICON_SIZE: f32 = 10.0;
-
-struct CaptionButtonTooltip {
-    label: &'static str,
-}
-
-impl Render for CaptionButtonTooltip {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let tokens = cx.global::<crate::Theme>().tokens;
-        let tooltip_tokens = tokens.tooltip_tokens();
-
-        gpui::div()
-            .max_w(gpui::px(420.0))
-            .px(tokens.sizes.space_2)
-            .py(tokens.sizes.space_1)
-            .rounded(tokens.sizes.radius_sm)
-            .border_1()
-            .border_color(tooltip_tokens.border)
-            .bg(tooltip_tokens.background)
-            .shadow(vec![tokens.chrome.shadow_md.to_box_shadow(false)])
-            .text_size(tokens.sizes.text_sm)
-            .text_color(tooltip_tokens.text)
-            .child(self.label)
-    }
-}
 
 fn windows_close_hover_background() -> Hsla {
     Rgba {
@@ -290,7 +266,7 @@ fn activate_window_control(control_type: WindowControlType, window: &mut Window,
 }
 
 impl RenderOnce for WindowControl {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         debug!(
             "TITLEBAR WINDOW_CONTROL: Rendering {:?} control with colors - icon={:?}, icon_hover={:?}, bg_hover={:?}",
             self.control_type, self.style.icon, self.style.icon_hover, self.style.background_hover
@@ -303,6 +279,7 @@ impl RenderOnce for WindowControl {
             .text_color(self.style.icon)
             .group_hover("", |this| this.text_color(self.style.icon_hover));
 
+        let sizes = cx.global::<crate::Theme>().tokens.sizes;
         gpui::div()
             .flex()
             .flex_row()
@@ -311,7 +288,7 @@ impl RenderOnce for WindowControl {
             .cursor_pointer()
             .justify_center()
             .items_center()
-            .rounded_md()
+            .rounded(sizes.radius_md)
             .w_6()
             .h_6()
             .hover(|this| this.bg(self.style.background_hover))
@@ -354,13 +331,17 @@ impl RenderOnce for WindowsCaptionButton {
         let control_type = self.control_type;
         let (hover_bg, hover_fg, active_bg, active_fg) = match self.control_type {
             WindowControlType::Close => {
-                let close_bg = windows_close_hover_background();
-                (
-                    close_bg,
-                    gpui::white(),
-                    ColorTheory::with_alpha(close_bg, 0.8),
-                    ColorTheory::with_alpha(gpui::white(), 0.8),
-                )
+                if let Some(c) = self.theme_tokens.chrome.contrast {
+                    (c.highlight, c.highlight_text, c.highlight, c.highlight_text)
+                } else {
+                    let close_bg = windows_close_hover_background();
+                    (
+                        close_bg,
+                        gpui::white(),
+                        ColorTheory::with_alpha(close_bg, 0.8),
+                        ColorTheory::with_alpha(gpui::white(), 0.8),
+                    )
+                }
             }
             WindowControlType::Minimize
             | WindowControlType::Restore
@@ -386,10 +367,8 @@ impl RenderOnce for WindowsCaptionButton {
             .hover(|button| button.bg(hover_bg).text_color(hover_fg))
             .active(|button| button.bg(active_bg).text_color(active_fg))
             .tooltip(move |_window, cx| {
-                cx.new(|_| CaptionButtonTooltip {
-                    label: control_type.accessible_label(),
-                })
-                .into()
+                cx.new(|_| crate::TextTooltip::new(control_type.accessible_label()))
+                    .into()
             })
             .on_mouse_down(MouseButton::Left, move |_, window, cx| {
                 window.prevent_default();
@@ -443,6 +422,7 @@ impl RenderOnce for WindowControls {
             .bottom_0()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
 
+        let sizes = cx.global::<crate::Theme>().tokens.sizes;
         controls = if self.platform_style == PlatformStyle::Windows {
             controls
                 .right(gpui::px(0.0))
@@ -450,7 +430,11 @@ impl RenderOnce for WindowControls {
                 .px(gpui::px(0.0))
                 .gap(gpui::px(0.0))
         } else {
-            controls.right_2().items_center().px_2().gap_1()
+            controls
+                .right(sizes.space_2)
+                .items_center()
+                .px(sizes.space_2)
+                .gap(sizes.space_1)
         };
 
         if let Some(area) = self.window_control_area {

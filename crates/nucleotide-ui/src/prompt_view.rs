@@ -635,10 +635,13 @@ impl Render for PromptView {
             self.focus_handle.focus(window, cx);
         }
         let ui_theme = cx.global::<crate::Theme>();
+        let tokens = ui_theme.tokens;
+        let sizes = tokens.sizes;
+        let hover_bg = tokens.chrome.surface_hover;
         let style = self
             .style
             .clone()
-            .unwrap_or_else(|| PromptStyle::from_tokens(&ui_theme.tokens));
+            .unwrap_or_else(|| PromptStyle::from_tokens(&tokens));
 
         div()
             .key_context(PROMPT_CONTEXT)
@@ -648,8 +651,8 @@ impl Render for PromptView {
             .bg(style.modal_style.background)
             .border_1()
             .border_color(style.modal_style.border)
-            .rounded_md()
-            .shadow(vec![ui_theme.tokens.chrome.shadow_lg.to_box_shadow(false)])
+            .rounded(sizes.radius_md)
+            .shadow(vec![tokens.chrome.shadow_lg.to_box_shadow(false)])
             .font(font.clone())
             .text_size(px(ui_font_size))
             .track_focus(&self.focus_handle)
@@ -663,10 +666,10 @@ impl Render for PromptView {
                 div()
                     .flex()
                     .items_center()
-                    .px_3()
-                    .py_2()
-                    .h(px(44.)) // Fixed height to prevent expansion
-                    .gap_2()
+                    .px(sizes.space_4)
+                    .py(sizes.space_2)
+                    .h(sizes.button_height_lg)
+                    .gap(sizes.space_2)
                     .child(
                         div()
                             .font(font.clone())
@@ -699,20 +702,19 @@ impl Render for PromptView {
             .when(
                 self.show_completions && !self.completions.is_empty(),
                 |this| {
+                    let max_visible = 4;
+                    let total = self.completions.len();
+                    let start_idx = self.completion_scroll_offset;
+                    let end_idx = (start_idx + max_visible).min(total);
+
                     this.child(
                         div()
                             .border_t_1()
                             .border_color(style.modal_style.border)
                             .bg(style.completion_background)
-                            .max_h(px(200.))
-                            .overflow_y_hidden()
-                            .children({
-                                // Use the tracked scroll offset to determine visible window
-                                let max_visible = 4; // Maximum number of visible items (matches visual capacity)
-
-                                let start_idx = self.completion_scroll_offset;
-                                let end_idx = (start_idx + max_visible).min(self.completions.len());
-
+                            .flex()
+                            .flex_col()
+                            .children(
                                 self.completions[start_idx..end_idx]
                                     .iter()
                                     .enumerate()
@@ -720,55 +722,105 @@ impl Render for PromptView {
                                         let actual_idx = start_idx + visible_idx;
                                         let is_selected = actual_idx == self.completion_selection;
                                         let row_font = font.clone();
-                                        div()
-                                            .id(("completion_item", actual_idx))
-                                            .font(row_font.clone())
-                                            .flex()
-                                            .flex_col()
-                                            .px_3()
-                                            .py_1()
-                                            .when(is_selected, |this| {
-                                                this.bg(style.modal_style.selected_background)
+                                        let click_listener = cx.listener(
+                                            move |this,
+                                                  _event: &gpui::MouseDownEvent,
+                                                  _window,
+                                                  cx| {
+                                                this.completion_selection = actual_idx;
+                                                this.accept_completion(cx);
+                                                cx.stop_propagation();
+                                            },
+                                        );
+                                        let row_bg = if is_selected {
+                                            style.modal_style.selected_background
+                                        } else {
+                                            gpui::transparent_black()
+                                        };
+                                        let row_fg = if is_selected {
+                                            style.modal_style.selected_text
+                                        } else {
+                                            style.modal_style.text
+                                        };
+
+                                        crate::ListItem::new(("completion_item", actual_idx))
+                                            .variant(crate::ListItemVariant::Ghost)
+                                            .spacing(crate::ListItemSpacing::Compact)
+                                            .focusable(false)
+                                            .background(row_bg)
+                                            .text_color(row_fg)
+                                            .hover_background(if is_selected {
+                                                row_bg
+                                            } else {
+                                                hover_bg
+                                            })
+                                            .with_listener(move |item| {
+                                                item.font(row_font.clone())
+                                                    .px(sizes.space_4)
+                                                    .py(sizes.space_2)
+                                                    .cursor_pointer()
+                                                    .on_mouse_down(
+                                                        gpui::MouseButton::Left,
+                                                        click_listener,
+                                                    )
                                             })
                                             .child(
                                                 div()
-                                                    .font(row_font.clone())
-                                                    .text_color(if is_selected {
-                                                        style.modal_style.selected_text
-                                                    } else {
-                                                        style.modal_style.text
-                                                    })
+                                                    .flex()
+                                                    .flex_col()
+                                                    .min_w(px(0.0))
                                                     .child(
-                                                        completion
-                                                            .display_text
-                                                            .as_ref()
-                                                            .unwrap_or(&completion.text)
-                                                            .clone(),
+                                                        div().child(
+                                                            completion
+                                                                .display_text
+                                                                .as_ref()
+                                                                .unwrap_or(&completion.text)
+                                                                .clone(),
+                                                        ),
+                                                    )
+                                                    .when_some(
+                                                        completion.description.as_ref(),
+                                                        |this, desc| {
+                                                            this.child(
+                                                                div()
+                                                                    .text_size(sizes.text_sm)
+                                                                    .text_color(if is_selected {
+                                                                        style
+                                                                            .modal_style
+                                                                            .selected_text
+                                                                    } else {
+                                                                        style
+                                                                            .modal_style
+                                                                            .prompt_text
+                                                                    })
+                                                                    .child(desc.clone()),
+                                                            )
+                                                        },
                                                     ),
                                             )
-                                            .when_some(
-                                                completion.description.as_ref(),
-                                                |this, desc| {
-                                                    this.child(
-                                                        div()
-                                                            .font(row_font.clone())
-                                                            .text_size(
-                                                                cx.global::<crate::Theme>()
-                                                                    .tokens
-                                                                    .sizes
-                                                                    .text_sm,
-                                                            )
-                                                            .text_color(if is_selected {
-                                                                style.modal_style.selected_text
-                                                            } else {
-                                                                style.modal_style.prompt_text
-                                                            })
-                                                            .child(desc.clone()),
-                                                    )
-                                                },
-                                            )
                                     })
-                                    .collect::<Vec<_>>()
+                                    .collect::<Vec<_>>(),
+                            )
+                            .when(total > max_visible, |list| {
+                                list.child(
+                                    div()
+                                        .border_t_1()
+                                        .border_color(style.modal_style.border)
+                                        .px(sizes.space_4)
+                                        .py(sizes.space_1)
+                                        .flex()
+                                        .items_center()
+                                        .justify_between()
+                                        .text_size(sizes.text_xs)
+                                        .text_color(style.modal_style.prompt_text)
+                                        .child(format!(
+                                            "Showing {}–{} of {}",
+                                            start_idx + 1,
+                                            end_idx,
+                                            total
+                                        ))
+                                        .child("Tab / ↑↓ to cycle"),
+                                )
                             }),
                     )
                 },

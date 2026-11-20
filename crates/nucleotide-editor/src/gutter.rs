@@ -226,8 +226,15 @@ pub fn build_gutter_lines_from_plans(
                 .style
                 .fg
                 .and_then(helix_color_to_hsla)
-                .unwrap_or(white());
+                .unwrap_or(text_style.color);
             let base_bg = plan.style.bg.and_then(helix_color_to_hsla);
+            let default_bg = text_style.background_color.unwrap_or_else(|| {
+                if text_style.color.l > 0.5 {
+                    black()
+                } else {
+                    white()
+                }
+            });
             let base_font = text_style.font();
             let run = create_styled_text_run(
                 plan.text.len(),
@@ -235,7 +242,7 @@ pub fn build_gutter_lines_from_plans(
                 &plan.style,
                 base_fg,
                 base_bg,
-                black(),
+                default_bg,
                 None,
             );
             let shaped = text_system.shape_line(plan.text.clone().into(), font_size, &[run], None);

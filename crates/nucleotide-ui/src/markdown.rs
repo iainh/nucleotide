@@ -4,9 +4,9 @@
 use gpui::prelude::{FluentBuilder, StyledImage};
 use gpui::{
     AppContext, ElementId, FontStyle, FontWeight, HighlightStyle, Hsla, InteractiveElement,
-    InteractiveText, IntoElement, MouseButton, ParentElement, Pixels, Render, RenderOnce,
-    SharedString, StatefulInteractiveElement, StrikethroughStyle, Styled, StyledText,
-    UnderlineStyle, Window, div, img, px, relative,
+    InteractiveText, IntoElement, MouseButton, ParentElement, Pixels, RenderOnce, SharedString,
+    StatefulInteractiveElement, StrikethroughStyle, Styled, StyledText, UnderlineStyle, Window,
+    div, img, px, relative,
 };
 use helix_core::{
     RopeSlice, Syntax,
@@ -1027,28 +1027,6 @@ struct RichTextRenderParts {
     highlights: Vec<(Range<usize>, HighlightStyle)>,
     code_fonts: Vec<(Range<usize>, SharedString)>,
     links: Vec<LinkRange>,
-}
-
-#[derive(Clone)]
-struct MarkdownTooltip {
-    text: SharedString,
-    style: MarkdownStyle,
-}
-
-impl Render for MarkdownTooltip {
-    fn render(&mut self, _window: &mut Window, _cx: &mut gpui::Context<Self>) -> impl IntoElement {
-        div()
-            .max_w(px(420.0))
-            .px(px(8.0))
-            .py(px(6.0))
-            .rounded(px(4.0))
-            .border_1()
-            .border_color(self.style.code_border)
-            .bg(self.style.code_background)
-            .text_size(self.style.body_font_size)
-            .text_color(self.style.body_color)
-            .child(self.text.clone())
-    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -2260,7 +2238,6 @@ fn render_rich_text_fragment(
             .collect::<Vec<_>>();
         let click_links = parts.links.clone();
         let tooltip_links = parts.links;
-        let tooltip_style = style.clone();
         let selection = style.selection.clone();
         let links = style.links.clone();
         if let Some(hover) = &links.layout {
@@ -2297,13 +2274,7 @@ fn render_rich_text_fragment(
                     .iter()
                     .find(|link| link.range.contains(&index))
                     .and_then(|link| link.title.clone())
-                    .map(|title| {
-                        cx.new(|_| MarkdownTooltip {
-                            text: title,
-                            style: tooltip_style.clone(),
-                        })
-                        .into()
-                    })
+                    .map(|title| cx.new(|_| crate::TextTooltip::new(title)).into())
             })
             .into_any_element()
     };
@@ -2645,13 +2616,14 @@ fn render_code_block(
         ));
 
     let block = if let Some(language) = language {
+        let label_size = (style.body_font_size - px(2.0)).max(px(10.0));
         div()
             .flex()
             .flex_col()
             .gap(px(4.0))
             .child(
                 div()
-                    .text_xs()
+                    .text_size(label_size)
                     .text_color(style.secondary_color)
                     .child(language),
             )
@@ -3477,13 +3449,8 @@ fn render_image_block(
         .w_full()
         .when(style.preview, |this| this.my(px(10.0)))
         .when_some(tooltip_title, |this, title| {
-            let tooltip_style = style.clone();
             this.tooltip(move |_window, cx| {
-                cx.new(|_| MarkdownTooltip {
-                    text: title.clone(),
-                    style: tooltip_style.clone(),
-                })
-                .into()
+                cx.new(|_| crate::TextTooltip::new(title.clone())).into()
             })
         })
         .when_some(link_url, |this, link_url| {
@@ -3529,13 +3496,8 @@ fn render_inline_image(
         .flex()
         .items_center()
         .when_some(title, |this, title| {
-            let tooltip_style = style.clone();
             this.tooltip(move |_window, cx| {
-                cx.new(|_| MarkdownTooltip {
-                    text: title.clone(),
-                    style: tooltip_style.clone(),
-                })
-                .into()
+                cx.new(|_| crate::TextTooltip::new(title.clone())).into()
             })
         })
         .when_some(link_url, |this, link_url| {
@@ -3670,7 +3632,7 @@ fn render_list_item(block: MarkdownBlock, style: &MarkdownStyle, block_id: &str)
     } else if ordered {
         div()
             .w(marker_width)
-            .text_sm()
+            .text_size(style.body_font_size)
             .text_right()
             .text_color(style.secondary_color)
             .child(format!("{index}."))
@@ -3678,7 +3640,7 @@ fn render_list_item(block: MarkdownBlock, style: &MarkdownStyle, block_id: &str)
     } else {
         div()
             .w(marker_width)
-            .text_sm()
+            .text_size(style.body_font_size)
             .text_center()
             .text_color(style.secondary_color)
             .child(bullet_for_depth(depth))
@@ -3863,6 +3825,7 @@ fn render_table(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui::Render;
 
     #[test]
     fn parses_common_lsp_markdown_blocks() {

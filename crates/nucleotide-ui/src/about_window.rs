@@ -64,13 +64,13 @@ impl Render for AboutWindow {
                 .bg(tokens.chrome.surface_elevated)
                 .border_1()
                 .border_color(tokens.chrome.border_strong)
-                .rounded_lg()
+                .rounded(tokens.sizes.radius_lg)
                 .shadow(vec![tokens.chrome.shadow_lg.to_box_shadow(false)])
-                .p_6()
+                .p(tokens.sizes.space_6)
                 .w(px(400.0))
                 .flex()
                 .flex_col()
-                .gap_4()
+                .gap(tokens.sizes.space_4)
                 .on_any_mouse_down(|_, _, cx| cx.stop_propagation())
                 .child(
                     div()
@@ -120,7 +120,7 @@ impl Render for AboutWindow {
                         .w_full()
                         .h(px(1.0))
                         .bg(tokens.chrome.separator_color)
-                        .my_2(),
+                        .my(tokens.sizes.space_2),
                 )
                 .child(
                     div()
@@ -139,7 +139,7 @@ impl Render for AboutWindow {
                         .child("Built with GPUI and Rust"),
                 )
                 .child(
-                    div().mx_auto().mt_4().child(
+                    div().mx_auto().mt(tokens.sizes.space_4).child(
                         Button::new("about-ok", "OK")
                             .variant(ButtonVariant::Secondary)
                             .size(ButtonSize::Small)

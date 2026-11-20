@@ -323,17 +323,23 @@ impl CompletionItemElement {
         } else {
             tokens.chrome.popup_foreground
         };
+        let secondary_text = if self.is_selected {
+            tokens.chrome.menu_selected_foreground
+        } else {
+            tokens.chrome.text_chrome_secondary
+        };
         let base_container = div()
             .flex()
             .flex_row()
             .items_center()
             .w_full()
-            .px_2()
-            .py(px(3.0)) // This is 6px total (3px top + 3px bottom)
-            .gap_2()
+            .px(tokens.sizes.space_2)
+            .py(tokens.sizes.space_1)
+            .gap(tokens.sizes.space_2)
+            .rounded(tokens.sizes.radius_sm)
             .when(self.is_selected, |div| div.bg(tokens.chrome.menu_selected))
             .when(!self.is_selected, |div| {
-                div.hover(|style| style.bg(tokens.editor.selection_secondary))
+                div.hover(|style| style.bg(tokens.chrome.surface_hover))
             });
 
         // Icon section - using Phosphor duotone SVG icons with design tokens
@@ -349,33 +355,37 @@ impl CompletionItemElement {
                 .flex_col() // Stack main text and details vertically
                 .min_w_0() // Allow text to truncate
                 .flex_1() // Take up remaining space
-                .gap_1() // This adds gap between rows
+                .gap(tokens.sizes.space_1)
                 .child(
                     // Top row: Primary text + signature/type info
                     div()
                         .flex()
                         .flex_row()
                         .items_center()
-                        .gap_2()
+                        .gap(tokens.sizes.space_2)
                         .min_w_0()
                         .w_full()
                         .child(
                             // Primary text with highlighting
                             div()
-                                .text_sm()
-                                .font_weight(gpui::FontWeight::NORMAL)
+                                .flex_shrink_0()
+                                .text_size(tokens.sizes.text_sm)
+                                .font_weight(gpui::FontWeight::MEDIUM)
                                 .text_color(item_text)
-                                .min_w_0()
-                                .overflow_hidden()
-                                .text_ellipsis()
+                                .whitespace_nowrap()
                                 .child(self.render_highlighted_text(display_text)),
                         )
                         // Show signature info (parameters) directly after function name
                         .when_some(signature_text, |div_el, signature| {
                             div_el.child(
                                 div()
-                                    .text_sm()
-                                    .text_color(item_text)
+                                    .flex_1()
+                                    .min_w_0()
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis()
+                                    .text_size(tokens.sizes.text_sm)
+                                    .text_color(secondary_text)
                                     .font_weight(gpui::FontWeight::NORMAL)
                                     .child(signature),
                             )
@@ -384,9 +394,10 @@ impl CompletionItemElement {
                         .when_some(type_text, |div_el, type_info| {
                             div_el.child(
                                 div()
-                                    .text_sm()
-                                    .text_color(item_text)
-                                    .font_weight(gpui::FontWeight::LIGHT)
+                                    .flex_shrink_0()
+                                    .text_size(tokens.sizes.text_sm)
+                                    .text_color(secondary_text)
+                                    .font_weight(gpui::FontWeight::NORMAL)
                                     .child(format!("→ {}", type_info)),
                             )
                         }),
@@ -395,8 +406,8 @@ impl CompletionItemElement {
                 .when_some(detail_text, |div_el, detail_text| {
                     div_el.child(
                         div()
-                            .text_xs()
-                            .text_color(item_text)
+                            .text_size(tokens.sizes.text_xs)
+                            .text_color(secondary_text)
                             .w_full()
                             .max_w_full()
                             .overflow_hidden()
@@ -407,22 +418,8 @@ impl CompletionItemElement {
                 }),
         );
 
-        // Score indicator (for debugging/development)
-        #[cfg(debug_assertions)]
-        let with_score = with_content.child(
-            div()
-                .ml_auto()
-                .text_xs()
-                .text_color(tokens.chrome.text_chrome_secondary)
-                .px_1()
-                .child(format!("{}", self.string_match.score)),
-        );
-
-        #[cfg(not(debug_assertions))]
-        let with_score = with_content;
-
         // Ensure the final element fills the full width
-        with_score.w_full().into_any_element()
+        with_content.w_full().into_any_element()
     }
 }
 
@@ -553,21 +550,24 @@ where
             nucleotide_logging::trace!(item = %item.text, "COMP: Got item");
             nucleotide_logging::trace!(item = %item.text, "COMP: About to create simple div");
 
-            // Create a simple div element instead of using CompletionItemElement for now
             let element = div()
                 .flex()
                 .flex_row()
                 .items_center()
                 .w_full()
-                .px_2()
-                .py_1()
-                .gap_2()
+                .px(tokens.sizes.space_2)
+                .py(tokens.sizes.space_1)
+                .gap(tokens.sizes.space_2)
+                .rounded(tokens.sizes.radius_sm)
                 .when(index == selected_index, |div| {
                     div.bg(tokens.chrome.menu_selected)
                 })
+                .when(index != selected_index, |div| {
+                    div.hover(|style| style.bg(tokens.chrome.surface_hover))
+                })
                 .child(
                     div()
-                        .text_sm()
+                        .text_size(tokens.sizes.text_sm)
                         .text_color(if index == selected_index {
                             tokens.chrome.menu_selected_foreground
                         } else {
@@ -591,7 +591,7 @@ where
         .bg(tokens.chrome.popup_background)
         .border_1()
         .border_color(tokens.chrome.popup_border)
-        .rounded_md()
+        .rounded(tokens.sizes.radius_md)
         .shadow(vec![tokens.chrome.shadow_md.to_box_shadow(false)])
         .max_h(px(list_state.max_height))
         .min_h(px(list_state.item_height * 3.0))

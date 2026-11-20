@@ -170,7 +170,7 @@ impl EditorScrollbar {
             state,
             axis,
             on_scroll: None,
-            thumb_color: hsla(0.0, 0.0, 0.72, 1.0),
+            thumb_color: hsla(0.0, 0.0, 0.50, 1.0),
             style: ScrollbarStyle::Themed,
             track_color: gpui::transparent_black(),
             contrast_disabled_color: None,

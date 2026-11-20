@@ -25,7 +25,7 @@ pub(crate) fn init(cx: &mut App) {
 #[derive(IntoElement)]
 pub struct OverlaySurface {
     children: Vec<AnyElement>,
-    top: Pixels,
+    top: Option<Pixels>,
     key_context: Option<&'static str>,
     on_light_dismiss: Option<LightDismissHandler>,
     on_cancel: Option<CancelHandler>,
@@ -35,7 +35,7 @@ impl OverlaySurface {
     pub fn new() -> Self {
         Self {
             children: Vec::new(),
-            top: px(32.0),
+            top: None,
             key_context: Some(OVERLAY_SURFACE_CONTEXT),
             on_light_dismiss: None,
             on_cancel: None,
@@ -43,7 +43,7 @@ impl OverlaySurface {
     }
 
     pub fn top(mut self, top: impl Into<Pixels>) -> Self {
-        self.top = top.into();
+        self.top = Some(top.into());
         self
     }
 
@@ -87,7 +87,12 @@ impl ParentElement for OverlaySurface {
 }
 
 impl RenderOnce for OverlaySurface {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let (default_top, inset) = cx
+            .try_global::<crate::Theme>()
+            .map(|theme| (theme.tokens.sizes.space_8, theme.tokens.sizes.space_5))
+            .unwrap_or((px(32.0), px(16.0)));
+        let top = self.top.unwrap_or(default_top);
         let mut root = div().absolute().size_full().bottom_0().left_0().occlude();
 
         if let Some(key_context) = self.key_context {
@@ -114,9 +119,9 @@ impl RenderOnce for OverlaySurface {
                 .size_full()
                 .justify_center()
                 .items_start()
-                .pt(self.top)
-                .pb(px(16.0))
-                .px(px(16.0))
+                .pt(top)
+                .pb(inset)
+                .px(inset)
                 .child(
                     div()
                         .max_w_full()

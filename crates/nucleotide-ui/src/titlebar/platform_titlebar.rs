@@ -116,6 +116,7 @@ impl Render for PlatformTitleBar {
             titlebar_tokens.background, titlebar_tokens.border
         );
 
+        let sizes = cx.global::<crate::Theme>().tokens.sizes;
         // Build the titlebar
         let title_bar = div()
             .flex()
@@ -134,13 +135,13 @@ impl Render for PlatformTitleBar {
             )
             .map(|this| {
                 if window.is_fullscreen() {
-                    this.pl_2()
+                    this.pl(sizes.space_2)
                 } else if native_macos_titlebar {
                     this.px(px(MAC_TRAFFIC_LIGHT_PADDING))
                 } else if self.platform_style == PlatformStyle::Mac {
                     this.pl(px(71.0))
                 } else {
-                    this.pl_2()
+                    this.pl(sizes.space_2)
                 }
             })
             // Avoid rounded corners on Linux to prevent visible corner artifacts
@@ -172,7 +173,7 @@ impl Render for PlatformTitleBar {
                     .items_center()
                     .justify_center()
                     .relative() // For absolute positioning of window controls
-                    .px_2()
+                    .px(sizes.space_2)
                     .when(self.show_title, |content| {
                         content.child(
                             // Title text - centered and styled with computed colors

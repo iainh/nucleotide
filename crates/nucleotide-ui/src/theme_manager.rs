@@ -569,9 +569,11 @@ impl ThemeManager {
             );
         }
 
-        // No suitable color found in theme. Use a clear sentinel (red)
-        // to make missing theme data obvious in tests and debug builds.
-        let fallback_color = hsla(0.0, 1.0, 0.5, 1.0);
+        // No suitable color found in theme: fall back to the system-appearance default surface.
+        let fallback_color = match system_appearance {
+            SystemAppearance::Light => crate::tokens::DesignTokens::light().editor.background,
+            SystemAppearance::Dark => crate::tokens::DesignTokens::dark().editor.background,
+        };
 
         nucleotide_logging::warn!(
             system_appearance = ?system_appearance,
@@ -1272,6 +1274,7 @@ mod surface_extraction_tests {
         let _guard = THEME_ENV_LOCK.lock().unwrap();
         let helix_theme = helix_view::Theme::default();
         let mut manager = ThemeManager::new(helix_theme.clone());
+        manager.set_system_appearance(SystemAppearance::Dark);
         let original = manager.ui_theme().tokens;
         manager.set_chrome_opacity(0.82);
         manager.set_ui_font_size(gpui::px(15.0));

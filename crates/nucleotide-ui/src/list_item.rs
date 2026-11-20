@@ -2,11 +2,11 @@
 // ABOUTME: Reusable component for consistent list rendering
 
 use crate::{
-    ComponentFactory, Composable, Interactive, Slotted, StyleSize, StyleState, StyleVariant,
-    Styled as UIStyled, animations_enabled, compute_component_style, should_enable_animations,
+    ComponentFactory, Composable, IndeterminateProgressIndicator, Interactive, Slotted, StyleSize,
+    StyleState, StyleVariant, Styled as UIStyled, animations_enabled, compute_component_style,
+    should_enable_animations,
 };
 use gpui::prelude::FluentBuilder;
-use gpui::px;
 use gpui::{
     AnyElement, App, ElementId, Hsla, InteractiveElement, IntoElement, ParentElement, RenderOnce,
     SharedString, StatefulInteractiveElement, Styled, TextOverflow, Window, div,
@@ -469,6 +469,10 @@ impl RenderOnce for ListItem {
         let background = self.background.unwrap_or(computed_style.background);
         let foreground = self.text_color.unwrap_or(computed_style.foreground);
 
+        let loading_id = SharedString::from(format!("{}-spinner", self.id));
+        let slot_gap = theme.tokens.sizes.space_2;
+        let spinner_size = f32::from(theme.tokens.sizes.text_sm);
+
         let mut base = div()
             .id(self.id)
             .flex()
@@ -533,12 +537,18 @@ impl RenderOnce for ListItem {
 
         // Add loading indicator if loading
         if self.loading {
-            base = base.child(div().child("⟳").mr(px(4.0)));
+            base = base.child(
+                div().mr(slot_gap).flex_shrink_0().child(
+                    IndeterminateProgressIndicator::new(loading_id)
+                        .size(spinner_size)
+                        .text_color(foreground),
+                ),
+            );
         }
 
         // Build content with slots
         if let Some(start_slot) = self.start_slot {
-            base = base.child(div().mr(px(4.0)).flex_shrink_0().child(start_slot));
+            base = base.child(div().mr(slot_gap).flex_shrink_0().child(start_slot));
         }
 
         // Main content area
@@ -551,7 +561,7 @@ impl RenderOnce for ListItem {
         );
 
         if let Some(end_slot) = self.end_slot {
-            base = base.child(div().ml(px(4.0)).flex_shrink_0().child(end_slot));
+            base = base.child(div().ml(slot_gap).flex_shrink_0().child(end_slot));
         }
 
         base
