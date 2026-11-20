@@ -47,6 +47,11 @@ impl Workspace {
             .read(cx)
             .status_entries()
             .len();
+        let (pill_bg, pill_fg) = if let Some(c) = tokens.chrome.contrast {
+            (c.highlight, c.highlight_text)
+        } else {
+            (tokens.editor.vcs_modified, tokens.editor.background)
+        };
         // A pill after the Changes label, hidden when nothing has changed.
         let pill = (count > 0).then(|| {
             div()
@@ -60,8 +65,8 @@ impl Workspace {
                 .flex()
                 .justify_center()
                 .rounded(tokens.sizes.radius_full)
-                .bg(tokens.editor.vcs_modified)
-                .text_color(tokens.editor.background)
+                .bg(pill_bg)
+                .text_color(pill_fg)
                 .text_size(tokens.sizes.text_xs)
                 .font_weight(FontWeight::SEMIBOLD)
                 .line_height(relative(1.2))
@@ -255,14 +260,17 @@ impl Workspace {
             );
         }
         let empty = files.is_empty().then(|| {
-            div()
-                .p(tokens.sizes.space_3)
-                .text_color(file_tree.item_text_secondary)
-                .child(if self.commit_review.snapshot.is_none() {
+            let loading = self.commit_review.snapshot.is_none();
+            StateView::new(
+                "changes-sidebar-empty",
+                if loading {
                     "Loading changes…"
                 } else {
                     "No changes"
-                })
+                },
+            )
+            .loading(loading)
+            .compact(true)
         });
         div()
             .id("changes-sidebar")

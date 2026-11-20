@@ -57,8 +57,8 @@ use helix_view::input::KeyEvent;
 use helix_view::keyboard::{KeyCode, KeyModifiers};
 use helix_view::{DocumentId, ViewId};
 use nucleotide_logging::{debug, error, info, instrument, trace, warn};
+use nucleotide_ui::StateView;
 use nucleotide_ui::ThemedContext as UIThemedContext;
-use nucleotide_ui::icon as svg;
 
 // ViewManager already imported above via pub use
 use nucleotide_ui::scrollbar::ScrollbarState;
@@ -12877,6 +12877,7 @@ impl Render for Workspace {
                     let core = self.core.clone();
                     let handle = self.handle.clone();
                     let open_local_btn = Button::new("open-dir-btn", "Open Local Directory")
+                        .variant(ButtonVariant::Primary)
                         .width(px(180.0))
                         .activate_on_mouse_down()
                         .on_click(cx.listener(
@@ -12886,6 +12887,7 @@ impl Render for Workspace {
                         ));
                     let open_remote_btn =
                         Button::new("open-remote-dir-btn", "Open Remote Directory")
+                            .variant(ButtonVariant::Secondary)
                             .width(px(180.0))
                             .activate_on_mouse_down()
                             .on_click(cx.listener(
@@ -12902,26 +12904,19 @@ impl Render for Workspace {
                             .flex()
                             .flex_col()
                             .size_full()
+                            .items_center()
+                            .justify_center()
                             .bg(file_tree_background)
                             .child(
-                                div()
-                                    .flex_1()
-                                    .w_full()
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .child(
+                                StateView::new("file-tree-empty", "No folder open")
+                                    .detail("Open a local or remote directory to browse files.")
+                                    .icon("icons/folder-open.svg")
+                                    .action(
                                         div()
                                             .flex()
                                             .flex_col()
                                             .items_center()
-                                            .gap(cx.theme().tokens.sizes.space_3)
-                                            .child(
-                                                svg()
-                                                    .path("icons/folder-open.svg")
-                                                    .size(px(48.0))
-                                                    .text_color(file_tree_tokens.icon_color),
-                                            )
+                                            .gap(cx.theme().tokens.sizes.space_2)
                                             .child(open_local_btn)
                                             .child(open_remote_btn),
                                     ),
@@ -13210,8 +13205,8 @@ impl Render for Workspace {
             .when(self.lsp_menu_open, |container| {
                 use gpui::{Anchor, point};
                 let ui_theme = cx.global::<nucleotide_ui::Theme>();
+                let sizes = ui_theme.tokens.sizes;
                 let dd_tokens = ui_theme.tokens.dropdown_tokens();
-                let notification_tokens = ui_theme.tokens.notification_tokens();
 
                 // Snapshot LSP state
                 let server_rows: Vec<gpui::AnyElement> = {
@@ -13236,9 +13231,9 @@ impl Render for Workspace {
                             rows.push(
                                 div()
                                     .w_full()
-                                    .px(ui_theme.tokens.sizes.space_3)
-                                    .py(ui_theme.tokens.sizes.space_2)
-                                    .text_size(ui_theme.tokens.sizes.text_sm)
+                                    .px(sizes.space_3)
+                                    .py(sizes.space_2)
+                                    .text_size(sizes.text_sm)
                                     .text_color(dd_tokens.item_text_secondary)
                                     .child("no LSP servers")
                                     .into_any_element(),
@@ -13246,19 +13241,20 @@ impl Render for Workspace {
                             // No servers to display; end of list
                         }
 
-                        for server in servers {
+                        let server_count = servers.len();
+                        for (server_idx, server) in servers.into_iter().enumerate() {
                             let (status_text, status_color) = match &server.status {
                                 ServerStatus::Starting => {
-                                    ("Starting".to_string(), notification_tokens.info_text)
+                                    ("Starting".to_string(), dd_tokens.status_info)
                                 }
                                 ServerStatus::Initializing => {
-                                    ("Initializing".to_string(), notification_tokens.info_text)
+                                    ("Initializing".to_string(), dd_tokens.status_info)
                                 }
                                 ServerStatus::Running => {
-                                    ("Running".to_string(), notification_tokens.success_text)
+                                    ("Running".to_string(), dd_tokens.status_success)
                                 }
                                 ServerStatus::Failed(_) => {
-                                    ("Failed".to_string(), notification_tokens.error_text)
+                                    ("Failed".to_string(), dd_tokens.status_error)
                                 }
                                 ServerStatus::Stopped => {
                                     ("Stopped".to_string(), dd_tokens.item_text_secondary)
@@ -13269,13 +13265,13 @@ impl Render for Workspace {
                             rows.push(
                                 div()
                                     .w_full()
-                                    .px(ui_theme.tokens.sizes.space_3)
-                                    .py(ui_theme.tokens.sizes.space_2)
+                                    .px(sizes.space_3)
+                                    .py(sizes.space_2)
                                     .flex()
                                     .items_center()
                                     .justify_between()
-                                    .gap_3()
-                                    .text_size(ui_theme.tokens.sizes.text_sm)
+                                    .gap(sizes.space_3)
+                                    .text_size(sizes.text_sm)
                                     .text_color(dd_tokens.item_text)
                                     .child(
                                         div()
@@ -13283,7 +13279,7 @@ impl Render for Workspace {
                                             .min_w_0()
                                             .flex()
                                             .items_center()
-                                            .gap_2()
+                                            .gap(sizes.space_2)
                                             .child(
                                                 div()
                                                     .min_w_0()
@@ -13297,7 +13293,7 @@ impl Render for Workspace {
                                                 name.child(
                                                     div()
                                                         .flex_none()
-                                                        .text_size(ui_theme.tokens.sizes.text_xs)
+                                                        .text_size(sizes.text_xs)
                                                         .text_color(dd_tokens.item_text_secondary)
                                                         .child("Remote"),
                                                 )
@@ -13306,9 +13302,9 @@ impl Render for Workspace {
                                     .child(
                                         div()
                                             .flex_none()
-                                            .px_2()
-                                            .py_1()
-                                            .rounded(ui_theme.tokens.sizes.radius_sm)
+                                            .px(sizes.space_2)
+                                            .py(sizes.space_1)
+                                            .rounded(sizes.radius_sm)
                                             .bg(nucleotide_ui::tokens::utils::with_alpha(
                                                 status_color,
                                                 0.12,
@@ -13323,12 +13319,12 @@ impl Render for Workspace {
                                 rows.push(
                                     div()
                                         .w_full()
-                                        .px(ui_theme.tokens.sizes.space_3)
-                                        .pb(ui_theme.tokens.sizes.space_2)
+                                        .px(sizes.space_3)
+                                        .pb(sizes.space_2)
                                         .overflow_hidden()
                                         .whitespace_nowrap()
                                         .text_ellipsis()
-                                        .text_size(ui_theme.tokens.sizes.text_xs)
+                                        .text_size(sizes.text_xs)
                                         .text_color(dd_tokens.item_text_secondary)
                                         .child(root.to_string())
                                         .into_any_element(),
@@ -13339,10 +13335,10 @@ impl Render for Workspace {
                                 rows.push(
                                     div()
                                         .w_full()
-                                        .px(ui_theme.tokens.sizes.space_3)
-                                        .pb(ui_theme.tokens.sizes.space_2)
-                                        .text_size(ui_theme.tokens.sizes.text_xs)
-                                        .text_color(notification_tokens.error_text)
+                                        .px(sizes.space_3)
+                                        .pb(sizes.space_2)
+                                        .text_size(sizes.text_xs)
+                                        .text_color(dd_tokens.status_error)
                                         .child(error.clone())
                                         .into_any_element(),
                                 );
@@ -13356,9 +13352,9 @@ impl Render for Workspace {
                                 rows.push(
                                     div()
                                         .w_full()
-                                        .px(ui_theme.tokens.sizes.space_6)
-                                        .pb(ui_theme.tokens.sizes.space_2)
-                                        .text_size(ui_theme.tokens.sizes.text_sm)
+                                        .px(sizes.space_6)
+                                        .pb(sizes.space_2)
+                                        .text_size(sizes.text_sm)
                                         .text_color(dd_tokens.item_text_secondary)
                                         .child("Idle")
                                         .into_any_element(),
@@ -13376,12 +13372,12 @@ impl Render for Workspace {
 
                                     let mut progress_row = div()
                                         .w_full()
-                                        .px(ui_theme.tokens.sizes.space_6)
-                                        .pb(ui_theme.tokens.sizes.space_2)
+                                        .px(sizes.space_6)
+                                        .pb(sizes.space_2)
                                         .flex()
                                         .flex_col()
-                                        .gap_1()
-                                        .text_size(ui_theme.tokens.sizes.text_sm)
+                                        .gap(sizes.space_1)
+                                        .text_size(sizes.text_sm)
                                         .text_color(dd_tokens.item_text_secondary)
                                         .child(line);
                                     if let Some(percentage) = p.percentage {
@@ -13398,7 +13394,7 @@ impl Render for Workspace {
                                                         .w(relative(
                                                             percentage.min(100) as f32 / 100.0,
                                                         ))
-                                                        .bg(notification_tokens.info_text),
+                                                        .bg(dd_tokens.status_info),
                                                 ),
                                         );
                                     }
@@ -13407,15 +13403,17 @@ impl Render for Workspace {
                                 }
                             }
 
-                            // Separator between servers
-                            rows.push(
-                                div()
-                                    .w_full()
-                                    .h(px(1.0))
-                                    .bg(dd_tokens.border)
-                                    .opacity(0.5)
-                                    .into_any_element(),
-                            );
+                            // Separator between servers only (the footer draws its own top border)
+                            if server_idx + 1 < server_count {
+                                rows.push(
+                                    div()
+                                        .w_full()
+                                        .h(px(1.0))
+                                        .bg(dd_tokens.border)
+                                        .opacity(0.5)
+                                        .into_any_element(),
+                                );
+                            }
                         }
 
                         rows

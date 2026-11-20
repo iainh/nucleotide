@@ -201,7 +201,7 @@ impl Render for ProjectTreeDragPreview {
                 .rounded(metrics.radius)
                 .bg(preview_bg)
                 .text_color(tokens.chrome.text_on_chrome)
-                .text_size(px(13.0))
+                .text_size(tokens.sizes.text_sm)
                 .child(self.entry.file_name.clone()),
         )
     }

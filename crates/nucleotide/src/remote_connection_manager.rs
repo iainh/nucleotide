@@ -1090,6 +1090,7 @@ impl RemoteConnectionManagerView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let sizes = cx.theme().tokens.sizes;
         let manager = cx.entity().clone();
         let protocol_menu = self
             .protocol_menu_open
@@ -1116,8 +1117,8 @@ impl RemoteConnectionManagerView {
                     deferred(
                         anchored()
                             .anchor(Anchor::TopLeft)
-                            .offset(point(px(0.0), px(4.0)))
-                            .snap_to_window_with_margin(px(8.0))
+                            .offset(point(px(0.0), sizes.space_2))
+                            .snap_to_window_with_margin(sizes.space_3)
                             .child(div().occlude().child(menu)),
                     )
                     .with_priority(500),
@@ -1134,13 +1135,14 @@ impl RemoteConnectionManagerView {
 
     fn render_suggestions(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let tokens = &cx.theme().tokens;
+        let sizes = tokens.sizes;
         let secondary_text = tokens.chrome.text_chrome_secondary;
         let text_color = tokens.chrome.text_on_chrome;
         let border = tokens.picker_tokens().border;
         let suggestions = self.filtered_suggestions();
         if suggestions.is_empty() {
             return div()
-                .py_2()
+                .py(sizes.space_2)
                 .text_color(secondary_text)
                 .child(match self.protocol {
                     RemoteConnectionProtocol::Ssh => {
@@ -1189,35 +1191,31 @@ impl RemoteConnectionManagerView {
                     .min_h(px(0.0))
                     .overflow_y_scroll()
                     .track_scroll(&self.suggestions_scroll_handle)
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap_4()
-                            .children(groups.into_iter().map(|(label, rows)| {
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .gap_2()
-                                    .child(
-                                        div()
-                                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                                            .text_color(text_color)
-                                            .child(label),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .flex_col()
-                                            .p_1()
-                                            .rounded_md()
-                                            .border_1()
-                                            .border_color(border)
-                                            .overflow_hidden()
-                                            .children(rows),
-                                    )
-                            })),
-                    ),
+                    .child(div().flex().flex_col().gap(sizes.space_5).children(
+                        groups.into_iter().map(|(label, rows)| {
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(sizes.space_2)
+                                .child(
+                                    div()
+                                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                                        .text_color(text_color)
+                                        .child(label),
+                                )
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .p(sizes.space_2)
+                                        .rounded(sizes.radius_md)
+                                        .border_1()
+                                        .border_color(border)
+                                        .overflow_hidden()
+                                        .children(rows),
+                                )
+                        }),
+                    )),
             )
             .when_some(
                 Scrollbar::vertical(self.suggestions_scrollbar_state.clone()),
@@ -1270,6 +1268,7 @@ impl RemoteConnectionManagerView {
             this.apply_suggestion(suggestion_for_click.clone(), cx);
         });
 
+        let radius_md = tokens.sizes.radius_md;
         let item = ListItem::new(("remote-suggestion", index))
             .variant(ListItemVariant::Ghost)
             .spacing(ListItemSpacing::Default)
@@ -1282,7 +1281,7 @@ impl RemoteConnectionManagerView {
                 hover_background
             })
             .with_listener(move |item| {
-                item.rounded_md()
+                item.rounded(radius_md)
                     .cursor_pointer()
                     .on_mouse_down(MouseButton::Left, click_listener)
             })
@@ -1342,19 +1341,20 @@ impl RemoteConnectionManagerView {
         let rows = visible_remote_directory_rows(&session.root);
         let row_count = rows.len();
 
+        let sizes = cx.theme().tokens.sizes;
         div()
             .flex()
             .flex_col()
             .flex_1()
             .min_h(px(0.0))
             .overflow_hidden()
-            .gap_3()
+            .gap(sizes.space_3)
             .child(
                 div()
                     .flex()
                     .flex_col()
                     .flex_shrink_0()
-                    .gap_1()
+                    .gap(sizes.space_1)
                     .child(
                         div()
                             .font_weight(gpui::FontWeight::MEDIUM)
@@ -1373,7 +1373,7 @@ impl RemoteConnectionManagerView {
                     .min_h(px(0.0))
                     .border_1()
                     .border_color(list_border)
-                    .rounded_md()
+                    .rounded(sizes.radius_md)
                     .bg(editor_background)
                     .overflow_hidden()
                     .child(
@@ -1381,7 +1381,7 @@ impl RemoteConnectionManagerView {
                             .id("remote-directory-scroll")
                             .size_full()
                             .min_h(px(0.0))
-                            .p_1()
+                            .p(sizes.space_2)
                             .overflow_y_scroll()
                             .track_scroll(&self.directory_scroll_handle)
                             .child(
@@ -1433,7 +1433,7 @@ impl RemoteConnectionManagerView {
                 div()
                     .flex()
                     .flex_col()
-                    .gap_1()
+                    .gap(sizes.space_1)
                     .child(
                         div()
                             .font_weight(gpui::FontWeight::MEDIUM)
@@ -1441,9 +1441,9 @@ impl RemoteConnectionManagerView {
                     )
                     .child(
                         div()
-                            .px_3()
-                            .py_2()
-                            .rounded_md()
+                            .px(sizes.space_4)
+                            .py(sizes.space_2)
+                            .rounded(sizes.radius_md)
                             .border_1()
                             .border_color(input_border)
                             .bg(input_background)
@@ -1495,6 +1495,7 @@ impl RemoteConnectionManagerView {
             this.toggle_tree_directory(row_path.clone(), cx);
         });
 
+        let sizes = tokens.sizes;
         ListItem::new(("remote-directory", index))
             .variant(ListItemVariant::Ghost)
             .spacing(ListItemSpacing::Default)
@@ -1507,7 +1508,7 @@ impl RemoteConnectionManagerView {
                 hover_background
             })
             .with_listener(move |item| {
-                item.rounded_md()
+                item.rounded(sizes.radius_md)
                     .cursor_pointer()
                     .on_mouse_down(MouseButton::Left, click_listener)
             })
@@ -1515,25 +1516,24 @@ impl RemoteConnectionManagerView {
                 div()
                     .flex()
                     .items_center()
-                    .gap_2()
-                    .child(div().w(px(depth as f32 * 16.0)).flex_shrink_0())
+                    .gap(sizes.space_2)
+                    .child(div().w(sizes.space_5 * depth as f32).flex_shrink_0())
                     .child(
                         div()
-                            .w(px(16.0))
-                            .h(px(16.0))
+                            .size(sizes.space_5)
                             .flex_shrink_0()
                             .flex()
                             .items_center()
                             .justify_center()
                             .child(
                                 chevron_icon(if expanded { "down" } else { "right" })
-                                    .size(px(16.0))
+                                    .size(sizes.space_5)
                                     .text_color(chevron_color),
                             ),
                     )
                     .child(
                         FileIcon::directory(expanded)
-                            .size(16.0)
+                            .size(f32::from(sizes.space_5))
                             .text_color(icon_color),
                     ),
             )
@@ -1541,7 +1541,7 @@ impl RemoteConnectionManagerView {
                 div()
                     .min_w(px(0.0))
                     .flex_1()
-                    .ml(px(4.0))
+                    .ml(sizes.space_2)
                     .whitespace_nowrap()
                     .child(row_name),
             )
@@ -1588,23 +1588,38 @@ impl RemoteConnectionManagerView {
     fn render_status(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let theme = cx.theme();
         let tokens = &theme.tokens;
+        let sizes = tokens.sizes;
         let Some(status) = &self.status else {
             return div().into_any_element();
         };
 
-        let color = match status.severity {
-            Severity::Error => tokens.editor.error,
-            Severity::Warning => tokens.editor.warning,
-            Severity::Hint => tokens.editor.text_secondary,
-            Severity::Info => tokens.editor.text_secondary,
+        let notifications = tokens.notification_tokens();
+        let (bg, border, color) = match status.severity {
+            Severity::Error => (
+                notifications.error_background,
+                notifications.error_border,
+                notifications.error_text,
+            ),
+            Severity::Warning => (
+                notifications.warning_background,
+                notifications.warning_border,
+                notifications.warning_text,
+            ),
+            Severity::Hint | Severity::Info => (
+                notifications.info_background,
+                notifications.info_border,
+                notifications.info_text,
+            ),
         };
 
         div()
             .debug_selector(|| "remote-connection-status".into())
-            .px_3()
-            .py_2()
-            .rounded_md()
-            .bg(tokens.chrome.surface_hover)
+            .px(sizes.space_4)
+            .py(sizes.space_2)
+            .rounded(sizes.radius_md)
+            .border_1()
+            .border_color(border)
+            .bg(bg)
             .text_color(color)
             .child(status.status.clone())
             .into_any_element()
@@ -1631,29 +1646,21 @@ impl Drop for RemoteConnectionManagerView {
 
 impl Render for RemoteConnectionManagerView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (
-            picker_border,
-            picker_background,
-            chrome_text,
-            chrome_secondary_text,
-            text_md,
-            text_xl,
-            text_sm,
-            shadow,
-        ) = {
+        let (modal_border, modal_background, chrome_text, chrome_secondary_text, sizes, shadow) = {
             let theme = cx.theme();
             let tokens = &theme.tokens;
             (
-                tokens.picker_tokens().border,
-                tokens.picker_tokens().container_background,
+                tokens.chrome.border_strong,
+                tokens.chrome.surface_elevated,
                 tokens.chrome.text_on_chrome,
                 tokens.chrome.text_chrome_secondary,
-                tokens.sizes.text_md,
-                tokens.sizes.text_xl,
-                tokens.sizes.text_sm,
+                tokens.sizes,
                 vec![tokens.chrome.shadow_lg.to_box_shadow(false)],
             )
         };
+        let text_md = sizes.text_md;
+        let text_xl = sizes.text_xl;
+        let text_sm = sizes.text_sm;
         let font = gpui::Font {
             family: cx
                 .global::<nucleotide_types::UiFontConfig>()
@@ -1709,7 +1716,7 @@ impl Render for RemoteConnectionManagerView {
             .on_action(cx.listener(Self::select_remote_protocol))
             .flex()
             .flex_col()
-            .gap_4()
+            .gap(sizes.space_4)
             .w(px(640.0))
             .h(px(dialog_height))
             // OverlaySurface supplies the available bounds, including its edge insets.
@@ -1717,11 +1724,11 @@ impl Render for RemoteConnectionManagerView {
             .max_h_full()
             .min_w(px(0.0))
             .min_h(px(0.0))
-            .p_5()
-            .rounded_md()
+            .p(sizes.space_5)
+            .rounded(sizes.radius_lg)
             .border_1()
-            .border_color(picker_border)
-            .bg(picker_background)
+            .border_color(modal_border)
+            .bg(modal_background)
             .overflow_hidden()
             .text_color(chrome_text)
             .font(font)
@@ -1768,7 +1775,7 @@ impl Render for RemoteConnectionManagerView {
                     // Keep status text in the scrollable body, never ahead of the footer.
                     .overflow_scroll()
                     .track_scroll(&self.body_scroll_handle)
-                    .gap_4()
+                    .gap(sizes.space_4)
                     .child(
                 div()
                     .flex()
@@ -1782,7 +1789,7 @@ impl Render for RemoteConnectionManagerView {
                                 .flex_col()
                                 .flex_1()
                                 .min_h(px(0.0))
-                                .gap_3()
+                                .gap(sizes.space_3)
                                 .child(
                                     div()
                                         .flex_shrink_0()
@@ -1805,7 +1812,7 @@ impl Render for RemoteConnectionManagerView {
                                         .flex()
                                         .flex_shrink_0()
                                         .items_center()
-                                        .gap_2()
+                                        .gap(sizes.space_2)
                                         .when(cfg!(windows), |this| this.child(self.render_protocol_dropdown(window, cx)))
                                         .child(self.render_input_field()),
                                 )
@@ -1860,7 +1867,7 @@ impl Render for RemoteConnectionManagerView {
                         div()
                             .flex()
                             .items_center()
-                            .gap_2()
+                            .gap(sizes.space_2)
                             .when(browsing, |this| {
                                 this.child(self.render_text_button(
                                     "Cancel",

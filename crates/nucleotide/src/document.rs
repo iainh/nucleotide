@@ -1025,7 +1025,7 @@ impl Render for DocumentView {
                 };
                 let peek_view = cx.entity();
                 editor_content =
-                    editor_content.frame_overlay(move |prepared, layout, _window, _cx| {
+                    editor_content.frame_overlay(move |prepared, layout, _window, cx| {
                         let bounds = prepared.as_ref()?.reserved_rows_bounds(layout)?;
                         let element = diff_peek::render_diff_peek(
                             &peek,
@@ -1033,6 +1033,7 @@ impl Render for DocumentView {
                             peek_view.clone(),
                             view_id,
                             layout.line_height,
+                            cx,
                         );
                         Some((bounds, element))
                     });
@@ -1170,13 +1171,23 @@ impl Render for DocumentView {
                                 .text_color(tokens.editor.text_secondary)
                                 .child("Start typing or open a file"),
                         )
-                        .child(
+                        .child({
+                            let open_file_label = if cfg!(target_os = "macos") {
+                                "⌘ O  Open File"
+                            } else {
+                                "Ctrl+O  Open File"
+                            };
+                            let quick_open_label = if cfg!(target_os = "macos") {
+                                "⌘ P  Quick Open"
+                            } else {
+                                "Ctrl+P  Quick Open"
+                            };
                             div()
                                 .flex()
                                 .items_center()
                                 .gap(tokens.sizes.space_2)
                                 .child(
-                                    Button::new("empty-scratch-open-file", "⌘ O  Open File")
+                                    Button::new("empty-scratch-open-file", open_file_label)
                                         .variant(ButtonVariant::Secondary)
                                         .size(ButtonSize::ExtraSmall)
                                         .on_click(move |_event, _window, cx| {
@@ -1184,14 +1195,14 @@ impl Render for DocumentView {
                                         }),
                                 )
                                 .child(
-                                    Button::new("empty-scratch-quick-open", "⌘ P  Quick Open")
+                                    Button::new("empty-scratch-quick-open", quick_open_label)
                                         .variant(ButtonVariant::Secondary)
                                         .size(ButtonSize::ExtraSmall)
                                         .on_click(move |_event, _window, cx| {
                                             request_file_picker(&quick_open_core, cx);
                                         }),
-                                ),
-                        ),
+                                )
+                        }),
                 )
         });
 
@@ -1366,27 +1377,30 @@ impl DocumentView {
         let rendered_view = view;
         let rendered_focus = focus;
 
+        let (toggle_bg, toggle_border) = if let Some(c) = tokens.chrome.contrast {
+            (c.window, c.window_text)
+        } else {
+            (
+                nucleotide_ui::tokens::with_alpha(tokens.chrome.surface, 0.58),
+                nucleotide_ui::tokens::with_alpha(tokens.chrome.border_muted, 0.64),
+            )
+        };
+
         div()
             .id(SharedString::from(format!(
                 "markdown-mode-controls-{doc_id}"
             )))
             .absolute()
-            .top(px(10.0))
-            .right(px(14.0))
+            .top(tokens.sizes.space_3)
+            .right(tokens.sizes.space_4)
             .flex()
             .items_center()
             .gap(tokens.sizes.space_1)
             .p(tokens.sizes.space_1)
             .rounded(tokens.sizes.radius_md)
-            .bg(nucleotide_ui::tokens::with_alpha(
-                tokens.chrome.surface,
-                0.58,
-            ))
+            .bg(toggle_bg)
             .border_1()
-            .border_color(nucleotide_ui::tokens::with_alpha(
-                tokens.chrome.border_muted,
-                0.64,
-            ))
+            .border_color(toggle_border)
             .child(
                 Button::icon_only(
                     SharedString::from(format!("markdown-source-{doc_id}")),

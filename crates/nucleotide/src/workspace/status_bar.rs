@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use gpui::prelude::FluentBuilder;
 use gpui::{
     Context, FontWeight, InteractiveElement, IntoElement, ParentElement, Pixels, SharedString,
-    StatefulInteractiveElement, Styled, Window, div, px,
+    Styled, Window, div, px,
 };
 use nucleotide_lsp::{LspStatusKind, LspStatusSummary};
 use nucleotide_ui::ThemedContext as UIThemedContext;
@@ -461,10 +461,11 @@ impl Workspace {
         &self,
         text: impl Into<SharedString>,
         status_bar_tokens: &nucleotide_ui::tokens::StatusBarTokens,
+        sizes: &nucleotide_ui::tokens::SizeTokens,
     ) -> gpui::AnyElement {
         div()
             .h_full()
-            .px_2()
+            .px(sizes.space_2)
             .max_w(px(120.0))
             .flex()
             .items_center()
@@ -480,23 +481,24 @@ impl Workspace {
         &self,
         metadata: &StatusBarDocumentMetadata,
         status_bar_tokens: &nucleotide_ui::tokens::StatusBarTokens,
+        sizes: &nucleotide_ui::tokens::SizeTokens,
     ) -> gpui::AnyElement {
         div()
             .h_full()
-            .px_2()
+            .px(sizes.space_2)
             .flex()
             .items_center()
-            .gap_2()
+            .gap(sizes.space_2)
             .text_color(status_bar_tokens.text_secondary)
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .gap_1()
+                    .gap(sizes.space_1)
                     .child(
                         svg()
                             .path("icons/triangle-alert.svg")
-                            .size(px(12.0))
+                            .size(sizes.text_sm)
                             .text_color(status_bar_tokens.warning),
                     )
                     .child(metadata.warnings.to_string()),
@@ -505,11 +507,11 @@ impl Workspace {
                 div()
                     .flex()
                     .items_center()
-                    .gap_1()
+                    .gap(sizes.space_1)
                     .child(
                         svg()
                             .path("icons/circle-x.svg")
-                            .size(px(12.0))
+                            .size(sizes.text_sm)
                             .text_color(status_bar_tokens.error),
                     )
                     .child(metadata.errors.to_string()),
@@ -523,32 +525,39 @@ impl Workspace {
         status_bar_tokens: &nucleotide_ui::tokens::StatusBarTokens,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        div()
-            .id("statusbar-commit")
-            .cursor_pointer()
-            .on_click(cx.listener(|this, _, _, cx| this.open_commit_tab(cx)))
-            .h_full()
-            .max_w(px(200.0))
-            .px_2()
-            .flex()
-            .items_center()
-            .gap_1()
-            .overflow_hidden()
-            .text_color(status_bar_tokens.text_secondary)
-            .child(
-                svg()
-                    .path("icons/git-branch.svg")
-                    .size(px(12.0))
-                    .flex_shrink_0(),
-            )
-            .child(
+        let sizes = cx.theme().tokens.sizes;
+        let label = vcs_ref.to_string();
+        let tooltip_label = format!("Commit review ({vcs_ref})");
+        Button::new("statusbar-commit", "")
+            .variant(ButtonVariant::Ghost)
+            .size(ButtonSize::ExtraSmall)
+            .tooltip(tooltip_label.clone())
+            .aria_label(tooltip_label)
+            .activate_on_mouse_down()
+            .content(
                 div()
-                    .min_w_0()
+                    .max_w(px(200.0))
+                    .flex()
+                    .items_center()
+                    .gap(sizes.space_1)
                     .overflow_hidden()
-                    .whitespace_nowrap()
-                    .text_ellipsis()
-                    .child(vcs_ref.to_string()),
+                    .text_color(status_bar_tokens.text_secondary)
+                    .child(
+                        svg()
+                            .path("icons/git-branch.svg")
+                            .size(sizes.text_sm)
+                            .flex_shrink_0(),
+                    )
+                    .child(
+                        div()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .child(label),
+                    ),
             )
+            .on_click(cx.listener(|this, _, _, cx| this.open_commit_tab(cx)))
             .into_any_element()
     }
 
@@ -645,8 +654,9 @@ impl Workspace {
             .filter(|message| !message.is_empty())
             .unwrap_or(&summary.title)
             .to_string();
+        let sizes = cx.theme().tokens.sizes;
         let icon_color = match summary.kind {
-            LspStatusKind::Failed => cx.theme().tokens.notification_tokens().error_text,
+            LspStatusKind::Failed => status_bar_tokens.error,
             LspStatusKind::Working | LspStatusKind::Starting => status_bar_tokens.text_accent,
             LspStatusKind::Idle => status_bar_tokens.text_primary,
             LspStatusKind::Unavailable => status_bar_tokens.text_secondary,
@@ -655,19 +665,26 @@ impl Workspace {
         let state_icon = match summary.kind {
             LspStatusKind::Working | LspStatusKind::Starting => {
                 IndeterminateProgressIndicator::new("statusbar-lsp-spinner")
-                    .size(13.0)
+                    .size(f32::from(sizes.text_sm))
                     .text_color(icon_color)
                     .into_any_element()
             }
             LspStatusKind::Failed => svg()
                 .path("icons/circle-x.svg")
-                .size(px(13.0))
+                .size(sizes.text_sm)
                 .text_color(icon_color)
                 .into_any_element(),
-            LspStatusKind::Idle => div().text_color(icon_color).child("●").into_any_element(),
-            LspStatusKind::Unavailable => {
-                div().text_color(icon_color).child("○").into_any_element()
-            }
+            LspStatusKind::Idle => div()
+                .size(px(6.0))
+                .rounded_full()
+                .bg(icon_color)
+                .into_any_element(),
+            LspStatusKind::Unavailable => div()
+                .size(px(6.0))
+                .rounded_full()
+                .border_1()
+                .border_color(icon_color)
+                .into_any_element(),
         };
 
         let mut content = div()
@@ -676,13 +693,14 @@ impl Workspace {
             .flex()
             .flex_row()
             .items_center()
-            .gap_1()
+            .gap(sizes.space_1)
             .overflow_hidden()
             .child(
                 div()
                     .flex_none()
                     .w(px(14.0))
                     .flex()
+                    .items_center()
                     .justify_center()
                     .child(state_icon),
             );
@@ -691,7 +709,7 @@ impl Workspace {
             content = content.child(
                 svg()
                     .path("icons/monitor.svg")
-                    .size(px(13.0))
+                    .size(sizes.text_sm)
                     .text_color(status_bar_tokens.text_secondary)
                     .flex_shrink_0(),
             );
@@ -772,6 +790,7 @@ impl Workspace {
         status_bar_tokens: &nucleotide_ui::tokens::StatusBarTokens,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
+        let sizes = cx.theme().tokens.sizes;
         let mut context = div().flex_none().h_full().flex().items_center();
 
         if model.density != StatusBarDensity::Compact {
@@ -780,7 +799,7 @@ impl Workspace {
                     .flex_none()
                     .w(geometry.position_width)
                     .h_full()
-                    .px_2()
+                    .px(sizes.space_2)
                     .flex()
                     .items_center()
                     .justify_end()
@@ -795,11 +814,22 @@ impl Workspace {
         {
             if statusbar_show_secondary_document_metadata(model.density, model.vcs_ref.as_deref()) {
                 context = context
-                    .child(self.statusbar_text_item(metadata.encoding.clone(), status_bar_tokens))
-                    .child(self.statusbar_text_item(metadata.line_ending, status_bar_tokens));
+                    .child(self.statusbar_text_item(
+                        metadata.encoding.clone(),
+                        status_bar_tokens,
+                        &sizes,
+                    ))
+                    .child(self.statusbar_text_item(
+                        metadata.line_ending,
+                        status_bar_tokens,
+                        &sizes,
+                    ));
             }
-            context = context
-                .child(self.statusbar_text_item(metadata.language.clone(), status_bar_tokens));
+            context = context.child(self.statusbar_text_item(
+                metadata.language.clone(),
+                status_bar_tokens,
+                &sizes,
+            ));
         }
 
         context = context.child(self.statusbar_lsp_item(
@@ -812,8 +842,11 @@ impl Workspace {
 
         if model.density == StatusBarDensity::Wide {
             if let Some(metadata) = model.document_metadata.as_ref() {
-                context =
-                    context.child(self.statusbar_diagnostics_item(metadata, status_bar_tokens));
+                context = context.child(self.statusbar_diagnostics_item(
+                    metadata,
+                    status_bar_tokens,
+                    &sizes,
+                ));
             }
         }
 
@@ -834,7 +867,7 @@ impl Workspace {
                 div()
                     .flex_1()
                     .min_w_0()
-                    .px_3()
+                    .px(sizes.space_3)
                     .child(self.statusbar_message_slot(
                         model.hovered_link.clone(),
                         model.file_name.clone(),
@@ -877,7 +910,7 @@ impl Workspace {
         }
 
         if let Some(activity_message) = background_activity {
-            let notification_tokens = cx.theme().tokens.notification_tokens();
+            let sizes = cx.theme().tokens.sizes;
             let message =
                 shorten_statusbar_text(&activity_message, STATUSBAR_BACKGROUND_ACTIVITY_MAX_CHARS);
 
@@ -886,12 +919,12 @@ impl Workspace {
                 .flex_1()
                 .min_w_0()
                 .items_center()
-                .gap_2()
+                .gap(sizes.space_2)
                 .overflow_hidden()
                 .child(
                     IndeterminateProgressIndicator::new("statusbar-background-activity")
-                        .size(13.0)
-                        .text_color(notification_tokens.info_text),
+                        .size(f32::from(sizes.text_sm))
+                        .text_color(status_bar_tokens.text_accent),
                 )
                 .child(
                     gpui::div()
@@ -917,12 +950,12 @@ impl Workspace {
                 .into_any_element();
         };
 
-        let notification_tokens = cx.theme().tokens.notification_tokens();
+        let sizes = cx.theme().tokens.sizes;
         let label_color = match notification.severity {
-            StatusBarNotificationSeverity::Info => notification_tokens.info_text,
-            StatusBarNotificationSeverity::Success => notification_tokens.success_text,
-            StatusBarNotificationSeverity::Warning => notification_tokens.warning_text,
-            StatusBarNotificationSeverity::Error => notification_tokens.error_text,
+            StatusBarNotificationSeverity::Info => status_bar_tokens.text_accent,
+            StatusBarNotificationSeverity::Success => status_bar_tokens.text_primary,
+            StatusBarNotificationSeverity::Warning => status_bar_tokens.warning,
+            StatusBarNotificationSeverity::Error => status_bar_tokens.error,
         };
         let status_icon = statusbar_notification_icon(notification.severity);
         let message = shorten_statusbar_text(
@@ -935,12 +968,12 @@ impl Workspace {
             .flex_1()
             .min_w_0()
             .items_center()
-            .gap_2()
+            .gap(sizes.space_2)
             .overflow_hidden()
             .child(
                 svg()
                     .path(status_icon)
-                    .size(px(14.0))
+                    .size(sizes.text_md)
                     .flex_shrink_0()
                     .text_color(label_color),
             )

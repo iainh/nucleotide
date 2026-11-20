@@ -584,6 +584,7 @@ impl Workspace {
             );
             for (index, side) in sides.iter_mut().enumerate() {
                 let key = fold_key(start);
+                let hover_bg = tokens.chrome.surface_hover;
                 side.code.push(
                     div()
                         .id(SharedString::from(format!(
@@ -597,6 +598,7 @@ impl Workspace {
                         .bg(style.surface)
                         .text_color(style.text_secondary)
                         .cursor_pointer()
+                        .hover(move |el| el.bg(hover_bg))
                         .child(label.clone())
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.commit_review.expanded.insert(key.clone());

@@ -495,10 +495,9 @@ impl Workspace {
             .when(!files.is_empty(), |list| list.child(virtual_list));
         if files.is_empty() && !busy && self.commit_review.error.is_none() {
             list = list.child(
-                div()
-                    .p(tokens.sizes.space_8)
-                    .text_color(style.text_secondary)
-                    .child("No changes to commit. Your working tree is clean."),
+                StateView::new("commit-review-empty", "No changes to commit")
+                    .detail("Your working tree is clean.")
+                    .icon("icons/git-branch.svg"),
             );
         }
         if self
@@ -507,7 +506,14 @@ impl Workspace {
             .as_ref()
             .is_some_and(|s| s.truncated)
         {
-            list = list.child("Some files are omitted by the status limit. Stage all affects only the files listed here.");
+            list = list.child(
+                div()
+                    .px(tokens.sizes.space_3)
+                    .py(tokens.sizes.space_2)
+                    .text_size(tokens.sizes.text_xs)
+                    .text_color(style.text_secondary)
+                    .child("Some files are omitted by the status limit. Stage all affects only the files listed here."),
+            );
         }
         let all_files = files.clone();
         let unstage_files = files.clone();
@@ -741,10 +747,21 @@ impl Workspace {
                     .p(tokens.sizes.space_2)
                     .bg(style.surface)
                     .child(
-                        button(
+                        Button::icon_only(
                             SharedString::from(format!("commit-collapse-{index}")),
-                            if collapsed { "▸" } else { "▾" },
+                            if collapsed {
+                                "icons/chevron-right.svg"
+                            } else {
+                                "icons/chevron-down.svg"
+                            },
                         )
+                        .variant(ButtonVariant::Ghost)
+                        .size(ButtonSize::ExtraSmall)
+                        .aria_label(if collapsed {
+                            "Expand file diff"
+                        } else {
+                            "Collapse file diff"
+                        })
                         .on_click(cx.listener(move |this, _, _, cx| {
                             if !this.commit_review.collapsed.remove(&path) {
                                 this.commit_review.collapsed.insert(path.clone());

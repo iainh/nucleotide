@@ -3,12 +3,15 @@
 
 use std::ops::Range;
 
+use gpui::prelude::FluentBuilder;
 use gpui::{
     AnyElement, App, Entity, FontWeight, InteractiveElement, IntoElement, ParentElement, Pixels,
-    SharedString, StatefulInteractiveElement, Styled, div, px,
+    ScrollHandle, SharedString, StatefulInteractiveElement, Styled, div,
 };
 use helix_core::{Tendril, Transaction};
 use helix_view::{Document, DocumentId, ViewId, view::ReservedRows};
+use nucleotide_types::scrollbar::SCROLLBAR_THICKNESS;
+use nucleotide_ui::scrollbar::{Scrollbar, ScrollbarState};
 use nucleotide_ui::{Button, ButtonSize, ButtonVariant};
 
 use super::DocumentView;
@@ -20,7 +23,7 @@ use crate::diff::{expand_tabs, shared_affixes};
 /// Diff lines shown before the panel body scrolls.
 const MAX_BODY_LINES: usize = 20;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub(super) struct DiffPeek {
     pub doc_id: DocumentId,
     pub doc_version: i32,
@@ -30,7 +33,23 @@ pub(super) struct DiffPeek {
     pub after: Range<usize>,
     pub removed: Vec<String>,
     pub added: Vec<String>,
+    scroll_handle: ScrollHandle,
+    scrollbar_state: ScrollbarState,
 }
+
+impl PartialEq for DiffPeek {
+    fn eq(&self, other: &Self) -> bool {
+        self.doc_id == other.doc_id
+            && self.doc_version == other.doc_version
+            && self.hunk_index == other.hunk_index
+            && self.hunk_count == other.hunk_count
+            && self.after == other.after
+            && self.removed == other.removed
+            && self.added == other.added
+    }
+}
+
+impl Eq for DiffPeek {}
 
 impl DiffPeek {
     /// The change shown by the diff gutter marker on `line`.
@@ -59,6 +78,8 @@ impl DiffPeek {
                 .collect()
         };
 
+        let scroll_handle = ScrollHandle::new();
+        let scrollbar_state = ScrollbarState::new(scroll_handle.clone());
         Some(Self {
             doc_id: doc.id(),
             doc_version: doc.version(),
@@ -67,6 +88,8 @@ impl DiffPeek {
             after: hunk.after.start as usize..hunk.after.end as usize,
             removed: lines(base, hunk.before.clone()),
             added: lines(text, hunk.after.clone()),
+            scroll_handle,
+            scrollbar_state,
         })
     }
 
@@ -164,7 +187,16 @@ pub(super) fn render_diff_peek(
     view: Entity<DocumentView>,
     view_id: ViewId,
     line_height: Pixels,
+    cx: &App,
 ) -> AnyElement {
+    let sizes = cx
+        .try_global::<nucleotide_ui::Theme>()
+        .map(|theme| theme.tokens.sizes)
+        .unwrap_or_else(nucleotide_ui::tokens::SizeTokens::default);
+    let ui_font: gpui::Font = cx
+        .try_global::<nucleotide_types::FontSettings>()
+        .map(|fonts| fonts.var_font.clone().into())
+        .unwrap_or_else(|| gpui::font(".SystemUIFont"));
     let id = |name: &str| SharedString::from(format!("diff-peek-{name}-{view_id:?}"));
     let button = |name: &str, label: &'static str, icon: Option<&'static str>| {
         let button = Button::new(id(name), label)
@@ -191,9 +223,9 @@ pub(super) fn render_diff_peek(
         .items_center()
         .justify_between()
         .h(line_height)
-        .px(px(8.0))
-        .font_family(SharedString::from(".SystemUIFont"))
-        .text_size(px(12.0))
+        .px(sizes.space_3)
+        .font(ui_font)
+        .text_size(sizes.text_sm)
         .child(
             div()
                 .text_color(style.text_secondary)
@@ -206,7 +238,7 @@ pub(super) fn render_diff_peek(
                 .flex()
                 .flex_row()
                 .items_center()
-                .gap(px(2.0))
+                .gap(sizes.space_1)
                 .child(
                     button("prev", "Previous", Some("icons/chevron-up.svg"))
                         .disabled(peek.hunk_index == 0)
@@ -236,18 +268,39 @@ pub(super) fn render_diff_peek(
         );
 
     let body = div()
-        .id(id("body"))
-        .flex()
-        .flex_col()
+        .relative()
         .max_h(line_height * MAX_BODY_LINES as f32)
-        .overflow_y_scroll()
-        .font_family(style.font_family.clone())
-        .text_size(style.font_size)
-        .text_color(style.text)
-        .children(
-            diff_lines(&peek.removed, &peek.added, style)
-                .into_iter()
-                .map(|line| render_diff_line(line, line_height)),
+        .overflow_hidden()
+        .child(
+            div()
+                .id(id("body"))
+                .flex()
+                .flex_col()
+                .max_h(line_height * MAX_BODY_LINES as f32)
+                .overflow_y_scroll()
+                .track_scroll(&peek.scroll_handle)
+                .font_family(style.font_family.clone())
+                .text_size(style.font_size)
+                .text_color(style.text)
+                .children(
+                    diff_lines(&peek.removed, &peek.added, style)
+                        .into_iter()
+                        .map(|line| render_diff_line(line, line_height)),
+                ),
+        )
+        .when_some(
+            Scrollbar::vertical(peek.scrollbar_state.clone()),
+            |container, scrollbar| {
+                container.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .right_0()
+                        .bottom_0()
+                        .w(SCROLLBAR_THICKNESS)
+                        .child(scrollbar),
+                )
+            },
         );
 
     div()
@@ -255,7 +308,7 @@ pub(super) fn render_diff_peek(
         .size_full()
         // The reservation's spare row becomes the margin above and below the panel.
         .py(line_height * 0.5)
-        .pr(px(12.0))
+        .pr(sizes.space_4)
         // Clicks and hovers stay in the panel; wheel scrolling still reaches the editor.
         .block_mouse_except_scroll()
         .child(
@@ -264,7 +317,7 @@ pub(super) fn render_diff_peek(
                 .flex()
                 .flex_col()
                 .overflow_hidden()
-                .rounded(px(8.0))
+                .rounded(sizes.radius_lg)
                 .border_1()
                 .border_color(style.border)
                 .bg(style.surface)

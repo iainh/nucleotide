@@ -54,71 +54,8 @@ impl Render for DraggedTab {
     }
 }
 
-struct TabTooltip {
-    text: SharedString,
-}
-
-struct TabMetaTooltip {
-    title: SharedString,
-    detail: SharedString,
-}
-
-impl Render for TabTooltip {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let tokens = cx.theme().tokens;
-        let tooltip_tokens = tokens.tooltip_tokens();
-
-        // GPUI anchors tooltips at the pointer. Drop below it, as native
-        // tooltips do, so the hovered tab and neighbouring controls stay visible.
-        div().pt(px(TAB_TOOLTIP_POINTER_CLEARANCE)).child(
-            div()
-                .max_w(px(420.0))
-                .px(tokens.sizes.space_2)
-                .py(tokens.sizes.space_1)
-                .rounded(tokens.sizes.radius_sm)
-                .border_1()
-                .border_color(tooltip_tokens.border)
-                .bg(tooltip_tokens.background)
-                .shadow(vec![tokens.chrome.shadow_md.to_box_shadow(false)])
-                .text_size(tokens.sizes.text_sm)
-                .text_color(tooltip_tokens.text)
-                .child(self.text.clone()),
-        )
-    }
-}
-
-impl Render for TabMetaTooltip {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let tokens = cx.theme().tokens;
-        let tooltip_tokens = tokens.tooltip_tokens();
-
-        div().pt(px(TAB_TOOLTIP_POINTER_CLEARANCE)).child(
-            div()
-                .max_w(px(420.0))
-                .px(tokens.sizes.space_2)
-                .py(tokens.sizes.space_1)
-                .rounded(tokens.sizes.radius_sm)
-                .border_1()
-                .border_color(tooltip_tokens.border)
-                .bg(tooltip_tokens.background)
-                .shadow(vec![tokens.chrome.shadow_md.to_box_shadow(false)])
-                .flex()
-                .flex_col()
-                .gap(tokens.sizes.space_1)
-                .child(
-                    div()
-                        .text_size(tokens.sizes.text_sm)
-                        .text_color(tooltip_tokens.text)
-                        .child(self.title.clone()),
-                )
-                .child(
-                    div()
-                        .text_size(tokens.sizes.text_xs)
-                        .text_color(tokens.tab_bar_tokens().tab_text_inactive)
-                        .child(self.detail.clone()),
-                ),
-        )
-    }
+fn tab_tooltip(text: impl Into<SharedString>) -> nucleotide_ui::TextTooltip {
+    nucleotide_ui::TextTooltip::new(text).pointer_clearance(px(TAB_TOOLTIP_POINTER_CLEARANCE))
 }
 
 struct TabEndButtonProps {
@@ -941,16 +878,13 @@ impl RenderOnce for Tab {
                 let readonly = is_readonly;
                 tab.tooltip(move |_window, cx| {
                     if readonly {
-                        cx.new(|_| TabMetaTooltip {
-                            title: tooltip.clone(),
-                            detail: SharedString::from(Tab::readonly_content_tooltip_detail()),
+                        cx.new(|_| {
+                            tab_tooltip(tooltip.clone())
+                                .detail(Tab::readonly_content_tooltip_detail())
                         })
                         .into()
                     } else {
-                        cx.new(|_| TabTooltip {
-                            text: tooltip.clone(),
-                        })
-                        .into()
+                        cx.new(|_| tab_tooltip(tooltip.clone())).into()
                     }
                 })
             })
@@ -1105,11 +1039,7 @@ impl Tab {
             .tooltip(move |_window, cx| {
                 let title = Self::readonly_tooltip_title(is_toggleable);
                 let detail = Self::readonly_tooltip_detail(is_toggleable);
-                cx.new(|_| TabMetaTooltip {
-                    title: SharedString::from(title),
-                    detail: SharedString::from(detail),
-                })
-                .into()
+                cx.new(|_| tab_tooltip(title).detail(detail)).into()
             });
 
         if let Some(on_toggle_readonly) = on_toggle_readonly {
@@ -1299,12 +1229,7 @@ impl Tab {
                 .justify_center()
                 .rounded(tokens.sizes.radius_sm)
                 .text_color(props.text_color)
-                .tooltip(move |_window, cx| {
-                    cx.new(|_| TabTooltip {
-                        text: tooltip.clone(),
-                    })
-                    .into()
-                })
+                .tooltip(move |_window, cx| cx.new(|_| tab_tooltip(tooltip.clone())).into())
                 .opacity(pin_opacity)
                 .child(
                     svg()
@@ -1356,12 +1281,7 @@ impl Tab {
                 .justify_center()
                 .rounded(tokens.sizes.radius_sm)
                 .text_color(props.text_color)
-                .tooltip(move |_window, cx| {
-                    cx.new(|_| TabTooltip {
-                        text: tooltip.clone(),
-                    })
-                    .into()
-                })
+                .tooltip(move |_window, cx| cx.new(|_| tab_tooltip(tooltip.clone())).into())
                 .opacity(close_opacity)
                 .child(
                     svg()

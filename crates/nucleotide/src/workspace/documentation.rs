@@ -221,7 +221,7 @@ impl Workspace {
                         })
                         .child(
                             div()
-                                .text_xs()
+                                .text_size(tokens.sizes.text_xs)
                                 .font_weight(FontWeight::MEDIUM)
                                 .text_color(file_tree_tokens.item_text_secondary)
                                 .child(entry.server_name.clone()),
@@ -286,7 +286,7 @@ impl Workspace {
                             .flex_1()
                             .items_center()
                             .gap(tokens.sizes.space_2)
-                            .text_sm()
+                            .text_size(tokens.sizes.text_sm)
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(file_tree_tokens.item_text)
                             .child(

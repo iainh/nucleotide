@@ -31,14 +31,8 @@ impl nucleotide_core::PickerCapability for HelixPickerCapability {
             // Wrap the DocumentView entity in a container to ensure sizing
             div().w_full().h_full().child(entity).into_any_element()
         } else {
-            // Fallback message if the entity wasn't registered
-            use gpui::px;
-            div()
-                .px_3()
-                .py_2()
-                .text_size(px(12.))
-                .font_family("monospace")
-                .child("Preview view not available")
+            nucleotide_ui::StateView::new("picker-preview-unavailable", "Preview not available")
+                .compact(true)
                 .into_any_element()
         }
     }

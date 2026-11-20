@@ -268,18 +268,14 @@ pub(super) fn image_zoom_percent(zoom: f32) -> String {
     format!("{:.0}%", zoom * 100.0)
 }
 
-fn image_transparency_grid_colors(editor_background: Hsla) -> (Hsla, Hsla) {
-    if editor_background.l > 0.5 {
-        (
-            gpui::hsla(0.0, 0.0, 0.98, 1.0),
-            gpui::hsla(0.0, 0.0, 0.86, 1.0),
-        )
-    } else {
-        (
-            gpui::hsla(0.0, 0.0, 0.16, 1.0),
-            gpui::hsla(0.0, 0.0, 0.26, 1.0),
-        )
+fn image_transparency_grid_colors(tokens: &nucleotide_ui::tokens::DesignTokens) -> (Hsla, Hsla) {
+    if let Some(c) = tokens.chrome.contrast {
+        return (c.window, c.button_face);
     }
+    let base = tokens.editor.background;
+    let delta = if base.l > 0.5 { -0.09 } else { 0.09 };
+    let alternate = nucleotide_ui::styling::ColorTheory::adjust_oklab_lightness(base, delta);
+    (base, alternate)
 }
 
 fn image_transparency_grid(base: Hsla, alternate: Hsla) -> gpui::AnyElement {
@@ -452,7 +448,7 @@ impl Workspace {
         let tab_id = tab.id;
         let zoom = presentation.zoom;
         let image_path = tab.render_path.clone();
-        let (grid_base, grid_alternate) = image_transparency_grid_colors(tokens.editor.background);
+        let (grid_base, grid_alternate) = image_transparency_grid_colors(tokens);
         let (image_element, image_size) = if let Some((width, height)) = tab.dimensions {
             let width = px(width as f32 * zoom);
             let height = px(height as f32 * zoom);
@@ -522,17 +518,9 @@ impl Workspace {
             .size_full()
             .bg(tokens.editor.background)
             .child(
-                div()
-                    .id("image-viewer-toolbar")
-                    .flex()
-                    .flex_none()
-                    .items_center()
-                    .gap(tokens.sizes.space_2)
-                    .px(tokens.sizes.space_3)
-                    .h(crate::tab::tab_container_height(*tokens))
-                    .border_b_1()
+                nucleotide_ui::Toolbar::new("image-viewer-toolbar")
+                    .height(crate::tab::tab_container_height(*tokens))
                     .border_color(tokens.chrome.border_default)
-                    .bg(tokens.tab_bar_tokens().container_background)
                     .child(
                         Button::icon_only("image-zoom-out", "icons/zoom-out.svg")
                             .variant(ButtonVariant::Ghost)

@@ -1,8 +1,11 @@
+use gpui::prelude::FluentBuilder;
 use gpui::{
     Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable, FontWeight,
-    InteractiveElement, IntoElement, ParentElement, Render, StatefulInteractiveElement, Styled,
-    Window, div, px,
+    InteractiveElement, IntoElement, ParentElement, Render, ScrollHandle,
+    StatefulInteractiveElement, Styled, Window, div, px,
 };
+use nucleotide_types::scrollbar::SCROLLBAR_THICKNESS;
+use nucleotide_ui::scrollbar::{Scrollbar, ScrollbarState};
 use nucleotide_ui::{
     Button, ButtonSize, ButtonVariant, FocusTraversal, MarkdownStyle, ModalView, ThemedContext,
     markdown,
@@ -34,16 +37,22 @@ pub struct UpdateDialog {
     focus_handle: FocusHandle,
     primary_focus_handle: FocusHandle,
     close_focus_handle: FocusHandle,
+    notes_scroll_handle: ScrollHandle,
+    notes_scrollbar_state: ScrollbarState,
 }
 
 impl UpdateDialog {
     pub fn new(controller: Entity<UpdateController>, cx: &mut Context<Self>) -> Self {
         cx.observe(&controller, |_, _, cx| cx.notify()).detach();
+        let notes_scroll_handle = ScrollHandle::new();
+        let notes_scrollbar_state = ScrollbarState::new(notes_scroll_handle.clone());
         Self {
             controller,
             focus_handle: cx.focus_handle().tab_stop(false),
             primary_focus_handle: cx.focus_handle().tab_index(1).tab_stop(true),
             close_focus_handle: cx.focus_handle().tab_index(2).tab_stop(true),
+            notes_scroll_handle,
+            notes_scrollbar_state,
         }
     }
 
@@ -183,15 +192,36 @@ impl Render for UpdateDialog {
         if let Some(notes) = notes {
             body = body.child(
                 div()
-                    .id("update-release-notes")
-                    .mt_2()
+                    .relative()
+                    .mt(tokens.sizes.space_2)
                     .max_h(px(260.0))
-                    .overflow_y_scroll()
-                    .pr_2()
-                    .child(markdown(
-                        notes,
-                        MarkdownStyle::from_tokens(&tokens).compact(),
-                    )),
+                    .overflow_hidden()
+                    .child(
+                        div()
+                            .id("update-release-notes")
+                            .max_h(px(260.0))
+                            .overflow_y_scroll()
+                            .track_scroll(&self.notes_scroll_handle)
+                            .pr(tokens.sizes.space_4)
+                            .child(markdown(
+                                notes,
+                                MarkdownStyle::from_tokens(&tokens).compact(),
+                            )),
+                    )
+                    .when_some(
+                        Scrollbar::vertical(self.notes_scrollbar_state.clone()),
+                        |container, scrollbar| {
+                            container.child(
+                                div()
+                                    .absolute()
+                                    .top_0()
+                                    .right_0()
+                                    .bottom_0()
+                                    .w(SCROLLBAR_THICKNESS)
+                                    .child(scrollbar),
+                            )
+                        },
+                    ),
             );
         }
 
@@ -229,11 +259,11 @@ impl Render for UpdateDialog {
                 .occlude()
                 .w(px(560.0))
                 .max_h(px(560.0))
-                .p_5()
+                .p(tokens.sizes.space_5)
                 .flex()
                 .flex_col()
                 .gap(tokens.sizes.space_4)
-                .rounded_lg()
+                .rounded(tokens.sizes.radius_lg)
                 .border_1()
                 .border_color(tokens.chrome.border_strong)
                 .bg(tokens.chrome.surface_elevated)
