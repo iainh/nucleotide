@@ -45,18 +45,27 @@ pub(super) struct CommitReview {
     shown: Option<PathBuf>,
     /// The sidebar lists changed files instead of the project tree.
     pub(super) sidebar: bool,
-    /// Line selections shown at once but not yet written to the index, by file.
-    /// They are staged when the operation in progress finishes.
-    selections: HashMap<PathBuf, Selection>,
+    /// Changes shown at once but not yet written to the index, by file. They
+    /// are staged when the operation in progress finishes.
+    queued: HashMap<PathBuf, StageTarget>,
+    /// The next reload follows a stage, which leaves HEAD and the message
+    /// defaults as they were.
+    reuse_context: bool,
+    /// Git status changed while a reload ran, so it may already be stale.
+    status_changed: bool,
+    /// The review is not on screen and reloads when it next shows.
+    stale: bool,
+    /// Waits for edits to pause before reloading.
+    debounce: Option<gpui::Task<()>>,
 }
 
 impl CommitReview {
-    /// Shows unstaged selections over a freshly read review. A selection is
-    /// dropped once the index holds it, or when the HEAD or working-tree text
-    /// its line numbers refer to has changed.
-    fn keep_selections(&mut self, snapshot: &mut ReviewSnapshot) {
+    /// Shows queued changes over a freshly read review. A change is dropped
+    /// once the index holds it, or when the HEAD or working-tree text it was
+    /// chosen against has changed.
+    fn keep_queued(&mut self, snapshot: &mut ReviewSnapshot) {
         let shown = self.snapshot.as_ref();
-        self.selections.retain(|path, selection| {
+        self.queued.retain(|path, target| {
             let Some(file) = snapshot
                 .files
                 .iter_mut()
@@ -66,20 +75,38 @@ impl CommitReview {
             };
             let before = shown
                 .and_then(|s| s.files.iter().find(|f| &f.entry.relative_path == path))
-                .and_then(|f| f.content.as_ref().ok());
-            let keep = match (before, &file.content) {
-                (Some(before), Ok(now)) => {
-                    before.head == now.head
-                        && before.worktree == now.worktree
-                        && now.selection.as_ref().is_some_and(|now| now != selection)
+                .map(|f| &f.content);
+            let unchanged = match (before, &file.content) {
+                (Some(Ok(before)), Ok(now)) => {
+                    before.head == now.head && before.worktree == now.worktree
                 }
+                // Whole-file actions do not depend on line numbers.
+                (Some(Err(_)), Err(_)) => matches!(target, StageTarget::File(_)),
                 _ => false,
             };
+            let keep = unchanged
+                && match target {
+                    StageTarget::Selection(selection) => file
+                        .content
+                        .as_ref()
+                        .ok()
+                        .and_then(|c| c.selection.as_ref())
+                        .is_some_and(|now| now != selection),
+                    StageTarget::File(staged) => file.state() != target_state(*staged),
+                };
             if keep {
-                *file = file.with_selection(selection.clone());
+                *file = file.with_target(target);
             }
             keep
         });
+    }
+}
+
+fn target_state(staged: bool) -> SelectionState {
+    if staged {
+        SelectionState::Staged
+    } else {
+        SelectionState::Unstaged
     }
 }
 
@@ -108,6 +135,8 @@ struct ReviewFile {
     content: Result<FileContent, String>,
     /// Read-only diff of a file staged only as a whole, such as a deletion or rename.
     preview: Option<Preview>,
+    /// The state of a queued whole-file change, shown until the index holds it.
+    shown: Option<SelectionState>,
 }
 
 struct Preview {
@@ -169,6 +198,9 @@ struct FileContent {
 
 impl ReviewFile {
     fn state(&self) -> SelectionState {
+        if let Some(state) = self.shown {
+            return state;
+        }
         if let Ok(content) = &self.content
             && let Some(selection) = &content.selection
             && !content.changes.hunks().is_empty()
@@ -187,16 +219,27 @@ impl ReviewFile {
         }
     }
 
-    /// This file as shown with `selection` staged, before the index holds it.
-    fn with_selection(&self, selection: Selection) -> Arc<Self> {
+    /// This file as shown once `target` is staged, before the index holds it.
+    fn with_target(&self, target: &StageTarget) -> Arc<Self> {
+        let mut content = self.content.clone();
+        let mut shown = None;
+        if let Ok(content) = &mut content
+            && content.selection.is_some()
+        {
+            content.selection = Some(match target {
+                StageTarget::Selection(selection) => selection.clone(),
+                StageTarget::File(true) => content.changes.select_all(),
+                StageTarget::File(false) => Selection::default(),
+            });
+        } else if let StageTarget::File(staged) = target {
+            shown = Some(target_state(*staged));
+        }
         Arc::new(Self {
             entry: self.entry.clone(),
             unsaved: self.unsaved,
-            content: self.content.clone().map(|content| FileContent {
-                selection: Some(selection),
-                ..content
-            }),
+            content,
             preview: None,
+            shown,
         })
     }
 
@@ -254,6 +297,7 @@ impl StageChange {
 }
 
 /// What a stage writes for one file.
+#[derive(Clone, PartialEq)]
 enum StageTarget {
     /// Stage or unstage the whole file.
     File(bool),
@@ -428,12 +472,26 @@ async fn load_content(
     })
 }
 
+/// What a reload can reuse from the review it replaces.
+#[derive(Default)]
+struct Previous {
+    files: Vec<Arc<ReviewFile>>,
+    /// HEAD with its message defaults and upstream, reused while HEAD is unchanged.
+    context: Option<ReviewContext>,
+}
+
+type ReviewContext = (
+    Option<String>,
+    Result<CommitMessageContext, String>,
+    Result<UpstreamState, String>,
+);
+
 async fn load_review(
     backend: WorkspaceBackendHandle,
     directory: PathBuf,
     buffers: HashMap<PathBuf, Vec<u8>>,
     loader: Option<Arc<helix_core::syntax::Loader>>,
-    previous: Vec<Arc<ReviewFile>>,
+    previous: Previous,
 ) -> Result<ReviewSnapshot, String> {
     let repository = GitRepository::discover(backend.clone(), &directory)
         .await?
@@ -443,8 +501,15 @@ async fn load_review(
         .await
         .map_err(|e| e.to_string())?;
     let index_signature = repository.index_signature().await?;
-    let message_context = repository.message_context().await;
-    let upstream = repository.upstream_state().await;
+    let (message_context, upstream) = match previous.context {
+        Some((reused, message_context, upstream)) if reused == head.head => {
+            (message_context, upstream)
+        }
+        _ => (
+            repository.message_context().await,
+            repository.upstream_state().await,
+        ),
+    };
     let mut status = backend
         .git_status(repository.root(), GitStatusOptions::default())
         .await
@@ -473,7 +538,7 @@ async fn load_review(
         &entries,
         &buffers,
         loader.as_deref(),
-        &previous,
+        &previous.files,
     )
     .await;
     let mut files = Vec::new();
@@ -488,6 +553,7 @@ async fn load_review(
             unsaved,
             content,
             preview,
+            shown: None,
         }));
     }
     if repository.index_signature().await? != index_signature
@@ -634,9 +700,6 @@ impl Workspace {
             return;
         }
         if key == "r" {
-            if self.commit_review.busy {
-                return;
-            }
             self.commit_review.error = None;
             self.refresh_commit_review(cx);
             return;
@@ -785,9 +848,23 @@ impl Workspace {
     }
 
     pub(super) fn refresh_commit_review(&mut self, cx: &mut Context<Self>) {
-        if self.commit_tab_pane().is_none() {
+        let Some(pane) = self.commit_tab_pane() else {
+            return;
+        };
+        self.commit_review.debounce = None;
+        // A hidden review reloads when it next shows instead of on every change.
+        if !self.commit_review.sidebar
+            && self
+                .pane_host
+                .layout
+                .pane(pane)
+                .and_then(|p| p.active_tab())
+                != Some(TabId::Commit)
+        {
+            self.commit_review.stale = true;
             return;
         }
+        self.commit_review.stale = false;
         if self.commit_review.busy {
             self.commit_review.refresh_again = true;
             return;
@@ -824,11 +901,21 @@ impl Workspace {
             self.update_document_views(cx);
         }
         self.commit_review.busy = true;
+        let reuse_context = std::mem::take(&mut self.commit_review.reuse_context);
         let previous = self
             .commit_review
             .snapshot
             .as_ref()
-            .map(|snapshot| snapshot.files.clone())
+            .map(|snapshot| Previous {
+                files: snapshot.files.clone(),
+                context: reuse_context.then(|| {
+                    (
+                        snapshot.head.clone(),
+                        snapshot.message_context.clone(),
+                        snapshot.upstream.clone(),
+                    )
+                }),
+            })
             .unwrap_or_default();
         let handle = self.handle.clone();
         cx.spawn(async move |this, cx| {
@@ -865,23 +952,28 @@ impl Workspace {
                             }
                             this.ensure_commit_message(&snapshot, cx);
                             let mut snapshot = snapshot;
-                            this.commit_review.keep_selections(&mut snapshot);
+                            this.commit_review.keep_queued(&mut snapshot);
                             this.commit_review.snapshot = Some(snapshot);
                         }
                     }
                     Err(error) => {
                         this.commit_review.snapshot = None;
-                        this.commit_review.selections.clear();
+                        this.commit_review.queued.clear();
                         this.commit_review.error = Some(error);
                         this.pane_host.commit_message_focused = false;
                         this.project_panes(cx);
                         this.update_document_views(cx);
                     }
                 }
+                if std::mem::take(&mut this.commit_review.status_changed)
+                    && !this.review_matches_status(cx)
+                {
+                    this.commit_review.refresh_again = true;
+                }
                 if std::mem::take(&mut this.commit_review.refresh_again) {
                     this.refresh_commit_review(cx);
                 }
-                this.stage_selections(cx);
+                this.stage_queued(cx);
                 cx.notify();
             });
         })
@@ -889,66 +981,103 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Reloads after edits once they pause, rather than on every keystroke.
+    pub(super) fn refresh_commit_review_soon(&mut self, cx: &mut Context<Self>) {
+        if self.commit_tab_pane().is_none() {
+            return;
+        }
+        // Replacing the task cancels the previous wait.
+        self.commit_review.debounce = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(250))
+                .await;
+            let _ = this.update(cx, |this, cx| this.refresh_commit_review(cx));
+        }));
+    }
+
+    /// Reloads when git status no longer matches the review. Our own stage
+    /// changes the status too, and its reload has usually already read it.
+    pub(super) fn commit_status_changed(&mut self, cx: &mut Context<Self>) {
+        if self.commit_review.busy {
+            self.commit_review.status_changed = true;
+        } else if !self.review_matches_status(cx) {
+            self.refresh_commit_review(cx);
+        }
+    }
+
+    fn review_matches_status(&self, cx: &App) -> bool {
+        let Some(snapshot) = &self.commit_review.snapshot else {
+            return false;
+        };
+        let service = cx.global::<VcsServiceHandle>().service().read(cx);
+        let entries = service.status_entries();
+        // The review also lists files changed only in unsaved buffers.
+        let listed = |entry: &GitStatusEntry| entries.contains(entry);
+        service.repository_head() == snapshot.head.as_deref()
+            && service.repository_ref().unwrap_or("No commits yet") == snapshot.branch
+            && entries
+                .iter()
+                .all(|entry| snapshot.files.iter().any(|file| &file.entry == entry))
+            && snapshot.files.iter().all(|file| {
+                listed(&file.entry)
+                    || (file.unsaved
+                        && file.entry.index_status == Status::Unmodified
+                        && file.entry.working_tree_status == Status::Modified)
+            })
+    }
+
+    /// Shows each change at once and stages it, after the operation in
+    /// progress when there is one. Clicks made meanwhile fold into one write.
     fn stage_review_files(
         &mut self,
         files: Vec<(Arc<ReviewFile>, StageChange)>,
         cx: &mut Context<Self>,
     ) {
-        if let [(file, change)] = files.as_slice()
-            && !matches!(change, StageChange::File(_))
-        {
-            self.select_review_lines(file.entry.relative_path.clone(), change, cx);
-            return;
-        }
-        let files = files
-            .into_iter()
-            .filter_map(|(file, change)| match change {
-                StageChange::File(staged) => Some((file, StageTarget::File(staged))),
-                _ => None,
-            })
-            .collect();
-        self.start_stage(files, cx);
-    }
-
-    /// Shows a line or hunk change at once and stages it, after the operation
-    /// in progress when there is one. Clicks made meanwhile fold into one write.
-    fn select_review_lines(&mut self, path: PathBuf, change: &StageChange, cx: &mut Context<Self>) {
         if self.commit_review.operation.is_some() {
             return;
         }
-        let Some(file) = self
-            .commit_review
-            .snapshot
-            .as_mut()
-            .and_then(|s| s.files.iter_mut().find(|f| f.entry.relative_path == path))
-        else {
+        let Some(snapshot) = &mut self.commit_review.snapshot else {
             return;
         };
-        // Build on the shown selection, which includes clicks not yet staged.
-        let Some(selection) = file.content.as_ref().ok().and_then(|c| change.select(c)) else {
-            return;
-        };
-        *file = file.with_selection(selection.clone());
-        self.commit_review.selections.insert(path, selection);
-        self.stage_selections(cx);
+        for (file, change) in files {
+            let path = &file.entry.relative_path;
+            let Some(shown) = snapshot
+                .files
+                .iter_mut()
+                .find(|f| &f.entry.relative_path == path)
+            else {
+                continue;
+            };
+            let target = match change {
+                StageChange::File(staged) => StageTarget::File(staged),
+                // Build on the shown selection, which includes clicks not yet staged.
+                change => match shown.content.as_ref().ok().and_then(|c| change.select(c)) {
+                    Some(selection) => StageTarget::Selection(selection),
+                    None => continue,
+                },
+            };
+            *shown = shown.with_target(&target);
+            self.commit_review.queued.insert(path.clone(), target);
+        }
+        self.stage_queued(cx);
         cx.notify();
     }
 
-    fn stage_selections(&mut self, cx: &mut Context<Self>) {
-        if self.commit_review.busy || self.commit_review.selections.is_empty() {
+    fn stage_queued(&mut self, cx: &mut Context<Self>) {
+        if self.commit_review.busy || self.commit_review.queued.is_empty() {
             return;
         }
         let Some(snapshot) = &self.commit_review.snapshot else {
             return;
         };
-        let files = std::mem::take(&mut self.commit_review.selections)
+        let files = std::mem::take(&mut self.commit_review.queued)
             .into_iter()
-            .filter_map(|(path, selection)| {
+            .filter_map(|(path, target)| {
                 let file = snapshot
                     .files
                     .iter()
                     .find(|f| f.entry.relative_path == path)?;
-                Some((file.clone(), StageTarget::Selection(selection)))
+                Some((file.clone(), target))
             })
             .collect();
         self.start_stage(files, cx);
@@ -1070,7 +1199,10 @@ impl Workspace {
                 .background_executor()
                 .spawn(async move { handle.block_on(pending.apply()) })
                 .await;
-            let _ = this.update(cx, |this, cx| this.finish_staging(result, cx));
+            let _ = this.update(cx, |this, cx| {
+                this.commit_review.reuse_context = true;
+                this.finish_staging(result, cx)
+            });
         })
         .detach();
     }
@@ -1081,7 +1213,7 @@ impl Workspace {
         self.commit_review.error = result.err();
         if let Some(error) = &self.commit_review.error {
             // Show what the index holds rather than clicks that may no longer apply.
-            self.commit_review.selections.clear();
+            self.commit_review.queued.clear();
             self.core
                 .update(cx, |core, _| core.editor.set_error(error.clone()));
         }

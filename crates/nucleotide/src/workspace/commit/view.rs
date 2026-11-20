@@ -30,6 +30,7 @@ impl Workspace {
     // Keyboard navigation includes offscreen controls without building their UI.
     fn review_controls(&mut self, files: &[(usize, Arc<ReviewFile>)], cx: &mut Context<Self>) {
         self.commit_review.controls.clear();
+        let mut live = HashSet::new();
         for (index, file) in files.iter().map(|(index, file)| (*index, file)) {
             let mut changes = vec![StageChange::File(file.state() != SelectionState::Staged)];
             if !self
@@ -70,18 +71,26 @@ impl Workspace {
                     remaining = remaining.saturating_sub(hunk.before.len() + hunk.after.len());
                 }
             }
+            live.insert(format!("commit-section-{index}"));
             for change in changes {
+                let id = change.control_id(index);
                 let focus = self
                     .commit_review
                     .control_focus
-                    .entry(change.control_id(index))
+                    .entry(id.clone())
                     .or_insert_with(|| cx.focus_handle())
                     .clone();
+                live.insert(id);
                 self.commit_review
                     .controls
                     .push((focus, file.clone(), change));
             }
         }
+        // Forget controls no longer shown, which would otherwise accumulate
+        // one handle for every line ever reviewed.
+        self.commit_review
+            .control_focus
+            .retain(|id, _| live.contains(id));
     }
 
     pub(super) fn review_checkbox(
@@ -101,7 +110,8 @@ impl Workspace {
             .size(CheckboxSize::Small)
             .checked(state == SelectionState::Staged)
             .indeterminate(state == SelectionState::Partial)
-            .disabled(self.commit_review.busy)
+            // Changes queue behind a stage, but not behind a commit or push.
+            .disabled(self.commit_review.operation.is_some())
             .on_change(move |_, window, cx| {
                 window.focus(&focus, cx);
                 let _ = workspace.update(cx, |workspace, cx| {
@@ -114,6 +124,9 @@ impl Workspace {
         &mut self,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
+        if self.commit_review.stale {
+            self.refresh_commit_review(cx);
+        }
         let tokens = cx.global::<nucleotide_ui::Theme>().tokens;
         let font = cx.global::<nucleotide_types::EditorFontConfig>();
         let style = DiffStyle {
@@ -148,6 +161,8 @@ impl Workspace {
             })
             .unwrap_or_default();
         let busy = self.commit_review.busy;
+        // Staging controls queue behind a stage; only a commit or push locks them.
+        let locked = self.commit_review.operation.is_some();
         let can_commit = self.can_commit(cx);
         let can_push = self.can_push();
         let amending = self.commit_amending();
@@ -279,15 +294,17 @@ impl Workspace {
                             .child("Commit review"),
                     )
                     .child(div().text_color(style.text_secondary).child(branch))
-                    .child(button("commit-refresh", "Refresh").disabled(busy).on_click(
-                        cx.listener(|this, _, _, cx| {
-                            this.commit_review.error = None;
-                            this.refresh_commit_review(cx);
-                        }),
-                    ))
+                    .child(
+                        button("commit-refresh", "Refresh")
+                            .disabled(locked)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.commit_review.error = None;
+                                this.refresh_commit_review(cx);
+                            })),
+                    )
                     .child(
                         button("commit-stage-all", "Stage all")
-                            .disabled(busy || files.is_empty())
+                            .disabled(locked || files.is_empty())
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.stage_review_files(
                                     all_files
@@ -300,7 +317,7 @@ impl Workspace {
                     )
                     .child(
                         button("commit-unstage-all", "Unstage all")
-                            .disabled(busy || staged_count == 0)
+                            .disabled(locked || staged_count == 0)
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.stage_review_files(
                                     unstage_files
@@ -518,7 +535,7 @@ impl Workspace {
                                 SharedString::from(format!("commit-unstage-{index}")),
                                 "Unstage file",
                             )
-                            .disabled(self.commit_review.busy)
+                            .disabled(self.commit_review.operation.is_some())
                             .on_click(cx.listener(
                                 move |this, _, _, cx| {
                                     this.stage_review_files(

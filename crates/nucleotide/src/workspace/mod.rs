@@ -3732,7 +3732,7 @@ impl Workspace {
             let revision = service.read(cx).status_revision();
             if revision != status_revision {
                 status_revision = revision;
-                workspace.refresh_commit_review(cx);
+                workspace.commit_status_changed(cx);
                 // The sidebar's Changes button shows the changed-file count.
                 cx.notify();
             }
@@ -9303,7 +9303,7 @@ impl Workspace {
             } => {
                 self.handle_document_changed(*doc_id, line_change, cx);
                 if !self.core.read(cx).editor.is_hosted_auxiliary(*doc_id) {
-                    self.refresh_commit_review(cx);
+                    self.refresh_commit_review_soon(cx);
                 }
             }
             DocumentEvent::Opened { doc_id, .. } => {

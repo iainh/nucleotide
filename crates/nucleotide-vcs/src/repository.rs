@@ -27,6 +27,7 @@ pub struct UpstreamState {
 }
 
 /// Message defaults read on the repository's host, including linked worktrees.
+#[derive(Clone)]
 pub struct CommitMessageContext {
     pub seed: String,
     pub last_message: Option<String>,

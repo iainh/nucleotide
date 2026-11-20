@@ -376,6 +376,33 @@ fn commit_review_stages_lines_clicked_while_an_earlier_stage_runs(cx: &mut gpui:
 }
 
 #[gpui::test]
+fn commit_review_stages_a_file_clicked_while_a_line_stage_runs(cx: &mut gpui::TestAppContext) {
+    let _runtime = TEST_RUNTIME.enter();
+    let root = repository();
+    let path = root.path().join("file.txt");
+    fs::write(&path, "alpha\nbeta\nlast\n").unwrap();
+    let (core, workspace, cx) = new_test_workspace(cx, &path);
+    workspace.update_in(cx, |workspace, window, cx| {
+        workspace.focus_editor(window, cx)
+    });
+    cx.simulate_keystrokes("i");
+    cx.simulate_input("first\n");
+    cx.simulate_keystrokes("escape");
+    core.update(cx, |_, cx| cx.emit(crate::Update::ShowCommit));
+    wait_for(&core, cx, |cx| {
+        cx.debug_bounds("commit-row-0-false-3").is_some()
+    });
+
+    // The line stage waits for the buffer to save; the file checkbox lands meanwhile.
+    click_line(cx, "commit-row-0-false-0");
+    cx.update(|window, cx| window.draw(cx).clear());
+    click_line(cx, "changes-stage-0");
+    wait_for(&core, cx, |_| {
+        git(root.path(), &["show", ":file.txt"]) == "first\nalpha\nbeta\nlast\n"
+    });
+}
+
+#[gpui::test]
 fn commit_review_shows_one_file_and_brackets_move_between_files(cx: &mut gpui::TestAppContext) {
     let _runtime = TEST_RUNTIME.enter();
     let root = repository();

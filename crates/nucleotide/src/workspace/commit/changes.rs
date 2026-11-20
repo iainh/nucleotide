@@ -129,6 +129,9 @@ impl Workspace {
         &mut self,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
+        if self.commit_review.stale {
+            self.refresh_commit_review(cx);
+        }
         let theme = cx.global::<nucleotide_ui::Theme>();
         let tokens = theme.tokens;
         let file_tree = tokens.file_tree_tokens();
@@ -139,7 +142,8 @@ impl Workspace {
             .map(|s| s.files.clone())
             .unwrap_or_default();
         let selected = self.selected_review_file().map(|(index, _)| index);
-        let busy = self.commit_review.busy;
+        // Clicks queue behind a stage; only a commit or push locks them.
+        let locked = self.commit_review.operation.is_some();
         let mut rows = Vec::with_capacity(files.len());
         for (index, file) in files.iter().enumerate() {
             let path = file.entry.relative_path.clone();
@@ -165,7 +169,7 @@ impl Workspace {
                         .size(CheckboxSize::Small)
                         .checked(state == SelectionState::Staged)
                         .indeterminate(state == SelectionState::Partial)
-                        .disabled(busy)
+                        .disabled(locked)
                         .on_change(move |_, _, cx| {
                             let change =
                                 StageChange::File(stage_file.state() != SelectionState::Staged);
