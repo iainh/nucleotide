@@ -27,7 +27,7 @@ independent instance.
 
 When a project folder is opened, Nucleotide reports it to Windows Recent Items
 and updates the taskbar Jump List `Recent Folders` category. On Windows,
-Nucleotide also publishes `Open...` and `Open Directory...` taskbar Jump List
+Nucleotide also publishes `Open…` and `Open Directory…` taskbar Jump List
 tasks when the app starts.
 
 ## Window dragging

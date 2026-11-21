@@ -3,7 +3,9 @@
 
 use gpui::{App, KeyBinding};
 
-use crate::actions::menu::{Cancel, Confirm, SelectDown, SelectLeft, SelectRight, SelectUp};
+use crate::actions::menu::{
+    ActivateMenuBar, AltTapMenuBar, Cancel, Confirm, SelectDown, SelectLeft, SelectRight, SelectUp,
+};
 
 mod popup_menu;
 mod popup_menu_surface;
@@ -25,5 +27,18 @@ pub(crate) fn init(cx: &mut App) {
         KeyBinding::new("escape", Cancel, Some(APP_MENU_BAR_CONTEXT)),
         KeyBinding::new("left", SelectLeft, Some(APP_MENU_BAR_CONTEXT)),
         KeyBinding::new("right", SelectRight, Some(APP_MENU_BAR_CONTEXT)),
+        KeyBinding::new("enter", Confirm, Some(APP_MENU_BAR_CONTEXT)),
+        KeyBinding::new("space", Confirm, Some(APP_MENU_BAR_CONTEXT)),
+        KeyBinding::new("down", SelectDown, Some(APP_MENU_BAR_CONTEXT)),
     ]);
+
+    // macOS uses the global menu bar. Elsewhere, bind only the bare `alt`
+    // keystroke, which GPUI emits when Alt is pressed and released with no
+    // other key, so Helix `Alt+<key>` bindings still reach the editor.
+    if !cfg!(target_os = "macos") {
+        cx.bind_keys([
+            KeyBinding::new("alt", AltTapMenuBar, None),
+            KeyBinding::new("f10", ActivateMenuBar, None),
+        ]);
+    }
 }

@@ -2647,3 +2647,27 @@ fn file_picker_preview_from_backend_formats_directory_listing() {
     assert!(preview.contains("README.md"));
     assert!(preview.contains("src/"));
 }
+
+#[gpui::test]
+fn injected_alt_tap_is_swallowed_once_after_activation(cx: &mut gpui::TestAppContext) {
+    cx.update(|cx| {
+        assert!(
+            !take_injected_alt_tap(cx),
+            "nothing pending before activation"
+        );
+
+        cx.set_global(InjectedAltTap(Some(std::time::Instant::now())));
+        assert!(take_injected_alt_tap(cx), "the injected tap is ignored");
+        assert!(
+            !take_injected_alt_tap(cx),
+            "a real Alt tap afterwards still works"
+        );
+
+        let stale = std::time::Instant::now() - std::time::Duration::from_secs(5);
+        cx.set_global(InjectedAltTap(Some(stale)));
+        assert!(
+            !take_injected_alt_tap(cx),
+            "a tap long after activation is real"
+        );
+    });
+}

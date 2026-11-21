@@ -37,7 +37,7 @@ The manager should preserve the current "just works" behaviour while replacing t
 
 ## Entry points
 
-- `File > Open Remote...` opens the manager.
+- `File > Open Remote…` opens the manager.
 - `File > Reconnect Remote` reopens the last successful remote workspace.
 - The `remote:` prompt remains available for direct paths, saved names and power-user commands.
 

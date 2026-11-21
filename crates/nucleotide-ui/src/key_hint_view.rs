@@ -1,12 +1,16 @@
 // ABOUTME: This file implements the KeyHintView component that displays keybinding hints
 // ABOUTME: when a pending keymap state is active (e.g., after pressing space leader)
 
+use crate::key_format::{KeyPlatform, key_label, modifier_labels};
 use crate::{Theme, styling::ColorTheory};
 use gpui::{
-    AnyElement, Context, EventEmitter, IntoElement, Keystroke, ParentElement, Render, Styled,
-    Window, div, prelude::FluentBuilder, px, relative,
+    AnyElement, Context, EventEmitter, InteractiveElement, IntoElement, Keystroke, ParentElement,
+    Pixels, Render, StatefulInteractiveElement, Styled, Window, canvas, div,
+    prelude::FluentBuilder, px, relative,
 };
 use helix_view::info::Info;
+use std::cell::Cell;
+use std::rc::Rc;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct HintLine {
@@ -14,13 +18,30 @@ struct HintLine {
     description: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct KeycapLabel {
+    text: String,
+    is_modifier: bool,
+}
+
+impl KeycapLabel {
+    fn key(text: String) -> Self {
+        Self {
+            text,
+            is_modifier: false,
+        }
+    }
+}
+
 const HINT_COLUMN_WIDTH: f32 = 292.0;
 const HINT_COLUMN_GAP: f32 = 14.0;
-const HINT_KEY_SLOT_WIDTH: f32 = 64.0;
+const HINT_KEY_SLOT_WIDTH: f32 = 84.0;
 
 #[derive(Debug)]
 pub struct KeyHintView {
     info: Option<Info>,
+    /// Width of the editor area the popup may use, measured each frame.
+    frame_width: Rc<Cell<Option<Pixels>>>,
 }
 
 impl Default for KeyHintView {
@@ -31,7 +52,10 @@ impl Default for KeyHintView {
 
 impl KeyHintView {
     pub fn new() -> Self {
-        Self { info: None }
+        Self {
+            info: None,
+            frame_width: Rc::default(),
+        }
     }
 
     pub fn set_info(&mut self, info: Option<Info>) {
@@ -71,36 +95,34 @@ impl KeyHintView {
         Keystroke::parse(&normalized).ok()
     }
 
-    fn key_badge_labels(key: &str) -> Vec<String> {
+    /// One keycap per modifier, then the key, in the platform's native style.
+    /// Helix lists alternative bindings as `s, C-s`; native hints show the first.
+    fn key_badge_labels(key: &str, platform: KeyPlatform) -> Vec<KeycapLabel> {
+        let key = key.split(", ").next().unwrap_or(key);
         let Some(stroke) = Self::parse_keystroke(key) else {
-            return vec![key.trim().to_string()];
+            return vec![KeycapLabel::key(key.trim().to_string())];
         };
 
-        let mut labels = Vec::new();
-
-        if stroke.modifiers.control {
-            labels.push("ctrl".to_string());
-        }
-        if stroke.modifiers.alt {
-            labels.push("alt".to_string());
-        }
-        if stroke.modifiers.shift {
-            labels.push("shift".to_string());
-        }
-        if stroke.modifiers.platform {
-            labels.push("cmd".to_string());
-        }
-        labels.push(key_label(stroke.key.as_str()));
+        let mut labels = modifier_labels(&stroke.modifiers, platform)
+            .into_iter()
+            .map(|label| KeycapLabel {
+                text: label.to_string(),
+                is_modifier: true,
+            })
+            .collect::<Vec<_>>();
+        labels.push(KeycapLabel::key(hint_key_label(&stroke, platform)));
 
         labels
     }
 
-    fn render_keycap(theme: &Theme, key_font: &gpui::Font, label: String) -> AnyElement {
+    fn render_keycap(theme: &Theme, key_font: &gpui::Font, label: KeycapLabel) -> AnyElement {
         let tokens = &theme.tokens;
         let tooltip = tokens.tooltip_tokens();
         let key_bg = Self::keycap_background(theme);
-        let is_modifier = matches!(label.as_str(), "ctrl" | "alt" | "shift" | "cmd");
+        // Word modifiers (Ctrl, Shift) need a wider cap than single macOS symbols.
+        let is_modifier = label.is_modifier && label.text.chars().count() > 1;
         let min_width = if is_modifier { 34.0 } else { 18.0 };
+        let label = label.text;
 
         div()
             .min_w(px(min_width))
@@ -140,7 +162,7 @@ impl KeyHintView {
     }
 
     fn render_key_badges(theme: &Theme, key_font: &gpui::Font, key: &str) -> AnyElement {
-        let labels = Self::key_badge_labels(key);
+        let labels = Self::key_badge_labels(key, KeyPlatform::current());
 
         div()
             .flex()
@@ -155,23 +177,37 @@ impl KeyHintView {
             .into_any_element()
     }
 
-    fn pair_lines(lines: Vec<HintLine>) -> Vec<(HintLine, Option<HintLine>)> {
-        let mut pairs = Vec::with_capacity(lines.len().div_ceil(2));
-        let mut lines = lines.into_iter();
-
-        while let Some(first) = lines.next() {
-            pairs.push((first, lines.next()));
-        }
-
-        pairs
+    fn render_row(
+        theme: &Theme,
+        key_font: &gpui::Font,
+        first: HintLine,
+        second: Option<HintLine>,
+    ) -> AnyElement {
+        div()
+            .flex()
+            .items_start()
+            .gap(px(HINT_COLUMN_GAP))
+            .child(Self::render_line(theme, key_font, first, false))
+            .when_some(second, |row, line| {
+                row.child(Self::render_line(theme, key_font, line, false))
+            })
+            .into_any_element()
     }
 
-    fn render_line(theme: &Theme, key_font: &gpui::Font, line: HintLine) -> AnyElement {
+    /// `full_width` fills a single column; a definite width lets wrapped
+    /// descriptions be measured at the width they are painted at.
+    fn render_line(
+        theme: &Theme,
+        key_font: &gpui::Font,
+        line: HintLine,
+        full_width: bool,
+    ) -> AnyElement {
         let tokens = &theme.tokens;
         let tooltip = tokens.tooltip_tokens();
 
         div()
-            .w(px(HINT_COLUMN_WIDTH))
+            .when(full_width, |row| row.w_full())
+            .when(!full_width, |row| row.w(px(HINT_COLUMN_WIDTH)))
             .flex_none()
             .min_w(px(0.0))
             .flex()
@@ -180,7 +216,7 @@ impl KeyHintView {
             .px(tokens.sizes.space_2)
             .py(tokens.sizes.space_1)
             .rounded(tokens.sizes.radius_sm)
-            .child(div().w(px(HINT_KEY_SLOT_WIDTH)).flex_none().when_some(
+            .child(div().min_w(px(HINT_KEY_SLOT_WIDTH)).flex_none().when_some(
                 line.key.as_deref(),
                 |slot, key| {
                     slot.flex()
@@ -196,34 +232,6 @@ impl KeyHintView {
                     .text_color(tooltip.text)
                     .child(line.description),
             )
-            .into_any_element()
-    }
-
-    fn render_row(
-        theme: &Theme,
-        key_font: &gpui::Font,
-        first: HintLine,
-        second: Option<HintLine>,
-    ) -> AnyElement {
-        let second = second.map_or_else(
-            || {
-                div()
-                    .w(px(HINT_COLUMN_WIDTH))
-                    .flex_none()
-                    .min_w(px(0.0))
-                    .into_any_element()
-            },
-            |line| Self::render_line(theme, key_font, line),
-        );
-
-        div()
-            .w_full()
-            .flex()
-            .items_start()
-            .justify_start()
-            .gap(px(HINT_COLUMN_GAP))
-            .child(Self::render_line(theme, key_font, first))
-            .child(second)
             .into_any_element()
     }
 }
@@ -243,13 +251,37 @@ impl Render for KeyHintView {
                 .lines()
                 .filter_map(Self::parse_line)
                 .collect::<Vec<_>>();
-            let rows = Self::pair_lines(lines);
 
-            div()
-                .absolute()
-                .bottom(tokens.sizes.space_4)
-                .right(tokens.sizes.space_4)
-                .w(px((HINT_COLUMN_WIDTH * 2.0) + HINT_COLUMN_GAP))
+            // The inset frame spans the editor so the popup can shrink to fit it:
+            // two columns when there is room, one when the editor is narrow,
+            // instead of spilling under the sidebar.
+            let two_column_width = px((HINT_COLUMN_WIDTH * 2.0) + HINT_COLUMN_GAP)
+                + tokens.sizes.space_3 * 2.0
+                + px(2.0);
+            // Until the editor area has been measured, assume it is wide.
+            let two_columns = self
+                .frame_width
+                .get()
+                .is_none_or(|width| width >= two_column_width);
+            let rows: Vec<AnyElement> = if two_columns {
+                let mut lines = lines.into_iter();
+                std::iter::from_fn(|| {
+                    let first = lines.next()?;
+                    Some(Self::render_row(&theme, &key_font, first, lines.next()))
+                })
+                .collect()
+            } else {
+                lines
+                    .into_iter()
+                    .map(|line| Self::render_line(&theme, &key_font, line, true))
+                    .collect()
+            };
+
+            let popup = div()
+                .when(two_columns, |popup| popup.w(two_column_width))
+                .when(!two_columns, |popup| popup.w_full())
+                .max_h(relative(1.0))
+                .min_h(px(0.0))
                 .bg(tooltip.background)
                 .border_1()
                 .border_color(tooltip.border)
@@ -274,10 +306,49 @@ impl Render for KeyHintView {
                             .child(clean_title),
                     )
                 })
-                .children(
-                    rows.into_iter()
-                        .map(|(first, second)| Self::render_row(&theme, &key_font, first, second)),
-                )
+                .child(
+                    div()
+                        .id("key-hint-lines")
+                        .min_h(px(0.0))
+                        .overflow_y_scroll()
+                        .flex()
+                        .flex_col()
+                        .gap(tokens.sizes.space_2)
+                        .children(rows),
+                );
+
+            // Inset on every side so a short editor caps the popup's height and
+            // the hints scroll instead of running under the titlebar.
+            div()
+                .absolute()
+                .top(tokens.sizes.space_4)
+                .left(tokens.sizes.space_4)
+                .right(tokens.sizes.space_4)
+                .bottom(tokens.sizes.space_4)
+                .flex()
+                .flex_col()
+                .justify_end()
+                .items_end()
+                .child({
+                    // Records the editor area's width; a change of column count
+                    // re-renders on the next frame.
+                    let frame_width = self.frame_width.clone();
+                    canvas(
+                        move |bounds, window, _| {
+                            let width = bounds.size.width;
+                            let was_two =
+                                frame_width.get().is_none_or(|old| old >= two_column_width);
+                            frame_width.set(Some(width));
+                            if was_two != (width >= two_column_width) {
+                                window.refresh();
+                            }
+                        },
+                        |_, _, _, _| {},
+                    )
+                    .absolute()
+                    .size_full()
+                })
+                .child(popup)
         } else {
             div().w_0().h_0()
         }
@@ -303,15 +374,14 @@ fn normalize_hint_key(key: &str) -> String {
         .replace("<enter>", "enter")
 }
 
-fn key_label(key: &str) -> String {
-    match key {
-        "space" => "space".to_string(),
-        "enter" => "enter".to_string(),
-        "backspace" => "backspace".to_string(),
-        "delete" => "delete".to_string(),
-        "escape" => "esc".to_string(),
-        key if key.len() == 1 => key.to_lowercase(),
-        key => key.to_string(),
+/// Helix keys are case-sensitive, so an unmodified `g` stays lower-case while
+/// shifted and other modified letters use the upper-case keycap (`⇧ G`, `Ctrl O`).
+fn hint_key_label(stroke: &Keystroke, platform: KeyPlatform) -> String {
+    let key = stroke.key.as_str();
+    if key.chars().count() == 1 && !stroke.modifiers.modified() {
+        key.to_string()
+    } else {
+        key_label(key, platform)
     }
 }
 
@@ -366,37 +436,36 @@ mod tests {
         assert_eq!(normalize_hint_key("<ret>"), "enter");
     }
 
-    #[test]
-    fn renders_modifiers_before_keycaps() {
-        assert_eq!(KeyHintView::key_badge_labels("G"), vec!["shift", "g"]);
-        assert_eq!(KeyHintView::key_badge_labels("C-o"), vec!["ctrl", "o"]);
+    fn badge_texts(key: &str, platform: KeyPlatform) -> Vec<String> {
+        KeyHintView::key_badge_labels(key, platform)
+            .into_iter()
+            .map(|label| label.text)
+            .collect()
     }
 
     #[test]
-    fn pairs_hint_lines_for_two_columns() {
-        let pairs = KeyHintView::pair_lines(vec![
-            HintLine {
-                key: Some("d".to_string()),
-                description: "definition".to_string(),
-            },
-            HintLine {
-                key: Some("r".to_string()),
-                description: "references".to_string(),
-            },
-            HintLine {
-                key: Some("i".to_string()),
-                description: "implementation".to_string(),
-            },
-        ]);
-
-        assert_eq!(pairs.len(), 2);
-        assert_eq!(pairs[0].0.key.as_deref(), Some("d"));
+    fn renders_platform_native_modifier_keycaps() {
+        assert_eq!(badge_texts("G", KeyPlatform::MacOS), vec!["⇧", "G"]);
+        assert_eq!(badge_texts("G", KeyPlatform::Linux), vec!["Shift", "G"]);
+        // Written with Shift first; native order puts Control first.
         assert_eq!(
-            pairs[0].1.as_ref().and_then(|line| line.key.as_deref()),
-            Some("r")
+            badge_texts("S-C-o", KeyPlatform::MacOS),
+            vec!["⌃", "⇧", "O"]
         );
-        assert_eq!(pairs[1].0.key.as_deref(), Some("i"));
-        assert!(pairs[1].1.is_none());
+        assert_eq!(
+            badge_texts("C-A-o", KeyPlatform::Windows),
+            vec!["Ctrl", "Alt", "O"]
+        );
+        assert_eq!(badge_texts("<ret>", KeyPlatform::Windows), vec!["Enter"]);
+        assert_eq!(badge_texts("<ret>", KeyPlatform::MacOS), vec!["↩"]);
+        // Plain keys keep Helix's case so `g` is not mistaken for `G`.
+        assert_eq!(badge_texts("g", KeyPlatform::Windows), vec!["g"]);
+        // Helix alternatives show only the first binding.
+        assert_eq!(
+            badge_texts("C-s, s", KeyPlatform::Windows),
+            vec!["Ctrl", "S"]
+        );
+        assert_eq!(badge_texts(",", KeyPlatform::Windows), vec![","]);
     }
 
     #[test]

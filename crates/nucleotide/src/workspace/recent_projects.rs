@@ -110,8 +110,8 @@ pub(super) fn windows_jump_list_entries(recent: &VecDeque<PathBuf>) -> Vec<Small
 #[cfg(target_os = "windows")]
 fn windows_jump_list_menu_items() -> Vec<MenuItem> {
     vec![
-        MenuItem::action("Open...", crate::actions::editor::OpenFile),
-        MenuItem::action("Open Directory...", crate::actions::editor::OpenDirectory),
+        MenuItem::action("Open…", crate::actions::editor::OpenFile),
+        MenuItem::action("Open Directory…", crate::actions::editor::OpenDirectory),
     ]
 }
 

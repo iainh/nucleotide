@@ -1419,6 +1419,31 @@ fn os_string_to_string(value: std::ffi::OsString) -> String {
         .unwrap_or_else(|value| value.to_string_lossy().into_owned())
 }
 
+/// When the Alt tap that GPUI injects on Windows to take foreground focus is due.
+#[derive(Default)]
+struct InjectedAltTap(Option<std::time::Instant>);
+
+impl gpui::Global for InjectedAltTap {}
+
+/// Brings a window to the front without its activation opening the menu bar:
+/// on Windows, GPUI presses and releases Alt to get foreground rights, which
+/// would otherwise arrive as a solo Alt tap.
+pub fn activate_window(window: &mut Window, cx: &mut App) {
+    if cfg!(target_os = "windows") {
+        cx.set_global(InjectedAltTap(Some(std::time::Instant::now())));
+    }
+    window.activate_window();
+}
+
+/// Consumes the injected Alt tap expected after [`activate_window`].
+fn take_injected_alt_tap(cx: &mut App) -> bool {
+    let Some(activated_at) = cx.try_global::<InjectedAltTap>().and_then(|tap| tap.0) else {
+        return false;
+    };
+    cx.set_global(InjectedAltTap(None));
+    activated_at.elapsed() < std::time::Duration::from_millis(500)
+}
+
 pub(crate) fn regex_selection_result(
     action: RegexSelectionAction,
     text: RopeSlice<'_>,
@@ -4205,6 +4230,21 @@ impl Workspace {
             PendingUnsavedClose::OpenDirectory { path } => {
                 self.open_directory_after_confirmation(&path, cx)
             }
+        }
+    }
+
+    fn activate_menu_bar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let blocked = self.terminal_is_focused(window, cx)
+            || self.modal_layer.read(cx).has_active_modal()
+            || self.overlay.read(cx).has_focusable_overlay();
+        let toggled = !blocked
+            && self.titlebar.clone().is_some_and(|titlebar| {
+                titlebar.update(cx, |titlebar, cx| {
+                    titlebar.toggle_application_menu(window, cx)
+                })
+            });
+        if !toggled {
+            cx.propagate();
         }
     }
 
@@ -12370,6 +12410,23 @@ impl Render for Workspace {
         );
 
         // Add action handlers
+        // Alt tap / F10 (Windows and Linux): move focus to the in-window menu bar.
+        // Terminals and open pickers or dialogs keep these keys; propagating
+        // lets F10 reach the terminal's PTY.
+        workspace_div = workspace_div.on_action(cx.listener(
+            move |workspace, _: &crate::actions::menu::ActivateMenuBar, window, cx| {
+                workspace.activate_menu_bar(window, cx);
+            },
+        ));
+        // Only a bare Alt can be the tap Windows activation simulates; F10 never is.
+        workspace_div = workspace_div.on_action(cx.listener(
+            move |workspace, _: &crate::actions::menu::AltTapMenuBar, window, cx| {
+                if !take_injected_alt_tap(cx) {
+                    workspace.activate_menu_bar(window, cx);
+                }
+            },
+        ));
+
         workspace_div = workspace_div.on_action(cx.listener(
             move |_, _: &crate::actions::common::Cancel, window, cx| {
                 if !cx.stop_active_drag(window) {

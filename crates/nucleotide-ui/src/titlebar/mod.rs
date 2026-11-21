@@ -120,6 +120,19 @@ impl TitleBar {
         true
     }
 
+    /// Alt or F10 on Windows and Linux: toggle keyboard focus on the in-window
+    /// menu bar. Returns false where there is none, such as macOS.
+    pub fn toggle_application_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        #[cfg(not(target_os = "macos"))]
+        if let Some(menu) = &self.application_menu {
+            menu.update(cx, |menu, cx| menu.toggle_keyboard_activation(window, cx));
+            return true;
+        }
+
+        let _ = (window, cx);
+        false
+    }
+
     pub fn height(window: &Window, cx: &gpui::App) -> gpui::Pixels {
         #[cfg(target_os = "linux")]
         if LinuxTitlebar::should_create_for_decorations(&window.window_decorations()) {

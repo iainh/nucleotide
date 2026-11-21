@@ -947,7 +947,7 @@ fn app_menus() -> Vec<Menu> {
             MenuItem::action("Open File…", OpenFile),
             MenuItem::action("Open Folder…", OpenDirectory),
             MenuItem::separator(),
-            MenuItem::action("Open Remote...", OpenRemote),
+            MenuItem::action("Open Remote…", OpenRemote),
             MenuItem::action("Reconnect Remote", ReconnectRemote),
             MenuItem::action("Cancel Remote Connection", CancelRemoteConnection),
             MenuItem::separator(),
@@ -1075,8 +1075,8 @@ fn settings_menu() -> MenuItem {
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 fn dock_menu_items() -> Vec<MenuItem> {
     vec![
-        MenuItem::action("Open...", OpenFile),
-        MenuItem::action("Open Directory...", OpenDirectory),
+        MenuItem::action("Open…", OpenFile),
+        MenuItem::action("Open Directory…", OpenDirectory),
     ]
 }
 
@@ -1392,8 +1392,8 @@ fn gui_main(
                     while let Some(request) = platform_open_rx.recv().await {
                         info!(request = ?request, "Processing platform open request");
 
-                        if let Err(error) = window_handle.update(cx, |_, window, _cx| {
-                            window.activate_window();
+                        if let Err(error) = window_handle.update(cx, |_, window, cx| {
+                            workspace::activate_window(window, cx);
                         }) {
                             warn!(error = %error, "Failed to activate window for platform open request");
                         }
@@ -1550,8 +1550,8 @@ fn gui_main(
                 Ok(window) => {
                     // GPUI draws once before open_window returns. Revealing the HWND
                     // here prevents DWM from composing a shadow-only startup frame.
-                    if let Err(error) = window.update(cx, |_, window, _cx| {
-                        window.activate_window();
+                    if let Err(error) = window.update(cx, |_, window, cx| {
+                        workspace::activate_window(window, cx);
                     }) {
                         warn!(error = %error, "Failed to show the startup window");
                     }
@@ -1783,7 +1783,7 @@ mod tests {
 
         match &items[0] {
             MenuItem::Action { name, action, .. } => {
-                assert_eq!(name.as_ref(), "Open...");
+                assert_eq!(name.as_ref(), "Open…");
                 assert!(action.partial_eq(&nucleotide::actions::editor::OpenFile));
             }
             _ => panic!("expected open file action"),
@@ -1791,7 +1791,7 @@ mod tests {
 
         match &items[1] {
             MenuItem::Action { name, action, .. } => {
-                assert_eq!(name.as_ref(), "Open Directory...");
+                assert_eq!(name.as_ref(), "Open Directory…");
                 assert!(action.partial_eq(&nucleotide::actions::editor::OpenDirectory));
             }
             _ => panic!("expected open directory action"),
@@ -1808,13 +1808,13 @@ mod tests {
 
         let has_open_remote = file_menu.items.iter().any(|item| match item {
             MenuItem::Action { name, action, .. } => {
-                name.as_ref() == "Open Remote..."
+                name.as_ref() == "Open Remote…"
                     && action.partial_eq(&nucleotide::actions::editor::OpenRemote)
             }
             _ => false,
         });
 
-        assert!(has_open_remote, "File menu should expose Open Remote...");
+        assert!(has_open_remote, "File menu should expose Open Remote…");
     }
 
     #[cfg(target_os = "windows")]

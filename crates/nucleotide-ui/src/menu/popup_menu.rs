@@ -11,6 +11,7 @@ use gpui::{
 };
 
 use crate::actions::menu;
+use crate::key_format::{KeyPlatform, format_keystroke};
 use crate::{ThemedContext, icon as svg};
 use menu::{Cancel, Confirm, SelectDown, SelectLeft, SelectRight, SelectUp};
 
@@ -283,7 +284,13 @@ impl PopupMenu {
                         binding
                             .keystrokes()
                             .iter()
-                            .map(ToString::to_string)
+                            .map(|keystroke| {
+                                format_keystroke(
+                                    keystroke.modifiers(),
+                                    keystroke.key(),
+                                    KeyPlatform::current(),
+                                )
+                            })
                             .collect::<Vec<_>>()
                             .join(" ")
                             .into()
@@ -453,6 +460,13 @@ impl PopupMenu {
             .iter()
             .enumerate()
             .filter_map(|(index, item)| item.is_clickable().then_some(index))
+    }
+
+    /// Highlight the first enabled item, as menus opened from the keyboard do.
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    pub(crate) fn select_first_item(&mut self, cx: &mut Context<Self>) {
+        let first = self.clickable_indices().next();
+        self.set_selected_index(first, cx);
     }
 
     fn set_selected_index(&mut self, index: Option<usize>, cx: &mut Context<Self>) {
