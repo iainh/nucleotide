@@ -2203,6 +2203,7 @@ impl OverlayView {
             char_width: px(12.0),  // Default character width
             cursor_position: None, // No exact cursor position available
             cursor_size: None,     // No exact cursor size available
+            pane_bounds: None,
         }
     }
 }
@@ -2222,6 +2223,8 @@ pub struct WorkspaceLayoutInfo {
     // Exact cursor coordinates from DocumentView rendering
     pub cursor_position: Option<gpui::Point<Pixels>>,
     pub cursor_size: Option<gpui::Size<Pixels>>,
+    /// Window-space bounds of the focused editor pane, so popups fit its split.
+    pub pane_bounds: Option<gpui::Bounds<Pixels>>,
 }
 
 impl gpui::Global for WorkspaceLayoutInfo {}
@@ -2351,6 +2354,26 @@ impl Render for OverlayView {
                     canvas(
                         move |bounds, window, cx| {
                             let (x, y) = overlay.read(cx).calculate_completion_position(cx);
+                            // Fit the popup to the focused split, not the whole
+                            // editor area, so a narrow pane does not clip it.
+                            let margin = px(8.0);
+                            let (left, right) = overlay
+                                .read(cx)
+                                .get_workspace_layout_info(cx)
+                                .pane_bounds
+                                .map(|pane| {
+                                    (
+                                        pane.left().max(bounds.left()),
+                                        pane.right().min(bounds.right()),
+                                    )
+                                })
+                                .filter(|(left, right)| right > left)
+                                .unwrap_or((bounds.left(), bounds.right()));
+                            completion_view.update(cx, |view, _| {
+                                view.set_available_width(Some(
+                                    (right - left - margin * 2.0).max(px(0.0)),
+                                ));
+                            });
                             let dismiss_overlay = overlay.clone();
                             let mut content = div()
                                 // Only the popup blocks editor input. Outside clicks
@@ -2366,7 +2389,7 @@ impl Render for OverlayView {
                                         });
                                     }
                                 })
-                                .child(completion_view)
+                                .child(completion_view.clone())
                                 .into_any_element();
                             let popup_size = content.layout_as_root(
                                 gpui::size(AvailableSpace::MaxContent, AvailableSpace::MaxContent),
@@ -2384,10 +2407,9 @@ impl Render for OverlayView {
                                 y + px(2.0)
                             };
                             // Window snapping alone includes the status bar/terminal;
-                            // contain this overlay in the actual editor bounds instead.
-                            let popup_x = x
-                                .min(bounds.right() - popup_size.width - px(8.0))
-                                .max(bounds.left() + px(8.0));
+                            // contain this overlay in the focused pane instead.
+                            let popup_x =
+                                x.min(right - popup_size.width - margin).max(left + margin);
                             content.prepaint_at(
                                 point(popup_x, popup_y.max(bounds.top() + px(8.0))),
                                 window,

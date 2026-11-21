@@ -634,6 +634,7 @@ impl Render for PromptView {
         if !self.focus_handle.is_focused(window) {
             self.focus_handle.focus(window, cx);
         }
+        let width = crate::overlay_surface::overlay_width_within_viewport(px(500.), window, cx);
         let ui_theme = cx.global::<crate::Theme>();
         let tokens = ui_theme.tokens;
         let sizes = tokens.sizes;
@@ -647,7 +648,7 @@ impl Render for PromptView {
             .key_context(PROMPT_CONTEXT)
             .flex()
             .flex_col()
-            .w(px(500.))
+            .w(width)
             .bg(style.modal_style.background)
             .border_1()
             .border_color(style.modal_style.border)

@@ -11441,6 +11441,10 @@ impl Workspace {
             char_width,
             cursor_position,
             cursor_size,
+            // The focused DocumentView publishes its bounds while it prepaints.
+            pane_bounds: cx
+                .try_global::<WorkspaceLayoutInfo>()
+                .and_then(|layout| layout.pane_bounds),
         };
 
         // Set as global state so overlay can access it

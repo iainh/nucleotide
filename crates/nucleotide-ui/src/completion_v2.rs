@@ -4,7 +4,7 @@
 use gpui::prelude::FluentBuilder;
 use gpui::{
     App, Context, DismissEvent, EventEmitter, FocusHandle, Focusable, InteractiveElement,
-    IntoElement, KeyBinding, MouseButton, ParentElement, Render, SharedString,
+    IntoElement, KeyBinding, MouseButton, ParentElement, Pixels, Render, SharedString,
     StatefulInteractiveElement, Styled, Task, Window, div, px, relative, uniform_list,
 };
 pub use nucleotide_events::completion::{
@@ -25,6 +25,8 @@ use crate::completion_error::{
 use crate::completion_perf::{PerformanceMonitor, PerformanceTimer};
 use crate::completion_renderer::{CompletionItemElement, CompletionListState};
 use crate::debouncer::{CompletionDebouncer, create_completion_debouncer};
+use crate::scrollbar::{Scrollbar, ScrollbarState};
+use nucleotide_types::scrollbar::SCROLLBAR_THICKNESS;
 // use crate::fuzzy::{FuzzyConfig, match_strings}; // Unused in synchronous filtering
 use crate::actions::completion::{
     CompletionConfirm, CompletionConfirmAndStop, CompletionDismiss, CompletionPageDown,
@@ -37,6 +39,63 @@ const COMPLETION_VISIBLE_ROWS: usize = 6;
 const COMPLETION_ROW_HEIGHT_PX: f32 = 32.0;
 const COMPLETION_LIST_MAX_HEIGHT_PX: f32 =
     COMPLETION_VISIBLE_ROWS as f32 * COMPLETION_ROW_HEIGHT_PX;
+const COMPLETION_LIST_MIN_WIDTH_PX: f32 = 220.0;
+const COMPLETION_LIST_MAX_WIDTH_PX: f32 = 840.0;
+const COMPLETION_DOCS_WIDTH_PX: f32 = 390.0;
+const COMPLETION_DOCS_MIN_WIDTH_PX: f32 = 240.0;
+const COMPLETION_STACKED_DOCS_MAX_HEIGHT_PX: f32 = 160.0;
+
+/// Where the documentation preview sits relative to the completion list.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum CompletionDocsPlacement {
+    Beside { width: f32 },
+    Below,
+}
+
+/// Widths for the completion popup, fitted to the space its pane allows.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct CompletionPopupLayout {
+    list_width: f32,
+    docs: Option<CompletionDocsPlacement>,
+}
+
+/// Fits the list and its documentation preview inside `available_width`.
+///
+/// The list keeps its content width when it fits; the preview goes beside
+/// the list only when it can stay readable there, and stacks below otherwise.
+fn completion_popup_layout(
+    content_width: f32,
+    has_docs: bool,
+    available_width: Option<f32>,
+    gap: f32,
+) -> CompletionPopupLayout {
+    let available = available_width.unwrap_or(f32::INFINITY).max(0.0);
+    let list_width = content_width
+        .clamp(COMPLETION_LIST_MIN_WIDTH_PX, COMPLETION_LIST_MAX_WIDTH_PX)
+        .min(available);
+    if !has_docs {
+        return CompletionPopupLayout {
+            list_width,
+            docs: None,
+        };
+    }
+
+    let beside_width = (available - list_width - gap).min(COMPLETION_DOCS_WIDTH_PX);
+    if beside_width >= COMPLETION_DOCS_MIN_WIDTH_PX {
+        return CompletionPopupLayout {
+            list_width,
+            docs: Some(CompletionDocsPlacement::Beside {
+                width: beside_width,
+            }),
+        };
+    }
+
+    // Stacked: list and preview share one column width.
+    CompletionPopupLayout {
+        list_width: list_width.max(COMPLETION_DOCS_WIDTH_PX.min(available)),
+        docs: Some(CompletionDocsPlacement::Below),
+    }
+}
 
 pub(crate) fn init(cx: &mut App) {
     cx.bind_keys([
@@ -607,7 +666,10 @@ pub struct CompletionView {
     documentation_loader: DocumentationLoader,
     documentation_panel: DocumentationPanel,
     list_state: CompletionListState,
+    list_scrollbar_state: ScrollbarState,
     current_documentation: Option<DocumentationContent>,
+    /// Widest the popup may render, set by the overlay from the focused pane.
+    available_width: Option<Pixels>,
 
     // GPUI Requirements
     focus_handle: FocusHandle,
@@ -621,6 +683,10 @@ impl CompletionView {
         if let Some(coord) = cx.try_global::<crate::FocusCoordinator>() {
             coord.set_completion_focus(focus_handle.clone());
         }
+
+        let list_state =
+            CompletionListState::new(COMPLETION_ROW_HEIGHT_PX, COMPLETION_LIST_MAX_HEIGHT_PX);
+        let list_scrollbar_state = ScrollbarState::new(list_state.scroll_handle.clone());
 
         Self {
             all_items: Vec::new(),
@@ -644,13 +710,45 @@ impl CompletionView {
             last_error: None,
             documentation_loader: DocumentationLoader::new(DocumentationCacheConfig::default()),
             documentation_panel: DocumentationPanel::new(),
-            list_state: CompletionListState::new(
-                COMPLETION_ROW_HEIGHT_PX,
-                COMPLETION_LIST_MAX_HEIGHT_PX,
-            ),
+            list_state,
+            list_scrollbar_state,
             current_documentation: None,
+            available_width: None,
             focus_handle,
         }
+    }
+
+    /// Limit the popup's width, such as to the pane that holds the cursor.
+    pub fn set_available_width(&mut self, width: Option<Pixels>) {
+        self.available_width = width;
+    }
+
+    /// Estimated list width for the widest filtered entry, so scrolling to a
+    /// longer item does not clip it.
+    fn content_width_estimate(&self) -> f32 {
+        let max_text_length = self
+            .filtered_entries
+            .iter()
+            .filter_map(|string_match| self.item_for_match(string_match))
+            .map(|item| {
+                let mut total_len = item
+                    .display_text
+                    .as_ref()
+                    .map_or(item.text.len(), |text| text.len());
+                if let Some(sig) = &item.signature_info {
+                    total_len += sig.len();
+                }
+                if let Some(type_info) = &item.type_info {
+                    total_len += type_info.len() + 1;
+                }
+                if let Some(detail) = &item.detail {
+                    total_len += detail.len() + 1;
+                }
+                total_len
+            })
+            .max()
+            .unwrap_or(0);
+        COMPLETION_LIST_MIN_WIDTH_PX + max_text_length as f32 * 7.5
     }
 
     /// Set all completion items and prepare candidates for filtering
@@ -2008,71 +2106,42 @@ impl Render for CompletionView {
             item_count = self.filtered_entries.len(),
             "Completion view render completed"
         );
+        let gap = tokens.sizes.space_2;
+        let layout = completion_popup_layout(
+            self.content_width_estimate(),
+            selected_documentation.is_some(),
+            self.available_width.map(f32::from),
+            f32::from(gap),
+        );
+        nucleotide_logging::debug!(
+            available_width = ?self.available_width,
+            layout = ?layout,
+            "Calculated completion popup layout"
+        );
+        let list_height =
+            self.filtered_entries.len().min(max_visible_items) as f32 * COMPLETION_ROW_HEIGHT_PX;
+        let docs_beside_width = match layout.docs {
+            Some(CompletionDocsPlacement::Beside { width }) => Some(width),
+            _ => None,
+        };
+
         container
             // Remain in flow so the parent can measure the popup before anchoring it.
             .child(
                 div()
                     .id("completion-popup-layout")
                     .flex()
-                    .flex_row()
-                    .items_start()
-                    .gap(tokens.sizes.space_2)
+                    .when(docs_beside_width.is_some(), |layout| {
+                        layout.flex_row().items_start()
+                    })
+                    .when(docs_beside_width.is_none(), |layout| layout.flex_col())
+                    .gap(gap)
                     .child(
                         div()
                             .id("completion-list")
                             .flex()
                             .flex_col()
-                            // Calculate optimal width based on content
-                            .w({
-                                // Calculate optimal width based on the longest item
-                                let base_width = 220.0; // Minimum practical width
-
-                                // Find the longest text in visible items
-                                let max_text_length = self
-                                    .filtered_entries
-                                    .iter()
-                                    .take(max_visible_items)
-                                    .map(|string_match| {
-                                        self.item_for_match(string_match)
-                                            .map(|item| {
-                                                // Calculate total text length including signature and type info
-                                                let mut total_len = item
-                                                    .display_text
-                                                    .as_ref()
-                                                    .map_or(item.text.len(), |text| text.len());
-
-                                                if let Some(sig) = &item.signature_info {
-                                                    total_len += sig.len();
-                                                }
-                                                if let Some(type_info) = &item.type_info {
-                                                    total_len += type_info.len() + 1;
-                                                }
-                                                if let Some(detail) = &item.detail {
-                                                    total_len += detail.len() + 1;
-                                                }
-                                                total_len
-                                            })
-                                            .unwrap_or(0)
-                                    })
-                                    .max()
-                                    .unwrap_or(0);
-
-                                // Estimate pixel width (rough approximation: 8px per character)
-                                let estimated_width: f32 =
-                                    base_width + (max_text_length as f32 * 7.5);
-
-                                // Cap the width to reasonable bounds
-                                let optimal_width = estimated_width.min(840.0).max(base_width);
-
-                                nucleotide_logging::debug!(
-                                    max_text_length = max_text_length,
-                                    estimated_width = estimated_width,
-                                    optimal_width = optimal_width,
-                                    "Calculated dynamic completion width"
-                                );
-
-                                px(optimal_width)
-                            })
+                            .w(px(layout.list_width))
                             .bg(tokens.chrome.popup_background)
                             .border_1()
                             .border_color(tokens.chrome.popup_border)
@@ -2083,6 +2152,7 @@ impl Render for CompletionView {
                             .child(
                                 div()
                                     .id("completion-list-container")
+                                    .relative()
                                     .flex()
                                     .flex_col()
                                     .w_full()
@@ -2128,9 +2198,23 @@ impl Render for CompletionView {
                                         )
                                         .track_scroll(&self.list_state.scroll_handle)
                                         .w_full()
-                                        .h(px(self.filtered_entries.len().min(max_visible_items) as f32
-                                            * COMPLETION_ROW_HEIGHT_PX)),
-                                    ),
+                                        .h(px(list_height)),
+                                    )
+                                    // Only lists longer than the visible rows can scroll.
+                                    .when(self.filtered_entries.len() > max_visible_items, |list| {
+                                        list.children(
+                                            Scrollbar::vertical(self.list_scrollbar_state.clone())
+                                                .map(|scrollbar| {
+                                                    div()
+                                                        .absolute()
+                                                        .top_0()
+                                                        .right_0()
+                                                        .bottom_0()
+                                                        .w(SCROLLBAR_THICKNESS)
+                                                        .child(scrollbar)
+                                                }),
+                                        )
+                                    }),
                             )
                             .child(
                                 div()
@@ -2148,15 +2232,18 @@ impl Render for CompletionView {
                                     )),
                             ),
                     )
-                    .when_some(selected_documentation, |layout, documentation| {
-                        layout.child(
+                    .when_some(selected_documentation, |popup, documentation| {
+                        popup.child(
                             div()
                                 .id("completion-documentation-preview")
                                 .flex()
                                 .flex_col()
-                                .w(px(390.0))
-                                .max_w(px(460.0))
-                                .max_h(max_container_height)
+                                .w(px(docs_beside_width.unwrap_or(layout.list_width)))
+                                .max_h(if docs_beside_width.is_some() {
+                                    max_container_height
+                                } else {
+                                    px(COMPLETION_STACKED_DOCS_MAX_HEIGHT_PX)
+                                })
                                 .overflow_hidden()
                                 .p(tokens.sizes.space_3)
                                 .bg(tokens.chrome.popup_background)
@@ -2931,6 +3018,92 @@ mod tests {
                 "popup={bounds:?}, viewport={viewport:?}"
             );
             assert_eq!(bounds.top(), px(40.0));
+        }
+
+        #[gpui::test]
+        fn completion_popup_width_covers_scrolled_items_and_fits_pane(cx: &mut TestAppContext) {
+            use gpui::{AppContext as _, InteractiveElement as _, IntoElement as _, point};
+            cx.update(|cx| cx.set_global(crate::Theme::from_tokens(crate::DesignTokens::dark())));
+            // The long item sits below the six visible rows.
+            let mut items: Vec<_> = (0..10)
+                .map(|i| CompletionItem::new(format!("a{i}")))
+                .collect();
+            items.push(CompletionItem::new(format!("a_{}", "long".repeat(20))));
+            let completion = cx.new(|cx| {
+                let mut view = CompletionView::new(cx);
+                view.sort_completions = false;
+                view.set_items_with_filter(items, None, cx);
+                view
+            });
+            let window = cx.add_empty_window();
+            let viewport = window.update(|window, _| window.viewport_size());
+            let mut measure = |available: Option<Pixels>| {
+                completion.update(window, |view, _| view.set_available_width(available));
+                window.draw(point(px(0.0), px(0.0)), viewport, |_, _| {
+                    div()
+                        .flex()
+                        .child(
+                            div()
+                                .debug_selector(|| "completion-measured".into())
+                                .child(completion.clone()),
+                        )
+                        .into_element()
+                });
+                window
+                    .debug_bounds("completion-measured")
+                    .unwrap()
+                    .size
+                    .width
+            };
+
+            // 220px base plus 82 characters at 7.5px each.
+            assert_eq!(measure(None), px(835.0));
+            assert_eq!(measure(Some(px(300.0))), px(300.0));
+        }
+
+        #[test]
+        fn completion_docs_go_beside_when_readable_and_stack_otherwise() {
+            let gap = 8.0;
+            // Wide pane: list keeps its width; docs take their preferred width.
+            assert_eq!(
+                completion_popup_layout(300.0, true, Some(1000.0), gap),
+                CompletionPopupLayout {
+                    list_width: 300.0,
+                    docs: Some(CompletionDocsPlacement::Beside { width: 390.0 }),
+                }
+            );
+            // Docs shrink beside the list while they stay at least 240px wide.
+            assert_eq!(
+                completion_popup_layout(300.0, true, Some(548.0), gap),
+                CompletionPopupLayout {
+                    list_width: 300.0,
+                    docs: Some(CompletionDocsPlacement::Beside { width: 240.0 }),
+                }
+            );
+            // One pixel less stacks the docs under a shared-width column.
+            assert_eq!(
+                completion_popup_layout(300.0, true, Some(547.0), gap),
+                CompletionPopupLayout {
+                    list_width: 390.0,
+                    docs: Some(CompletionDocsPlacement::Below),
+                }
+            );
+            // A pane narrower than the docs' preferred width caps the column.
+            assert_eq!(
+                completion_popup_layout(600.0, true, Some(320.0), gap),
+                CompletionPopupLayout {
+                    list_width: 320.0,
+                    docs: Some(CompletionDocsPlacement::Below),
+                }
+            );
+            // Without an available width the list keeps its 220-840px range.
+            assert_eq!(
+                completion_popup_layout(2000.0, false, None, gap),
+                CompletionPopupLayout {
+                    list_width: 840.0,
+                    docs: None,
+                }
+            );
         }
 
         #[gpui::test]

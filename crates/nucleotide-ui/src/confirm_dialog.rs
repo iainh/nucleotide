@@ -327,11 +327,13 @@ impl ModalView for ConfirmDialogView {
 }
 
 impl Render for ConfirmDialogView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let width =
+            crate::overlay_surface::overlay_width_within_viewport(self.dialog.width, window, cx);
         let tokens = &cx.theme().tokens;
         let windows_system = tokens.chrome.is_windows_system();
         let button_width =
-            (self.dialog.width - px(2.0) - tokens.sizes.space_7 * 2.0 - tokens.sizes.space_3) / 2.0;
+            (width - px(2.0) - tokens.sizes.space_7 * 2.0 - tokens.sizes.space_3) / 2.0;
         let button_size = if windows_system {
             ButtonSize::Medium
         } else {
@@ -386,7 +388,7 @@ impl Render for ConfirmDialogView {
                 .when(tokens.chrome.contrast.is_none(), |this| {
                     this.shadow(vec![tokens.chrome.shadow_lg.to_box_shadow(false)])
                 })
-                .w(self.dialog.width)
+                .w(width)
                 .when(windows_system, |this| {
                     this.overflow_hidden().font_family("Segoe UI Variable")
                 })
@@ -462,7 +464,11 @@ mod tests {
 
     impl Render for ConfirmDialogHarness {
         fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-            div().size_full().child(self.dialog.clone())
+            div().size_full().flex().items_start().child(
+                div()
+                    .debug_selector(|| "confirm-dialog".into())
+                    .child(self.dialog.clone()),
+            )
         }
     }
 
@@ -506,6 +512,26 @@ mod tests {
                 harness.events.borrow_mut().clear();
             });
         }
+    }
+
+    #[gpui::test]
+    fn confirm_dialog_narrows_to_fit_small_windows(cx: &mut TestAppContext) {
+        init_confirm_dialog_test(cx);
+        let (_harness, cx) = cx.add_window_view(ConfirmDialogHarness::new);
+        cx.simulate_resize(gpui::size(px(1000.0), px(600.0)));
+        cx.run_until_parked();
+        assert_eq!(
+            cx.debug_bounds("confirm-dialog").unwrap().size.width,
+            px(420.0)
+        );
+
+        // The app's minimum window width leaves 368px between 16px insets.
+        cx.simulate_resize(gpui::size(px(400.0), px(300.0)));
+        cx.run_until_parked();
+        assert_eq!(
+            cx.debug_bounds("confirm-dialog").unwrap().size.width,
+            px(368.0)
+        );
     }
 
     #[gpui::test]

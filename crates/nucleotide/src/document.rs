@@ -955,6 +955,7 @@ impl Render for DocumentView {
                         let layout_info = cx.global_mut::<crate::overlay::WorkspaceLayoutInfo>();
                         layout_info.cursor_position = overlay.map(|plan| plan.cursor_position);
                         layout_info.cursor_size = overlay.map(|plan| plan.cursor_size);
+                        layout_info.pane_bounds = Some(bounds);
                     }
                     prepared
                 },

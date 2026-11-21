@@ -21,6 +21,19 @@ pub(crate) fn init(cx: &mut App) {
     )]);
 }
 
+/// Horizontal space a centred overlay keeps from each window edge.
+fn overlay_inset(cx: &App) -> Pixels {
+    cx.try_global::<crate::Theme>()
+        .map_or(px(16.0), |theme| theme.tokens.sizes.space_5)
+}
+
+/// `preferred` narrowed so a centred overlay keeps its inset from both
+/// window edges, such as a prompt or dialog in a narrow window.
+pub fn overlay_width_within_viewport(preferred: Pixels, window: &Window, cx: &App) -> Pixels {
+    let available = window.viewport_size().width - overlay_inset(cx) * 2.0;
+    preferred.min(available).max(px(0.0))
+}
+
 /// Full-window overlay wrapper for one centred, top-aligned surface.
 #[derive(IntoElement)]
 pub struct OverlaySurface {
@@ -88,10 +101,10 @@ impl ParentElement for OverlaySurface {
 
 impl RenderOnce for OverlaySurface {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let (default_top, inset) = cx
+        let default_top = cx
             .try_global::<crate::Theme>()
-            .map(|theme| (theme.tokens.sizes.space_8, theme.tokens.sizes.space_5))
-            .unwrap_or((px(32.0), px(16.0)));
+            .map_or(px(32.0), |theme| theme.tokens.sizes.space_8);
+        let inset = overlay_inset(cx);
         let top = self.top.unwrap_or(default_top);
         let mut root = div().absolute().size_full().bottom_0().left_0().occlude();
 
