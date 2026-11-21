@@ -203,7 +203,11 @@ fn platform_ui_font_size() -> Option<f32> {
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn platform_ui_font_size() -> Option<f32> {
-    None
+    use std::sync::OnceLock;
+
+    // Each config load resolves defaults; read the desktop font once.
+    static SIZE: OnceLock<f32> = OnceLock::new();
+    Some(*SIZE.get_or_init(nucleotide_appearance::linux_ui_font_size))
 }
 
 /// Controls where Nucleotide derives non-editor UI chrome styling from.

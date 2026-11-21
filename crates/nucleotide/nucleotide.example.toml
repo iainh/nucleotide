@@ -112,6 +112,9 @@ appearance_follows_theme = true
 # Tabs use neutral selection, short separators and compact system-font labels,
 # while retaining the configured close-button position and file icons.
 # Hiding the sidebar leaves a fully solid window.
+# On Linux, "system" uses solid Adwaita neutrals (Breeze on KDE Plasma) and the
+# XDG Desktop Portal accent colour. macOS uses the System Settings accent
+# colour. Accent changes apply when the window is next activated.
 # Status content stays aligned beneath the editor as the sidebar resizes or hides.
 # Native traffic lights and the system menu bar remain.
 # On Windows, the tab strip fills the editor island's top and side insets.
@@ -133,8 +136,10 @@ look = "theme"
 
 # Font size in pixels. Default: platform UI font size on macOS and Windows,
 # with a 13.0 fallback; Windows enforces a 14.0 minimum on this default only.
-# Default on Linux and other platforms: 13.0. The number below is an override
-# example, not a portable default.
+# On Linux the default is the desktop interface font size, read from the XDG
+# Desktop Portal, then GTK settings.ini or KDE kdeglobals, falling back to
+# Cantarell 11pt (Adwaita) or Noto Sans 10pt (Breeze). The number below is an
+# override example, not a portable default.
 # size = 13.0
 
 # Line-height multiplier. Default: 1.5.

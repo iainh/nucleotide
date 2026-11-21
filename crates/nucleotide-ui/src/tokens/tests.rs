@@ -218,6 +218,8 @@ mod system_chrome_token_tests {
             for palette in [
                 NativeChromePalette::macos_native(appearance, accent),
                 NativeChromePalette::windows_fluent(appearance, accent),
+                NativeChromePalette::adwaita(appearance, accent),
+                NativeChromePalette::breeze(appearance, accent),
             ] {
                 let chrome = ChromeTokens::from_native_chrome_palette(palette);
                 let mut editor = EditorTokens::fallback(appearance.is_dark());

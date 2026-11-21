@@ -54,10 +54,18 @@ mod tests {
     }
 
     fn expected_default_ui_font_size() -> f32 {
-        if cfg!(target_os = "windows") {
+        #[cfg(target_os = "windows")]
+        {
             14.0
-        } else {
+        }
+        #[cfg(target_os = "macos")]
+        {
             13.0
+        }
+        // Linux follows the desktop interface font, e.g. Cantarell 11pt.
+        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+        {
+            nucleotide_appearance::linux_ui_font_size()
         }
     }
 

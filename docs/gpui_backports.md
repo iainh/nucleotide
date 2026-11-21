@@ -68,6 +68,11 @@ API migrations, root manifest changes, or lockfile changes are required.
   window-wide external file drop. Existing `on_drop` handlers retain their
   bubble-phase hover checks and `can_drop` predicates.
 
+- Linux XDG portal colour-scheme events notify windows after releasing the
+  X11/Wayland client borrow. Appearance observers repaint synchronously, and
+  painting text borrows the client again; holding the borrow panicked with
+  `RefCell already mutably borrowed` whenever a portal reported a scheme.
+
 ## Deferred migration
 
 [`eb354c8d50`](https://github.com/zed-industries/zed/commit/eb354c8d504071bdb79110a7a5c9d374c2864113)

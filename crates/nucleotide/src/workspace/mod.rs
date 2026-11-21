@@ -5763,6 +5763,33 @@ impl Workspace {
         }));
     }
 
+    /// Rebuild system chrome when the OS accent changed while the window was inactive.
+    fn refresh_system_accent(&mut self, cx: &mut Context<Self>) {
+        // AppKit applies accent-change notifications on the main thread; read there.
+        // The Linux portal read is a D-Bus round trip; keep it off the UI thread.
+        #[cfg(target_os = "macos")]
+        let read = gpui::Task::ready(nucleotide_appearance::refresh_system_accent_color());
+        #[cfg(not(target_os = "macos"))]
+        let read =
+            cx.background_spawn(async { nucleotide_appearance::refresh_system_accent_color() });
+        cx.spawn(async move |this, cx| {
+            if !read.await {
+                return;
+            }
+            let _ = this.update(cx, |workspace, cx| {
+                let uses_system_chrome = cx.global::<crate::ThemeManager>().ui_chrome_style()
+                    == nucleotide_appearance::UiChromeStyle::System;
+                if uses_system_chrome {
+                    nucleotide_logging::info!(
+                        "OS accent colour changed - rebuilding system chrome"
+                    );
+                    workspace.sync_editor_theme(cx);
+                }
+            });
+        })
+        .detach();
+    }
+
     /// Version of switch_theme_by_name for use from event handlers (no window appearance updates)
     fn switch_theme_by_name_no_window(&mut self, theme_name: &str, cx: &mut Context<Self>) {
         nucleotide_logging::info!(
@@ -11915,6 +11942,7 @@ impl Render for Workspace {
             self.update_controller
                 .update(cx, |controller, cx| controller.check_if_stale(cx));
             self.refresh_commit_review(cx);
+            self.refresh_system_accent(cx);
         }
         self.window_was_active = window_is_active;
 
@@ -11940,8 +11968,12 @@ impl Render for Workspace {
         if !self.appearance_observer_set {
             self.appearance_observer_set = true;
 
-            // Get initial appearance and trigger theme switch if needed
-            let initial_appearance = cx.window_appearance();
+            // Get initial appearance and trigger theme switch if needed. On
+            // Linux this includes the portal colour scheme read at startup.
+            let initial_appearance = match nucleotide_appearance::SystemAppearance::global(cx) {
+                nucleotide_appearance::SystemAppearance::Dark => WindowAppearance::Dark,
+                nucleotide_appearance::SystemAppearance::Light => WindowAppearance::Light,
+            };
             nucleotide_logging::info!(
                 initial_appearance = ?initial_appearance,
                 "Initial window appearance detected at startup"

@@ -6,6 +6,13 @@ mod macos_material;
 #[cfg(target_os = "macos")]
 pub use macos_material::ChromeMaterial;
 
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+mod linux_settings;
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+pub use linux_settings::{LinuxDesktop, ui_font_size as linux_ui_font_size};
+
+use std::sync::Mutex;
+
 use gpui::{App, Global, Hsla, WindowAppearance, WindowBackgroundAppearance, hsla};
 
 /// Extracted colors from a Helix theme used to derive editor and themed chrome.
@@ -76,8 +83,9 @@ pub enum SystemAppearance {
 impl SystemAppearance {
     /// Initializes the global SystemAppearance based on the current window appearance.
     pub fn init(cx: &mut App) {
-        *cx.default_global::<GlobalSystemAppearance>() =
-            GlobalSystemAppearance(SystemAppearance::from(cx.window_appearance()));
+        let appearance = platform::color_scheme()
+            .unwrap_or_else(|| SystemAppearance::from(cx.window_appearance()));
+        *cx.default_global::<GlobalSystemAppearance>() = GlobalSystemAppearance(appearance);
     }
 
     /// Returns the global SystemAppearance.
@@ -226,7 +234,10 @@ impl NativeChromePalette {
 
         #[cfg(not(any(target_os = "windows", target_os = "macos")))]
         {
-            Self::solid_fallback(appearance, accent)
+            match LinuxDesktop::current() {
+                LinuxDesktop::Adwaita => Self::adwaita(appearance, accent),
+                LinuxDesktop::Breeze => Self::breeze(appearance, accent),
+            }
         }
     }
 
@@ -419,13 +430,123 @@ impl NativeChromePalette {
         }
     }
 
-    pub fn solid_fallback(appearance: SystemAppearance, accent: Hsla) -> Self {
-        let mut palette = Self::windows_fluent(appearance, accent);
-        palette.mica_alpha = 1.0;
-        palette.layer_alpha = 1.0;
-        palette.dense_text_layer_alpha = 1.0;
-        palette.elevated_alpha = 1.0;
-        palette
+    /// GNOME/libadwaita neutrals: headerbar, view, sidebar and popover colours.
+    pub fn adwaita(appearance: SystemAppearance, accent: Hsla) -> Self {
+        if appearance.is_dark() {
+            Self::opaque(
+                appearance,
+                accent,
+                [
+                    hsla_from_rgb_u8(46, 46, 50, 1.0),
+                    hsla_from_rgb_u8(34, 34, 38, 1.0),
+                    hsla_from_rgb_u8(40, 40, 44, 1.0),
+                    hsla_from_rgb_u8(54, 54, 58, 1.0),
+                    hsla_from_rgb_u8(54, 54, 58, 1.0),
+                    hsla_from_rgb_u8(255, 255, 255, 0.10),
+                    hsla_from_rgb_u8(255, 255, 255, 0.16),
+                    hsla_from_rgb_u8(255, 255, 255, 1.0),
+                ],
+                [0.70, 0.45, 0.36, 0.50],
+            )
+        } else {
+            Self::opaque(
+                appearance,
+                accent,
+                [
+                    hsla_from_rgb_u8(250, 250, 251, 1.0),
+                    hsla_from_rgb_u8(255, 255, 255, 1.0),
+                    hsla_from_rgb_u8(235, 235, 237, 1.0),
+                    hsla_from_rgb_u8(255, 255, 255, 1.0),
+                    hsla_from_rgb_u8(255, 255, 255, 1.0),
+                    hsla_from_rgb_u8(0, 0, 6, 0.12),
+                    hsla_from_rgb_u8(0, 0, 6, 0.20),
+                    hsla_from_rgb_u8(50, 50, 55, 1.0),
+                ],
+                [0.68, 0.42, 0.10, 0.20],
+            )
+        }
+    }
+
+    /// KDE Plasma Breeze neutrals: window, button, view and tooltip colours.
+    pub fn breeze(appearance: SystemAppearance, accent: Hsla) -> Self {
+        if appearance.is_dark() {
+            Self::opaque(
+                appearance,
+                accent,
+                [
+                    hsla_from_rgb_u8(32, 35, 38, 1.0),
+                    hsla_from_rgb_u8(41, 44, 48, 1.0),
+                    hsla_from_rgb_u8(27, 30, 32, 1.0),
+                    hsla_from_rgb_u8(41, 44, 48, 1.0),
+                    hsla_from_rgb_u8(41, 44, 48, 1.0),
+                    hsla_from_rgb_u8(62, 66, 71, 1.0),
+                    hsla_from_rgb_u8(88, 92, 97, 1.0),
+                    hsla_from_rgb_u8(252, 252, 252, 1.0),
+                ],
+                [0.70, 0.40, 0.40, 0.55],
+            )
+        } else {
+            Self::opaque(
+                appearance,
+                accent,
+                [
+                    hsla_from_rgb_u8(239, 240, 241, 1.0),
+                    hsla_from_rgb_u8(252, 252, 252, 1.0),
+                    hsla_from_rgb_u8(255, 255, 255, 1.0),
+                    hsla_from_rgb_u8(255, 255, 255, 1.0),
+                    hsla_from_rgb_u8(247, 247, 247, 1.0),
+                    hsla_from_rgb_u8(205, 207, 209, 1.0),
+                    hsla_from_rgb_u8(175, 178, 181, 1.0),
+                    hsla_from_rgb_u8(35, 38, 41, 1.0),
+                ],
+                [0.70, 0.40, 0.12, 0.24],
+            )
+        }
+    }
+
+    /// Linux toolkits draw solid chrome: there is no compositor material to expose.
+    fn opaque(
+        appearance: SystemAppearance,
+        accent: Hsla,
+        [
+            mica_base,
+            layer_base,
+            layer_alt_base,
+            elevated_base,
+            acrylic,
+            stroke,
+            stroke_subtle,
+            text,
+        ]: [Hsla; 8],
+        [
+            secondary_text_alpha,
+            disabled_text_alpha,
+            shadow_alpha,
+            strong_shadow_alpha,
+        ]: [f32; 4],
+    ) -> Self {
+        Self {
+            appearance,
+            accent,
+            accent_ramp: None,
+            contrast: None,
+            mica_base,
+            layer_base,
+            layer_alt_base,
+            elevated_base,
+            acrylic,
+            stroke,
+            stroke_subtle,
+            text,
+            secondary_text_alpha,
+            disabled_text_alpha,
+            shadow_alpha,
+            strong_shadow_alpha,
+            mica_alpha: 1.0,
+            layer_alpha: 1.0,
+            dense_text_layer_alpha: 1.0,
+            elevated_alpha: 1.0,
+        }
     }
 }
 
@@ -570,20 +691,58 @@ pub fn default_macos_accent_color() -> Hsla {
     hsla_from_rgb_u8(0, 122, 255, 1.0)
 }
 
+/// libadwaita's default blue accent (`#3584e4`).
+pub fn default_adwaita_accent_color() -> Hsla {
+    hsla_from_rgb_u8(53, 132, 228, 1.0)
+}
+
+/// Breeze's default highlight (`#3daee9`).
+pub fn default_breeze_accent_color() -> Hsla {
+    hsla_from_rgb_u8(61, 174, 233, 1.0)
+}
+
 pub fn default_system_accent_color() -> Hsla {
     #[cfg(target_os = "macos")]
     {
         default_macos_accent_color()
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
     {
         default_windows_accent_color()
     }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        match LinuxDesktop::current() {
+            LinuxDesktop::Adwaita => default_adwaita_accent_color(),
+            LinuxDesktop::Breeze => default_breeze_accent_color(),
+        }
+    }
 }
 
+/// Last accent read from the OS; `None` until the first read.
+static SYSTEM_ACCENT: Mutex<Option<Option<Hsla>>> = Mutex::new(None);
+
+/// The user's OS accent colour, read once and kept until
+/// [`refresh_system_accent_color`] observes a change.
 pub fn platform_system_accent_color() -> Option<Hsla> {
-    platform::system_accent_color()
+    let mut cached = SYSTEM_ACCENT
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    *cached.get_or_insert_with(platform::system_accent_color)
+}
+
+/// Re-read the OS accent colour. Returns true when it differs from the
+/// accent used so far, so callers rebuild system chrome tokens.
+pub fn refresh_system_accent_color() -> bool {
+    let fresh = platform::system_accent_color();
+    let mut cached = SYSTEM_ACCENT
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let changed = cached.is_some_and(|previous| previous != fresh);
+    *cached = Some(fresh);
+    changed
 }
 
 pub fn hsla_from_rgb_u8(red: u8, green: u8, blue: u8, alpha: f32) -> Hsla {
@@ -657,6 +816,10 @@ mod platform {
         color(&settings, UIColorType::Accent)
     }
 
+    pub fn color_scheme() -> Option<super::SystemAppearance> {
+        None
+    }
+
     fn color(settings: &UISettings, kind: UIColorType) -> Option<Hsla> {
         let color = settings.GetColorValue(kind).ok()?;
         Some(hsla_from_rgb_u8(color.R, color.G, color.B, 1.0))
@@ -676,12 +839,41 @@ mod platform {
     }
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "macos")]
 mod platform {
-    use gpui::Hsla;
+    use super::{Hsla, hsla_from_rgb_u8};
+    use objc2_app_kit::{NSColor, NSColorSpace};
+
+    /// System Settings > Appearance > Accent colour; Multicolour reports blue.
+    pub fn system_accent_color() -> Option<Hsla> {
+        let accent =
+            NSColor::controlAccentColor().colorUsingColorSpace(&NSColorSpace::sRGBColorSpace())?;
+        let channel = |value: f64| (value.clamp(0.0, 1.0) * 255.0).round() as u8;
+        Some(hsla_from_rgb_u8(
+            channel(accent.redComponent()),
+            channel(accent.greenComponent()),
+            channel(accent.blueComponent()),
+            1.0,
+        ))
+    }
+
+    /// GPUI's effective appearance observer is authoritative on macOS.
+    pub fn color_scheme() -> Option<super::SystemAppearance> {
+        None
+    }
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+mod platform {
+    use super::{Hsla, linux_settings::read_portal_settings};
 
     pub fn system_accent_color() -> Option<Hsla> {
-        None
+        read_portal_settings().accent
+    }
+
+    /// Resolve startup appearance before GPUI's asynchronous portal read lands.
+    pub fn color_scheme() -> Option<super::SystemAppearance> {
+        read_portal_settings().color_scheme
     }
 }
 
@@ -784,6 +976,39 @@ mod tests {
             content_islands_enabled(UiChromeStyle::System),
             cfg!(any(target_os = "windows", target_os = "macos"))
         );
+    }
+
+    #[test]
+    fn linux_palettes_use_adwaita_and_breeze_neutrals_not_fluent() {
+        let adwaita_dark =
+            NativeChromePalette::adwaita(SystemAppearance::Dark, default_adwaita_accent_color());
+        let breeze_light =
+            NativeChromePalette::breeze(SystemAppearance::Light, default_breeze_accent_color());
+        assert_eq!(adwaita_dark.mica_base, hsla_from_rgb_u8(46, 46, 50, 1.0));
+        assert_eq!(breeze_light.mica_base, hsla_from_rgb_u8(239, 240, 241, 1.0));
+        assert_eq!(breeze_light.text, hsla_from_rgb_u8(35, 38, 41, 1.0));
+
+        for appearance in [SystemAppearance::Light, SystemAppearance::Dark] {
+            let accent = hsla(0.8, 0.6, 0.5, 1.0);
+            let fluent = NativeChromePalette::windows_fluent(appearance, accent);
+            for palette in [
+                NativeChromePalette::adwaita(appearance, accent),
+                NativeChromePalette::breeze(appearance, accent),
+            ] {
+                assert_eq!(palette.accent, accent);
+                assert_ne!(palette.mica_base, fluent.mica_base);
+                assert_ne!(palette.layer_alt_base, fluent.layer_alt_base);
+                assert_ne!(palette.text, fluent.text);
+                for alpha in [
+                    palette.mica_alpha,
+                    palette.layer_alpha,
+                    palette.dense_text_layer_alpha,
+                    palette.elevated_alpha,
+                ] {
+                    assert_eq!(alpha, 1.0, "Linux has no native material to expose");
+                }
+            }
+        }
     }
 
     #[test]

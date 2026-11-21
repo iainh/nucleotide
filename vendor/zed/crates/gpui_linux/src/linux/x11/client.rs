@@ -477,8 +477,16 @@ impl X11Client {
                 move |event, _, client| match event {
                     XDPEvent::WindowAppearance(appearance) => {
                         client.with_common(|common| common.appearance = appearance);
-                        for window in client.0.borrow_mut().windows.values_mut() {
-                            window.window.set_appearance(appearance);
+                        // Observers may repaint, which borrows the client again.
+                        let windows: Vec<_> = client
+                            .0
+                            .borrow()
+                            .windows
+                            .values()
+                            .map(|window| window.window.clone())
+                            .collect();
+                        for mut window in windows {
+                            window.set_appearance(appearance);
                         }
                     }
                     XDPEvent::ButtonLayout(layout_str) => {
