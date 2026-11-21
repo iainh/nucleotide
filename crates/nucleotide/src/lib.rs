@@ -29,6 +29,7 @@ pub mod tests;
 pub mod types;
 pub mod updates;
 pub mod utils;
+pub mod window_state;
 pub mod workspace;
 
 // Re-export from nucleotide-core

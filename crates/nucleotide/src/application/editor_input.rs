@@ -3309,6 +3309,7 @@ pub fn resolve_fallback_shortcut(
         ('s', primary, Intent::Save),
         ('w', primary, Intent::CloseFile),
         ('n', primary, Intent::NewFile),
+        ('n', primary | KeyModifiers::SHIFT, Intent::NewWindow),
         ('p', primary, Intent::ShowFileFinder),
         (
             'p',
@@ -5021,6 +5022,8 @@ mod tests {
             ("C-F4", TargetPlatform::Windows, Intent::CloseFile),
             ("C-`", TargetPlatform::Windows, Intent::ToggleTerminal),
             ("C-`", TargetPlatform::Linux, Intent::ToggleTerminal),
+            ("C-S-n", TargetPlatform::Linux, Intent::NewWindow),
+            ("Meta-S-n", TargetPlatform::MacOS, Intent::NewWindow),
         ] {
             assert_eq!(
                 resolve_fallback_shortcut(Mode::Normal, KeyEvent::from_str(key).unwrap(), platform),

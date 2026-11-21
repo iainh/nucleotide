@@ -7,9 +7,7 @@ use anyhow::{Context, Result};
 use helix_term::args::Args;
 use nucleotide_logging::{error, info, instrument, warn};
 
-use gpui::{
-    AppContext, Menu, MenuItem, TitlebarOptions, WindowBounds, WindowKind, WindowOptions, px,
-};
+use gpui::{AppContext, Menu, MenuItem, TitlebarOptions, WindowKind, WindowOptions, px};
 
 // Import from the library crate instead of re-declaring modules
 use nucleotide::application::{Application, MaintenanceWake};
@@ -403,6 +401,14 @@ fn main() -> Result<()> {
     // Install panic handler to prevent data loss
     install_panic_handler();
 
+    // Read and clear the marker before any threads start, so processes this window launches,
+    // such as terminal shells, do not inherit it.
+    let opened_by_new_window = std::env::var_os(nucleotide::window_state::NEW_WINDOW_ENV).is_some();
+    if opened_by_new_window {
+        // SAFETY: no other threads exist yet.
+        unsafe { std::env::remove_var(nucleotide::window_state::NEW_WINDOW_ENV) };
+    }
+
     let initial_dock_action = startup_dock_action()?;
     let initial_protocol_request = startup_protocol_request()?;
     let mut args = if initial_dock_action.is_some() || initial_protocol_request.is_some() {
@@ -450,18 +456,25 @@ fn main() -> Result<()> {
         .map(|(path, pos)| (normalize_startup_file_path(&path), pos))
         .collect();
 
+    // A window opened by New Window must not be forwarded to the window that opened it.
     #[cfg(target_os = "windows")]
-    let _windows_single_instance_guard =
+    let _windows_single_instance_guard = if opened_by_new_window {
+        None
+    } else {
         match windows_single_instance::claim_or_forward(&args, initial_dock_action)? {
-            windows_single_instance::ClaimResult::Primary(guard) => guard,
+            windows_single_instance::ClaimResult::Primary(guard) => Some(guard),
             windows_single_instance::ClaimResult::Forwarded => return Ok(()),
-        };
+        }
+    };
 
     let (platform_open_tx, platform_open_rx) =
         tokio::sync::mpsc::unbounded_channel::<ExternalOpenRequest>();
 
+    // Forwarded launch requests go to the primary instance only.
     #[cfg(target_os = "windows")]
-    windows_single_instance::start_listener(platform_open_tx.clone());
+    if _windows_single_instance_guard.is_some() {
+        windows_single_instance::start_listener(platform_open_tx.clone());
+    }
 
     // Load our combined configuration (helix + gui)
     let config = match crate::config::Config::load() {
@@ -534,6 +547,7 @@ fn main() -> Result<()> {
         initial_dock_action,
         platform_open_tx,
         platform_open_rx,
+        opened_by_new_window,
     );
     info!("Application shutting down");
     Ok(())
@@ -744,10 +758,24 @@ fn forwarded_open_path_kind(path: &Path) -> Option<ForwardedOpenPathKind> {
 }
 
 fn window_options(
-    _cx: &mut impl gpui::AppContext,
+    cx: &gpui::App,
     config: &nucleotide::config::Config,
     is_dark_chrome: bool,
+    saved_window: Option<&nucleotide::window_state::SavedWindow>,
+    cascade: bool,
 ) -> gpui::WindowOptions {
+    let displays = cx.displays();
+    let display_areas: Vec<_> = displays
+        .iter()
+        .map(|display| nucleotide::window_state::DisplayArea {
+            uuid: display.uuid().ok().map(|uuid| uuid.to_string()),
+            bounds: display.bounds(),
+        })
+        .collect();
+    let placement =
+        nucleotide::window_state::resolve_window_placement(saved_window, &display_areas, cascade);
+    let display_id = placement.display.map(|index| displays[index].id());
+
     let window_decorations = match std::env::var("HELIX_WINDOW_DECORATIONS") {
         Ok(val) if val == "server" => gpui::WindowDecorations::Server,
         Ok(val) if val == "client" => gpui::WindowDecorations::Client,
@@ -775,10 +803,7 @@ fn window_options(
             appears_transparent: true, // Key for custom titlebar
             traffic_light_position: Some(traffic_light_position),
         }),
-        window_bounds: Some(WindowBounds::Windowed(gpui::Bounds {
-            origin: gpui::point(px(100.0), px(100.0)),
-            size: gpui::size(px(1200.0), px(800.0)),
-        })),
+        window_bounds: Some(placement.bounds),
         focus: true,
         // On Windows, showing the HWND during creation lets DWM display its shadow
         // before GPUI has drawn the first frame. Keep it hidden until open_window
@@ -788,10 +813,13 @@ fn window_options(
         is_movable: true,
         is_resizable: true,
         is_minimizable: true,
-        display_id: None,
+        display_id,
         window_background,
         window_decorations: Some(window_decorations),
-        window_min_size: Some(gpui::size(px(400.0), px(300.0))),
+        window_min_size: Some(gpui::size(
+            px(nucleotide::window_state::MIN_WINDOW_WIDTH),
+            px(nucleotide::window_state::MIN_WINDOW_HEIGHT),
+        )),
         icon: None,
         tabbing_identifier: None,
     }
@@ -867,8 +895,8 @@ use nucleotide::actions::updates::Check as CheckForUpdates;
 #[cfg(target_os = "macos")]
 use nucleotide::actions::window::{Hide, HideOthers, ShowAll};
 use nucleotide::actions::workspace::{
-    FindReferences, GoToDefinition, NewFile, ShowBufferPicker, ShowCodeActions, ShowCommandPrompt,
-    ShowFileFinder, ShowSymbolPicker, ShowWorkspaceSymbolPicker,
+    FindReferences, GoToDefinition, NewFile, NewWindow, ShowBufferPicker, ShowCodeActions,
+    ShowCommandPrompt, ShowFileFinder, ShowSymbolPicker, ShowWorkspaceSymbolPicker,
 };
 use nucleotide::actions::{
     completion::TriggerCompletion,
@@ -914,6 +942,7 @@ fn app_menus() -> Vec<Menu> {
         ]),
         Menu::new("File").items([
             MenuItem::action("New File", NewFile),
+            MenuItem::action("New Window", NewWindow),
             MenuItem::separator(),
             MenuItem::action("Open File…", OpenFile),
             MenuItem::action("Open Folder…", OpenDirectory),
@@ -1054,6 +1083,7 @@ fn dock_menu_items() -> Vec<MenuItem> {
 // Font types are now exported from nucleotide::types
 use nucleotide::{EditorFontConfig, FontSettings, UiFontConfig};
 
+#[allow(clippy::too_many_arguments)]
 #[instrument(skip(app, config, handle, platform_open_tx, platform_open_rx))]
 fn gui_main(
     mut app: Application,
@@ -1063,6 +1093,7 @@ fn gui_main(
     initial_dock_action: Option<usize>,
     platform_open_tx: tokio::sync::mpsc::UnboundedSender<ExternalOpenRequest>,
     mut platform_open_rx: tokio::sync::mpsc::UnboundedReceiver<ExternalOpenRequest>,
+    opened_by_new_window: bool,
 ) {
     if let Some(workspace_root) = &workspace_root {
         app.project_directory = Some(workspace_root.clone());
@@ -1202,7 +1233,14 @@ fn gui_main(
                 warn!(error = %error, "Failed to apply DirectWrite text rendering settings");
             }
 
-            let options = window_options(cx, &config, is_dark_chrome);
+            let window_state = nucleotide::window_state::load();
+            let options = window_options(
+                cx,
+                &config,
+                is_dark_chrome,
+                window_state.window.as_ref(),
+                opened_by_new_window,
+            );
 
             let window = cx.open_window(options, |#[allow(unused)] window, cx| {
                 let input = cx.new(|_| nucleotide::application::Input);
@@ -1322,6 +1360,8 @@ fn gui_main(
                         window,
                         cx,
                     );
+
+                    workspace.enable_window_state_persistence(window_state, window, cx);
 
                     // Set the current project root explicitly using the workspace root that was successfully determined
                     if let Some(root) = workspace_root.as_ref() {
@@ -1896,7 +1936,8 @@ mod tests {
             .iter()
             .find(|menu| menu.name.as_ref() == "File")
             .unwrap();
-        assert!(!file.items.iter().any(|item| matches!(item, MenuItem::Action { action, .. } if action.partial_eq(&nucleotide::actions::editor::SaveAs) || action.partial_eq(&nucleotide::actions::workspace::NewWindow))));
+        assert!(!file.items.iter().any(|item| matches!(item, MenuItem::Action { action, .. } if action.partial_eq(&nucleotide::actions::editor::SaveAs))));
+        assert!(file.items.iter().any(|item| matches!(item, MenuItem::Action { action, .. } if action.partial_eq(&nucleotide::actions::workspace::NewWindow))));
         let settings_owner = menus
             .iter()
             .find(|menu| {

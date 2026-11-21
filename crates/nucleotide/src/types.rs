@@ -218,6 +218,7 @@ pub enum SemanticShortcutIntent {
     RunFileTests,
     ToggleFileTree,
     ToggleTerminal,
+    NewWindow,
 }
 
 impl std::fmt::Debug for Update {

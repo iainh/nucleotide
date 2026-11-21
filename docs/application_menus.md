@@ -6,8 +6,8 @@ in-window Linux and Windows menu bars.
 - **Nucleotide:** About, update checks, Settings and Quit. Hide commands appear
   only on macOS. Windows places Settings and Exit in File, and About and update
   checks in Help.
-- **File:** New File, file/folder opening, remote connections, Save and Close File.
-  New Window and Save As are omitted until their implementations are complete.
+- **File:** New File, New Window, file/folder opening, remote connections, Save and
+  Close File. Save As is omitted until its implementation is complete.
 - **Edit:** History, clipboard operations, document/project search, completion,
   code actions and reverting the current change.
 - **Selection:** Whole-document selection, syntax-aware expansion/shrinking,
@@ -62,3 +62,21 @@ placement, light dismiss, hit testing, clipping and resource lifetimes. A custom
 framebuffer blur would instead be in-app acrylic, not Desktop Acrylic parity;
 that renderer expansion is also deferred. See Microsoft's
 [material distinctions](https://learn.microsoft.com/en-us/windows/apps/develop/ui/materials).
+
+## Windows and saved window state
+
+New Window (Ctrl+Shift+N, or Cmd+Shift+N on macOS) starts another Nucleotide
+process with one empty window, because each window owns its own Helix editor.
+It opens 32 px below and to the right of the saved window and never in full
+screen. On Windows it does not take part in single-instance forwarding, so
+files opened from Explorer still go to the first window.
+
+Each window saves its bounds, maximized or full-screen state, display, file
+tree visibility and width, and documentation sidebar width to
+`window-state.json` in the platform state directory (`$XDG_STATE_HOME/nucleotide`
+on Linux, `~/Library/Application Support/nucleotide` on macOS and
+`%LOCALAPPDATA%\Spiralpoint\Nucleotide` on Windows). `NUCLEOTIDE_STATE_DIR`
+overrides the directory. The window that changed last wins. On launch the saved
+window is moved onto the display it was on, or the display it overlaps most,
+and shrunk to fit if that display is smaller or gone. Wayland compositors choose
+window positions themselves, so only the size and state are restored there.

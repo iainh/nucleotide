@@ -20,6 +20,7 @@ mod status_bar;
 #[cfg(feature = "terminal-emulator-core")]
 mod terminal_sessions;
 pub mod view_manager;
+mod window_persistence;
 
 use documentation::{DOC_SIDEBAR_DEFAULT_WIDTH, DOC_SIDEBAR_MIN_WIDTH, show_hover_docs};
 pub(crate) use image_viewer::ImageId;
@@ -651,6 +652,8 @@ pub struct Workspace {
     /// Native full-screen state from the last render, for layout helpers
     /// without a window.
     window_fullscreen: bool,
+    /// Set only on the application window; saves its geometry and chrome state.
+    window_state_persistence: Option<window_persistence::WindowStatePersistence>,
 }
 
 #[derive(Default)]
@@ -4020,6 +4023,7 @@ impl Workspace {
             remote_open_generation: 0,
             last_remote_open_target: None,
             window_fullscreen: false,
+            window_state_persistence: None,
         };
 
         // Compute initial theme-derived colors once
@@ -5362,6 +5366,7 @@ impl Workspace {
                 cx.notify();
             }
             Intent::ToggleTerminal => self.tab_bar_action_new_terminal(cx),
+            Intent::NewWindow => self.open_new_window(cx),
         }
     }
 
@@ -12027,6 +12032,7 @@ impl Render for Workspace {
             - f32::from(island_margin * 2.0 + island_gutter_half + island_inset * 2.0))
         .max(1.0);
         self.sync_documentation_sidebar_width_for_viewport(right_content_w_px);
+        self.persist_chrome_state(window, cx);
         let doc_sidebar_w_px = if self.doc_sidebar_visible {
             self.doc_sidebar_width
         } else {
@@ -12987,9 +12993,8 @@ impl Render for Workspace {
 
         // NewWindow action
         workspace_div = workspace_div.on_action(cx.listener(
-            move |_workspace, _: &crate::actions::workspace::NewWindow, _window, _cx| {
-                // TODO: Implement new window
-                nucleotide_logging::warn!("New window not yet implemented");
+            move |workspace, _: &crate::actions::workspace::NewWindow, _window, cx| {
+                workspace.open_new_window(cx);
             },
         ));
 
