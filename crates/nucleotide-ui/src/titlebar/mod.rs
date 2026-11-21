@@ -29,11 +29,9 @@ pub use linux_titlebar::LinuxTitlebar;
 pub use linux_window_controls::LinuxWindowControls;
 
 use gpui::{
-    AnyView, AppContext, Context, Entity, IntoElement, ParentElement, Render, Styled, Window, div,
-    px,
+    AnyView, AppContext, Context, Entity, InteractiveElement, IntoElement, MouseButton,
+    ParentElement, Render, Styled, Window, WindowControlArea, div, px,
 };
-#[cfg(target_os = "windows")]
-use gpui::{InteractiveElement, WindowControlArea};
 
 #[cfg(target_os = "windows")]
 const WINDOWS_CONTROL_BUTTON_SIZE: f32 = 46.0;
@@ -54,6 +52,23 @@ const TITLEBAR_ACTION_RIGHT_INSET: f32 = 8.0;
 /// Native macOS traffic lights plus the application's trailing action lane.
 pub const MACOS_CONTROLS_WIDTH: f32 =
     82.0 + TITLEBAR_ACTION_LANE_WIDTH + TITLEBAR_ACTION_RIGHT_INSET;
+
+/// Make an element behave like empty title-bar space: dragging moves the
+/// window, and a double-click runs the system's title-bar action (zoom by
+/// default on macOS). Windows hit-tests the drag area natively; macOS needs
+/// the explicit window move, which AppKit tracks from the mouse-down event.
+pub fn window_drag_area<E: InteractiveElement>(element: E) -> E {
+    element
+        .window_control_area(WindowControlArea::Drag)
+        .on_mouse_down(MouseButton::Left, |event, window, cx| {
+            if event.click_count < 2 {
+                window.start_window_move();
+            } else {
+                window.titlebar_double_click();
+            }
+            cx.stop_propagation();
+        })
+}
 
 #[cfg(target_os = "windows")]
 fn windows_caption_controls_width() -> f32 {
@@ -387,6 +402,8 @@ impl Render for TitleBar {
             .when_some(self.trailing_view.clone(), |titlebar, trailing_view| {
                 titlebar.child(
                     div()
+                        // Keep the title bar's window drag out of the action lane.
+                        .occlude()
                         .absolute()
                         .top_0()
                         .right(px(TITLEBAR_ACTION_RIGHT_INSET))

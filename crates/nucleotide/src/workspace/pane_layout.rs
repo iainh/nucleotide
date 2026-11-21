@@ -359,6 +359,19 @@ impl PaneLayout {
         })
     }
 
+    /// Whether a main pane's top edge is the main layout's top edge. Dock panes
+    /// sit below the main layout and never touch it.
+    pub fn touches_top(&self, pane: PaneId) -> bool {
+        let mut node = Node::Pane(pane);
+        while let Some((split, index)) = self.parent(node) {
+            if self.splits[split].axis == Axis::Vertical && index > 0 {
+                return false;
+            }
+            node = Node::Split(split);
+        }
+        node == self.root
+    }
+
     fn visible(&self, pane: PaneId) -> bool {
         self.panes.contains_key(pane)
             && (self.main_panes().contains(&pane)

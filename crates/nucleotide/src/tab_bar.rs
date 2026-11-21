@@ -11,6 +11,7 @@ use helix_core::diagnostic::Severity as DiagnosticSeverity;
 #[cfg(test)]
 use helix_view::DocumentId;
 use nucleotide_types::VcsStatus;
+use nucleotide_ui::titlebar::window_drag_area;
 use nucleotide_ui::{ThemedContext, Tooltipped};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
@@ -205,6 +206,7 @@ struct TabStripOptions {
     on_scroll_wheel: Option<TabBarScrollWheelHandler>,
     on_drop: Option<TabDropHandler>,
     forced_pin_state: Option<bool>,
+    window_drag: bool,
     tokens: nucleotide_ui::tokens::DesignTokens,
     border_color: gpui::Hsla,
 }
@@ -252,6 +254,8 @@ pub struct TabBar {
     scroll_handle: Option<ScrollHandle>,
     /// Empty space before the first row, reserved for native window controls
     leading_inset: Pixels,
+    /// Whether the first row's empty tab-strip space moves and zooms the window
+    window_drag: bool,
     /// Controls rendered before the scrollable tab strip
     start_children: Vec<AnyElement>,
     /// Controls rendered after the scrollable tab strip
@@ -307,6 +311,7 @@ impl TabBar {
             deemphasized: false,
             scroll_handle: None,
             leading_inset: px(0.0),
+            window_drag: false,
             start_children: Vec::new(),
             end_children: Vec::new(),
             loading_documents: HashSet::new(),
@@ -337,6 +342,14 @@ impl TabBar {
     /// background and baseline continue beneath it.
     pub fn leading_inset(mut self, inset: Pixels) -> Self {
         self.leading_inset = inset;
+        self
+    }
+
+    /// Let empty space in the first row move the window and run the title-bar
+    /// double-click action instead of the empty double-click handler, for tab
+    /// bars that share the native title bar.
+    pub fn window_drag(mut self, enabled: bool) -> Self {
+        self.window_drag = enabled;
         self
     }
 
@@ -756,6 +769,7 @@ impl TabBar {
             on_scroll_wheel,
             on_drop: self.pane_drag_drop.map(|(_, on_drop)| on_drop),
             forced_pin_state: None,
+            window_drag: self.window_drag,
             tokens: *tokens,
             border_color,
         });
@@ -978,6 +992,8 @@ impl TabBar {
             on_scroll_wheel: None,
             on_drop: on_drop.clone(),
             forced_pin_state: Some(true),
+            // Only the first row shares the native title bar.
+            window_drag: self.window_drag,
             tokens: *tokens,
             border_color,
         });
@@ -989,6 +1005,7 @@ impl TabBar {
             on_scroll_wheel,
             on_drop,
             forced_pin_state: Some(false),
+            window_drag: false,
             tokens: *tokens,
             border_color,
         });
@@ -1048,6 +1065,7 @@ impl TabBar {
                 options.on_empty_double_click,
                 options.on_drop,
                 options.forced_pin_state,
+                options.window_drag,
                 options.tokens,
                 options.border_color,
             ))
@@ -1058,9 +1076,13 @@ impl TabBar {
         on_empty_double_click: Option<EmptyTabBarClickHandler>,
         on_drop: Option<TabDropHandler>,
         forced_pin_state: Option<bool>,
+        window_drag: bool,
         tokens: nucleotide_ui::tokens::DesignTokens,
         border_color: gpui::Hsla,
     ) -> gpui::AnyElement {
+        // Strips that share the native title bar keep its double-click action
+        // (zoom by default) instead of the empty-strip handler.
+        let on_empty_double_click = on_empty_double_click.filter(|_| !window_drag);
         let target = div()
             .id(end_drop_target_id(forced_pin_state))
             .min_w(px(24.0))
@@ -1076,7 +1098,8 @@ impl TabBar {
             .when(
                 end_drop_target_has_leading_border(forced_pin_state),
                 |target| target.border_l_1().border_color(border_color),
-            );
+            )
+            .when(window_drag, window_drag_area);
 
         target
             .when_some(on_drop, |target, on_drop| {

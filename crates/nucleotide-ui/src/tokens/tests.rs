@@ -624,7 +624,7 @@ mod titlebar_contrast_tests {
         let sizes = SizeTokens::native_chrome();
 
         #[cfg(target_os = "macos")]
-        assert_eq!(sizes.titlebar_height, gpui::px(32.0));
+        assert_eq!(sizes.titlebar_height, sizes.button_height_md);
 
         #[cfg(not(target_os = "macos"))]
         assert_eq!(sizes.titlebar_height, SizeTokens::default().titlebar_height);

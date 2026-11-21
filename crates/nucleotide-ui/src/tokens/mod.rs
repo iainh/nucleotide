@@ -326,15 +326,15 @@ impl SizeTokens {
 
     /// Create metrics for chrome that follows the host platform's native UI.
     ///
-    /// macOS unified title bars keep enough room for the native traffic lights
-    /// while remaining close to Nucleotide's compact theme chrome. Keeping this
-    /// here makes the platform geometry travel with the system palette instead of
-    /// leaking macOS constants into components.
+    /// macOS unified title bars share one row with the editor tabs, so the
+    /// sidebar header matches the tab row and the native traffic lights centre
+    /// on both. Keeping this here makes the platform geometry travel with the
+    /// system palette instead of leaking macOS constants into components.
     pub fn native_chrome() -> Self {
         #[cfg(target_os = "macos")]
         {
             let mut tokens = Self::default();
-            tokens.titlebar_height = px(32.0);
+            tokens.titlebar_height = tokens.button_height_md;
             tokens
         }
 

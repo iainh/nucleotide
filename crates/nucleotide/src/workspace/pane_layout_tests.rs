@@ -1073,3 +1073,29 @@ fn generated_command_sequences_preserve_ownership_content_and_rectangular_partit
         }
     }
 }
+
+#[test]
+fn touches_top_follows_vertical_stacks_and_excludes_dock() {
+    // [ left | [ top-right / bottom-right ] ], plus a dock below.
+    let mut layout = PaneLayout::from_topology(branch(
+        Axis::Horizontal,
+        vec![
+            (1.0, leaf(image(1))),
+            (
+                1.0,
+                branch(
+                    Axis::Vertical,
+                    vec![(1.0, leaf(image(2))), (1.0, leaf(image(3)))],
+                ),
+            ),
+        ],
+    ))
+    .unwrap();
+    let main = layout.main_panes();
+    let dock = layout.ensure_dock(140.0).unwrap();
+
+    assert!(layout.touches_top(main[0]));
+    assert!(layout.touches_top(main[1]));
+    assert!(!layout.touches_top(main[2]));
+    assert!(!layout.touches_top(dock));
+}

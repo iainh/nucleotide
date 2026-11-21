@@ -165,6 +165,12 @@ impl Render for PlatformTitleBar {
             .id(self.id.clone())
             .relative()
             .window_control_area(WindowControlArea::Drag)
+            // AppKit only drags the top of the band and never zooms because
+            // GPUI's view receives the clicks, so handle both explicitly.
+            .when(
+                self.platform_style == PlatformStyle::Mac && !window.is_fullscreen(),
+                super::window_drag_area,
+            )
             .w_full()
             .h(height)
             .min_h(height)

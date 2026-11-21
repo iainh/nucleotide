@@ -8935,6 +8935,13 @@ impl Workspace {
         .deemphasized(!editor_pane_focused)
         .track_scroll(&scroll_handle)
         .leading_inset(self.macos_pane_controls_inset(pane_id, cx))
+        // Top tab bars share the unified macOS title bar, so their empty space
+        // must move and zoom the window like the title bar it replaces.
+        .window_drag(
+            self.macos_system_shell(cx)
+                && !self.window_fullscreen
+                && self.pane_host.layout.touches_top(pane_id),
+        )
         .with_pane_drag_drop(pane_id, {
             let workspace = cx.entity().clone();
             move |dragged, before, window, cx| {
