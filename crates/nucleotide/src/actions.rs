@@ -14,6 +14,23 @@ pub mod project_tree {
     }
 }
 
+pub(crate) mod editor_context_menu {
+    use gpui::{Pixels, Point};
+    use helix_view::ViewId;
+
+    /// Opens the code editor's context menu for a view at a window position.
+    #[derive(Clone, PartialEq, Debug, gpui::Action)]
+    #[action(namespace = editor_context_menu, no_json)]
+    pub(crate) struct Open {
+        pub(crate) view_id: ViewId,
+        pub(crate) position: Point<Pixels>,
+    }
+
+    #[derive(Clone, PartialEq, Debug, gpui::Action)]
+    #[action(namespace = editor_context_menu, no_json)]
+    pub(crate) struct RevealInFileTree;
+}
+
 pub(crate) mod tab_menus {
     use crate::workspace::{TabBarNewMenuIntent, TabBarSplitMenuIntent, TabContextMenuIntent};
 

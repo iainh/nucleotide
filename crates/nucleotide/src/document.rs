@@ -1214,6 +1214,24 @@ impl Render for DocumentView {
             .relative()
             .flex()
             .flex_col()
+            .when(rendered_markdown.is_none(), |this| {
+                let core = self.core.clone();
+                let view_id = self.view_id;
+                let focus = self.focus.clone();
+                // Right-click leaves the Helix selection alone so menu actions act on it.
+                this.on_mouse_down(MouseButton::Right, move |event, window, cx| {
+                    cx.stop_propagation();
+                    focus_editor_view(&core, view_id, cx);
+                    window.focus(&focus, cx);
+                    window.dispatch_action(
+                        Box::new(crate::actions::editor_context_menu::Open {
+                            view_id,
+                            position: event.position,
+                        }),
+                        cx,
+                    );
+                })
+            })
             .child(content)
             .when_some(empty_scratch_state, gpui::ParentElement::child)
             .when_some(controls, gpui::ParentElement::child)

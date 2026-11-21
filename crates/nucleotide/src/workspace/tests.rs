@@ -1595,6 +1595,35 @@ fn tab_context_menu_disabled_states_match_zed_rules() {
 }
 
 #[test]
+fn editor_context_menu_disables_edits_by_selection_and_readonly_state() {
+    use super::{EditorContextMenuCapabilities, EditorContextMenuIntent as Intent};
+
+    let editable_cursor = EditorContextMenuCapabilities::default();
+    assert!(Intent::Cut.disabled(editable_cursor));
+    assert!(Intent::Copy.disabled(editable_cursor));
+    assert!(!Intent::Paste.disabled(editable_cursor));
+
+    let readonly_selection = EditorContextMenuCapabilities {
+        has_selection: true,
+        is_readonly: true,
+        ..Default::default()
+    };
+    assert!(Intent::Cut.disabled(readonly_selection));
+    assert!(!Intent::Copy.disabled(readonly_selection));
+    assert!(Intent::Paste.disabled(readonly_selection));
+
+    let lsp_without_references = EditorContextMenuCapabilities {
+        supports_goto_definition: true,
+        supports_code_actions: true,
+        ..Default::default()
+    };
+    assert!(!Intent::GoToDefinition.disabled(lsp_without_references));
+    assert!(Intent::FindReferences.disabled(lsp_without_references));
+    assert!(!Intent::CodeActions.disabled(lsp_without_references));
+    assert!(Intent::RevealInFileTree.disabled(lsp_without_references));
+}
+
+#[test]
 fn tab_bar_split_menu_items_match_zed_directional_split_actions() {
     let labels = Workspace::tab_bar_split_menu_intents()
         .iter()

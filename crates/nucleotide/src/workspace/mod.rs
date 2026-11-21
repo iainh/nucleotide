@@ -353,6 +353,104 @@ struct TabContextMenuCapabilities {
     is_readonly: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum EditorContextMenuIntent {
+    Cut,
+    Copy,
+    Paste,
+    GoToDefinition,
+    FindReferences,
+    CodeActions,
+    RevealInFileTree,
+}
+
+impl EditorContextMenuIntent {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Cut => "Cut",
+            Self::Copy => "Copy",
+            Self::Paste => "Paste",
+            Self::GoToDefinition => "Go to Definition",
+            Self::FindReferences => "Find References",
+            Self::CodeActions => "Code Actions…",
+            Self::RevealInFileTree => "Reveal in File Tree",
+        }
+    }
+
+    /// The action the menu dispatches from the editor, so the item runs
+    /// exactly like the application menu entry and keybinding.
+    fn action(self) -> Box<dyn gpui::Action> {
+        match self {
+            Self::Cut => Box::new(crate::actions::text_input::Cut),
+            Self::Copy => Box::new(crate::actions::text_input::Copy),
+            Self::Paste => Box::new(crate::actions::text_input::Paste),
+            Self::GoToDefinition => Box::new(crate::actions::workspace::GoToDefinition),
+            Self::FindReferences => Box::new(crate::actions::workspace::FindReferences),
+            Self::CodeActions => Box::new(crate::actions::workspace::ShowCodeActions),
+            Self::RevealInFileTree => {
+                Box::new(crate::actions::editor_context_menu::RevealInFileTree)
+            }
+        }
+    }
+
+    fn disabled(self, capabilities: EditorContextMenuCapabilities) -> bool {
+        match self {
+            Self::Cut => capabilities.is_readonly || !capabilities.has_selection,
+            Self::Copy => !capabilities.has_selection,
+            Self::Paste => capabilities.is_readonly,
+            Self::GoToDefinition => !capabilities.supports_goto_definition,
+            Self::FindReferences => !capabilities.supports_find_references,
+            Self::CodeActions => !capabilities.supports_code_actions,
+            Self::RevealInFileTree => !capabilities.has_file_tree_path,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EditorContextMenuEntry {
+    Action(EditorContextMenuIntent),
+    Separator,
+}
+
+const EDITOR_CONTEXT_MENU_ENTRIES: &[EditorContextMenuEntry] = &[
+    EditorContextMenuEntry::Action(EditorContextMenuIntent::Cut),
+    EditorContextMenuEntry::Action(EditorContextMenuIntent::Copy),
+    EditorContextMenuEntry::Action(EditorContextMenuIntent::Paste),
+    EditorContextMenuEntry::Separator,
+    EditorContextMenuEntry::Action(EditorContextMenuIntent::GoToDefinition),
+    EditorContextMenuEntry::Action(EditorContextMenuIntent::FindReferences),
+    EditorContextMenuEntry::Action(EditorContextMenuIntent::CodeActions),
+    EditorContextMenuEntry::Separator,
+    EditorContextMenuEntry::Action(EditorContextMenuIntent::RevealInFileTree),
+];
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct EditorContextMenuCapabilities {
+    /// Some Helix range spans text; a bare cursor has nothing to cut or copy.
+    has_selection: bool,
+    is_readonly: bool,
+    supports_goto_definition: bool,
+    supports_find_references: bool,
+    supports_code_actions: bool,
+    has_file_tree_path: bool,
+}
+
+/// Whether an LSP item can do anything for this document. While its
+/// configured servers are still starting, the item stays enabled and the
+/// request reports the result, as the matching keybinding does.
+fn editor_lsp_feature_available(
+    doc: &helix_view::Document,
+    feature: helix_core::syntax::config::LanguageServerFeature,
+) -> bool {
+    let has_configured_servers = doc.path().is_some()
+        && doc
+            .language_config()
+            .is_some_and(|config| !config.language_servers.is_empty());
+    has_configured_servers
+        && (doc.language_servers().next().is_none()
+            || doc.language_servers_with_feature(feature).next().is_some())
+}
+
 const SPLIT_PANE_HANDLE_HITBOX_PX: f32 = nucleotide_ui::SPLITTER_HITBOX_PX;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -469,6 +567,11 @@ pub struct Workspace {
     tab_context_popup_menu_subscription: Option<Subscription>,
     tab_context_menu_doc_id: Option<TabId>,
     pinned_documents: HashSet<TabId>,
+    // Code editor context menu state
+    editor_context_menu: ContextMenuController,
+    editor_context_popup_menu: Option<Entity<PopupMenu>>,
+    editor_context_popup_menu_subscription: Option<Subscription>,
+    editor_context_menu_view_id: Option<ViewId>,
     // Tab bar split menu state
     tab_bar_split_menu: ContextMenuController,
     tab_bar_split_popup_menu: Option<Entity<PopupMenu>>,
@@ -3840,6 +3943,10 @@ impl Workspace {
             tab_context_popup_menu_subscription: None,
             tab_context_menu_doc_id: None,
             pinned_documents: HashSet::new(),
+            editor_context_menu: ContextMenuController::new(),
+            editor_context_popup_menu: None,
+            editor_context_popup_menu_subscription: None,
+            editor_context_menu_view_id: None,
             tab_bar_split_menu: ContextMenuController::new(),
             tab_bar_split_popup_menu: None,
             tab_bar_split_popup_menu_subscription: None,
@@ -4628,6 +4735,196 @@ impl Workspace {
                 ],
             );
         }
+        cx.notify();
+    }
+
+    fn editor_context_menu_capabilities(
+        &self,
+        view_id: ViewId,
+        cx: &mut Context<Self>,
+    ) -> EditorContextMenuCapabilities {
+        use helix_core::syntax::config::LanguageServerFeature;
+
+        let core = self.core.read(cx);
+        let editor = &core.editor;
+        let Some(doc) = editor
+            .tree
+            .try_get(view_id)
+            .and_then(|view| editor.document(view.doc))
+        else {
+            return EditorContextMenuCapabilities::default();
+        };
+
+        // Normal mode always keeps a one-character block cursor; only a wider
+        // range there is a selection the user made.
+        let min_selection_len = if editor.mode() == helix_view::document::Mode::Normal {
+            2
+        } else {
+            1
+        };
+        let has_file_tree_path = doc.path().is_some_and(|path| {
+            self.file_tree.as_ref().is_some_and(|tree| {
+                tree.read(cx).contains_path(path)
+                    || self
+                        .current_project_root
+                        .as_ref()
+                        .is_some_and(|root| path.starts_with(root))
+            })
+        });
+
+        EditorContextMenuCapabilities {
+            has_selection: doc
+                .selection(view_id)
+                .ranges()
+                .iter()
+                .any(|range| range.len() >= min_selection_len),
+            is_readonly: doc.readonly,
+            supports_goto_definition: editor_lsp_feature_available(
+                doc,
+                LanguageServerFeature::GotoDefinition,
+            ),
+            supports_find_references: editor_lsp_feature_available(
+                doc,
+                LanguageServerFeature::GotoReference,
+            ),
+            supports_code_actions: editor_lsp_feature_available(
+                doc,
+                LanguageServerFeature::CodeAction,
+            ),
+            has_file_tree_path,
+        }
+    }
+
+    fn open_editor_context_menu(
+        &mut self,
+        view_id: ViewId,
+        position: gpui::Point<Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        self.close_tab_bar_menus();
+        self.close_file_tree_context_menu(cx);
+        self.close_editor_context_menu();
+        self.editor_context_menu
+            .open_at((f32::from(position.x), f32::from(position.y)));
+        self.editor_context_menu_view_id = Some(view_id);
+        cx.notify();
+    }
+
+    fn build_editor_context_popup_menu(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<PopupMenu> {
+        if let Some(menu) = self.editor_context_popup_menu.clone() {
+            return menu;
+        }
+
+        let view_id = self.editor_context_menu_view_id;
+        let capabilities = view_id
+            .map(|view_id| self.editor_context_menu_capabilities(view_id, cx))
+            .unwrap_or_default();
+        // Items dispatch from the editor so editor-only actions such as Cut
+        // see the document view focused, as they do from the keyboard.
+        let action_context = view_id
+            .and_then(|view_id| self.view_manager.get_document_view(&view_id))
+            .map(|view| view.focus_handle(cx))
+            .unwrap_or_else(|| self.focus_handle.clone());
+
+        let menu = PopupMenu::build(window, cx, move |mut menu, _window, _cx| {
+            menu = menu.action_context(action_context);
+            for entry in EDITOR_CONTEXT_MENU_ENTRIES.iter().copied() {
+                match entry {
+                    EditorContextMenuEntry::Action(intent) => {
+                        menu = menu.menu_with_check_and_disabled(
+                            intent.label(),
+                            false,
+                            intent.action(),
+                            intent.disabled(capabilities),
+                        );
+                    }
+                    EditorContextMenuEntry::Separator => {
+                        menu = menu.separator();
+                    }
+                }
+            }
+            menu
+        });
+
+        self.editor_context_popup_menu_subscription = Some(cx.subscribe(
+            &menu,
+            |workspace, _menu, _event: &DismissEvent, cx| {
+                if workspace.close_editor_context_menu() {
+                    cx.notify();
+                }
+            },
+        ));
+        self.editor_context_popup_menu = Some(menu.clone());
+        menu
+    }
+
+    fn render_editor_context_menu(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let menu = self.build_editor_context_popup_menu(window, cx);
+        let menu_focus = menu.read(cx).focus_handle(cx);
+        if !menu_focus.contains_focused(window, cx) {
+            menu_focus.focus(window, cx);
+        }
+
+        Self::render_popup_menu_backdrop(
+            menu,
+            self.editor_context_menu.position(),
+            Anchor::TopLeft,
+            (0.0, 0.0),
+            cx,
+            Workspace::dismiss_editor_context_menu,
+        )
+    }
+
+    fn close_editor_context_menu(&mut self) -> bool {
+        let closed = self.editor_context_menu.close();
+        let had_menu = self.editor_context_popup_menu.take().is_some();
+        let had_subscription = self.editor_context_popup_menu_subscription.take().is_some();
+        let had_target = self.editor_context_menu_view_id.take().is_some();
+        closed || had_menu || had_subscription || had_target
+    }
+
+    /// Light dismiss hands keyboard focus back to the editor the menu opened
+    /// from, so Helix keeps its mode and the next key reaches it.
+    fn dismiss_editor_context_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let view_id = self.editor_context_menu_view_id;
+        if !self.close_editor_context_menu() {
+            return;
+        }
+        if let Some(view) =
+            view_id.and_then(|view_id| self.view_manager.get_document_view(&view_id))
+        {
+            window.focus(&view.focus_handle(cx), cx);
+        } else {
+            window.focus(&self.focus_handle, cx);
+        }
+        cx.notify();
+    }
+
+    fn reveal_focused_document_in_file_tree(&mut self, cx: &mut Context<Self>) {
+        let path = {
+            let editor = &self.core.read(cx).editor;
+            editor
+                .tree
+                .try_get(editor.tree.focus)
+                .and_then(|view| editor.document(view.doc))
+                .and_then(|doc| doc.path().map(Path::to_path_buf))
+        };
+        let (Some(path), Some(file_tree)) = (path, self.file_tree.clone()) else {
+            return;
+        };
+
+        self.show_file_tree = true;
+        file_tree.update(cx, |tree, cx| {
+            tree.sync_selection_with_file(Some(path.as_path()), cx);
+        });
         cx.notify();
     }
 
@@ -11910,6 +12207,12 @@ impl Render for Workspace {
                                 .with_priority(100),
                         )
                     })
+                    .when(self.editor_context_menu.is_open(), |this| {
+                        this.child(
+                            gpui::deferred(self.render_editor_context_menu(window, cx))
+                                .with_priority(100),
+                        )
+                    })
                     .when(self.tab_bar_split_menu.is_open(), |this| {
                         this.child(
                             gpui::deferred(self.render_tab_bar_split_menu(window, cx))
@@ -12606,6 +12909,23 @@ impl Render for Workspace {
                         cx,
                     );
                 }
+                cx.stop_propagation();
+            },
+        ));
+
+        workspace_div = workspace_div.on_action(cx.listener(
+            move |workspace, action: &crate::actions::editor_context_menu::Open, _window, cx| {
+                workspace.open_editor_context_menu(action.view_id, action.position, cx);
+                cx.stop_propagation();
+            },
+        ));
+
+        workspace_div = workspace_div.on_action(cx.listener(
+            move |workspace,
+                  _: &crate::actions::editor_context_menu::RevealInFileTree,
+                  _window,
+                  cx| {
+                workspace.reveal_focused_document_in_file_tree(cx);
                 cx.stop_propagation();
             },
         ));
