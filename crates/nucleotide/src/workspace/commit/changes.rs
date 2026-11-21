@@ -142,6 +142,7 @@ impl Workspace {
 
     pub(in crate::workspace) fn render_changes_sidebar(
         &mut self,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         if self.commit_review.stale {
@@ -149,7 +150,11 @@ impl Workspace {
         }
         let theme = cx.global::<nucleotide_ui::Theme>();
         let tokens = theme.tokens;
-        let file_tree = tokens.file_tree_tokens();
+        let file_tree = if window.is_window_active() {
+            tokens.file_tree_tokens()
+        } else {
+            tokens.file_tree_tokens().inactive_window(&tokens.chrome)
+        };
         let files = self
             .commit_review
             .snapshot

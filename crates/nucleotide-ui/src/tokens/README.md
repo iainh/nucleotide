@@ -125,6 +125,18 @@ cursor and OS accent colours. Label contrast is checked against the tint
 composited over the native footer palette. The themed UI keeps cursor-derived
 solid mode badges.
 
+### Inactive windows
+
+When `!window.is_window_active()`, chrome reads as unfocused by applying the
+`inactive_window(&chrome)` transform to its component tokens:
+`TitleBarTokens` quiets the title, embedded menu bar and caption glyphs to
+`text_chrome_disabled`; `FileTreeTokens` replaces accent selections in the
+file tree and Changes sidebar with a neutral fill; and `StatusBarTokens` gives
+every mode badge the same neutral fill with an AA-readable label. Each
+transform returns its tokens unchanged in contrast mode, so system colour
+pairs stay exact. Apply it after `translucent_sidebar` or
+`system_mode_badges`.
+
 ### Windows accent and contrast themes
 
 Windows system chrome reads the personalisation accent and its light/dark ramp

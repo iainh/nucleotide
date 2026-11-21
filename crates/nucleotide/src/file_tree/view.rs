@@ -2798,16 +2798,20 @@ impl FileTreeView {
         &self,
         entry: &FileTreeEntry,
         vcs_status: Option<VcsStatus>,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let is_selected = self.selected_paths.contains(&entry.path);
         let row = ProjectTreeRow::from_entry(entry, is_selected, vcs_status);
         let theme = cx.theme().clone();
-        let file_tree_tokens = if self.tree.config().translucent_background {
+        let mut file_tree_tokens = if self.tree.config().translucent_background {
             theme.tokens.file_tree_tokens().translucent_sidebar()
         } else {
             theme.tokens.file_tree_tokens()
         };
+        if !window.is_window_active() {
+            file_tree_tokens = file_tree_tokens.inactive_window(&theme.tokens.chrome);
+        }
         let left_click_row = row.clone();
         let drop_target_path = row.path.clone();
         let density = self.tree.config().density;
@@ -2984,11 +2988,11 @@ mod tests {
             root_status: bool,
         }
         impl Render for SidebarHarness {
-            fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
                 let content = if self.root_status {
                     self.tree.update(cx, |view, cx| {
                         let root = view.tree.entry_by_path(view.tree.root_path()).unwrap();
-                        view.render_entry(&root, Some(VcsStatus::Modified), cx)
+                        view.render_entry(&root, Some(VcsStatus::Modified), window, cx)
                             .into_any_element()
                     })
                 } else {
@@ -4733,12 +4737,13 @@ impl Render for FileTreeView {
                         let list = uniform_list("file-tree-list", entries.len(), {
                             let entries = entries.clone();
                             let vcs_statuses = vcs_statuses.clone();
-                            cx.processor(move |this, range: std::ops::Range<usize>, _window, cx| {
+                            cx.processor(move |this, range: std::ops::Range<usize>, window, cx| {
                                 let mut items = Vec::with_capacity(range.end - range.start);
                                 for index in range {
                                     if let Some(entry) = entries.get(index) {
                                         let vcs_status = vcs_statuses.get(index).copied().flatten();
-                                        items.push(this.render_entry(entry, vcs_status, cx));
+                                        items
+                                            .push(this.render_entry(entry, vcs_status, window, cx));
                                     }
                                 }
                                 items

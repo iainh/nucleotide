@@ -224,7 +224,11 @@ impl ApplicationMenu {
 impl Render for ApplicationMenu {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let tokens = cx.global::<Theme>().tokens;
-        let titlebar_tokens = tokens.titlebar_tokens();
+        let titlebar_tokens = if window.is_window_active() {
+            tokens.titlebar_tokens()
+        } else {
+            tokens.titlebar_tokens().inactive_window(&tokens.chrome)
+        };
 
         let row_h = self.row_height;
         let metrics = menu_bar_metrics(self.embedded_in_titlebar);

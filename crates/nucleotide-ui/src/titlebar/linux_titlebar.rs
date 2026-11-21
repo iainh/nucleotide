@@ -97,7 +97,7 @@ impl LinuxTitlebar {
         }
     }
 
-    pub fn new(id: impl Into<ElementId>, theme: &crate::Theme) -> Self {
+    pub fn new(id: impl Into<ElementId>, theme: &crate::Theme, window_active: bool) -> Self {
         let platform_info = get_platform_info().clone();
 
         #[cfg(debug_assertions)]
@@ -108,7 +108,14 @@ impl LinuxTitlebar {
             platform_info.button_layout
         );
 
-        let tokens = theme.tokens.titlebar_tokens();
+        let tokens = if window_active {
+            theme.tokens.titlebar_tokens()
+        } else {
+            theme
+                .tokens
+                .titlebar_tokens()
+                .inactive_window(&theme.tokens.chrome)
+        };
 
         // Choose style based on desktop environment
         let style = match platform_info.desktop_environment {

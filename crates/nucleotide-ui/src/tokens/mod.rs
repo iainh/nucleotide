@@ -1522,6 +1522,23 @@ impl TitleBarTokens {
             height,
         }
     }
+
+    /// Return tokens for a background window: native title bars quiet their
+    /// title, menu, and caption glyphs. System contrast colours stay exact.
+    pub fn inactive_window(self, chrome: &ChromeTokens) -> Self {
+        if chrome.contrast.is_some() {
+            return self;
+        }
+        Self {
+            foreground: chrome.text_chrome_disabled,
+            ..self
+        }
+    }
+}
+
+/// Neutral fill for an unemphasized selection in a background window.
+fn inactive_selection_background(chrome: &ChromeTokens) -> Hsla {
+    utils::with_alpha(chrome.text_on_chrome, 0.1)
 }
 
 /// File tree component tokens for background and content styling
@@ -1695,6 +1712,25 @@ impl FileTreeTokens {
             ..self
         }
     }
+
+    /// Return tokens for a background window, where selections lose their
+    /// accent as macOS source lists do. System contrast colours stay exact.
+    pub fn inactive_window(self, chrome: &ChromeTokens) -> Self {
+        if chrome.contrast.is_some() {
+            return self;
+        }
+        let selected = inactive_selection_background(chrome);
+        Self {
+            item_background_selected: selected,
+            item_background_selected_hover: selected,
+            item_background_selected_pressed: selected,
+            selection_indicator: self
+                .selection_indicator
+                .map(|_| chrome.text_chrome_disabled),
+            icon_color_selected: self.icon_color,
+            ..self
+        }
+    }
 }
 
 /// Status bar component tokens for background and status content
@@ -1835,6 +1871,26 @@ impl StatusBarTokens {
         (self.mode_normal, self.mode_normal_text) = normal;
         (self.mode_insert, self.mode_insert_text) = insert;
         (self.mode_select, self.mode_select_text) = select;
+        self
+    }
+
+    /// Return tokens for a background window: the mode badge drops its mode
+    /// colour for a neutral fill with readable secondary text. System contrast
+    /// colours stay exact.
+    pub fn inactive_window(mut self, chrome: &ChromeTokens) -> Self {
+        if chrome.contrast.is_some() {
+            return self;
+        }
+        let background = inactive_selection_background(chrome);
+        let backdrop = utils::with_alpha(chrome.footer_background, 1.0);
+        let foreground = ensure_visual_contrast(
+            &[backdrop.blend(background)],
+            self.text_secondary,
+            ContrastRatios::AA_NORMAL,
+        );
+        (self.mode_normal, self.mode_normal_text) = (background, foreground);
+        (self.mode_insert, self.mode_insert_text) = (background, foreground);
+        (self.mode_select, self.mode_select_text) = (background, foreground);
         self
     }
 

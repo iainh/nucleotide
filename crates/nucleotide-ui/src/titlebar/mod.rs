@@ -292,7 +292,11 @@ impl Render for TitleBar {
                                     .text_ellipsis()
                                     .font_family(WINDOWS_UI_FONT_FAMILY)
                                     .text_size(tokens.sizes.text_sm)
-                                    .text_color(tokens.chrome.text_chrome_secondary)
+                                    .text_color(if window.is_window_active() {
+                                        tokens.chrome.text_chrome_secondary
+                                    } else {
+                                        titlebar_tokens.inactive_window(&tokens.chrome).foreground
+                                    })
                                     .child(
                                         div()
                                             .min_w_0()

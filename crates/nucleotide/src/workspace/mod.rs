@@ -13180,7 +13180,7 @@ impl Render for Workspace {
                     });
                 if let Some(file_tree) = self.file_tree.clone() {
                     let content = if self.commit_review.sidebar {
-                        self.render_changes_sidebar(cx)
+                        self.render_changes_sidebar(window, cx)
                     } else {
                         file_tree.into_any_element()
                     };

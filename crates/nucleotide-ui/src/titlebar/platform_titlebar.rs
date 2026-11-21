@@ -101,8 +101,11 @@ impl Render for PlatformTitleBar {
 
             if LinuxTitlebar::should_create_for_decorations(&decorations) {
                 debug!("Using enhanced Linux titlebar");
-                let mut linux_titlebar =
-                    LinuxTitlebar::new(self.id.clone(), cx.global::<crate::Theme>());
+                let mut linux_titlebar = LinuxTitlebar::new(
+                    self.id.clone(),
+                    cx.global::<crate::Theme>(),
+                    window.is_window_active(),
+                );
                 if self.show_title {
                     linux_titlebar.set_title(self.title.clone());
                 }
@@ -118,7 +121,12 @@ impl Render for PlatformTitleBar {
             }
         }
 
-        let titlebar_tokens = cx.global::<crate::Theme>().tokens.titlebar_tokens();
+        let tokens = cx.global::<crate::Theme>().tokens;
+        let titlebar_tokens = if window.is_window_active() {
+            tokens.titlebar_tokens()
+        } else {
+            tokens.titlebar_tokens().inactive_window(&tokens.chrome)
+        };
 
         let quiet_shell = cx
             .try_global::<crate::theme_manager::ThemeManager>()

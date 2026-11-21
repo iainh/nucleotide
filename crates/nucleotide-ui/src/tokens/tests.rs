@@ -165,6 +165,19 @@ mod system_chrome_token_tests {
                 .system_mode_badges(&chrome);
             assert_eq!(badges.mode_normal, c.highlight);
             assert_eq!(badges.mode_normal_text, c.highlight_text);
+            // Background windows keep the exact system pairs; dimming would
+            // break the user's chosen contrast.
+            let inactive = badges.inactive_window(&chrome);
+            assert_eq!(inactive.mode_insert, c.highlight);
+            assert_eq!(inactive.mode_insert_text, c.highlight_text);
+            let inactive_tree = tree.inactive_window(&chrome);
+            assert_eq!(inactive_tree.item_background_selected, c.highlight);
+            assert_eq!(inactive_tree.icon_color_selected, c.highlight_text);
+            let titlebar = chrome.titlebar_tokens(&SizeTokens::default());
+            assert_eq!(
+                titlebar.inactive_window(&chrome).foreground,
+                titlebar.foreground
+            );
             let notifications = chrome.notification_tokens(&editor);
             assert_eq!(notifications.error_background, c.window);
             assert_eq!(notifications.error_text, c.window_text);
@@ -233,6 +246,57 @@ mod system_chrome_token_tests {
                     assert!(contrast >= 4.5, "{appearance:?}: contrast {contrast}");
                 }
             }
+        }
+    }
+
+    #[test]
+    fn inactive_window_drops_accents_but_keeps_mode_readable() {
+        let accent = hsla(300.0 / 360.0, 0.7, 0.5, 1.0);
+        for appearance in [SystemAppearance::Light, SystemAppearance::Dark] {
+            let chrome = ChromeTokens::from_native_chrome_palette(
+                NativeChromePalette::macos_native(appearance, accent),
+            );
+            let editor = EditorTokens::fallback(appearance.is_dark());
+
+            // The selection loses its accent tint but stays visible.
+            let tree = chrome.file_tree_tokens(&editor);
+            let inactive_tree = tree.inactive_window(&chrome);
+            if cfg!(target_os = "windows") {
+                // WinUI selection is a neutral fill with an accent pill.
+                assert_eq!(tree.selection_indicator, Some(chrome.primary));
+                assert_eq!(
+                    inactive_tree.selection_indicator,
+                    Some(chrome.text_chrome_disabled)
+                );
+            } else {
+                assert!(tree.item_background_selected.s > 0.5);
+            }
+            assert!(inactive_tree.item_background_selected.s < 0.2);
+            assert!(inactive_tree.item_background_selected.a > 0.0);
+
+            // Every mode shares one neutral badge whose label stays AA-readable.
+            let badges = chrome.status_bar_tokens(&editor).inactive_window(&chrome);
+            assert_eq!(badges.mode_normal, badges.mode_insert);
+            assert_eq!(badges.mode_normal, badges.mode_select);
+            assert_ne!(badges.mode_normal, editor.cursor_normal);
+            let backdrop = gpui::Hsla {
+                a: 1.0,
+                ..chrome.footer_background
+            };
+            let under = backdrop.blend(badges.mode_normal);
+            let contrast = ColorTheory::contrast_ratio(under, under.blend(badges.mode_normal_text));
+            assert!(contrast >= 4.5, "{appearance:?}: contrast {contrast}");
+
+            // The title is quieter than in the active window.
+            let titlebar = chrome.titlebar_tokens(&SizeTokens::default());
+            let title_bg = gpui::Hsla {
+                a: 1.0,
+                ..titlebar.background
+            };
+            let shown = |fg: gpui::Hsla| ColorTheory::contrast_ratio(title_bg, title_bg.blend(fg));
+            assert!(
+                shown(titlebar.inactive_window(&chrome).foreground) < shown(titlebar.foreground)
+            );
         }
     }
 

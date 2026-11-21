@@ -1004,6 +1004,9 @@ impl Workspace {
             {
                 status_bar_tokens = status_bar_tokens.system_mode_badges(&ui_theme.tokens.chrome);
             }
+            if !window.is_window_active() {
+                status_bar_tokens = status_bar_tokens.inactive_window(&ui_theme.tokens.chrome);
+            }
             (status_bar_tokens, ui_theme.tokens.sizes)
         };
         let viewport_width = f32::from(window.viewport_size().width);
