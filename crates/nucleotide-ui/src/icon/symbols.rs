@@ -61,14 +61,18 @@ pub(super) fn lookup(path: &str) -> Option<Symbol> {
         "download" => ("arrow.down.to.line", '\u{e896}'),
         "play" => ("play", '\u{e768}'),
         "rotate-ccw" => ("arrow.counterclockwise", '\u{e7a7}'),
+        "refresh" => ("arrow.clockwise", '\u{e72c}'),
+        "minus" => ("minus", '\u{e738}'),
+        "git-push" => ("arrow.up.circle", '\u{e74a}'),
         "zoom-in" => ("plus.magnifyingglass", '\u{e8a3}'),
         "zoom-out" => ("minus.magnifyingglass", '\u{e71f}'),
         "maximize" => ("arrow.up.left.and.arrow.down.right", '\u{e740}'),
         "minimize" => ("arrow.down.right.and.arrow.up.left", '\u{e73f}'),
         "monitor" => ("display", '\u{e7f4}'),
         "square-scissors" | "completion-snippet" => ("scissors", '\u{e8c6}'),
-        // Completion-kind badges, broken-link status, VCS imagery, and animated
-        // artwork retain their bundled shape rather than changing their meaning.
+        // Completion-kind badges, broken-link status, VCS and diff-layout imagery,
+        // and animated artwork retain their bundled shape rather than changing
+        // their meaning.
         _ => return None,
     };
     Some(Symbol { macos, windows })

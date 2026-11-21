@@ -548,6 +548,7 @@ impl Workspace {
                     .child(div().text_color(style.text_secondary).child(branch))
                     .child(
                         button("commit-refresh", "Refresh")
+                            .icon("icons/refresh.svg")
                             .disabled(locked)
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.commit_review.error = None;
@@ -556,6 +557,7 @@ impl Workspace {
                     )
                     .child(
                         button("commit-stage-all", "Stage all")
+                            .icon("icons/plus.svg")
                             .disabled(locked || files.is_empty())
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.stage_review_files(
@@ -569,6 +571,7 @@ impl Workspace {
                     )
                     .child(
                         button("commit-unstage-all", "Unstage all")
+                            .icon("icons/minus.svg")
                             .disabled(locked || staged_count == 0)
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.stage_review_files(
@@ -583,14 +586,25 @@ impl Workspace {
                     )
                     .children(
                         [
-                            ("commit-layout-split", "Side by side", false),
-                            ("commit-layout-unified", "Unified", true),
+                            (
+                                "commit-layout-split",
+                                "Side by side",
+                                "icons/diff-split.svg",
+                                false,
+                            ),
+                            (
+                                "commit-layout-unified",
+                                "Unified",
+                                "icons/diff-unified.svg",
+                                true,
+                            ),
                         ]
-                        .map(|(id, label, unified)| {
+                        .map(|(id, label, icon, unified)| {
                             div()
                                 .when(cfg!(test), |view| view.debug_selector(|| id.into()))
                                 .child(
                                     button(id, label)
+                                        .icon(icon)
                                         .variant(if self.commit_review.unified == unified {
                                             ButtonVariant::Secondary
                                         } else {
@@ -679,6 +693,7 @@ impl Workspace {
                                     "commit-submit",
                                     if amending { "Amend Commit" } else { "Commit" },
                                 )
+                                .icon("icons/git-commit.svg")
                                 .disabled(!can_commit)
                                 .size(ButtonSize::Small)
                                 .on_click(
@@ -693,6 +708,7 @@ impl Workspace {
                             })
                             .child(
                                 Button::new("commit-push", "Commit and Push")
+                                    .icon("icons/git-push.svg")
                                     .disabled(!can_commit)
                                     .size(ButtonSize::Small)
                                     .on_click(
@@ -707,9 +723,11 @@ impl Workspace {
                                     view.debug_selector(|| "commit-push-only".into())
                                 })
                                 .child(
-                                    button("commit-push-only", "Push").on_click(
-                                        cx.listener(|this, _, _, cx| this.push_commit(cx)),
-                                    ),
+                                    button("commit-push-only", "Push")
+                                        .icon("icons/git-push.svg")
+                                        .on_click(
+                                            cx.listener(|this, _, _, cx| this.push_commit(cx)),
+                                        ),
                                 ),
                         )
                     }),
@@ -791,6 +809,7 @@ impl Workspace {
                                 SharedString::from(format!("commit-unstage-{index}")),
                                 "Unstage file",
                             )
+                            .icon("icons/minus.svg")
                             .disabled(self.commit_review.operation.is_some())
                             .on_click(cx.listener(
                                 move |this, _, _, cx| {

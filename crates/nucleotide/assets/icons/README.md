@@ -19,7 +19,8 @@ semantic identifier; it no longer requires SVG rendering on every platform.
 The resolver lives in `crates/nucleotide-ui/src/icon/`. Add native equivalents
 in `symbols.rs`, not in individual controls. Unmapped names, unavailable symbols
 or fonts, and transformed artwork use the bundled SVG. Specialised completion
-badges, VCS imagery and the animated spinner deliberately retain their artwork.
+badges, VCS and diff-layout imagery and the animated spinner deliberately
+retain their artwork.
 Code-file extensions share the platform's code symbol rather than lettered
 extension badges. These are semantic system symbols, not Explorer/Finder file
 association icons or thumbnails; rendering never queries file associations.
@@ -44,7 +45,7 @@ Stable-collection sources: `braces` (Braces), `completion-function` (Function),
 `completion-method` (Parentheses), `completion-module` (BoxTape),
 `completion-snippet` and `square-scissors` (CodeBlock), `completion-variable`
 (Variable), `monitor` (Desktop), `more-horizontal` (Ellipsis), `pin` (Pin),
-`rotate-ccw` (Reload).
+`refresh` and `rotate-ccw` (Reload).
 
 Pierre has no artwork for these, so they are derived from Pierre geometry:
 
@@ -53,6 +54,9 @@ Pierre has no artwork for these, so they are derived from Pierre geometry:
 - `rotate-ccw`: Reload, mirrored.
 - `zoom-in` and `zoom-out`: MagnifyingGlass with a plus or minus drawn at
   Pierre's 1.25-unit stroke.
+
+`diff-split` and `diff-unified` (DiffSplit and DiffStacked) are scaled to 80%
+around their centre so their solid tiles don't crowd button labels.
 
 Pierre has no per-language file icons. Extension-specific names such as
 `file-rs.svg` keep their paths but share FileCode, FileText, FileImage,

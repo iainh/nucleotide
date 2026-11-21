@@ -87,10 +87,10 @@ impl Workspace {
             .py(tokens.sizes.space_1)
             .children(
                 [
-                    ("sidebar-files", "Files", false),
-                    ("sidebar-changes", "Changes", true),
+                    ("sidebar-files", "Files", "icons/folder-tree.svg", false),
+                    ("sidebar-changes", "Changes", "icons/git-branch.svg", true),
                 ]
-                .map(|(id, label, show_changes)| {
+                .map(|(id, label, icon, show_changes)| {
                     let pill = if show_changes {
                         pill.take().flatten()
                     } else {
@@ -100,13 +100,23 @@ impl Workspace {
                         .when(cfg!(test), |view| view.debug_selector(|| id.into()))
                         .child(
                             Button::new(id, label)
+                                .icon(icon)
                                 .size(ButtonSize::Small)
                                 .when_some(pill, |button, pill| {
+                                    // Custom content replaces the icon slot, so repeat it here.
                                     button.content(
                                         div()
                                             .flex()
                                             .items_center()
                                             .gap(tokens.sizes.space_2)
+                                            .child(
+                                                nucleotide_ui::icon()
+                                                    .path(icon)
+                                                    .size(px(
+                                                        nucleotide_ui::tokens::STANDARD_ICON_SIZE,
+                                                    ))
+                                                    .flex_none(),
+                                            )
                                             .child(label)
                                             .child(pill),
                                     )

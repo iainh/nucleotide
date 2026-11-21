@@ -579,7 +579,7 @@ impl Workspace {
             }
             folds.push(rows);
             let label = format!(
-                "⋯ {count} unchanged line{}",
+                "{count} unchanged line{}",
                 if count == 1 { "" } else { "s" }
             );
             for (index, side) in sides.iter_mut().enumerate() {
@@ -594,11 +594,18 @@ impl Workspace {
                         .h(row)
                         .flex()
                         .items_center()
+                        .gap(tokens.sizes.space_2)
                         .px(tokens.sizes.space_3)
                         .bg(style.surface)
                         .text_color(style.text_secondary)
                         .cursor_pointer()
                         .hover(move |el| el.bg(hover_bg))
+                        .child(
+                            nucleotide_ui::icon()
+                                .path("icons/unfold.svg")
+                                .size(tokens.sizes.space_4)
+                                .flex_none(),
+                        )
                         .child(label.clone())
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.commit_review.expanded.insert(key.clone());
