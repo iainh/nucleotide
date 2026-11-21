@@ -1,5 +1,5 @@
 // ABOUTME: Token-integrated checkbox component for binary UI settings.
-// ABOUTME: Renders Phosphor-duotone-backed checked and unchecked states with GPUI focus handling.
+// ABOUTME: Renders icon-backed checked and unchecked states with GPUI focus handling.
 
 use crate::icon as svg;
 use crate::tokens::CheckboxTokens;
@@ -13,8 +13,8 @@ use std::sync::Arc;
 
 type CheckboxChangeHandler = Arc<dyn Fn(bool, &mut Window, &mut App)>;
 
-/// The Phosphor square spans 192 of the icon's 256 units.
-const BOX_SCALE: f32 = 0.75;
+/// The bundled Pierre squircle spans the icon's full 16 units.
+const BOX_SCALE: f32 = 1.0;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum CheckboxSize {
@@ -173,7 +173,7 @@ impl RenderOnce for Checkbox {
                 .into_any_element()
         };
         let icon = if let Some(c) = theme.tokens.chrome.contrast {
-            // Avoid the duotone SVG's translucent fill in contrast mode.
+            // Draw an opaque box in contrast mode rather than tinting the icon.
             let selected = (self.checked || self.indeterminate) && !disabled;
             drawn_box(
                 div()

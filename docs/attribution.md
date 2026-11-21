@@ -42,12 +42,11 @@ silently skipping validation.
 - **License**: MPL-2.0
 - **Role**: The original GUI implementation that Nucleotide was forked from
 
-### Phosphor Icons
-- **Project/Core**: https://github.com/phosphor-icons/core
-- **Website**: https://phosphoricons.com
-- **License**: MIT
-- **Role**: Provides the regular and duotone icons used throughout the interface
-- **Maintainers**: Phosphor Icons team
+### Pierre Icons
+- **Project**: https://github.com/pierrecomputer/icons
+- **License**: Apache-2.0
+- **Role**: Provides the bundled interface icons, used on Linux and wherever macOS or Windows has no native symbol
+- **Maintainers**: The Pierre Computer Company
 
 ## Special Thanks
 

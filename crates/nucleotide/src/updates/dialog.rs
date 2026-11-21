@@ -332,7 +332,7 @@ mod tests {
     }
 
     #[test]
-    fn update_actions_use_phosphor_icons() {
+    fn update_actions_use_bundled_icons() {
         assert_eq!(DialogAction::Check.icon(), "icons/rotate-ccw.svg");
         assert_eq!(DialogAction::Download.icon(), "icons/download.svg");
         assert_eq!(DialogAction::Retry.icon(), "icons/rotate-ccw.svg");

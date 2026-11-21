@@ -584,7 +584,7 @@ fn statusbar_text_shortening_counts_characters() {
 }
 
 #[test]
-fn statusbar_notifications_use_phosphor_icons() {
+fn statusbar_notifications_use_bundled_icons() {
     assert_eq!(
         statusbar_notification_icon(StatusBarNotificationSeverity::Info),
         "icons/info.svg"

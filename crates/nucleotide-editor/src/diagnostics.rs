@@ -413,7 +413,7 @@ mod tests {
     }
 
     #[test]
-    fn severity_icon_paths_use_phosphor_assets() {
+    fn severity_icon_paths_use_bundled_assets() {
         assert_eq!(
             diagnostic_severity_icon_path(Severity::Error),
             "icons/circle-x.svg"

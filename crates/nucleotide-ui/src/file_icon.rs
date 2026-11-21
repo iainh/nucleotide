@@ -190,7 +190,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn maps_every_phosphor_extension_icon() {
+    fn maps_every_extension_icon() {
         let mappings = [
             ("c", "file-c"),
             ("cs", "file-c-sharp"),
@@ -228,7 +228,7 @@ mod tests {
     }
 
     #[test]
-    fn maps_extension_aliases_to_their_phosphor_icons() {
+    fn maps_extension_aliases_to_their_icons() {
         let mappings = [
             ("cc", "file-cpp"),
             ("cxx", "file-cpp"),

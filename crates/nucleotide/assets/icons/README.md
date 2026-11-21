@@ -14,7 +14,7 @@ semantic identifier; it no longer requires SVG rendering on every platform.
 - **macOS:** runtime SF Symbols through AppKit, rasterized at the display scale
   with the requested tint. A bounded cache retains only owned image pixels,
   never native objects. Native traffic lights remain managed by macOS.
-- **Linux:** the bundled artwork below.
+- **Linux:** the bundled artwork below, for every icon.
 
 The resolver lives in `crates/nucleotide-ui/src/icon/`. Add native equivalents
 in `symbols.rs`, not in individual controls. Unmapped names, unavailable symbols
@@ -28,41 +28,48 @@ Keep `gpui::svg()` for actual SVG documents and diagrams, not UI icons. Do not
 bundle either platform's icon font or export SF Symbols as replacement assets.
 Native rendering applies in both system and theme UI looks.
 
-## Bundled fallbacks
+## Bundled artwork
 
-All assets in this directory are official [Phosphor Icons core](https://github.com/phosphor-icons/core)
-icons. Most use the duotone weight, while compact action icons use the regular
-weight for clarity. They are renamed locally where necessary to preserve the
-stable `icons/*.svg` paths used by existing call sites. See the [Phosphor Icons
-website](https://phosphoricons.com) for the icon catalog.
+All assets in this directory come from [Pierre Icons](https://github.com/pierrecomputer/icons)
+by The Pierre Computer Company. They are the 16px outline artwork from the
+beta collection (`beta/svg/Icon<Name>/outline-16px.svg`), with a few from the
+stable collection (`svg/Icon<Name>.svg`) where beta has no equivalent. They are
+renamed to keep the stable `icons/*.svg` paths used by call sites, minified to
+one line, and stable-collection fills are changed from `black` to
+`currentColor`.
 
-Source version: Phosphor Icons core v2.1.1, commit
-`2b75f3ad12b420c9504ef05df8d2564a28f8500e`.
+Source version: commit `aae3cf5` (2026-11-20).
 
-Extension-specific file icons retain their canonical `file-<extension>.svg`
-names. Files without a dedicated extension icon use `file-code.svg` or
-`file-text.svg` when their type is known, and `file.svg` otherwise.
+Stable-collection sources: `braces` (Braces), `completion-function` (Function),
+`completion-method` (Parentheses), `completion-module` (BoxTape),
+`completion-snippet` and `square-scissors` (CodeBlock), `completion-variable`
+(Variable), `monitor` (Desktop), `more-horizontal` (Ellipsis), `pin` (Pin),
+`rotate-ccw` (Reload).
+
+Pierre has no artwork for these, so they are derived from Pierre geometry:
+
+- `chevron-right` and `chevron-up`: Chevron, rotated.
+- `play`: Triangle, rotated to point right.
+- `rotate-ccw`: Reload, mirrored.
+- `zoom-in` and `zoom-out`: MagnifyingGlass with a plus or minus drawn at
+  Pierre's 1.25-unit stroke.
+
+Pierre has no per-language file icons. Extension-specific names such as
+`file-rs.svg` keep their paths but share FileCode, FileText, FileImage,
+FileRichText, FileSpreadsheet or FileZip artwork, matching the native symbols.
 
 ## License
 
-MIT License
+Licensed under the Apache License, Version 2.0 (the "License"); you may not
+use these files except in compliance with the License. You may obtain a copy
+of the License at
 
-Copyright (c) 2023 Phosphor Icons
+    http://www.apache.org/licenses/LICENSE-2.0
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+License for the specific language governing permissions and limitations under
+the License.
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+Copyright The Pierre Computer Company. Modified as described above.
