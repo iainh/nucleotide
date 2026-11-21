@@ -37,6 +37,18 @@ pub struct PlatformTitleBar {
     title: String,
     show_title: bool,
     inset_applied: bool,
+    #[cfg(target_os = "linux")]
+    linux_slots: LinuxTitlebarSlots,
+}
+
+/// Application-owned views laid out inside the Linux titlebar row, plus the
+/// drag state that must persist across frames.
+#[cfg(target_os = "linux")]
+#[derive(Default)]
+struct LinuxTitlebarSlots {
+    application_menu: Option<gpui::AnyView>,
+    trailing_view: Option<gpui::AnyView>,
+    drag_pending: std::rc::Rc<std::cell::Cell<bool>>,
 }
 
 impl PlatformTitleBar {
@@ -48,6 +60,8 @@ impl PlatformTitleBar {
             title: String::new(),
             show_title: true,
             inset_applied: false,
+            #[cfg(target_os = "linux")]
+            linux_slots: LinuxTitlebarSlots::default(),
         }
     }
 
@@ -57,6 +71,18 @@ impl PlatformTitleBar {
 
     pub fn set_show_title(&mut self, show_title: bool) {
         self.show_title = show_title;
+    }
+
+    /// Lay out the application menu and trailing actions inside the Linux
+    /// titlebar row, next to the window controls instead of over them.
+    #[cfg(target_os = "linux")]
+    pub fn set_linux_slots(
+        &mut self,
+        application_menu: Option<gpui::AnyView>,
+        trailing_view: Option<gpui::AnyView>,
+    ) {
+        self.linux_slots.application_menu = application_menu;
+        self.linux_slots.trailing_view = trailing_view;
     }
 
     pub fn height(_window: &Window, cx: &App) -> Pixels {
@@ -77,9 +103,16 @@ impl Render for PlatformTitleBar {
                 debug!("Using enhanced Linux titlebar");
                 let mut linux_titlebar =
                     LinuxTitlebar::new(self.id.clone(), cx.global::<crate::Theme>());
-                linux_titlebar.set_title(self.title.clone());
+                if self.show_title {
+                    linux_titlebar.set_title(self.title.clone());
+                }
 
-                return linux_titlebar.render_element(window);
+                return linux_titlebar.render_element(
+                    window,
+                    self.linux_slots.application_menu.clone(),
+                    self.linux_slots.trailing_view.clone(),
+                    self.linux_slots.drag_pending.clone(),
+                );
             } else {
                 debug!("Using fallback platform titlebar on Linux");
             }

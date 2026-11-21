@@ -152,6 +152,45 @@ impl Render for TitleBar {
         });
 
         #[cfg(target_os = "linux")]
+        if let Some(menu) = &self.application_menu
+            && LinuxTitlebar::should_create_for_decorations(&window.window_decorations())
+        {
+            let titlebar_height = TitleBar::height(window, cx);
+            let separator_color = cx.global::<crate::Theme>().tokens.chrome.separator_color;
+            menu.update(cx, |menu, _cx| menu.set_row_height(titlebar_height));
+            // The Linux titlebar lays out the menu, window controls, and
+            // trailing actions in one row ordered by the desktop's button
+            // layout, so none of them can overlap.
+            let menu_view: AnyView = menu.clone().into();
+            let trailing_view = self.trailing_view.clone();
+            self.platform_titlebar.update(cx, |titlebar, _cx| {
+                titlebar.set_linux_slots(Some(menu_view), trailing_view);
+            });
+
+            return div()
+                .relative()
+                .w_full()
+                .h(titlebar_height)
+                .min_h(titlebar_height)
+                .flex_shrink_0()
+                .child(self.platform_titlebar.clone())
+                // Paint after the row so the menu background cannot obscure
+                // the separator above the sidebar and navigation controls.
+                .child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .right_0()
+                        .bottom_0()
+                        .h(px(1.0))
+                        .bg(separator_color),
+                )
+                .into_any_element();
+        }
+
+        // Server-decorated Linux windows fall back to the generic platform
+        // titlebar with the menu overlaid on its leading edge.
+        #[cfg(target_os = "linux")]
         {
             if let Some(menu) = &self.application_menu {
                 let titlebar_height = TitleBar::height(window, cx);

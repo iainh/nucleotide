@@ -1,10 +1,13 @@
 // ABOUTME: Linux-specific titlebar implementation with enhanced desktop environment integration
 // ABOUTME: Provides native-like titlebar experience across GNOME, KDE, and tiling window managers
 
+use std::cell::Cell;
+use std::rc::Rc;
+
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    Decorations, ElementId, InteractiveElement, MouseButton, ParentElement, Pixels, Styled, Window,
-    WindowControlArea, div, px,
+    AnyView, Decorations, ElementId, InteractiveElement, MouseButton, ParentElement, Pixels,
+    StatefulInteractiveElement, Styled, Window, WindowControlArea, div, px,
 };
 
 use crate::titlebar::linux_platform_detector::{
@@ -23,8 +26,6 @@ pub struct LinuxTitlebarStyle {
     pub foreground: gpui::Hsla,
     pub border: gpui::Hsla,
     pub height: Pixels,
-    pub padding_left: f32,
-    pub padding_right: f32,
     pub title_alignment: TitleAlignment,
 }
 
@@ -36,7 +37,7 @@ pub enum TitleAlignment {
 
 impl LinuxTitlebarStyle {
     /// Create GNOME-style titlebar (Adwaita inspired)
-    pub fn gnome_style(tokens: TitleBarTokens, platform_info: &LinuxPlatformInfo) -> Self {
+    pub fn gnome_style(tokens: TitleBarTokens, _platform_info: &LinuxPlatformInfo) -> Self {
         debug!("Creating GNOME-style titlebar");
 
         Self {
@@ -44,20 +45,12 @@ impl LinuxTitlebarStyle {
             foreground: tokens.foreground,
             border: tokens.border,
             height: tokens.height.max(px(40.0)), // GNOME prefers taller titlebars
-            padding_left: match platform_info.button_layout {
-                WindowButtonLayout::Left => 120.0, // Space for controls on left
-                _ => 12.0,
-            },
-            padding_right: match platform_info.button_layout {
-                WindowButtonLayout::Left => 12.0,
-                _ => 120.0, // Space for controls on right
-            },
             title_alignment: TitleAlignment::Center, // GNOME centers titles
         }
     }
 
     /// Create KDE-style titlebar (Breeze inspired)
-    pub fn kde_style(tokens: TitleBarTokens, platform_info: &LinuxPlatformInfo) -> Self {
+    pub fn kde_style(tokens: TitleBarTokens, _platform_info: &LinuxPlatformInfo) -> Self {
         debug!("Creating KDE-style titlebar");
 
         Self {
@@ -65,11 +58,6 @@ impl LinuxTitlebarStyle {
             foreground: tokens.foreground,
             border: tokens.border,
             height: tokens.height.max(px(32.0)), // KDE uses standard height
-            padding_left: 16.0,
-            padding_right: match platform_info.button_layout {
-                WindowButtonLayout::Right => 100.0, // Space for controls
-                _ => 16.0,
-            },
             title_alignment: TitleAlignment::Left, // KDE left-aligns titles
         }
     }
@@ -83,8 +71,6 @@ impl LinuxTitlebarStyle {
             foreground: tokens.foreground,
             border: tokens.border,
             height: tokens.height.min(px(28.0)), // Minimal height
-            padding_left: 8.0,
-            padding_right: 60.0,                   // Just space for close button
             title_alignment: TitleAlignment::Left, // Simple left alignment
         }
     }
@@ -173,112 +159,189 @@ impl LinuxTitlebar {
     }
 }
 
-impl LinuxTitlebar {
-    pub fn render_element(&mut self, window: &mut Window) -> gpui::Stateful<gpui::Div> {
-        let decorations = window.window_decorations();
+/// A segment of the Linux titlebar row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TitlebarSlot {
+    WindowControls,
+    ApplicationMenu,
+    DragRegion,
+    TrailingActions,
+}
 
+/// Left-to-right order of the titlebar row. The window controls sit on the
+/// edge the desktop uses for them, and the draggable title region separates
+/// the application menu from the trailing action lane.
+fn slot_order(button_layout: WindowButtonLayout) -> [TitlebarSlot; 4] {
+    use TitlebarSlot::*;
+    match button_layout {
+        WindowButtonLayout::Left => [WindowControls, ApplicationMenu, DragRegion, TrailingActions],
+        WindowButtonLayout::Right | WindowButtonLayout::Custom => {
+            [ApplicationMenu, DragRegion, TrailingActions, WindowControls]
+        }
+    }
+}
+
+impl LinuxTitlebar {
+    /// Render the titlebar as a single row. `application_menu` and
+    /// `trailing_view` are optional application-owned slots; `drag_pending`
+    /// must outlive the frame so a press in the drag region can start a window
+    /// move once the pointer moves.
+    pub fn render_element(
+        &mut self,
+        window: &mut Window,
+        application_menu: Option<AnyView>,
+        trailing_view: Option<AnyView>,
+        drag_pending: Rc<Cell<bool>>,
+    ) -> gpui::Stateful<gpui::Div> {
         #[cfg(debug_assertions)]
         debug!(
             "Rendering Linux titlebar - DE: {:?}, decorations: {:?}, height: {:?}",
-            self.platform_info.desktop_environment, decorations, self.style.height
+            self.platform_info.desktop_environment,
+            window.window_decorations(),
+            self.style.height
         );
 
         // Set window insets only once to avoid redundant per-frame calls
         if !self.inset_applied {
-            match decorations {
-                Decorations::Client { .. } => window.set_client_inset(px(0.0)),
-                Decorations::Server => window.set_client_inset(px(0.0)),
-            }
+            window.set_client_inset(px(0.0));
             self.inset_applied = true;
         }
 
-        // Create the main titlebar container
+        let button_layout = self.platform_info.button_layout;
+
+        // Do not apply rounded corners on Linux. Many compositors already
+        // round the window, and an extra clip here causes corner artifacts.
         let mut titlebar = div()
+            .id(self.id.clone())
             .flex()
             .flex_row()
-            .id(self.id.clone())
-            .window_control_area(WindowControlArea::Drag)
+            .items_center()
             .w_full()
             .h(self.style.height)
+            .overflow_hidden()
             .bg(self.style.background)
             .border_b_1()
             .border_color(self.style.border);
 
-        // Do not apply rounded corners on Linux.
-        // Many compositors already round the window and applying an additional
-        // clip here causes visible corner artifacts. Leaving the corners square
-        // avoids double-rounding and blends correctly with the window frame.
-        titlebar = titlebar.map(|el| match decorations {
-            // Keep behavior identical for both decoration modes: no extra rounding.
-            Decorations::Server => el,
-            Decorations::Client { .. } => el,
-        });
+        for slot in slot_order(button_layout) {
+            titlebar = match slot {
+                TitlebarSlot::WindowControls => {
+                    // Always show window controls on Linux, even when
+                    // maximized or fullscreen: some WMs use fullscreen as a
+                    // stand-in for maximize, and hiding the controls makes it
+                    // impossible to restore the window.
+                    titlebar.child(LinuxWindowControls::new(TitleBarTokens {
+                        background: self.style.background,
+                        foreground: self.style.foreground,
+                        border: self.style.border,
+                        height: self.style.height,
+                    }))
+                }
+                TitlebarSlot::ApplicationMenu => titlebar
+                    .when_some(application_menu.clone(), |titlebar, menu| {
+                        titlebar.child(div().flex_none().h_full().child(menu))
+                    }),
+                TitlebarSlot::DragRegion => titlebar.child(self.render_drag_region(&drag_pending)),
+                TitlebarSlot::TrailingActions => {
+                    titlebar.when_some(trailing_view.clone(), |titlebar, trailing_view| {
+                        titlebar.child(
+                            div()
+                                .flex_none()
+                                .w(px(super::TITLEBAR_ACTION_LANE_WIDTH))
+                                .h_full()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(trailing_view),
+                        )
+                    })
+                }
+            };
+        }
 
-        // Apply padding based on button layout
-        titlebar = titlebar
-            .pl(px(self.style.padding_left))
-            .pr(px(self.style.padding_right));
+        // With controls on the left, the trailing lane ends the row, so keep
+        // the same inset from the window edge it has on other platforms.
+        titlebar.when(
+            button_layout == WindowButtonLayout::Left && trailing_view.is_some(),
+            |titlebar| titlebar.pr(px(super::TITLEBAR_ACTION_RIGHT_INSET)),
+        )
+    }
 
-        // Create title content area
-        let title_content = div()
+    /// The flexible title area between the menu and the trailing actions.
+    /// Dragging it moves the window and double-clicking it toggles maximize.
+    fn render_drag_region(&self, drag_pending: &Rc<Cell<bool>>) -> gpui::Stateful<gpui::Div> {
+        div()
+            .id("linux-titlebar-drag-region")
             .flex()
             .flex_row()
-            .w_full()
+            .flex_1()
+            .min_w_0()
             .h_full()
+            .px_2()
             .items_center()
-            .relative()
+            .overflow_hidden()
             .map(|el| match self.style.title_alignment {
                 TitleAlignment::Left => el.justify_start(),
                 TitleAlignment::Center => el.justify_center(),
             })
+            .window_control_area(WindowControlArea::Drag)
             .child(
-                div().flex().items_center().gap_2().child(
-                    div()
-                        .text_size(self.title_text_size)
-                        .font_weight(gpui::FontWeight::MEDIUM)
-                        .text_color(self.style.foreground)
-                        .child(self.title.clone()),
-                ),
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(self.title_text_size)
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(self.style.foreground)
+                    .child(self.title.clone()),
             )
+            // Start the move on the first pointer motion rather than on press,
+            // so the compositor's move grab does not swallow a double-click.
             .on_mouse_down(MouseButton::Left, {
-                let button_layout = self.platform_info.button_layout;
+                let drag_pending = drag_pending.clone();
+                move |event, _window, cx| {
+                    drag_pending.set(event.click_count == 1);
+                    cx.stop_propagation();
+                }
+            })
+            .on_mouse_up(MouseButton::Left, {
+                let drag_pending = drag_pending.clone();
+                move |_, _, _| drag_pending.set(false)
+            })
+            .on_mouse_move({
+                let drag_pending = drag_pending.clone();
                 move |event, window, cx| {
-                    // Handle titlebar dragging, but avoid interfering with window controls
-                    let bounds = window.window_bounds().get_bounds();
-                    let event_x = event.position.x;
-                    let window_width = bounds.size.width;
-                    let control_area_width = px(120.0); // Approximate width of control area
-
-                    let should_drag = match button_layout {
-                        WindowButtonLayout::Left => event_x > control_area_width,
-                        WindowButtonLayout::Right | WindowButtonLayout::Custom => {
-                            event_x < (window_width - control_area_width)
-                        }
-                    };
-
-                    if should_drag {
+                    if drag_pending.get() && event.pressed_button == Some(MouseButton::Left) {
+                        drag_pending.set(false);
                         window.start_window_move();
                     }
                     cx.stop_propagation();
                 }
             })
-            .on_mouse_move(|_, _, cx| cx.stop_propagation());
+            .on_click(|event, window, _| {
+                if event.click_count() == 2 {
+                    window.zoom_window();
+                }
+            })
+    }
+}
 
-        // Add the title content to the titlebar
-        titlebar = titlebar.child(title_content);
+#[cfg(test)]
+mod tests {
+    use super::{TitlebarSlot, slot_order};
+    use crate::titlebar::linux_platform_detector::WindowButtonLayout;
 
-        // Always show window controls on Linux, even when maximized/fullscreen.
-        // We use fullscreen as a stand-in for maximize on some WMs; hiding the
-        // controls makes it impossible to restore the window.
-        let titlebar_tokens = TitleBarTokens {
-            background: self.style.background,
-            foreground: self.style.foreground,
-            border: self.style.border,
-            height: self.style.height,
-        };
-
-        titlebar = titlebar.child(LinuxWindowControls::new(titlebar_tokens));
-
-        titlebar
+    #[test]
+    fn window_controls_take_the_edge_named_by_the_button_layout() {
+        use TitlebarSlot::*;
+        assert_eq!(
+            slot_order(WindowButtonLayout::Left),
+            [WindowControls, ApplicationMenu, DragRegion, TrailingActions]
+        );
+        for layout in [WindowButtonLayout::Right, WindowButtonLayout::Custom] {
+            assert_eq!(
+                slot_order(layout),
+                [ApplicationMenu, DragRegion, TrailingActions, WindowControls]
+            );
+        }
     }
 }

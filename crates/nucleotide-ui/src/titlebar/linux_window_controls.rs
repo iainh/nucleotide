@@ -331,23 +331,18 @@ impl RenderOnce for LinuxWindowControls {
         let theme_tokens = cx.global::<crate::Theme>().tokens;
 
         let controls = self.get_control_layout(window);
+        // The titlebar places this cluster in its row according to the button
+        // layout, so it stays in normal flow and never overlaps other content.
         let mut container = div()
             .flex()
             .flex_row()
+            .flex_none()
             .id("linux-window-controls")
+            .h_full()
+            .px_2()
             .items_center()
             .gap_1()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
-
-        // Position controls based on layout
-        match self.platform_info.button_layout {
-            WindowButtonLayout::Left => {
-                container = container.absolute().left_2().top_0().bottom_0();
-            }
-            WindowButtonLayout::Right | WindowButtonLayout::Custom => {
-                container = container.absolute().right_2().top_0().bottom_0();
-            }
-        }
 
         // Add all controls
         for control_type in controls.iter() {
