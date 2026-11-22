@@ -1013,12 +1013,26 @@ impl Workspace {
         let quiet_shell = nucleotide_appearance::content_islands_enabled(
             cx.global::<crate::ThemeManager>().ui_chrome_style(),
         );
-        // Align status content with the solid workspace, leaving the native
-        // sidebar column clear through the bottom of the window.
-        let sidebar_width = if cfg!(target_os = "macos") && quiet_shell && self.show_file_tree {
+        // The status bar spans only the editor; the sidebar column continues
+        // to the bottom of the window and holds the Files | Changes switch.
+        let sidebar_width = if self.show_file_tree {
             px(self.file_tree_width)
         } else {
             px(0.0)
+        };
+        let sidebar_footer = {
+            let file_tree_tokens = cx.theme().tokens.file_tree_tokens();
+            div()
+                .size_full()
+                .when(!quiet_shell, |footer| {
+                    footer
+                        .bg(file_tree_tokens.background)
+                        .border_r_1()
+                        .border_color(file_tree_tokens.border)
+                })
+                .when(self.file_tree.is_some(), |footer| {
+                    footer.child(self.render_sidebar_switch(cx))
+                })
         };
         let geometry = StatusBarGeometry::new(
             viewport_width - f32::from(shell_margin * 2.0 + sidebar_width),
@@ -1090,7 +1104,7 @@ impl Workspace {
             .top_border(!quiet_shell)
             .when(quiet_shell, |bar| bar.px(shell_margin))
             .when(sidebar_width > px(0.0), |bar| {
-                bar.leading(sidebar_width, div())
+                bar.leading(sidebar_width, sidebar_footer)
             })
             .content(content)
             .trailing(utilities)

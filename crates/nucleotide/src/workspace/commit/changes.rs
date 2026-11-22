@@ -32,9 +32,9 @@ impl Workspace {
         self.show_commit_tab(cx);
     }
 
-    /// The Files | Changes switch at the bottom of the sidebar.
+    /// The Files | Changes switch, shown in the status bar row under the sidebar.
     pub(in crate::workspace) fn render_sidebar_switch(
-        &mut self,
+        &self,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let tokens = cx.global::<nucleotide_ui::Theme>().tokens;
@@ -79,12 +79,10 @@ impl Workspace {
         let mut pill = Some(pill);
         div()
             .flex()
-            .flex_none()
-            .border_t_1()
-            .border_color(tokens.file_tree_tokens().separator)
+            .h_full()
+            .items_center()
             .gap(tokens.sizes.space_1)
             .px(tokens.sizes.space_2)
-            .py(tokens.sizes.space_1)
             .children(
                 [
                     ("sidebar-files", "Files", "icons/folder-tree.svg", false),

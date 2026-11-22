@@ -13332,16 +13332,7 @@ impl Render for Workspace {
                             .overflow_hidden()
                             .flex()
                             .flex_col()
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_h(px(0.0))
-                                    .overflow_hidden()
-                                    .flex()
-                                    .flex_col()
-                                    .child(content),
-                            )
-                            .child(self.render_sidebar_switch(cx)),
+                            .child(content),
                     );
                 } else {
                     // No directory open: offer local and remote workspace choices.
