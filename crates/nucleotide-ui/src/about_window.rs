@@ -145,7 +145,6 @@ impl Render for AboutWindow {
                             .size(ButtonSize::Small)
                             .icon("icons/square-check-big.svg")
                             .focus_handle(self.ok_focus_handle.clone())
-                            .activate_on_mouse_down()
                             .on_click(cx.listener(|this, _event, _window, cx| {
                                 this.dismiss(cx);
                                 cx.stop_propagation();

@@ -1577,7 +1577,6 @@ impl RemoteConnectionManagerView {
             .variant(ButtonVariant::Secondary)
             .size(ButtonSize::Medium)
             .icon(icon)
-            .activate_on_mouse_down()
             .on_click(move |_event, window, cx| {
                 manager.update(cx, |this, cx| {
                     listener(this, window, cx);
@@ -1749,7 +1748,6 @@ impl Render for RemoteConnectionManagerView {
                     .child(
                         Button::icon_only("remote-close", "icons/close.svg")
                             .aria_label("Close remote workspace dialog")
-                            .activate_on_mouse_down()
                             .on_click({
                                 let manager = cx.entity().clone();
                                 move |_event, _window, cx| {

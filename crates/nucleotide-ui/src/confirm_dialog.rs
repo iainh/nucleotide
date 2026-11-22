@@ -15,6 +15,10 @@ use crate::{Button, ButtonSize, ButtonVariant, FocusTraversal, ThemedContext};
 
 pub(crate) const CONFIRM_DIALOG_CONTEXT: &str = "ConfirmDialog";
 
+/// Windows places the primary button before Cancel; macOS and Linux desktops
+/// place Cancel first. This follows the host OS, not the ui_look chrome.
+const PRIMARY_BUTTON_FIRST: bool = cfg!(target_os = "windows");
+
 pub(crate) fn init(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("enter", ConfirmDialogAction, Some(CONFIRM_DIALOG_CONTEXT)),
@@ -259,17 +263,16 @@ pub struct ConfirmDialogView {
 
 impl ConfirmDialogView {
     pub fn new(dialog: ConfirmDialog, cx: &mut Context<Self>) -> Self {
-        let windows_system = cx.theme().tokens.chrome.is_windows_system();
         Self {
             dialog,
             focus_handle: cx.focus_handle().tab_stop(false),
             cancel_focus_handle: cx
                 .focus_handle()
-                .tab_index(if windows_system { 2 } else { 1 })
+                .tab_index(if PRIMARY_BUTTON_FIRST { 2 } else { 1 })
                 .tab_stop(true),
             confirm_focus_handle: cx
                 .focus_handle()
-                .tab_index(if windows_system { 1 } else { 2 })
+                .tab_index(if PRIMARY_BUTTON_FIRST { 1 } else { 2 })
                 .tab_stop(true),
             dismissed_by_action: false,
         }
@@ -345,7 +348,6 @@ impl Render for ConfirmDialogView {
             .when(!windows_system, |button| button.icon("icons/circle-x.svg"))
             .when(windows_system, |button| button.width(button_width))
             .focus_handle(self.cancel_focus_handle.clone())
-            .when(!windows_system, Button::activate_on_mouse_down)
             .on_click(cx.listener(|view, _event, _window, cx| {
                 view.emit_cancelled(cx);
                 cx.stop_propagation();
@@ -363,7 +365,6 @@ impl Render for ConfirmDialogView {
                 .when(!windows_system, |button| button.icon(confirm_icon))
                 .when(windows_system, |button| button.width(button_width))
                 .focus_handle(self.confirm_focus_handle.clone())
-                .when(!windows_system, Button::activate_on_mouse_down)
                 .on_click(cx.listener(|view, _event, _window, cx| {
                     view.emit_confirmed(cx);
                     cx.stop_propagation();
@@ -414,7 +415,7 @@ impl Render for ConfirmDialogView {
                             this.p(tokens.sizes.space_7)
                                 .bg(tokens.chrome.file_tree_background.alpha(1.0))
                         })
-                        .child(DialogFooter::new().children(if windows_system {
+                        .child(DialogFooter::new().children(if PRIMARY_BUTTON_FIRST {
                             vec![confirm_button, cancel_button]
                         } else {
                             vec![cancel_button, confirm_button]
@@ -480,9 +481,7 @@ mod tests {
     }
 
     #[cfg(target_os = "windows")]
-    #[gpui::test]
-    fn windows_confirmation_waits_for_release_and_allows_drag_away(cx: &mut TestAppContext) {
-        init_confirm_dialog_test(cx);
+    fn use_windows_system_chrome(cx: &mut TestAppContext) {
         cx.update(|cx| {
             let mut tokens = crate::DesignTokens::dark();
             tokens.chrome = crate::tokens::ChromeTokens::from_native_chrome_palette(
@@ -493,6 +492,49 @@ mod tests {
             );
             cx.set_global(crate::Theme::from_tokens(tokens));
         });
+    }
+
+    #[gpui::test]
+    fn theme_look_confirmation_waits_for_release_and_allows_drag_away(cx: &mut TestAppContext) {
+        init_confirm_dialog_test(cx);
+        assert_buttons_activate_on_release(cx);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[gpui::test]
+    fn windows_confirmation_waits_for_release_and_allows_drag_away(cx: &mut TestAppContext) {
+        init_confirm_dialog_test(cx);
+        use_windows_system_chrome(cx);
+        assert_buttons_activate_on_release(cx);
+    }
+
+    #[gpui::test]
+    fn theme_look_button_order_follows_host_os(cx: &mut TestAppContext) {
+        init_confirm_dialog_test(cx);
+        assert_button_order_follows_host_os(cx);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[gpui::test]
+    fn windows_system_button_order_follows_host_os(cx: &mut TestAppContext) {
+        init_confirm_dialog_test(cx);
+        use_windows_system_chrome(cx);
+        assert_button_order_follows_host_os(cx);
+    }
+
+    fn assert_button_order_follows_host_os(cx: &mut TestAppContext) {
+        let (_harness, cx) = cx.add_window_view(ConfirmDialogHarness::new);
+        cx.run_until_parked();
+        let confirm = cx.debug_bounds("confirm-dialog-confirm").unwrap();
+        let cancel = cx.debug_bounds("confirm-dialog-cancel").unwrap();
+        assert_eq!(
+            confirm.left() < cancel.left(),
+            cfg!(target_os = "windows"),
+            "Windows puts the primary button first; other platforms put Cancel first"
+        );
+    }
+
+    fn assert_buttons_activate_on_release(cx: &mut TestAppContext) {
         let (harness, cx) = cx.add_window_view(ConfirmDialogHarness::new);
         cx.run_until_parked();
         for (selector, expected) in [
@@ -587,16 +629,22 @@ mod tests {
             )
         });
 
+        let (first, second) = if cfg!(target_os = "windows") {
+            (confirm_focus, cancel_focus)
+        } else {
+            (cancel_focus, confirm_focus)
+        };
+
         cx.update(|window, cx| {
             window.focus(&dialog_focus, cx);
             dialog_focus.dispatch_action(&FocusNext, window, cx);
-            assert!(cancel_focus.is_focused(window));
+            assert!(first.is_focused(window));
 
-            cancel_focus.dispatch_action(&FocusNext, window, cx);
-            assert!(confirm_focus.is_focused(window));
+            first.dispatch_action(&FocusNext, window, cx);
+            assert!(second.is_focused(window));
 
-            confirm_focus.dispatch_action(&FocusPrevious, window, cx);
-            assert!(cancel_focus.is_focused(window));
+            second.dispatch_action(&FocusPrevious, window, cx);
+            assert!(first.is_focused(window));
         });
     }
 

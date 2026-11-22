@@ -43,7 +43,6 @@ impl Render for UpdateIndicator {
                     )
                     .tooltip("Checking for Nucleotide updates")
                     .aria_label("Checking for Nucleotide updates")
-                    .activate_on_mouse_down()
                     .on_click(|_, window, cx| Self::open_update_details(window, cx)),
             ),
             UpdateState::Available(update) => Some(
@@ -52,7 +51,6 @@ impl Render for UpdateIndicator {
                     .size(ButtonSize::ExtraSmall)
                     .tooltip(format!("Nucleotide {} is available", update.version))
                     .aria_label(format!("Nucleotide {} is available", update.version))
-                    .activate_on_mouse_down()
                     .on_click(|_, window, cx| Self::open_update_details(window, cx)),
             ),
             UpdateState::Downloading { update, percent } => Some(
@@ -72,7 +70,6 @@ impl Render for UpdateIndicator {
                         "Downloading Nucleotide {}: {}%",
                         update.version, percent
                     ))
-                    .activate_on_mouse_down()
                     .on_click(|_, window, cx| Self::open_update_details(window, cx)),
             ),
             UpdateState::ReadyToRestart(update) => Some(
@@ -87,7 +84,6 @@ impl Render for UpdateIndicator {
                         "Restart to update Nucleotide to {}",
                         update.version
                     ))
-                    .activate_on_mouse_down()
                     .on_click(|_, window, cx| Self::open_update_details(window, cx)),
             ),
             UpdateState::Applying(update) => Some(
@@ -101,7 +97,6 @@ impl Render for UpdateIndicator {
                     )
                     .tooltip(format!("Preparing Nucleotide {}", update.version))
                     .aria_label(format!("Preparing Nucleotide {}", update.version))
-                    .activate_on_mouse_down()
                     .on_click(|_, window, cx| Self::open_update_details(window, cx)),
             ),
             UpdateState::Failed { .. } => Some(
@@ -110,7 +105,6 @@ impl Render for UpdateIndicator {
                     .size(ButtonSize::ExtraSmall)
                     .tooltip("Nucleotide update failed; open to retry")
                     .aria_label("Nucleotide update failed; open to retry")
-                    .activate_on_mouse_down()
                     .on_click(|_, window, cx| Self::open_update_details(window, cx)),
             ),
             _ => None,

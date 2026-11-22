@@ -533,7 +533,6 @@ impl Workspace {
             .size(ButtonSize::ExtraSmall)
             .tooltip(tooltip_label.clone())
             .aria_label(tooltip_label)
-            .activate_on_mouse_down()
             .content(
                 div()
                     .max_w(px(200.0))
@@ -1042,7 +1041,6 @@ impl Workspace {
             .tooltip("Toggle File Tree")
             .aria_label("Toggle file tree")
             .focus_handle(self.statusbar_file_tree_focus.clone())
-            .activate_on_mouse_down()
             .on_click(move |_event, _window, app_cx| {
                 workspace_entity.update(app_cx, |workspace, cx| {
                     workspace.show_file_tree = !workspace.show_file_tree;
@@ -1057,7 +1055,6 @@ impl Workspace {
             .tooltip("New Terminal")
             .aria_label("New terminal")
             .focus_handle(self.statusbar_terminal_focus.clone())
-            .activate_on_mouse_down()
             .on_click(move |_event, _window, app_cx| {
                 workspace_entity.update(app_cx, |workspace, cx| {
                     workspace.tab_bar_action_new_terminal(cx);

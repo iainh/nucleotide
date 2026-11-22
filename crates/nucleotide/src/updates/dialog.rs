@@ -233,7 +233,6 @@ impl Render for UpdateDialog {
                 .icon(action.icon())
                 .disabled(action_disabled)
                 .focus_handle(self.primary_focus_handle.clone())
-                .activate_on_mouse_down()
                 .on_click(move |_event, window, cx| {
                     match action {
                         DialogAction::Check => controller.update(cx, |controller, cx| {
@@ -282,7 +281,6 @@ impl Render for UpdateDialog {
                                 .size(ButtonSize::Small)
                                 .icon("icons/circle-x.svg")
                                 .focus_handle(self.close_focus_handle.clone())
-                                .activate_on_mouse_down()
                                 .on_click(cx.listener(|this, _event, _window, cx| {
                                     this.dismiss(cx);
                                     cx.stop_propagation();

@@ -304,7 +304,6 @@ impl Workspace {
                             .size(ButtonSize::ExtraSmall)
                             .tooltip("Close Documentation")
                             .aria_label("Close documentation sidebar")
-                            .activate_on_mouse_down()
                             .on_click(cx.listener(|workspace, _event, _window, cx| {
                                 workspace.close_documentation_sidebar(cx);
                                 cx.stop_propagation();

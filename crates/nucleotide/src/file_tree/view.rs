@@ -2852,7 +2852,6 @@ impl FileTreeView {
                             } else {
                                 "Filter Files"
                             })
-                            .activate_on_mouse_down()
                             .on_click(cx.listener(
                                 move |view, _event, _window, cx| {
                                     if search_active {
@@ -2870,7 +2869,6 @@ impl FileTreeView {
                                 .size(ButtonSize::ExtraSmall)
                                 .aria_label("Collapse All")
                                 .tooltip("Collapse All")
-                                .activate_on_mouse_down()
                                 .on_click(cx.listener(|view, _event, _window, cx| {
                                     view.collapse_all_directories(cx);
                                     cx.stop_propagation();

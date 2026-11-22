@@ -8995,7 +8995,6 @@ impl Workspace {
                         .variant(ButtonVariant::Ghost)
                         .size(ButtonSize::Small)
                         .tooltip("Go Back")
-                        .activate_on_mouse_down()
                         .disabled(!has_documents)
                         .on_click({
                             let workspace = cx.entity().clone();
@@ -9013,7 +9012,6 @@ impl Workspace {
                         .variant(ButtonVariant::Ghost)
                         .size(ButtonSize::Small)
                         .tooltip("Go Forward")
-                        .activate_on_mouse_down()
                         .disabled(!has_documents)
                         .on_click({
                             let workspace = cx.entity().clone();
@@ -9034,7 +9032,6 @@ impl Workspace {
                         .variant(ButtonVariant::Ghost)
                         .size(ButtonSize::Small)
                         .tooltip("New File")
-                        .activate_on_mouse_down()
                         .on_click({
                             let workspace = cx.entity().clone();
                             move |_event, _window, cx| {
@@ -13304,7 +13301,6 @@ impl Render for Workspace {
                     let open_local_btn = Button::new("open-dir-btn", "Open Local Directory")
                         .variant(ButtonVariant::Primary)
                         .width(px(180.0))
-                        .activate_on_mouse_down()
                         .on_click(cx.listener(
                             move |_: &mut Workspace, _ev: &gpui::ClickEvent, _window, cx| {
                                 open_directory(core.clone(), handle.clone(), cx);
@@ -13314,7 +13310,6 @@ impl Render for Workspace {
                         Button::new("open-remote-dir-btn", "Open Remote Directory")
                             .variant(ButtonVariant::Secondary)
                             .width(px(180.0))
-                            .activate_on_mouse_down()
                             .on_click(cx.listener(
                                 move |workspace: &mut Workspace,
                                       _ev: &gpui::ClickEvent,

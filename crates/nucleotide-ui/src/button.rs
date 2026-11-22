@@ -497,6 +497,9 @@ impl Button {
         self
     }
 
+    /// Fire on press instead of release. Reserve this for menu triggers;
+    /// action and confirmation buttons should keep click-on-release so a
+    /// press can be cancelled by dragging off the button.
     pub fn activate_on_mouse_down(mut self) -> Self {
         self.activate_on_mouse_down = true;
         self
@@ -1080,7 +1083,13 @@ impl RenderOnce for Button {
                     });
                 } else {
                     button = button
-                        .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+                        // GPUI records the pending click before this bubble
+                        // listener runs, so stopping here only keeps the
+                        // press away from parent rows and bars.
+                        .on_mouse_down(MouseButton::Left, |_, window, cx| {
+                            window.prevent_default();
+                            cx.stop_propagation();
+                        })
                         .on_click(move |ev, window, cx| {
                             cx.stop_propagation();
                             if !ev.standard_click() {

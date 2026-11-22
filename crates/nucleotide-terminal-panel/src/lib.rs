@@ -160,8 +160,7 @@ impl Render for TerminalPanel {
         )
         .variant(ButtonVariant::Ghost)
         .size(ButtonSize::ExtraSmall)
-        .tooltip("Close Terminal")
-        .activate_on_mouse_down();
+        .tooltip("Close Terminal");
 
         close_button = if let Some(close_handler) = close_handler {
             close_button.on_click(move |_event, window, cx| {

@@ -526,7 +526,6 @@ impl Workspace {
                             .variant(ButtonVariant::Ghost)
                             .size(ButtonSize::Small)
                             .tooltip("Zoom Out")
-                            .activate_on_mouse_down()
                             .disabled(zoom <= IMAGE_ZOOM_MIN)
                             .on_click({
                                 let workspace = cx.entity().clone();
@@ -548,7 +547,6 @@ impl Workspace {
                             .variant(ButtonVariant::Ghost)
                             .size(ButtonSize::Small)
                             .tooltip("Zoom to 100%")
-                            .activate_on_mouse_down()
                             .disabled((zoom - 1.0).abs() < f32::EPSILON)
                             .on_click({
                                 let workspace = cx.entity().clone();
@@ -565,7 +563,6 @@ impl Workspace {
                             .variant(ButtonVariant::Ghost)
                             .size(ButtonSize::Small)
                             .tooltip("Zoom In")
-                            .activate_on_mouse_down()
                             .disabled(zoom >= IMAGE_ZOOM_MAX)
                             .on_click({
                                 let workspace = cx.entity().clone();

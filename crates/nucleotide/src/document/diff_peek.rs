@@ -201,8 +201,7 @@ pub(super) fn render_diff_peek(
     let button = |name: &str, label: &'static str, icon: Option<&'static str>| {
         let button = Button::new(id(name), label)
             .variant(ButtonVariant::Ghost)
-            .size(ButtonSize::ExtraSmall)
-            .activate_on_mouse_down();
+            .size(ButtonSize::ExtraSmall);
         match icon {
             Some(icon) => button.icon(icon),
             None => button,
@@ -262,7 +261,6 @@ pub(super) fn render_diff_peek(
                     Button::icon_only(id("close"), "icons/close.svg")
                         .variant(ButtonVariant::Ghost)
                         .size(ButtonSize::ExtraSmall)
-                        .activate_on_mouse_down()
                         .on_click(on(DocumentView::close_diff_peek)),
                 ),
         );

@@ -133,7 +133,6 @@ impl ComponentGallery {
                                 let mut button = Button::new(("gallery-button", index), label)
                                     .variant(variant)
                                     .size(ButtonSize::Small)
-                                    .activate_on_mouse_down()
                                     .on_click(cx.listener(|gallery, _, _, cx| {
                                         gallery.increment_clicks(cx);
                                     }));
@@ -154,17 +153,16 @@ impl ComponentGallery {
                     .child(
                         Button::new("gallery-icon-button", "Save")
                             .icon("icons/file.svg")
-                            .activate_on_mouse_down()
                             .on_click(cx.listener(|gallery, _, _, cx| {
                                 gallery.increment_clicks(cx);
                             })),
                     )
                     .child(
-                        Button::icon_only("gallery-icon-only-button", "icons/search.svg")
-                            .activate_on_mouse_down()
-                            .on_click(cx.listener(|gallery, _, _, cx| {
+                        Button::icon_only("gallery-icon-only-button", "icons/search.svg").on_click(
+                            cx.listener(|gallery, _, _, cx| {
                                 gallery.increment_clicks(cx);
-                            })),
+                            }),
+                        ),
                     )
                     .child(Button::new("gallery-loading-button", "Loading").loading(true))
                     .child(Button::new("gallery-disabled-button", "Disabled").disabled(true)),

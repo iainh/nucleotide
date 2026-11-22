@@ -1428,7 +1428,6 @@ impl DocumentView {
                 .variant(source_variant)
                 .size(ButtonSize::Small)
                 .tooltip("Show Source")
-                .activate_on_mouse_down()
                 .on_click({
                     move |_event, window, cx| {
                         source_view.update(cx, |view, cx| {
@@ -1449,7 +1448,6 @@ impl DocumentView {
                 .variant(rendered_variant)
                 .size(ButtonSize::Small)
                 .tooltip("Render Markdown")
-                .activate_on_mouse_down()
                 .on_click({
                     move |_event, window, cx| {
                         rendered_view.update(cx, |view, cx| {
