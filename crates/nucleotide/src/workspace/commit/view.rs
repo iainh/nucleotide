@@ -524,6 +524,7 @@ impl Workspace {
             })
             .capture_key_down(cx.listener(Self::commit_shortcut))
             .on_key_down(cx.listener(Self::commit_review_key))
+            .on_drag_move(cx.listener(Self::resize_commit_message))
             .size_full()
             .flex()
             .flex_col()
@@ -619,6 +620,7 @@ impl Workspace {
                     ),
             )
             .child(self.render_commit_message(cx))
+            .child(self.render_commit_message_divider(cx))
             .when_some(error, |view, error| {
                 view.child(
                     div()

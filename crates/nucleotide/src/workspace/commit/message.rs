@@ -2,6 +2,9 @@
 //! DocumentView so editing, IME, undo, rulers and wrapping keep their contracts.
 use super::*;
 
+/// Drag payload of the divider between the message editor and the diff.
+pub(super) struct MessageDivider;
+
 impl Workspace {
     pub(super) fn ensure_commit_message(
         &mut self,
@@ -156,6 +159,63 @@ impl Workspace {
         }
     }
 
+    fn commit_message_height(&self, cx: &App) -> Pixels {
+        let tokens = cx.global::<nucleotide_ui::Theme>().tokens;
+        self.commit_review
+            .message_height
+            .unwrap_or(tokens.sizes.space_8 * 5.0)
+    }
+
+    /// The divider below the message panel. Dragging it resizes the editor,
+    /// and a double click restores the default height.
+    pub(super) fn render_commit_message_divider(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let theme = cx.global::<nucleotide_ui::Theme>();
+        nucleotide_ui::splitter(
+            "commit-message-divider",
+            nucleotide_ui::SplitterAxis::Horizontal,
+            nucleotide_ui::SPLITTER_HITBOX_PX,
+            theme,
+        )
+        .when(cfg!(test), |handle| {
+            handle.debug_selector(|| "commit-message-divider".into())
+        })
+        .flex_shrink_0()
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                if event.click_count >= 2 {
+                    this.commit_review.message_height = None;
+                    cx.notify();
+                } else {
+                    this.commit_review.message_resize =
+                        Some((event.position.y, this.commit_message_height(cx)));
+                }
+            }),
+        )
+        .on_drag(MessageDivider, |_, _, _, cx| cx.new(|_| gpui::Empty))
+        .into_any_element()
+    }
+
+    /// Follows a message divider drag; the diff below keeps at least eight rows.
+    pub(super) fn resize_commit_message(
+        &mut self,
+        event: &gpui::DragMoveEvent<MessageDivider>,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((start, height)) = self.commit_review.message_resize else {
+            return;
+        };
+        let space = cx.global::<nucleotide_ui::Theme>().tokens.sizes.space_8;
+        let min = space * 2.0;
+        let max = (event.bounds.size.height - space * 8.0).max(min);
+        let height = (height + event.event.position.y - start).clamp(min, max);
+        if self.commit_review.message_height != Some(height) {
+            self.commit_review.message_height = Some(height);
+            cx.notify();
+        }
+    }
+
     pub(super) fn render_commit_message(&self, cx: &Context<Self>) -> gpui::AnyElement {
         let tokens = cx.global::<nucleotide_ui::Theme>().tokens;
         let message = self.pane_host.commit_message.and_then(|(document, slot)| {
@@ -187,9 +247,7 @@ impl Workspace {
             .id("commit-message-panel")
             .flex()
             .flex_col()
-            .flex_shrink_0()
-            .border_b_1()
-            .border_color(tokens.chrome.border_default);
+            .flex_shrink_0();
         if let Some((view, subject, long_body, position)) = message {
             panel = panel
                 .child(
@@ -207,7 +265,7 @@ impl Workspace {
                         .when(cfg!(test), |view| {
                             view.debug_selector(|| "commit-message-editor".into())
                         })
-                        .h(tokens.sizes.space_8 * 5.0)
+                        .h(self.commit_message_height(cx))
                         .min_h_0()
                         .overflow_hidden()
                         .child(view),

@@ -962,3 +962,72 @@ fn side_by_side_divider_drags_and_double_click_recentres(cx: &mut gpui::TestAppC
     let [old, new] = widths(cx);
     assert!((old - new).abs() < px(1.0), "double click recentres");
 }
+
+#[gpui::test]
+fn message_divider_resizes_editor_against_diff_and_double_click_restores(
+    cx: &mut gpui::TestAppContext,
+) {
+    let _runtime = TEST_RUNTIME.enter();
+    let root = repository();
+    fs::write(root.path().join("file.txt"), "alpha\nchanged\nbeta\n").unwrap();
+    let (core, _, cx) = new_test_workspace(cx, &root.path().join("file.txt"));
+    install_commit_language(&core, cx);
+    core.update(cx, |_, cx| cx.emit(crate::Update::ShowCommit));
+    wait_for(&core, cx, |cx| {
+        cx.debug_bounds("commit-message-editor").is_some()
+            && cx.debug_bounds("commit-diff-0-split").is_some()
+    });
+    let heights = |cx: &mut gpui::VisualTestContext| {
+        [
+            cx.debug_bounds("commit-message-editor")
+                .unwrap()
+                .size
+                .height,
+            cx.debug_bounds("commit-diff-0-split").unwrap().top(),
+        ]
+    };
+    let [editor, diff_top] = heights(cx);
+    let start = cx.debug_bounds("commit-message-divider").unwrap().center();
+    let end = point(start.x, start.y + px(60.0));
+    cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::none());
+    cx.simulate_mouse_move(
+        point(start.x, start.y + px(10.0)),
+        MouseButton::Left,
+        Modifiers::none(),
+    );
+    cx.simulate_mouse_move(end, MouseButton::Left, Modifiers::none());
+    cx.simulate_mouse_up(end, MouseButton::Left, Modifiers::none());
+    pump(&core, cx);
+    // The editor grows by the pointer's travel and pushes the diff down with it.
+    let [dragged_editor, dragged_top] = heights(cx);
+    assert!(
+        (dragged_editor - editor - px(60.0)).abs() < px(1.0),
+        "{editor:?} -> {dragged_editor:?}"
+    );
+    assert!(
+        (dragged_top - diff_top - px(60.0)).abs() < px(1.0),
+        "{diff_top:?} -> {dragged_top:?}"
+    );
+    let handle = cx.debug_bounds("commit-message-divider").unwrap().center();
+    assert!((handle.y - end.y).abs() < px(1.0));
+
+    cx.simulate_click(handle, Modifiers::none());
+    cx.simulate_event(gpui::MouseDownEvent {
+        position: handle,
+        modifiers: Modifiers::none(),
+        button: MouseButton::Left,
+        click_count: 2,
+        first_mouse: false,
+    });
+    cx.simulate_event(gpui::MouseUpEvent {
+        position: handle,
+        modifiers: Modifiers::none(),
+        button: MouseButton::Left,
+        click_count: 2,
+    });
+    pump(&core, cx);
+    assert!(
+        (heights(cx)[0] - editor).abs() < px(1.0),
+        "double click restores"
+    );
+}

@@ -39,6 +39,10 @@ pub(super) struct CommitReview {
     expanded: HashSet<(PathBuf, bool, u32)>,
     /// The HEAD column's share of side-by-side diff width; half when unset.
     split: Option<f32>,
+    /// Height of the commit message editor; five rows when unset.
+    message_height: Option<Pixels>,
+    /// Pointer y and editor height when the message divider drag began.
+    message_resize: Option<(Pixels, Pixels)>,
     /// The file whose diff is shown. The first file when unset or no longer changed.
     selected: Option<PathBuf>,
     /// The file the diff list was last laid out for, to reset its scroll on a new selection.
