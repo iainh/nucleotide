@@ -10,9 +10,9 @@ use gpui::{
     TextSystem, Window, div, font, img, prelude::*, px,
 };
 use merman::{
-    Engine, MermaidConfig, OperationControl, RenderOutput, RenderRequest, Renderer, SvgEnvironment,
-    SvgRequest,
-    runtime::RuntimePolicy,
+    MermaidConfig, OperationControl, RenderOutput, RenderRequest, Renderer, SemanticParser,
+    SvgEnvironment, SvgRequest,
+    model::runtime::RuntimePolicy,
     svg::{
         DeterministicTextMeasurer, MeasurementProfileId, RenderResourcePolicy, ResourceLimitId,
         RootBackgroundPostprocessor, ScopedCssPostprocessor, SvgPipeline, TextMeasurementPolicy,
@@ -396,11 +396,10 @@ fn render_svg(
         .try_with_system_clock()?
         .try_with_system_time_zone()?;
     let output = Renderer::new()
-        .with_engine(
-            Engine::new()
-                .with_runtime_policy(runtime)
-                .with_site_config(MermaidConfig::from_value(config)),
+        .with_semantic_parser(
+            SemanticParser::new().with_site_config(MermaidConfig::from_value(config)),
         )
+        .with_runtime_policy(runtime)
         .with_parse_options(merman::ParseOptions::strict())
         .render(RenderRequest::svg(source, control, request))
         .context("could not render diagram")?;

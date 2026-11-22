@@ -33,4 +33,4 @@ regex = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true, features = ["fs", "rt", "macros"] }
 
 [dev-dependencies]
-tempfile = "3.0"
+tempfile = "3.27"

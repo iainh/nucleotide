@@ -248,7 +248,7 @@ assert eof == b'\n\x04', repr(eof)
             .unwrap();
         assert_eq!(&ready, b"READY");
         let bytes = vec![b'x'; input_size];
-        let expected_input = format!("{} {:x}", input_size, Sha256::digest(&bytes));
+        let expected_input = format!("{} {}", input_size, hex::encode(Sha256::digest(&bytes)));
         let write = async {
             input.write_all(&bytes).await?;
             input.shutdown().await

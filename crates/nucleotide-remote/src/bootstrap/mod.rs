@@ -2509,7 +2509,7 @@ pub(crate) fn sha256_reader(reader: &mut impl Read) -> io::Result<String> {
     loop {
         let read = reader.read(&mut buffer)?;
         if read == 0 {
-            return Ok(format!("{:x}", hasher.finalize()));
+            return Ok(hex::encode(hasher.finalize()));
         }
         hasher.update(&buffer[..read]);
     }
@@ -2532,7 +2532,7 @@ pub(crate) fn sha256_reader_with_startup_context(
         };
         if read == 0 {
             startup.check()?;
-            return Ok(format!("{:x}", hasher.finalize()));
+            return Ok(hex::encode(hasher.finalize()));
         }
         hasher.update(&buffer[..read]);
     }
