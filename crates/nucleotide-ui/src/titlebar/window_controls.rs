@@ -260,7 +260,8 @@ fn activate_window_control(control_type: WindowControlType, window: &mut Window,
             window.zoom_window();
         }
         WindowControlType::Close => {
-            cx.quit();
+            // The workspace handles Quit and asks before discarding unsaved buffers.
+            window.dispatch_action(Box::new(crate::actions::editor::Quit), cx);
         }
     }
 }
@@ -294,8 +295,11 @@ impl RenderOnce for WindowControl {
             .hover(|this| this.bg(self.style.background_hover))
             .child(icon)
             .on_mouse_move(|_, _, cx| cx.stop_propagation())
-            .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+            .on_mouse_down(MouseButton::Left, |_, window, cx| {
                 window.prevent_default();
+                cx.stop_propagation();
+            })
+            .on_click(move |_, window, cx| {
                 cx.stop_propagation();
                 activate_window_control(self.control_type, window, cx);
             })
@@ -370,8 +374,20 @@ impl RenderOnce for WindowsCaptionButton {
                 cx.new(|_| crate::TextTooltip::new(control_type.accessible_label()))
                     .into()
             })
-            .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+            // Reporting the native caption hit-test area enables Windows 11 Snap
+            // Layouts on Maximize/Restore.
+            .window_control_area(match control_type {
+                WindowControlType::Minimize => WindowControlArea::Min,
+                WindowControlType::Restore | WindowControlType::Maximize => WindowControlArea::Max,
+                WindowControlType::Close => WindowControlArea::Close,
+            })
+            .on_mouse_down(MouseButton::Left, |_, window, cx| {
                 window.prevent_default();
+                cx.stop_propagation();
+            })
+            // Act on release over the button so dragging off cancels. Stopping
+            // propagation also stops GPUI's default non-client button action.
+            .on_click(move |_, window, cx| {
                 cx.stop_propagation();
                 activate_window_control(control_type, window, cx);
             })

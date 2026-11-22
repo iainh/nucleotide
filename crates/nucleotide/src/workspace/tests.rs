@@ -1970,16 +1970,38 @@ fn unsaved_buffers_status_matches_helix_close_error_shape() {
 
 #[test]
 fn unsaved_close_confirmation_copy_names_single_and_batch() {
-    assert_eq!(unsaved_close_confirmation_title(1), "Close Unsaved Buffer");
     assert_eq!(
-        unsaved_close_confirmation_message(&["main.rs".to_string()]),
+        unsaved_close_confirmation_title(1, false),
+        "Close Unsaved Buffer"
+    );
+    assert_eq!(
+        unsaved_close_confirmation_message(&["main.rs".to_string()], false),
         "'main.rs' has unsaved changes. Close without saving?"
     );
 
-    assert_eq!(unsaved_close_confirmation_title(2), "Close Unsaved Buffers");
     assert_eq!(
-        unsaved_close_confirmation_message(&["main.rs".to_string(), "lib.rs".to_string()]),
+        unsaved_close_confirmation_title(2, false),
+        "Close Unsaved Buffers"
+    );
+    assert_eq!(
+        unsaved_close_confirmation_message(&["main.rs".to_string(), "lib.rs".to_string()], false),
         "2 buffers have unsaved changes: main.rs, lib.rs. Close without saving?"
+    );
+}
+
+#[test]
+fn unsaved_quit_confirmation_says_quit() {
+    assert_eq!(
+        unsaved_close_confirmation_title(1, true),
+        "Quit with Unsaved Buffer"
+    );
+    assert_eq!(
+        unsaved_close_confirmation_title(2, true),
+        "Quit with Unsaved Buffers"
+    );
+    assert_eq!(
+        unsaved_close_confirmation_message(&["main.rs".to_string(), "lib.rs".to_string()], true),
+        "2 buffers have unsaved changes: main.rs, lib.rs. Quit without saving?"
     );
 }
 

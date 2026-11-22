@@ -237,7 +237,9 @@ impl RenderOnce for LinuxWindowControl {
 
         button
             .on_mouse_move(|_, _, cx| cx.stop_propagation())
-            .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            // Act on release over the button so dragging off cancels.
+            .on_click(move |_, window, cx| {
                 cx.stop_propagation();
 
                 match self.control_type {
@@ -252,7 +254,8 @@ impl RenderOnce for LinuxWindowControl {
                     }
                     LinuxControlType::Close => {
                         debug!("Close button clicked");
-                        cx.quit();
+                        // The workspace handles Quit and asks before discarding unsaved buffers.
+                        window.dispatch_action(Box::new(crate::actions::editor::Quit), cx);
                     }
                 }
             })

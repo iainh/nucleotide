@@ -2313,6 +2313,42 @@ fn tab_copy_actions_preserve_unicode_paths(cx: &mut gpui::TestAppContext) {
 }
 
 #[gpui::test]
+fn window_close_and_quit_ask_before_discarding_unsaved_buffers(cx: &mut gpui::TestAppContext) {
+    let _runtime = TEST_RUNTIME.enter();
+    let root = tempdir().unwrap();
+    let path = root.path().join("unsaved.txt");
+    fs::write(&path, "saved\n").unwrap();
+    let (core, _workspace, cx) = new_test_workspace(cx, &path);
+
+    // Nothing unsaved: the native close proceeds.
+    assert!(cx.simulate_close());
+
+    core.update(cx, |core, _| {
+        let view = core.editor.tree.focus;
+        let doc_id = core.editor.tree.get(view).doc;
+        let doc = core.editor.documents.get_mut(&doc_id).unwrap();
+        let transaction =
+            Transaction::change(doc.text(), std::iter::once((0, 0, Some("edit ".into()))));
+        doc.apply(&transaction, view);
+        assert!(doc.is_modified());
+    });
+
+    // Unsaved changes: the native close is held for confirmation.
+    assert!(!cx.simulate_close());
+    cx.run_until_parked();
+
+    // The Quit action (window chrome Close, menu, Ctrl+Q) also waits instead
+    // of flushing and closing every view.
+    cx.dispatch_action(crate::actions::editor::Quit);
+    cx.run_until_parked();
+    core.read_with(cx, |core, _| {
+        assert_eq!(core.editor.tree.views().count(), 1);
+        assert!(core.editor.documents.values().any(|doc| doc.is_modified()));
+    });
+    assert_eq!(fs::read_to_string(&path).unwrap(), "saved\n");
+}
+
+#[gpui::test]
 fn command_prompt_action_accepts_and_executes_native_commands(cx: &mut gpui::TestAppContext) {
     let _runtime = TEST_RUNTIME.enter();
     let root = tempdir().unwrap();

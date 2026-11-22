@@ -1074,6 +1074,7 @@ enum PendingUnsavedClose<T> {
     OpenDirectory {
         path: PathBuf,
     },
+    Quit,
 }
 
 #[derive(Clone)]
@@ -1270,20 +1271,22 @@ fn ssh_target_guidance_arg(target: &nucleotide_workspace::SshWorkspaceTarget) ->
     value
 }
 
-fn unsaved_close_confirmation_title(count: usize) -> &'static str {
-    if count == 1 {
-        "Close Unsaved Buffer"
-    } else {
-        "Close Unsaved Buffers"
+fn unsaved_close_confirmation_title(count: usize, quit: bool) -> &'static str {
+    match (quit, count == 1) {
+        (false, true) => "Close Unsaved Buffer",
+        (false, false) => "Close Unsaved Buffers",
+        (true, true) => "Quit with Unsaved Buffer",
+        (true, false) => "Quit with Unsaved Buffers",
     }
 }
 
-fn unsaved_close_confirmation_message(names: &[String]) -> String {
+fn unsaved_close_confirmation_message(names: &[String], quit: bool) -> String {
+    let verb = if quit { "Quit" } else { "Close" };
     match names {
-        [name] => format!("'{name}' has unsaved changes. Close without saving?"),
-        [] => "Close without saving unsaved changes?".to_string(),
+        [name] => format!("'{name}' has unsaved changes. {verb} without saving?"),
+        [] => format!("{verb} without saving unsaved changes?"),
         names => format!(
-            "{} buffers have unsaved changes: {}. Close without saving?",
+            "{} buffers have unsaved changes: {}. {verb} without saving?",
             names.len(),
             names.join(", ")
         ),
@@ -3739,6 +3742,12 @@ impl Workspace {
             workspace.sync_confirmation_modal(window, cx);
         })
         .detach();
+        let workspace = cx.weak_entity();
+        window.on_window_should_close(cx, move |_window, cx| {
+            workspace
+                .update(cx, |workspace, cx| workspace.window_should_close(cx))
+                .unwrap_or(true)
+        });
         // Register editor focus with the global coordinator for centralized focus handling
         if let Some(coord) = cx.try_global::<nucleotide_ui::FocusCoordinator>().cloned() {
             coord.set_editor_focus(focus_handle.clone());
@@ -4230,7 +4239,46 @@ impl Workspace {
             PendingUnsavedClose::OpenDirectory { path } => {
                 self.open_directory_after_confirmation(&path, cx)
             }
+            PendingUnsavedClose::Quit => self.quit_now(cx),
         }
+    }
+
+    fn modified_buffer_names(&self, cx: &App) -> Vec<String> {
+        self.core
+            .read(cx)
+            .editor
+            .documents
+            .values()
+            .filter(|doc| doc.is_modified())
+            .map(|doc| doc.display_name().into_owned())
+            .collect()
+    }
+
+    /// Quits from window chrome or the Quit action, asking first when any
+    /// buffer has unsaved changes.
+    fn request_quit(&mut self, cx: &mut Context<Self>) {
+        let modified_names = self.modified_buffer_names(cx);
+        if modified_names.is_empty() {
+            self.quit_now(cx);
+        } else {
+            self.request_unsaved_close(PendingUnsavedClose::Quit, modified_names, cx);
+        }
+    }
+
+    /// Native window close (Alt+F4, taskbar, macOS close button): lets the
+    /// window close when nothing is unsaved, otherwise asks before quitting.
+    fn window_should_close(&mut self, cx: &mut Context<Self>) -> bool {
+        let modified_names = self.modified_buffer_names(cx);
+        if modified_names.is_empty() {
+            return true;
+        }
+        self.request_unsaved_close(PendingUnsavedClose::Quit, modified_names, cx);
+        false
+    }
+
+    fn quit_now(&mut self, cx: &mut Context<Self>) {
+        quit(self.core.clone(), self.handle.clone(), cx);
+        cx.quit();
     }
 
     fn activate_menu_bar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -4289,11 +4337,19 @@ impl Workspace {
             .as_ref()
             .map(|pending| pending.names.as_slice())
             .unwrap_or(&[]);
+        let quit = matches!(
+            self.close_confirm.as_ref().map(|pending| &pending.action),
+            Some(PendingUnsavedClose::Quit)
+        );
 
         ConfirmDialog::new(
-            unsaved_close_confirmation_title(names.len()),
-            unsaved_close_confirmation_message(names),
-            "Close Without Saving",
+            unsaved_close_confirmation_title(names.len(), quit),
+            unsaved_close_confirmation_message(names, quit),
+            if quit {
+                "Quit Without Saving"
+            } else {
+                "Close Without Saving"
+            },
         )
         .confirm_variant(ButtonVariant::Danger)
     }
@@ -5364,11 +5420,7 @@ impl Workspace {
     ) {
         use crate::types::SemanticShortcutIntent as Intent;
         match intent {
-            Intent::Quit => {
-                let handle = self.handle.clone();
-                quit(self.core.clone(), handle, cx);
-                cx.quit();
-            }
+            Intent::Quit => self.request_quit(cx),
             Intent::OpenFile | Intent::ShowFileFinder => open(
                 self.core.clone(),
                 self.handle.clone(),
@@ -12550,12 +12602,9 @@ impl Render for Workspace {
         ));
 
         // Global editor actions that work regardless of focus
-        let handle = self.handle.clone();
-        let core = self.core.clone();
         workspace_div = workspace_div.on_action(cx.listener(
-            move |_, _: &crate::actions::editor::Quit, _window, cx| {
-                quit(core.clone(), handle.clone(), cx);
-                cx.quit();
+            |workspace, _: &crate::actions::editor::Quit, _window, cx| {
+                workspace.request_quit(cx);
             },
         ));
 
