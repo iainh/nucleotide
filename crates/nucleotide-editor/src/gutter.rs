@@ -4,7 +4,7 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use gpui::{
-    App, Bounds, Hsla, Pixels, Point, Result, ShapedLine, TextAlign, TextStyle, Window,
+    App, Bounds, Hsla, Pixels, Point, Result, ShapedLine, TextAlign, TextRun, TextStyle, Window,
     WindowTextSystem, black, fill, px, size, white,
 };
 use helix_view::{Document, Editor, Theme, View, editor::GutterType, graphics::Style};
@@ -213,6 +213,32 @@ pub(crate) fn gutter_origin(bounds: Bounds<Pixels>, scroll_line_offset: Pixels) 
     origin
 }
 
+/// The styled run for a gutter plan's text, as the editor gutter paints it.
+pub fn gutter_line_plan_run(plan: &GutterLinePlan, text_style: &TextStyle) -> TextRun {
+    let base_fg = plan
+        .style
+        .fg
+        .and_then(helix_color_to_hsla)
+        .unwrap_or(text_style.color);
+    let base_bg = plan.style.bg.and_then(helix_color_to_hsla);
+    let default_bg = text_style.background_color.unwrap_or_else(|| {
+        if text_style.color.l > 0.5 {
+            black()
+        } else {
+            white()
+        }
+    });
+    create_styled_text_run(
+        plan.text.len(),
+        &text_style.font(),
+        &plan.style,
+        base_fg,
+        base_bg,
+        default_bg,
+        None,
+    )
+}
+
 pub fn build_gutter_lines_from_plans(
     text_system: Arc<WindowTextSystem>,
     text_style: &TextStyle,
@@ -222,29 +248,8 @@ pub fn build_gutter_lines_from_plans(
     plans
         .iter()
         .map(|plan| {
-            let base_fg = plan
-                .style
-                .fg
-                .and_then(helix_color_to_hsla)
-                .unwrap_or(text_style.color);
-            let base_bg = plan.style.bg.and_then(helix_color_to_hsla);
-            let default_bg = text_style.background_color.unwrap_or_else(|| {
-                if text_style.color.l > 0.5 {
-                    black()
-                } else {
-                    white()
-                }
-            });
-            let base_font = text_style.font();
-            let run = create_styled_text_run(
-                plan.text.len(),
-                &base_font,
-                &plan.style,
-                base_fg,
-                base_bg,
-                default_bg,
-                None,
-            );
+            let run = gutter_line_plan_run(plan, text_style);
+            let base_fg = run.color;
             let shaped = text_system.shape_line(plan.text.clone().into(), font_size, &[run], None);
 
             GutterLine {

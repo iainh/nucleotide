@@ -81,15 +81,17 @@ pub use gutter::{
     GutterLinePlanParams, GutterLinePosition, SoftWrapGutterLinePlanParams,
     UnwrappedGutterLinePlanParams, build_gutter_line_plans, build_gutter_lines,
     build_gutter_lines_from_plans, build_soft_wrap_gutter_line_plans,
-    build_unwrapped_gutter_line_plans, paint_gutter_lines, soft_wrap_gutter_line_positions,
+    build_unwrapped_gutter_line_plans, gutter_line_plan_run, paint_gutter_lines,
+    soft_wrap_gutter_line_positions,
 };
 pub use highlight::{
     DiagnosticOverlaySpans, EditorLineHighlightContext, HighlightLineParams,
     SoftWrapHighlightedLineRunsBatchParams, SoftWrapHighlightedLineRunsParams,
     UnwrappedHighlightedLine, UnwrappedHighlightedLineParams, UnwrappedHighlightedLinesParams,
     diagnostic_overlay_spans, gpui_hsla_to_helix_color, highlight_line,
-    soft_wrap_highlighted_line_runs, soft_wrap_highlighted_line_runs_batch, text_style_at_position,
-    unwrapped_highlighted_line, unwrapped_highlighted_lines,
+    soft_wrap_highlighted_line_runs, soft_wrap_highlighted_line_runs_batch,
+    syntax_highlighted_line, text_style_at_position, unwrapped_highlighted_line,
+    unwrapped_highlighted_lines,
 };
 pub use hit_test::{
     EditorHitTestResult, EditorHoverTarget, hit_test_document_position, hover_target_at_position,

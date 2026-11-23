@@ -243,11 +243,29 @@ pub struct UiConfig {
 }
 
 /// Editor-specific GUI configuration
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EditorGuiConfig {
     /// Font used in the editor
     #[serde(default, deserialize_with = "deserialize_editor_font")]
     pub font: Option<FontConfig>,
+
+    /// Show the file path and the symbols around the cursor above the editor.
+    #[serde(default = "default_true")]
+    pub breadcrumbs: bool,
+
+    /// Pin the header lines of the scopes around the top line while scrolling.
+    #[serde(default = "default_true")]
+    pub sticky_scroll: bool,
+}
+
+impl Default for EditorGuiConfig {
+    fn default() -> Self {
+        Self {
+            font: None,
+            breadcrumbs: true,
+            sticky_scroll: true,
+        }
+    }
 }
 
 /// Theme mode selection

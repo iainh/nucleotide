@@ -45,7 +45,7 @@ pub struct NativeEditorView<F, P, T> {
     on_mouse_down: Option<PointerCallback>,
     on_mouse_drag: Option<PointerCallback>,
     on_mouse_up: Option<PointerCallback>,
-    frame_overlay: Option<FrameOverlayCallback<T>>,
+    frame_overlays: Vec<FrameOverlayCallback<T>>,
 }
 
 impl<F, P, T> NativeEditorView<F, P, T>
@@ -89,12 +89,13 @@ where
             on_mouse_down: None,
             on_mouse_drag: None,
             on_mouse_up: None,
-            frame_overlay: None,
+            frame_overlays: Vec::new(),
         }
     }
 
     /// Places an element over the document at window bounds computed from this
     /// frame's prepared layout, so it moves with the text without a frame of lag.
+    /// Later overlays paint above earlier ones.
     pub fn frame_overlay(
         mut self,
         overlay: impl Fn(
@@ -105,7 +106,7 @@ where
         ) -> Option<(Bounds<Pixels>, AnyElement)>
         + 'static,
     ) -> Self {
-        self.frame_overlay = Some(Box::new(overlay));
+        self.frame_overlays.push(Box::new(overlay));
         self
     }
 
@@ -267,10 +268,10 @@ where
         // Prepare before constructing the surface: its scrollbars and input must
         // see the same geometry that the document will paint in this frame.
         let frame = (self.prepare)(&mut self.editor_state, bounds, &mut layout, window, cx);
-        let frame_overlay = self
-            .frame_overlay
-            .as_ref()
-            .and_then(|overlay| overlay(&frame, &layout, window, cx))
+        let frame_overlays = self
+            .frame_overlays
+            .iter()
+            .filter_map(|overlay| overlay(&frame, &layout, window, cx))
             .map(|(overlay_bounds, element)| {
                 div()
                     .absolute()
@@ -279,7 +280,8 @@ where
                     .w(overlay_bounds.size.width)
                     .h(overlay_bounds.size.height)
                     .child(element)
-            });
+            })
+            .collect::<Vec<_>>();
         let view_entity_id = self.view_entity_id;
         let editor_state = self.editor_state.clone();
         let mut paint = self.paint.take().expect("editor element prepainted once");
@@ -398,7 +400,7 @@ where
 
         let mut surface = root
             .child(paint_area.child(editor_surface))
-            .children(frame_overlay)
+            .children(frame_overlays)
             .into_any_element();
         surface.prepaint_as_root(
             bounds.origin,

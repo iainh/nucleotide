@@ -333,6 +333,21 @@ pub struct NativeEditorPreparedFrame {
 }
 
 impl NativeEditorPreparedFrame {
+    /// Window bounds of the whole editor surface, gutter included.
+    pub fn bounds(&self) -> Bounds<Pixels> {
+        self.paint_plan.bounds
+    }
+
+    /// Window bounds of the text area, right of the gutter.
+    pub fn text_bounds(&self, layout: &EditorLayout) -> Bounds<Pixels> {
+        EditorSurfaceGeometry::new(
+            self.paint_plan.bounds,
+            self.paint_plan.frame.gutter_width,
+            layout.cell_width,
+        )
+        .text_bounds()
+    }
+
     /// Window bounds of the host-reserved rows across the text area, if any are reserved.
     /// The rows may extend past the editor bounds when partly scrolled out of view.
     pub fn reserved_rows_bounds(&self, layout: &EditorLayout) -> Option<Bounds<Pixels>> {

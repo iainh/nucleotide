@@ -145,6 +145,16 @@ look = "theme"
 # Line-height multiplier. Default: 1.5.
 # line_height = 1.5
 
+[editor]
+# Show the project-relative path and the symbols around the cursor in a bar
+# above the editor. Click a symbol to move the cursor to it. Default: true.
+breadcrumbs = true
+
+# Pin the header lines of the scopes around the first visible line, such as
+# `impl` blocks and functions, at the top of the editor while scrolling.
+# Click a pinned line to move the cursor to it. Default: true.
+sticky_scroll = true
+
 # Font used in the editor view.
 # Table default: unset. If [ui.font] is configured but [editor.font] is not,
 # the editor inherits that UI font configuration. If neither is configured,

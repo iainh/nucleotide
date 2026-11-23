@@ -455,6 +455,7 @@ mode = "invalid_mode"
                     line_height: 1.5,
                     ligatures: Some(true),
                 }),
+                ..EditorGuiConfig::default()
             },
             theme: ThemeConfig {
                 mode: ThemeMode::Light,

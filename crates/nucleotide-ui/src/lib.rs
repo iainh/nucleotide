@@ -4,6 +4,7 @@
 pub mod about_window;
 pub mod actions;
 pub mod assets;
+pub mod breadcrumbs;
 pub mod button;
 pub mod checkbox;
 pub mod common;
@@ -68,6 +69,7 @@ mod styling_tests;
 
 pub use about_window::AboutWindow;
 pub use assets::Assets;
+pub use breadcrumbs::{BreadcrumbSegment, Breadcrumbs};
 pub use button::{Button, ButtonSize, ButtonVariant, IconPosition, TextTooltip};
 pub use checkbox::{Checkbox, CheckboxSize};
 pub use completion_docs::{

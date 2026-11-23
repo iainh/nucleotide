@@ -372,6 +372,50 @@ pub fn text_style_at_position(
     syntax_hl.style
 }
 
+/// One document line with its syntax colours only, without selections or other
+/// overlays, for showing the line outside the document flow such as a pinned header.
+pub fn syntax_highlighted_line(
+    doc: &Document,
+    theme: &Theme,
+    syntax_loader: &helix_core::syntax::Loader,
+    line: usize,
+    fg_color: Hsla,
+    font: &Font,
+    default_bg: Hsla,
+) -> (DisplayLineText, Vec<TextRun>) {
+    let text = doc.text().slice(..);
+    let line = line.min(text.len_lines().saturating_sub(1));
+    let source = line_text_without_trailing_newline(text.line(line));
+    let line_start = text.line_to_char(line);
+    let line_end = line_start + source.chars().count();
+    let display = DisplayLineText::from_source(source, doc.tab_width() as u16);
+    if line_start == line_end {
+        return (display, Vec::new());
+    }
+
+    let default_style = theme.get("ui.text");
+    let text_style = Style {
+        fg: default_style.fg,
+        bg: None,
+        ..Default::default()
+    };
+    let syntax_highlighter = doc_syntax_highlights(doc, line_start, 1, syntax_loader);
+    let mut syntax_hl = SyntaxHighlighter::new(syntax_highlighter, text, theme, text_style);
+    let mut overlay_hl = OverlayHighlighter::new(Vec::new(), theme);
+    let runs = highlight_line_with_state(
+        text,
+        &mut syntax_hl,
+        &mut overlay_hl,
+        line_start,
+        line_end,
+        fg_color,
+        font,
+        default_bg,
+    );
+    let runs = expand_text_runs_for_display(&runs, &display.map);
+    (display, runs)
+}
+
 pub fn highlight_line(params: HighlightLineParams<'_>) -> Vec<TextRun> {
     let text = params.doc.text().slice(..);
     let (anchor, height) = syntax_highlight_window(text, params.view_position);

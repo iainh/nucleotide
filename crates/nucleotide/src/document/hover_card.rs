@@ -86,6 +86,15 @@ impl DocumentView {
             self.dismiss_hover_card(cx);
             return;
         }
+        // Pinned sticky scroll rows cover the text beneath them.
+        if self
+            .sticky_scroll_bounds
+            .get()
+            .is_some_and(|sticky| sticky.contains(&position))
+        {
+            self.hover_pointer_left(cx);
+            return;
+        }
         let metrics = self.editor_state.surface_metrics().get();
         let event = nucleotide_editor::EditorSurfacePointerEvent {
             position,

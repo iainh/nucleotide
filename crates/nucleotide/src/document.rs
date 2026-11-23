@@ -17,13 +17,15 @@ use nucleotide_ui::ThemedContext as UIThemedContext;
 use nucleotide_ui::scrollbar::{Scrollbar, ScrollbarState};
 use nucleotide_ui::theme_manager::HelixThemedContext;
 use nucleotide_ui::{
-    Button, ButtonSize, ButtonVariant, MarkdownStyle, Tooltipped, markdown_extended,
+    BreadcrumbSegment, Breadcrumbs, Button, ButtonSize, ButtonVariant, FileIcon, MarkdownStyle,
+    Tooltipped, markdown_extended,
 };
 use nucleotide_workspace::{WorkspaceBackendHandle, WorkspaceIdentity};
 
 mod diff_peek;
 mod hover_card;
 mod native_input;
+mod outline;
 
 use crate::{Core, Input, InputEvent};
 use nucleotide_editor::{
@@ -205,6 +207,8 @@ pub struct DocumentView {
     /// Handed to the preview, which scrolls to the heading and clears it.
     markdown_anchor_request: Rc<RefCell<Option<String>>>,
     hover: hover_card::HoverState,
+    /// Window bounds of the pinned sticky scroll rows in the last frame, if any.
+    sticky_scroll_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
 }
 
 impl DocumentView {
@@ -243,6 +247,7 @@ impl DocumentView {
             pending_markdown_anchor: None,
             markdown_anchor_request: Rc::default(),
             hover: Default::default(),
+            sticky_scroll_bounds: Rc::default(),
         }
     }
 
@@ -758,6 +763,309 @@ impl DocumentView {
     }
 }
 
+/// Whether a gutter plan is the line-number column: digits, padded to its width.
+fn is_line_number_text(text: &str) -> bool {
+    let text = text.trim();
+    !text.is_empty() && text.chars().all(|ch| ch.is_ascii_digit())
+}
+
+/// An element placed over the editor at window bounds, computed while painting a frame.
+type FrameOverlay = Option<(Bounds<Pixels>, gpui::AnyElement)>;
+
+impl DocumentView {
+    /// Moves the cursor to the first non-blank character of `line` and reveals it.
+    fn jump_to_line(&mut self, line: usize, cx: &mut Context<Self>) {
+        let view_id = self.view_id;
+        self.core.update(cx, |core, cx| {
+            let Some(doc_id) = core.editor.tree.try_get(view_id).map(|view| view.doc) else {
+                return;
+            };
+            if core.editor.tree.focus != view_id {
+                core.editor.focus(view_id);
+            }
+            let Some(doc) = core.editor.documents.get_mut(&doc_id) else {
+                return;
+            };
+            let text = doc.text().slice(..);
+            let line = line.min(text.len_lines().saturating_sub(1));
+            let indent = text
+                .line(line)
+                .chars()
+                .take_while(|ch| ch.is_whitespace() && *ch != '\n')
+                .count();
+            let cursor = text.line_to_char(line) + indent;
+            doc.set_selection(view_id, helix_core::Selection::point(cursor));
+            cx.emit(crate::Update::ViewFocused { view_id });
+            cx.notify();
+        });
+        self.request_cursor_reveal();
+        cx.notify();
+    }
+
+    /// The path from the project root to the file, then the scopes around the cursor.
+    fn render_breadcrumbs(&self, cx: &mut Context<Self>) -> Option<Breadcrumbs> {
+        let (path, project_directory, scopes) = {
+            let core = self.core.read(cx);
+            let view = core.editor.tree.try_get(self.view_id)?;
+            let doc = core.editor.documents.get(&view.doc)?;
+            if core.editor.is_hosted_auxiliary(doc.id()) {
+                return None;
+            }
+            let text = doc.text().slice(..);
+            let cursor_line = doc.selection(self.view_id).primary().cursor_line(text);
+            let scopes = doc
+                .syntax()
+                .map(|syntax| outline::enclosing_scopes(syntax, text, cursor_line))
+                .unwrap_or_default();
+            (
+                doc.path().map(Path::to_path_buf),
+                core.project_directory.clone(),
+                scopes,
+            )
+        };
+
+        let theme = cx.theme();
+        let icon_color = theme.tokens.editor.text_secondary;
+        let mut segments = Vec::new();
+        if let Some(path) = &path {
+            let relative = project_directory
+                .as_deref()
+                .and_then(|root| path.strip_prefix(root).ok())
+                .unwrap_or(path);
+            let names: Vec<_> = relative
+                .components()
+                .filter_map(|component| match component {
+                    std::path::Component::Normal(name) => Some(name.to_string_lossy().into_owned()),
+                    _ => None,
+                })
+                .collect();
+            let file_index = names.len().saturating_sub(1);
+            for (index, name) in names.into_iter().enumerate() {
+                let icon = if index == file_index {
+                    FileIcon::from_extension(path.extension().and_then(|ext| ext.to_str()))
+                } else {
+                    FileIcon::directory(false)
+                };
+                segments.push(
+                    BreadcrumbSegment::new(name).icon(icon.size(14.0).text_color(icon_color)),
+                );
+            }
+        } else {
+            segments.push(
+                BreadcrumbSegment::new("[scratch]")
+                    .icon(FileIcon::scratch().size(14.0).text_color(icon_color)),
+            );
+        }
+
+        for scope in scopes {
+            let kind = scope.kind.icon_kind();
+            let icon = nucleotide_ui::create_completion_icon(
+                &kind,
+                nucleotide_ui::CompletionIconConfig::new(14.0)
+                    .with_color(nucleotide_ui::get_completion_icon_color(&kind, theme)),
+            );
+            let view = cx.entity().downgrade();
+            let focus = self.focus.clone();
+            let line = scope.start_line;
+            segments.push(BreadcrumbSegment::new(scope.label).icon(icon).on_click(
+                move |_event, window, cx| {
+                    window.focus(&focus, cx);
+                    let _ = view.update(cx, |view, cx| view.jump_to_line(line, cx));
+                },
+            ));
+        }
+
+        Some(
+            Breadcrumbs::new(SharedString::from(format!(
+                "breadcrumbs-{:?}",
+                self.view_id
+            )))
+            .segments(segments),
+        )
+    }
+
+    /// Pins the header lines of the scopes around the first visible line above
+    /// the text, each a button that moves the cursor to its header.
+    fn sticky_scroll_overlay(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> impl Fn(
+        &Option<NativeEditorPreparedFrame>,
+        &EditorLayout,
+        &mut Window,
+        &mut App,
+    ) -> FrameOverlay
+    + 'static {
+        let core = self.core.clone();
+        let view_id = self.view_id;
+        let view = cx.entity().downgrade();
+        let focus = self.focus.clone();
+        let font = self.style.font();
+        let font_size = self.style.font_size.to_pixels(px(16.0));
+        let text_style = self.style.clone();
+        let is_focused = self.is_focused;
+        let tokens = cx.theme().tokens;
+        let ui_tokens = cx.ui_theme().tokens;
+        let sticky_bounds = self.sticky_scroll_bounds.clone();
+
+        move |prepared, layout, _window, cx| {
+            sticky_bounds.set(None);
+            let prepared = prepared.as_ref()?;
+            let max_rows = outline::MAX_STICKY_ROWS.min(layout.rows / 3);
+            let theme = cx.global::<crate::ThemeManager>().helix_theme().clone();
+            let (rows, horizontal_offset) = {
+                let core = core.read(cx);
+                let view = core.editor.tree.try_get(view_id)?;
+                let doc = core.editor.documents.get(&view.doc)?;
+                let syntax = doc.syntax()?;
+                let text = doc.text().slice(..);
+                let offset = doc.view_offset(view_id);
+                let top_line = text.char_to_line(offset.anchor.min(text.len_chars()));
+                let scopes = outline::sticky_scopes(top_line, max_rows, |line| {
+                    outline::enclosing_scopes(syntax, text, line)
+                });
+                // The editor's own gutter plan for the pinned lines, so their numbers
+                // match its column, numbering mode and theme styles.
+                let positions: Vec<_> = scopes
+                    .iter()
+                    .enumerate()
+                    .map(|(row, scope)| nucleotide_editor::GutterLinePosition {
+                        first_visual_line: true,
+                        doc_line: scope.start_line,
+                        visual_line: row as u16,
+                    })
+                    .collect();
+                let mut line_numbers: Vec<_> = nucleotide_editor::build_gutter_line_plans(
+                    nucleotide_editor::GutterLinePlanParams {
+                        layout,
+                        origin: gpui::point(px(2.0), px(0.0)),
+                        positions: &positions,
+                        editor: &core.editor,
+                        document: doc,
+                        view,
+                        theme: &theme,
+                        is_focused,
+                    },
+                )
+                .into_iter()
+                .filter(|plan| {
+                    plan.kind == nucleotide_editor::GutterLineKind::Text
+                        && is_line_number_text(&plan.text)
+                })
+                .map(|plan| {
+                    let run = nucleotide_editor::gutter_line_plan_run(&plan, &text_style);
+                    (
+                        plan.doc_line,
+                        plan.origin.x,
+                        SharedString::from(plan.text),
+                        run,
+                    )
+                })
+                .collect();
+                let loader = core.editor.syn_loader.load();
+                let rows: Vec<_> = scopes
+                    .into_iter()
+                    .map(|scope| {
+                        let (line_text, runs) = nucleotide_editor::syntax_highlighted_line(
+                            doc,
+                            &theme,
+                            &loader,
+                            scope.start_line,
+                            tokens.editor.text_primary,
+                            &font,
+                            tokens.editor.background,
+                        );
+                        let line_number = line_numbers
+                            .iter()
+                            .position(|(line, ..)| *line == scope.start_line)
+                            .map(|index| line_numbers.swap_remove(index));
+                        (scope.start_line, line_text.display, runs, line_number)
+                    })
+                    .collect();
+                (rows, offset.horizontal_offset)
+            };
+            if rows.is_empty() {
+                return None;
+            }
+
+            let bounds = prepared.bounds();
+            let gutter_width = prepared.text_bounds(layout).origin.x - bounds.origin.x;
+            let line_height = layout.line_height;
+            let overlay_bounds = Bounds::new(
+                bounds.origin,
+                gpui::size(
+                    (bounds.size.width - SCROLLBAR_THICKNESS).max(px(0.0)),
+                    line_height * rows.len() as f32,
+                ),
+            );
+            sticky_bounds.set(Some(overlay_bounds));
+            let scroll_x = layout.cell_width * horizontal_offset as f32;
+            // Inset by its blur and dropped by as much, the shadow falls only below the rows.
+            let elevation = ui_tokens.chrome.shadow_md;
+            let shadow = gpui::BoxShadow {
+                color: elevation.color,
+                offset: gpui::point(px(0.0), elevation.blur_radius),
+                blur_radius: elevation.blur_radius,
+                spread_radius: -elevation.blur_radius,
+                inset: false,
+            };
+            let element =
+                div()
+                    .id(SharedString::from(format!("sticky-scroll-{view_id:?}")))
+                    .size_full()
+                    .flex()
+                    .flex_col()
+                    .bg(tokens.editor.background)
+                    .shadow(vec![shadow])
+                    .text_size(font_size)
+                    .line_height(line_height)
+                    .children(rows.into_iter().map(|(line, text, runs, line_number)| {
+                        let view = view.clone();
+                        let focus = focus.clone();
+                        div()
+                            .id(gpui::ElementId::NamedInteger(
+                                "sticky-scroll-row".into(),
+                                line as u64,
+                            ))
+                            .flex()
+                            .flex_row()
+                            .flex_none()
+                            .w_full()
+                            .h(line_height)
+                            .cursor_pointer()
+                            .hover(|style| style.bg(ui_tokens.chrome.surface_hover))
+                            .on_mouse_down(MouseButton::Left, move |_event, window, cx| {
+                                cx.stop_propagation();
+                                window.focus(&focus, cx);
+                                let _ = view.update(cx, |view, cx| view.jump_to_line(line, cx));
+                            })
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .relative()
+                                    .w(gutter_width)
+                                    .h_full()
+                                    .children(line_number.map(|(_, x, number, run)| {
+                                        div().absolute().left(x).whitespace_nowrap().child(
+                                            gpui::StyledText::new(number).with_runs(vec![run]),
+                                        )
+                                    })),
+                            )
+                            .child(
+                                div().flex_1().min_w(px(0.0)).overflow_hidden().child(
+                                    div()
+                                        .ml(-scroll_x)
+                                        .whitespace_nowrap()
+                                        .child(gpui::StyledText::new(text).with_runs(runs)),
+                                ),
+                            )
+                    }))
+                    .into_any_element();
+            Some((overlay_bounds, element))
+        }
+    }
+}
+
 fn text_style_metrics_changed(previous: &TextStyle, next: &TextStyle) -> bool {
     previous.font_size != next.font_size || previous.line_height != next.line_height
 }
@@ -890,6 +1198,11 @@ impl Render for DocumentView {
                             doc.text().len_chars(),
                         )
                 })
+        };
+
+        let (show_breadcrumbs, sticky_scroll) = {
+            let config = &self.core.read(cx).config.gui.editor;
+            (config.breadcrumbs, config.sticky_scroll)
         };
 
         let editor_content = {
@@ -1046,6 +1359,10 @@ impl Render for DocumentView {
                     });
             }
 
+            if sticky_scroll {
+                editor_content = editor_content.frame_overlay(self.sticky_scroll_overlay(cx));
+            }
+
             if let Some(input) = input {
                 let input_view = cx.entity();
                 editor_content = editor_content.on_key_down(move |ev, _window, cx| {
@@ -1142,6 +1459,9 @@ impl Render for DocumentView {
             editor_content.into_any_element()
         };
 
+        let breadcrumbs = show_breadcrumbs
+            .then(|| self.render_breadcrumbs(cx))
+            .flatten();
         let controls = markdown_document
             .as_ref()
             .map(|snapshot| self.render_markdown_controls(snapshot.doc_id, markdown_mode, cx));
@@ -1263,9 +1583,19 @@ impl Render for DocumentView {
                     );
                 })
             })
-            .child(content)
-            .when_some(empty_scratch_state, gpui::ParentElement::child)
-            .when_some(controls, gpui::ParentElement::child)
+            .when_some(
+                breadcrumbs.filter(|_| show_breadcrumbs && !show_empty_scratch_state),
+                gpui::ParentElement::child,
+            )
+            .child(
+                div()
+                    .relative()
+                    .flex_1()
+                    .min_h(px(0.0))
+                    .child(content)
+                    .when_some(empty_scratch_state, gpui::ParentElement::child)
+                    .when_some(controls, gpui::ParentElement::child),
+            )
             .when_some(hover_card, gpui::ParentElement::child)
     }
 }
