@@ -31,6 +31,16 @@ pub(crate) mod editor_context_menu {
     pub(crate) struct RevealInFileTree;
 }
 
+pub(crate) mod commit_menu {
+    use crate::workspace::ReviewMenuIntent;
+
+    #[derive(Clone, PartialEq, Debug, gpui::Action)]
+    #[action(namespace = commit_menu, no_json)]
+    pub(crate) struct Operation {
+        pub(crate) intent: ReviewMenuIntent,
+    }
+}
+
 pub(crate) mod tab_menus {
     use crate::workspace::{TabBarNewMenuIntent, TabBarSplitMenuIntent, TabContextMenuIntent};
 

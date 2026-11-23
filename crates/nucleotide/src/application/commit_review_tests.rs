@@ -1031,3 +1031,106 @@ fn message_divider_resizes_editor_against_diff_and_double_click_restores(
         "double click restores"
     );
 }
+
+fn right_click(cx: &mut gpui::VisualTestContext, selector: &'static str) {
+    let bounds = cx.debug_bounds(selector).expect("visible change row");
+    let position = bounds.center();
+    cx.simulate_mouse_down(position, MouseButton::Right, Modifiers::none());
+    cx.simulate_mouse_up(position, MouseButton::Right, Modifiers::none());
+    cx.run_until_parked();
+}
+
+#[gpui::test]
+fn review_menu_discards_only_after_confirmation_and_reloads_the_buffer(
+    cx: &mut gpui::TestAppContext,
+) {
+    use crate::workspace::ReviewMenuIntent;
+    let _runtime = TEST_RUNTIME.enter();
+    let root = repository();
+    let path = root.path().join("file.txt");
+    fs::write(&path, "alpha\nchanged\n").unwrap();
+    git(root.path(), &["add", "file.txt"]);
+    fs::write(&path, "alpha\nchanged again\n").unwrap();
+    fs::write(root.path().join("other.txt"), "keep\n").unwrap();
+    let (core, _, cx) = new_test_workspace(cx, &path);
+    core.update(cx, |_, cx| cx.emit(crate::Update::ShowCommit));
+    wait_for(&core, cx, |cx| cx.debug_bounds("changes-row-1").is_some());
+
+    // Cancelling the confirmation leaves the file alone.
+    right_click(cx, "changes-row-0");
+    cx.dispatch_action(crate::actions::commit_menu::Operation {
+        intent: ReviewMenuIntent::Discard,
+    });
+    cx.run_until_parked();
+    cx.simulate_keystrokes("escape");
+    pump(&core, cx);
+    assert_eq!(fs::read_to_string(&path).unwrap(), "alpha\nchanged again\n");
+
+    right_click(cx, "changes-row-0");
+    cx.dispatch_action(crate::actions::commit_menu::Operation {
+        intent: ReviewMenuIntent::Discard,
+    });
+    cx.run_until_parked();
+    cx.simulate_keystrokes("enter");
+    wait_for(&core, cx, |cx| {
+        fs::read_to_string(&path).unwrap() == "alpha\nbeta\n"
+            && core.read_with(cx, |core, _| {
+                core.editor.documents.values().next().unwrap().text() == "alpha\nbeta\n"
+            })
+    });
+    assert_eq!(
+        git(root.path(), &["status", "--porcelain"]),
+        "?? other.txt\n"
+    );
+
+    // Deleting an untracked file also asks first.
+    wait_for(&core, cx, |cx| {
+        cx.debug_bounds("changes-row-0").is_some() && cx.debug_bounds("changes-row-1").is_none()
+    });
+    right_click(cx, "changes-row-0");
+    cx.dispatch_action(crate::actions::commit_menu::Operation {
+        intent: ReviewMenuIntent::Discard,
+    });
+    cx.run_until_parked();
+    cx.simulate_keystrokes("enter");
+    wait_for(&core, cx, |_| !root.path().join("other.txt").exists());
+}
+
+#[gpui::test]
+fn review_hunk_menu_stages_and_discards_one_hunk(cx: &mut gpui::TestAppContext) {
+    use crate::workspace::ReviewMenuIntent;
+    let _runtime = TEST_RUNTIME.enter();
+    let root = repository();
+    let path = root.path().join("file.txt");
+    let base: String = (0..20).map(|n| format!("line {n}\n")).collect();
+    fs::write(&path, &base).unwrap();
+    git(root.path(), &["commit", "-qam", "lines"]);
+    let edited = base
+        .replace("line 1\n", "first\n")
+        .replace("line 18\n", "second\n");
+    fs::write(&path, &edited).unwrap();
+    let (core, _, cx) = new_test_workspace(cx, &path);
+    core.update(cx, |_, cx| cx.emit(crate::Update::ShowCommit));
+    wait_for(&core, cx, |cx| {
+        cx.debug_bounds("commit-row-0-false-18").is_some()
+    });
+
+    right_click(cx, "commit-row-0-false-18");
+    cx.dispatch_action(crate::actions::commit_menu::Operation {
+        intent: ReviewMenuIntent::StageHunk,
+    });
+    wait_for(&core, cx, |_| {
+        git(root.path(), &["show", ":file.txt"]) == base.replace("line 18\n", "second\n")
+    });
+
+    right_click(cx, "commit-row-0-false-1");
+    cx.dispatch_action(crate::actions::commit_menu::Operation {
+        intent: ReviewMenuIntent::DiscardHunk,
+    });
+    cx.run_until_parked();
+    cx.simulate_keystrokes("enter");
+    let kept = base.replace("line 18\n", "second\n");
+    wait_for(&core, cx, |_| fs::read_to_string(&path).unwrap() == kept);
+    // The staged hunk stays staged.
+    assert_eq!(git(root.path(), &["show", ":file.txt"]), kept);
+}

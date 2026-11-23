@@ -2,6 +2,7 @@
 // ABOUTME: Separates view management from workspace coordination logic
 
 mod commit;
+pub(crate) use commit::ReviewMenuIntent;
 mod documentation;
 mod global_search;
 mod image_viewer;
@@ -4418,6 +4419,13 @@ impl Workspace {
                 window,
                 cx,
                 Workspace::handle_unsaved_close_confirm_event,
+            );
+        } else if let Some(dialog) = self.discard_confirm_dialog() {
+            self.show_confirmation_dialog(
+                dialog,
+                window,
+                cx,
+                Workspace::handle_discard_confirmation,
             );
         } else if self.terminal_close_confirm.is_some() {
             self.show_confirmation_dialog(
@@ -12347,6 +12355,10 @@ impl Render for Workspace {
                                 .with_priority(100),
                         )
                     })
+                    .children(
+                        self.render_review_menu(window, cx)
+                            .map(|menu| gpui::deferred(menu).with_priority(100)),
+                    )
                     .when(self.tab_bar_split_menu.is_open(), |this| {
                         this.child(
                             gpui::deferred(self.render_tab_bar_split_menu(window, cx))
@@ -13089,6 +13101,14 @@ impl Render for Workspace {
                     let handler = Workspace::tab_context_menu_handler(action.intent);
                     handler(workspace, doc_id, cx);
                 }
+                cx.stop_propagation();
+            },
+        ));
+
+        workspace_div = workspace_div.on_action(cx.listener(
+            move |workspace, action: &crate::actions::commit_menu::Operation, window, cx| {
+                window.prevent_default();
+                workspace.review_menu_operation(action.intent, window, cx);
                 cx.stop_propagation();
             },
         ));

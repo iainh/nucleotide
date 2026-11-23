@@ -6661,12 +6661,17 @@ pub(crate) fn reload_workspace_document_from_read(
         helix_core::diff::compare_ropes(doc.text(), &rope)
     };
 
-    let view = editor
+    editor
         .tree
         .try_get(view_id)
         .with_context(|| format!("view {view_id:?} is no longer open"))?;
-    if view.doc != doc_id {
-        bail!("view {view_id:?} no longer displays document {doc_id:?}");
+    // The view need not show the document now, but must hold its selection,
+    // which the reload maps and records in the history.
+    if !editor
+        .document(doc_id)
+        .is_some_and(|doc| doc.selections().contains_key(&view_id))
+    {
+        bail!("view {view_id:?} holds no selection in document {doc_id:?}");
     }
 
     let tree = &mut editor.tree;

@@ -693,7 +693,9 @@ impl Workspace {
                                 &edits[side][offset],
                                 colors,
                             );
-                            sides[side].code.push(code_row(text, Some(color)));
+                            let row = code_row(text, Some(color));
+                            let row = self.with_hunk_menu(row, &diff, hunk_index, cx);
+                            sides[side].code.push(row);
                             let checkbox = diff.staging.map(|(index, file, content)| {
                                 let removal = side == 0;
                                 let staged = content.selection.as_ref().is_some_and(|s| {
@@ -730,7 +732,9 @@ impl Workspace {
                                     .child(checkbox)
                                     .into_any_element()
                             });
-                            sides[side].gutter.push(gutter_row(side, line, checkbox));
+                            let row = gutter_row(side, line, checkbox);
+                            let row = self.with_hunk_menu(row, &diff, hunk_index, cx);
+                            sides[side].gutter.push(row);
                         }
                     }
                     let checkbox = diff.staging.map(|(index, file, content)| {

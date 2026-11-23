@@ -146,8 +146,7 @@ impl Workspace {
         if self.commit_review.stale {
             self.refresh_commit_review(cx);
         }
-        let theme = cx.global::<nucleotide_ui::Theme>();
-        let tokens = theme.tokens;
+        let tokens = cx.global::<nucleotide_ui::Theme>().tokens;
         let file_tree = if window.is_window_active() {
             tokens.file_tree_tokens()
         } else {
@@ -237,7 +236,7 @@ impl Workspace {
                                 } else {
                                     file_tree.icon_color
                                 })
-                                .render_with_theme(theme)
+                                .render_with_theme(cx.global::<nucleotide_ui::Theme>())
                                 .flex_none(),
                         )
                         .child(div().flex_none().whitespace_nowrap().child(name))
@@ -269,6 +268,10 @@ impl Workspace {
                     .when(cfg!(test), |view| {
                         view.debug_selector(move || format!("changes-row-{index}"))
                     })
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        self.review_menu_listener(file, None, cx),
+                    )
                     .child(row),
             );
         }

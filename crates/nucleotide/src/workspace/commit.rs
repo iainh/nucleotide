@@ -1,5 +1,6 @@
 //! Commit review state and save-before-stage coordination. Git work never runs on the UI thread.
 mod changes;
+mod menu;
 mod message;
 mod split;
 mod submit;
@@ -8,6 +9,7 @@ mod tests;
 mod view;
 
 use super::*;
+pub(crate) use menu::ReviewMenuIntent;
 use nucleotide_vcs::repository::{
     CommitMessageContext, FileVersions, GitRepository, UpstreamState,
 };
@@ -67,6 +69,12 @@ pub(super) struct CommitReview {
     hunk_items: Vec<usize>,
     /// The items and row height the list last measured.
     laid_out: (Vec<view::ReviewItem>, Pixels),
+    /// The right-click menu of a changed file, or of one of its hunks.
+    menu: ContextMenuController,
+    menu_target: Option<(Arc<ReviewFile>, Option<usize>)>,
+    menu_popup: Option<(Entity<PopupMenu>, Subscription)>,
+    /// Changes to discard once confirmed and no other Git work runs.
+    discard: Option<menu::Discard>,
 }
 
 impl CommitReview {
@@ -1009,6 +1017,7 @@ impl Workspace {
                     this.refresh_commit_review(cx);
                 }
                 this.stage_queued(cx);
+                this.start_discard(cx);
                 cx.notify();
             });
         })

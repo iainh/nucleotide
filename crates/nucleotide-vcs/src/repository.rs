@@ -409,6 +409,29 @@ impl GitRepository {
         self.git_with_paths(&["reset", "--quiet"], paths).await
     }
 
+    /// Restores `tracked` paths in the index and working tree to HEAD, removing
+    /// those HEAD lacks, and deletes `untracked` paths. This cannot be undone.
+    pub async fn discard(&self, tracked: &[&Path], untracked: &[&Path]) -> Result<(), String> {
+        if !tracked.is_empty() {
+            let head = self
+                .optional_line(&["rev-parse", "--verify", "--quiet", "HEAD"])
+                .await?;
+            if head.is_some() {
+                self.git_with_paths(
+                    &["restore", "--source=HEAD", "--staged", "--worktree"],
+                    tracked,
+                )
+                .await?;
+            } else {
+                // Before the first commit every tracked file is a new file.
+                self.git_with_paths(&["rm", "--force", "--quiet"], tracked)
+                    .await?;
+            }
+        }
+        self.git_with_paths(&["clean", "--force", "-d", "--quiet"], untracked)
+            .await
+    }
+
     /// A read-only snapshot of staged changes, including conflict stages.
     pub async fn index_signature(&self) -> Result<Vec<u8>, String> {
         let output = self
@@ -1218,6 +1241,69 @@ mod tests {
         assert_eq!(
             git(temp.path(), &["status", "--porcelain"]),
             "M  edit.txt\n D gone.txt\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn discard_restores_head_and_removes_new_files_leaving_others_alone() {
+        let temp = repository_with(&[
+            ("edit.txt", "a\n"),
+            ("gone.txt", "x\n"),
+            ("old.txt", "moved\n"),
+            ("keep.txt", "k\n"),
+        ]);
+        let root = temp.path();
+        std::fs::write(root.join("edit.txt"), "staged\n").unwrap();
+        git(root, &["add", "edit.txt"]);
+        std::fs::write(root.join("edit.txt"), "worktree\n").unwrap();
+        std::fs::remove_file(root.join("gone.txt")).unwrap();
+        git(root, &["mv", "old.txt", "new.txt"]);
+        std::fs::write(root.join("added.txt"), "added\n").unwrap();
+        git(root, &["add", "added.txt"]);
+        std::fs::create_dir(root.join("scratch")).unwrap();
+        std::fs::write(root.join("scratch/untracked.txt"), "u\n").unwrap();
+        std::fs::write(root.join("keep.txt"), "kept edit\n").unwrap();
+        std::fs::write(root.join("other.txt"), "other\n").unwrap();
+        let repo = open(root).await;
+
+        repo.discard(
+            &[
+                Path::new("edit.txt"),
+                Path::new("gone.txt"),
+                Path::new("new.txt"),
+                Path::new("old.txt"),
+                Path::new("added.txt"),
+            ],
+            &[Path::new("scratch")],
+        )
+        .await
+        .unwrap();
+        assert_eq!(std::fs::read(root.join("edit.txt")).unwrap(), b"a\n");
+        assert_eq!(std::fs::read(root.join("gone.txt")).unwrap(), b"x\n");
+        assert_eq!(std::fs::read(root.join("old.txt")).unwrap(), b"moved\n");
+        assert!(!root.join("new.txt").exists());
+        assert!(!root.join("added.txt").exists());
+        assert!(!root.join("scratch").exists());
+        assert_eq!(
+            git(root, &["status", "--porcelain"]),
+            " M keep.txt\n?? other.txt\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn discard_before_the_first_commit_removes_new_files() {
+        let temp = tempfile::tempdir().unwrap();
+        init(temp.path());
+        std::fs::write(temp.path().join("new.txt"), "n\n").unwrap();
+        std::fs::write(temp.path().join("keep.txt"), "k\n").unwrap();
+        git(temp.path(), &["add", "."]);
+        let repo = open(temp.path()).await;
+
+        repo.discard(&[Path::new("new.txt")], &[]).await.unwrap();
+        assert!(!temp.path().join("new.txt").exists());
+        assert_eq!(
+            git(temp.path(), &["status", "--porcelain"]),
+            "A  keep.txt\n"
         );
     }
 

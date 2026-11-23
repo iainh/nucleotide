@@ -446,6 +446,12 @@ impl Workspace {
             workspace.update(cx, |workspace, cx| {
                 let body =
                     workspace.render_review_item(index, &file, &items[item], &list_style, cx);
+                // A unified hunk is one item; split rows open their hunk's menu themselves.
+                let hunk = match items[item] {
+                    ReviewItem::Unified(DiffPart::Hunk { index, .. }) => Some(index),
+                    _ => None,
+                };
+                let menu = workspace.review_menu_listener(&file, hunk, cx);
                 let focus = workspace.commit_review.control_focus[&if item == 0 {
                     format!("commit-section-{index}")
                 } else {
@@ -455,6 +461,7 @@ impl Workspace {
                 // The items together draw one bordered box around the file.
                 div()
                     .when(item == last, |item| item.pb(tokens.sizes.space_3))
+                    .on_mouse_down(MouseButton::Right, menu)
                     .child(
                         div()
                             .track_focus(&focus)
