@@ -9,7 +9,7 @@ use nucleotide_workspace::{ProcessOutput, ProcessSpec, WorkspaceBackendHandle};
 use crate::staging::MAX_LINE_STAGING_BYTES;
 
 const METADATA_OUTPUT_LIMIT: usize = 64 * 1024;
-const READ_TIMEOUT_MS: u64 = 10_000;
+pub(crate) const READ_TIMEOUT_MS: u64 = 10_000;
 const WRITE_TIMEOUT_MS: u64 = 30_000;
 /// Commit hooks may run formatters or tests.
 const COMMIT_TIMEOUT_MS: u64 = 10 * 60_000;
@@ -762,7 +762,7 @@ impl GitRepository {
     }
 
     /// The first output line of a command that fails when the value is unset.
-    async fn optional_line(&self, args: &[&str]) -> Result<Option<String>, String> {
+    pub(crate) async fn optional_line(&self, args: &[&str]) -> Result<Option<String>, String> {
         let output = self.run(args, Vec::new(), READ_TIMEOUT_MS).await?;
         if !output.success && output.status_code != Some(1) {
             return Err(command_error(args[0], &output));
@@ -824,7 +824,7 @@ impl GitRepository {
             .await
     }
 
-    async fn run_process(
+    pub(crate) async fn run_process(
         &self,
         args: &[&str],
         stdin: Vec<u8>,
@@ -875,7 +875,7 @@ fn tab_records(raw: &[u8]) -> impl Iterator<Item = (&str, &str)> {
     })
 }
 
-fn command_error(operation: &str, output: &ProcessOutput) -> String {
+pub(crate) fn command_error(operation: &str, output: &ProcessOutput) -> String {
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stderr = stderr.trim();
     if stderr.is_empty() {

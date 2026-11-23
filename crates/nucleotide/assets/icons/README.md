@@ -39,7 +39,7 @@ renamed to keep the stable `icons/*.svg` paths used by call sites, minified to
 one line, and stable-collection fills are changed from `black` to
 `currentColor`.
 
-Source version: commit `aae3cf5` (2026-11-20).
+Source version: commit `aae3cf5` (2026-11-20). `history` is ClockArrow.
 
 Stable-collection sources: `braces` (Braces), `completion-function` (Function),
 `completion-method` (Parentheses), `completion-module` (BoxTape),

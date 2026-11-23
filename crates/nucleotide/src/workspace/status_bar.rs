@@ -1014,7 +1014,7 @@ impl Workspace {
             cx.global::<crate::ThemeManager>().ui_chrome_style(),
         );
         // The status bar spans only the editor; the sidebar column continues
-        // to the bottom of the window and holds the Files | Changes switch.
+        // to the bottom of the window and holds the Files | Changes | History switch.
         let sidebar_width = if self.show_file_tree {
             px(self.file_tree_width)
         } else {

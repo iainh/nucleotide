@@ -1,5 +1,6 @@
 //! Commit review state and save-before-stage coordination. Git work never runs on the UI thread.
 mod changes;
+mod history;
 mod menu;
 mod message;
 mod split;
@@ -19,6 +20,18 @@ use nucleotide_vcs::staging::{
 use nucleotide_workspace::{
     GitStatusEntry, GitStatusKind as Status, GitStatusOptions, ReadOptions,
 };
+
+/// What the sidebar lists.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum Sidebar {
+    /// The project tree.
+    #[default]
+    Files,
+    /// Changed files, whose diffs the Commit tab shows for staging.
+    Changes,
+    /// Commits drawn as a graph; the Commit tab shows the selected one.
+    History,
+}
 
 #[derive(Default)]
 pub(super) struct CommitReview {
@@ -49,8 +62,10 @@ pub(super) struct CommitReview {
     selected: Option<PathBuf>,
     /// The file the diff list was last laid out for, to reset its scroll on a new selection.
     shown: Option<PathBuf>,
-    /// The sidebar lists changed files instead of the project tree.
-    pub(super) sidebar: bool,
+    /// What the sidebar lists.
+    pub(super) sidebar: Sidebar,
+    /// The commit graph of the History sidebar, and the commit the Commit tab shows from it.
+    pub(super) history: history::History,
     /// Changes shown at once but not yet written to the index, by file. They
     /// are staged when the operation in progress finishes.
     queued: HashMap<PathBuf, StageTarget>,
@@ -861,7 +876,14 @@ impl Workspace {
 
     /// Activates the Commit tab, opening it when needed, without reloading the review.
     fn show_commit_tab(&mut self, cx: &mut Context<Self>) {
-        self.commit_review.sidebar = true;
+        self.commit_review.sidebar = Sidebar::Changes;
+        self.commit_review.history.in_tab = false;
+        self.activate_commit_tab(cx);
+    }
+
+    /// Activates the Commit tab, opening it when needed, for whichever of the
+    /// review or a history commit it shows.
+    fn activate_commit_tab(&mut self, cx: &mut Context<Self>) {
         self.commit_review
             .focus
             .get_or_insert_with(|| cx.focus_handle());
@@ -879,7 +901,11 @@ impl Workspace {
     }
 
     pub(super) fn close_commit_tab(&mut self, cx: &mut Context<Self>) {
-        self.commit_review.sidebar = false;
+        // The History list stays useful without a commit on screen.
+        if self.commit_review.sidebar == Sidebar::Changes {
+            self.commit_review.sidebar = Sidebar::Files;
+        }
+        self.commit_review.history.in_tab = false;
         if let Some(pane) = self.commit_tab_pane() {
             let _ = self.pane_host.layout.close_tab(pane, TabId::Commit);
         }
@@ -896,14 +922,14 @@ impl Workspace {
         };
         self.commit_review.debounce = None;
         // A hidden review reloads when it next shows instead of on every change.
-        if !self.commit_review.sidebar
+        let in_tab = !self.commit_review.history.in_tab
             && self
                 .pane_host
                 .layout
                 .pane(pane)
                 .and_then(|p| p.active_tab())
-                != Some(TabId::Commit)
-        {
+                == Some(TabId::Commit);
+        if self.commit_review.sidebar != Sidebar::Changes && !in_tab {
             self.commit_review.stale = true;
             return;
         }
@@ -1042,6 +1068,8 @@ impl Workspace {
     /// Reloads when git status no longer matches the review. Our own stage
     /// changes the status too, and its reload has usually already read it.
     pub(super) fn commit_status_changed(&mut self, cx: &mut Context<Self>) {
+        // A commit changes the status as well as the history.
+        self.history_changed(cx);
         if self.commit_review.busy {
             self.commit_review.status_changed = true;
         } else if !self.review_matches_status(cx) {

@@ -885,7 +885,7 @@ fn line_count(text: Option<&[u8]>) -> u32 {
 }
 
 impl Workspace {
-    fn render_unified_staged(
+    pub(super) fn render_unified_staged(
         &mut self,
         index: usize,
         staged: &FileChanges,

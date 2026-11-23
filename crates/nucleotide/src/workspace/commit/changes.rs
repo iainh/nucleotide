@@ -25,6 +25,9 @@ fn change_kind(entry: &GitStatusEntry) -> (VcsStatus, &'static str) {
     }
 }
 
+/// Sidebar width from which every list in the switch shows its label.
+const SIDEBAR_SWITCH_LABELS_WIDTH: f32 = 300.0;
+
 impl Workspace {
     /// Shows a changed file's diff in the Commit tab, opening the tab when needed.
     fn select_review_file(&mut self, path: PathBuf, cx: &mut Context<Self>) {
@@ -32,13 +35,15 @@ impl Workspace {
         self.show_commit_tab(cx);
     }
 
-    /// The Files | Changes switch, shown in the status bar row under the sidebar.
+    /// The Files | Changes | History switch, shown in the status bar row under the sidebar.
     pub(in crate::workspace) fn render_sidebar_switch(
         &self,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let tokens = cx.global::<nucleotide_ui::Theme>().tokens;
-        let changes = self.commit_review.sidebar;
+        let current = self.commit_review.sidebar;
+        // A narrow sidebar labels only the list it shows; the others keep tooltips.
+        let compact = self.file_tree_width < SIDEBAR_SWITCH_LABELS_WIDTH;
         // The VCS service watches the repository, so the count stays current
         // even while the Commit tab, and with it the review, is closed.
         let count = cx
@@ -85,21 +90,44 @@ impl Workspace {
             .px(tokens.sizes.space_2)
             .children(
                 [
-                    ("sidebar-files", "Files", "icons/folder-tree.svg", false),
-                    ("sidebar-changes", "Changes", "icons/git-branch.svg", true),
+                    (
+                        "sidebar-files",
+                        "Files",
+                        "icons/folder-tree.svg",
+                        Sidebar::Files,
+                    ),
+                    (
+                        "sidebar-changes",
+                        "Changes",
+                        "icons/git-branch.svg",
+                        Sidebar::Changes,
+                    ),
+                    (
+                        "sidebar-history",
+                        "History",
+                        "icons/history.svg",
+                        Sidebar::History,
+                    ),
                 ]
-                .map(|(id, label, icon, show_changes)| {
-                    let pill = if show_changes {
+                .map(|(id, label, icon, sidebar)| {
+                    let pill = if sidebar == Sidebar::Changes {
                         pill.take().flatten()
                     } else {
                         None
                     };
+                    let shown_label = if compact && current != sidebar {
+                        ""
+                    } else {
+                        label
+                    };
                     div()
                         .when(cfg!(test), |view| view.debug_selector(|| id.into()))
                         .child(
-                            Button::new(id, label)
+                            Button::new(id, shown_label)
                                 .icon(icon)
                                 .size(ButtonSize::Small)
+                                .tooltip(label)
+                                .aria_label(label)
                                 .when_some(pill, |button, pill| {
                                     // Custom content replaces the icon slot, so repeat it here.
                                     button.content(
@@ -115,20 +143,22 @@ impl Workspace {
                                                     ))
                                                     .flex_none(),
                                             )
-                                            .child(label)
+                                            .when(!shown_label.is_empty(), |content| {
+                                                content.child(shown_label)
+                                            })
                                             .child(pill),
                                     )
                                 })
-                                .variant(if changes == show_changes {
+                                .variant(if current == sidebar {
                                     ButtonVariant::Secondary
                                 } else {
                                     ButtonVariant::Ghost
                                 })
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    if show_changes {
-                                        this.open_commit_tab(cx);
-                                    } else {
-                                        this.commit_review.sidebar = false;
+                                .on_click(cx.listener(move |this, _, _, cx| match sidebar {
+                                    Sidebar::Changes => this.open_commit_tab(cx),
+                                    Sidebar::History => this.show_history_sidebar(cx),
+                                    Sidebar::Files => {
+                                        this.commit_review.sidebar = Sidebar::Files;
                                         cx.notify();
                                     }
                                 })),

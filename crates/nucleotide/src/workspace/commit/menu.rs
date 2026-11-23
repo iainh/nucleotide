@@ -371,7 +371,7 @@ impl Workspace {
             ),
             (RevealInFileTree, _) => {
                 if let Some(file_tree) = self.file_tree.clone() {
-                    self.commit_review.sidebar = false;
+                    self.commit_review.sidebar = Sidebar::Files;
                     self.show_file_tree = true;
                     file_tree.update(cx, |tree, cx| {
                         tree.sync_selection_with_file(Some(path.as_path()), cx);

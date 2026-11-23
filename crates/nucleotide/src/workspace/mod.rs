@@ -11405,7 +11405,11 @@ impl Workspace {
         let content = if let Some(TabId::Terminal(id)) = active {
             self.render_terminal_content(pane_id, id, geometry.rect, cx)
         } else if active == Some(TabId::Commit) {
-            self.render_commit_review(cx)
+            if self.commit_review.history.in_tab {
+                self.render_history_commit(cx)
+            } else {
+                self.render_commit_review(cx)
+            }
         } else if let Some(image) = image {
             self.render_image_viewer(pane_id, image, cx)
         } else {
@@ -13341,10 +13345,10 @@ impl Render for Workspace {
                         tree.border_r_1().border_color(file_tree_tokens.border)
                     });
                 if let Some(file_tree) = self.file_tree.clone() {
-                    let content = if self.commit_review.sidebar {
-                        self.render_changes_sidebar(window, cx)
-                    } else {
-                        file_tree.into_any_element()
+                    let content = match self.commit_review.sidebar {
+                        commit::Sidebar::Files => file_tree.into_any_element(),
+                        commit::Sidebar::Changes => self.render_changes_sidebar(window, cx),
+                        commit::Sidebar::History => self.render_history_sidebar(window, cx),
                     };
                     file_tree_container = file_tree_container.child(
                         div()

@@ -64,6 +64,8 @@ pub(super) fn lookup(path: &str) -> Option<Symbol> {
         "refresh" => ("arrow.clockwise", '\u{e72c}'),
         "minus" => ("minus", '\u{e738}'),
         "git-push" => ("arrow.up.circle", '\u{e74a}'),
+        "history" => ("clock.arrow.circlepath", '\u{e81c}'),
+        "tag" => ("tag", '\u{e8ec}'),
         "zoom-in" => ("plus.magnifyingglass", '\u{e8a3}'),
         "zoom-out" => ("minus.magnifyingglass", '\u{e71f}'),
         "maximize" => ("arrow.up.left.and.arrow.down.right", '\u{e740}'),
