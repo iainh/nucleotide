@@ -77,6 +77,9 @@ pub struct AvailableSpace {
     pub right: Pixels,
 }
 
+/// Space [`PopupPositioner::calculate_anchored_position`] leaves between a popup and its anchor.
+pub const ANCHORED_POPUP_GAP: Pixels = px(4.0);
+
 /// Smart popup positioning calculator
 pub struct PopupPositioner {
     constraints: PopupConstraints,
@@ -122,6 +125,65 @@ impl PopupPositioner {
             bounds: Bounds {
                 origin: position,
                 size: optimal_size,
+            },
+            placement,
+            constrained,
+            available_space,
+        }
+    }
+
+    /// Place a popup against an anchor rectangle, such as a hovered word: below it,
+    /// aligned with its left edge, or above it when only that side has room.
+    /// The popup stays `margin` inside `window_bounds`, and shrinks to fit them.
+    pub fn calculate_anchored_position(
+        &self,
+        anchor: Bounds<Pixels>,
+        content_size: Size<Pixels>,
+        window_bounds: Bounds<Pixels>,
+    ) -> PopupPosition {
+        let margin = self.constraints.margin;
+        let gap = ANCHORED_POPUP_GAP;
+        let available_space = AvailableSpace {
+            above: max(px(0.0), anchor.top() - window_bounds.top() - margin - gap),
+            below: max(
+                px(0.0),
+                window_bounds.bottom() - anchor.bottom() - margin - gap,
+            ),
+            left: max(px(0.0), anchor.left() - window_bounds.left() - margin),
+            right: max(px(0.0), window_bounds.right() - anchor.left() - margin),
+        };
+
+        let mut popup_size = self.calculate_optimal_size(content_size, &available_space);
+        popup_size.width = popup_size
+            .width
+            .min(max(px(0.0), window_bounds.size.width - margin * 2.0));
+        let placement = if popup_size.height <= available_space.below
+            || available_space.below >= available_space.above
+        {
+            PopupPlacement::Below
+        } else {
+            PopupPlacement::Above
+        };
+        let room = match placement {
+            PopupPlacement::Below => available_space.below,
+            _ => available_space.above,
+        };
+        let constrained = popup_size.height > room;
+        popup_size.height = popup_size.height.min(room);
+
+        let y = match placement {
+            PopupPlacement::Below => anchor.bottom() + gap,
+            _ => anchor.top() - gap - popup_size.height,
+        };
+        let x = anchor
+            .left()
+            .min(window_bounds.right() - margin - popup_size.width)
+            .max(window_bounds.left() + margin);
+
+        PopupPosition {
+            bounds: Bounds {
+                origin: point(x, y),
+                size: popup_size,
             },
             placement,
             constrained,
@@ -542,6 +604,44 @@ mod tests {
         let popup = create_completion_popup(anchor, content);
         assert_eq!(popup.anchor, anchor);
         assert!(popup.visible);
+    }
+
+    #[test]
+    fn anchored_position_flips_above_and_stays_inside_bounds() {
+        let positioner = PopupPositioner::new(PopupConstraints {
+            min_width: px(0.0),
+            min_height: px(0.0),
+            max_width: px(500.0),
+            max_height: px(400.0),
+            ..Default::default()
+        });
+        // A pane offset from the window origin, so absolute and relative mix-ups show.
+        let pane = Bounds {
+            origin: point(px(100.0), px(50.0)),
+            size: size(px(600.0), px(400.0)),
+        };
+        let word = |x: f32, y: f32| Bounds {
+            origin: point(px(x), px(y)),
+            size: size(px(40.0), px(20.0)),
+        };
+        let content = size(px(300.0), px(150.0));
+
+        let below = positioner.calculate_anchored_position(word(200.0, 100.0), content, pane);
+        assert_eq!(below.placement, PopupPlacement::Below);
+        assert_eq!(below.bounds.origin, point(px(200.0), px(124.0)));
+
+        // Near the bottom only the space above fits; near the right edge it shifts left.
+        let above = positioner.calculate_anchored_position(word(650.0, 380.0), content, pane);
+        assert_eq!(above.placement, PopupPlacement::Above);
+        assert_eq!(above.bounds.origin, point(px(392.0), px(226.0)));
+        assert!(!above.constrained);
+
+        // Neither side fits: use the larger side and shrink to it.
+        let tall = size(px(300.0), px(390.0));
+        let squeezed = positioner.calculate_anchored_position(word(200.0, 150.0), tall, pane);
+        assert_eq!(squeezed.placement, PopupPlacement::Below);
+        assert!(squeezed.constrained);
+        assert_eq!(squeezed.bounds.bottom(), pane.bottom() - px(8.0));
     }
 
     #[test]

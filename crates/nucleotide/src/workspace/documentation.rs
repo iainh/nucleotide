@@ -32,60 +32,17 @@ pub(super) const DOC_SIDEBAR_MAX_WIDTH: f32 = 640.0;
 const DOC_SIDEBAR_MIN_EDITOR_WIDTH: f32 = 240.0;
 
 pub(super) fn show_hover_docs(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &mut App) {
-    use futures_util::stream::{FuturesOrdered, StreamExt};
-
     debug!("Requesting hover documentation");
 
-    let hover_requests = {
-        let core_r = core.read(cx);
-        let editor = &core_r.editor;
-        let hover_requests = || {
-            let Some(view) = editor.tree.try_get(editor.tree.focus) else {
-                debug!("No focused editor view available for hover documentation");
-                return None;
-            };
-            let Some(doc) = editor.documents.get(&view.doc) else {
-                debug!(
-                    view_id = ?view.id,
-                    doc_id = ?view.doc,
-                    "No focused document available for hover documentation"
-                );
-                return None;
-            };
-
-            let Some(url) = doc.url() else {
-                debug!(
-                    view_id = ?view.id,
-                    doc_id = ?view.doc,
-                    "Focused document has no file URL for hover documentation"
-                );
-                return None;
-            };
-
-            let mut seen = HashSet::new();
-            let identifier = lsp::TextDocumentIdentifier::new(url);
-            let mut requested = 0usize;
-
-            let futures: FuturesOrdered<_> = doc
-                .language_servers_with_feature(LanguageServerFeature::Hover)
-                .filter(|ls| seen.insert(ls.id()))
-                .filter_map(|language_server| {
-                    requested += 1;
-                    let server_name = language_server.name().to_string();
-                    let identifier = identifier.clone();
-                    let pos = doc.position(view.id, language_server.offset_encoding());
-                    let request = language_server.text_document_hover(identifier, pos, None)?;
-
-                    Some(async move { request.await.map(|hover| (server_name, hover)) })
-                })
-                .collect();
-
-            Some((futures, requested))
-        };
-        hover_requests()
+    let requests = {
+        let editor = &core.read(cx).editor;
+        editor
+            .tree
+            .try_get(editor.tree.focus)
+            .and_then(|view| hover_requests(editor, view.id, None))
     };
 
-    let Some((mut futures, requested_servers)) = hover_requests else {
+    let Some(requests) = requests else {
         core.update(cx, |core, cx| {
             core.editor
                 .set_status("No file-backed document is available for documentation.");
@@ -94,7 +51,7 @@ pub(super) fn show_hover_docs(core: Entity<Core>, _handle: tokio::runtime::Handl
         return;
     };
 
-    if requested_servers == 0 {
+    if requests.is_empty() {
         debug!("No LSP servers with hover capability are available");
         core.update(cx, |core, cx| {
             core.editor
@@ -106,44 +63,79 @@ pub(super) fn show_hover_docs(core: Entity<Core>, _handle: tokio::runtime::Handl
 
     let core_weak = core.downgrade();
     cx.spawn(async move |cx| {
-        let mut entries: Vec<HoverDocEntry> = Vec::new();
-
-        while let Some(result) = futures.next().await {
-            match result {
-                Ok((server_name, Some(hover))) => {
-                    let markdown = hover_contents_to_markdown(hover.contents);
-                    if !markdown.trim().is_empty() {
-                        entries.push(HoverDocEntry {
-                            server_name,
-                            markdown,
-                        });
-                    }
-                }
-                Ok((_server_name, None)) => {}
-                Err(err) => {
-                    warn!(error = %err, "Hover request failed");
-                }
-            }
-        }
-
-        if entries.is_empty() {
-            if let Some(core) = core_weak.upgrade() {
-                core.update(cx, |core, cx| {
-                    core.editor.set_status("No hover results available.");
-                    cx.emit(crate::Update::HoverDocs(Vec::new()));
-                });
-            }
-            return;
-        }
-
+        let entries = collect_hover_entries(requests).await;
         if let Some(core) = core_weak.upgrade() {
-            let payload = entries;
-            core.update(cx, |_core, cx| {
-                cx.emit(crate::Update::HoverDocs(payload));
+            core.update(cx, |core, cx| {
+                if entries.is_empty() {
+                    core.editor.set_status("No hover results available.");
+                }
+                cx.emit(crate::Update::HoverDocs(entries));
             });
         }
     })
     .detach();
+}
+
+type HoverRequest =
+    futures_util::future::LocalBoxFuture<'static, helix_lsp::Result<(String, Option<lsp::Hover>)>>;
+
+/// Hover requests to every hover-capable server of `view_id`'s document, at
+/// `char_idx` or, without one, at the view's primary cursor. `None` when the
+/// document has no file URL to ask about.
+pub(crate) fn hover_requests(
+    editor: &helix_view::Editor,
+    view_id: helix_view::ViewId,
+    char_idx: Option<usize>,
+) -> Option<Vec<HoverRequest>> {
+    use futures_util::FutureExt;
+
+    let view = editor.tree.try_get(view_id)?;
+    let doc = editor.documents.get(&view.doc)?;
+    let Some(url) = doc.url() else {
+        debug!(view_id = ?view.id, doc_id = ?view.doc, "Document has no file URL for hover");
+        return None;
+    };
+
+    let mut seen = HashSet::new();
+    let identifier = lsp::TextDocumentIdentifier::new(url);
+    Some(
+        doc.language_servers_with_feature(LanguageServerFeature::Hover)
+            .filter(|ls| seen.insert(ls.id()))
+            .filter_map(|language_server| {
+                let server_name = language_server.name().to_string();
+                let encoding = language_server.offset_encoding();
+                let pos = match char_idx {
+                    Some(char_idx) => {
+                        helix_lsp::util::pos_to_lsp_pos(doc.text(), char_idx, encoding)
+                    }
+                    None => doc.position(view.id, encoding),
+                };
+                let request = language_server.text_document_hover(identifier.clone(), pos, None)?;
+                Some(async move { request.await.map(|hover| (server_name, hover)) }.boxed_local())
+            })
+            .collect(),
+    )
+}
+
+/// Await `requests` in server order, keeping the non-empty results.
+pub(crate) async fn collect_hover_entries(requests: Vec<HoverRequest>) -> Vec<HoverDocEntry> {
+    let mut entries = Vec::new();
+    for result in futures_util::future::join_all(requests).await {
+        match result {
+            Ok((server_name, Some(hover))) => {
+                let markdown = hover_contents_to_markdown(hover.contents);
+                if !markdown.trim().is_empty() {
+                    entries.push(HoverDocEntry {
+                        server_name,
+                        markdown,
+                    });
+                }
+            }
+            Ok((_server_name, None)) => {}
+            Err(err) => warn!(error = %err, "Hover request failed"),
+        }
+    }
+    entries
 }
 
 fn hover_contents_to_markdown(contents: lsp::HoverContents) -> String {

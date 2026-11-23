@@ -22,6 +22,7 @@ use nucleotide_ui::{
 use nucleotide_workspace::{WorkspaceBackendHandle, WorkspaceIdentity};
 
 mod diff_peek;
+mod hover_card;
 mod native_input;
 
 use crate::{Core, Input, InputEvent};
@@ -203,6 +204,7 @@ pub struct DocumentView {
     pending_markdown_anchor: Option<PendingMarkdownAnchor>,
     /// Handed to the preview, which scrolls to the heading and clears it.
     markdown_anchor_request: Rc<RefCell<Option<String>>>,
+    hover: hover_card::HoverState,
 }
 
 impl DocumentView {
@@ -240,6 +242,7 @@ impl DocumentView {
             markdown_link_hovered: Rc::default(),
             pending_markdown_anchor: None,
             markdown_anchor_request: Rc::default(),
+            hover: Default::default(),
         }
     }
 
@@ -424,6 +427,7 @@ impl DocumentView {
         .detach();
         cx.on_blur(&self.focus, window, |view, _window, cx| {
             view.cancel_native_composition(cx);
+            view.dismiss_hover_card(cx);
             view.editor_state.clear_pointer_selection();
             cx.notify();
         })
@@ -431,6 +435,7 @@ impl DocumentView {
         cx.observe_window_activation(window, |view, window, cx| {
             if !window.is_window_active() {
                 view.cancel_native_composition(cx);
+                view.dismiss_hover_card(cx);
                 view.editor_state.clear_pointer_selection();
             }
         })
@@ -851,6 +856,7 @@ impl Render for DocumentView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.reset_native_input_if_needed(window, cx);
         self.sync_diff_peek(cx);
+        self.sync_hover_card(cx);
         let runnable_tasks_by_line = self.runnable_tasks_by_line(cx);
         let layout_snapshot = self.editor_state.layout_snapshot();
         let desired_gutter_extra_columns = if runnable_tasks_by_line.is_empty() {
@@ -1051,6 +1057,7 @@ impl Render for DocumentView {
                             }
                         });
                     }
+                    input_view.update(cx, |view, cx| view.dismiss_hover_card(cx));
                     let key = crate::utils::translate_key(&ev.keystroke);
                     let uses_native_text = input_view.read(cx).uses_native_text(ev, cx);
                     if uses_native_text {
@@ -1074,7 +1081,10 @@ impl Render for DocumentView {
 
                     move |phase, event, cx| {
                         if phase == EditorPointerSelectionPhase::Begin {
-                            input_view.update(cx, |view, cx| view.cancel_native_composition(cx));
+                            input_view.update(cx, |view, cx| {
+                                view.cancel_native_composition(cx);
+                                view.dismiss_hover_card(cx);
+                            });
                         }
                         if phase == EditorPointerSelectionPhase::Begin
                             && let Some(line) = editor_state.gutter_diff_line_at(event.position)
@@ -1119,6 +1129,10 @@ impl Render for DocumentView {
             None
         };
 
+        if rendered_markdown.is_some() {
+            self.hover = Default::default();
+        }
+        let hover_card = self.render_hover_card(cx);
         if rendered_markdown.is_none() && self.markdown_link_hovered.replace(false) {
             report_markdown_link_hover(&self.core, None, cx);
         }
@@ -1218,9 +1232,26 @@ impl Render for DocumentView {
                 let core = self.core.clone();
                 let view_id = self.view_id;
                 let focus = self.focus.clone();
+                let hover_view = cx.entity();
+                this.on_mouse_move(
+                    cx.listener(|view, event: &gpui::MouseMoveEvent, window, cx| {
+                        view.hover_pointer_moved(
+                            event.position,
+                            event.pressed_button.is_some(),
+                            window,
+                            cx,
+                        );
+                    }),
+                )
+                .on_hover(cx.listener(|view, hovered: &bool, _window, cx| {
+                    if !*hovered {
+                        view.hover_pointer_left(cx);
+                    }
+                }))
                 // Right-click leaves the Helix selection alone so menu actions act on it.
-                this.on_mouse_down(MouseButton::Right, move |event, window, cx| {
+                .on_mouse_down(MouseButton::Right, move |event, window, cx| {
                     cx.stop_propagation();
+                    hover_view.update(cx, |view, cx| view.dismiss_hover_card(cx));
                     focus_editor_view(&core, view_id, cx);
                     window.focus(&focus, cx);
                     window.dispatch_action(
@@ -1235,6 +1266,7 @@ impl Render for DocumentView {
             .child(content)
             .when_some(empty_scratch_state, gpui::ParentElement::child)
             .when_some(controls, gpui::ParentElement::child)
+            .when_some(hover_card, gpui::ParentElement::child)
     }
 }
 

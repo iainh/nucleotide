@@ -416,6 +416,26 @@ impl EditorViewState {
         }
     }
 
+    /// The word under `event` in the frame this view last painted.
+    pub fn hover_target_at_event(
+        &self,
+        editor: &Editor,
+        view_id: ViewId,
+        event: EditorSurfacePointerEvent,
+    ) -> Option<crate::EditorHoverTarget> {
+        let view = editor.tree.try_get(view_id)?;
+        let document = editor.document(view.doc)?;
+        let gutter_columns = view
+            .gutter_offset(document)
+            .saturating_add(self.gutter_extra_columns.get());
+        crate::hover_target_at_position(
+            event,
+            gutter_columns,
+            &self.surface_metrics.line_cache(),
+            document,
+        )
+    }
+
     pub fn clear_pointer_selection(&self) {
         self.selection_drag_state.clear();
         self.surface_metrics.clear_pointer_drag();

@@ -24,6 +24,7 @@ pub mod view_manager;
 mod window_persistence;
 
 use documentation::{DOC_SIDEBAR_DEFAULT_WIDTH, DOC_SIDEBAR_MIN_WIDTH, show_hover_docs};
+pub(crate) use documentation::{collect_hover_entries, hover_requests};
 pub(crate) use image_viewer::ImageId;
 use image_viewer::{
     ImagePresentations, ImageTab, cache_remote_image_file, should_open_with_image_viewer,
@@ -8358,6 +8359,10 @@ impl Workspace {
                 self.handle_overlay_update(cx);
             }
             crate::Update::HoverDocs(entries) => {
+                self.set_documentation_sidebar_entries(entries.clone(), cx);
+            }
+            crate::Update::OpenHoverDocs(entries) => {
+                self.doc_sidebar_visible = true;
                 self.set_documentation_sidebar_entries(entries.clone(), cx);
             }
             crate::Update::Completion(_completion_view) => {

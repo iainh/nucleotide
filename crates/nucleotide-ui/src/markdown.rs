@@ -50,6 +50,8 @@ pub struct MarkdownStyle {
     pub heading_font_sizes: [Pixels; 6],
     pub heading_border_color: Option<Hsla>,
     pub code_overflow_x_scroll: bool,
+    /// Show a fenced block's language above it.
+    pub code_language_labels: bool,
     pub alert_note_color: Hsla,
     pub alert_tip_color: Hsla,
     pub alert_important_color: Hsla,
@@ -79,6 +81,7 @@ impl MarkdownStyle {
             heading_font_sizes: scaled_heading_sizes(body_font_size),
             heading_border_color: None,
             code_overflow_x_scroll: false,
+            code_language_labels: true,
             alert_note_color: tokens.editor.info,
             alert_tip_color: tokens.editor.success,
             alert_important_color: tokens.editor.info,
@@ -2615,7 +2618,7 @@ fn render_code_block(
             style,
         ));
 
-    let block = if let Some(language) = language {
+    let block = if let Some(language) = language.filter(|_| style.code_language_labels) {
         let label_size = (style.body_font_size - px(2.0)).max(px(10.0));
         div()
             .flex()

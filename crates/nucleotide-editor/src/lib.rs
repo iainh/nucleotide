@@ -91,7 +91,9 @@ pub use highlight::{
     soft_wrap_highlighted_line_runs, soft_wrap_highlighted_line_runs_batch, text_style_at_position,
     unwrapped_highlighted_line, unwrapped_highlighted_lines,
 };
-pub use hit_test::{EditorHitTestResult, hit_test_document_position};
+pub use hit_test::{
+    EditorHitTestResult, EditorHoverTarget, hit_test_document_position, hover_target_at_position,
+};
 pub use inline_diagnostics::{
     FallbackDiagnosticFramePlan, FallbackDiagnosticFramePlanParams, FallbackDiagnosticPaintParams,
     InlineDiagnosticColors, InlineDiagnosticConnector, InlineDiagnosticFramePlan,

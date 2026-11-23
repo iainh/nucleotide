@@ -137,6 +137,8 @@ pub enum Update {
     RemoteConnectionManager,
     Completion(gpui::Entity<nucleotide_ui::completion_v2::CompletionView>),
     HoverDocs(Vec<HoverDocEntry>),
+    /// Show these results, such as a hover card's, in the documentation sidebar.
+    OpenHoverDocs(Vec<HoverDocEntry>),
     CompletionEvent(helix_view::handlers::completion::CompletionEvent),
     Info(helix_view::info::Info),
 
@@ -245,6 +247,7 @@ impl std::fmt::Debug for Update {
             Update::Completion(_) => write!(f, "Completion(...)"),
             Update::Info(_) => write!(f, "Info(...)"),
             Update::HoverDocs(entries) => write!(f, "HoverDocs(len={})", entries.len()),
+            Update::OpenHoverDocs(entries) => write!(f, "OpenHoverDocs(len={})", entries.len()),
             Update::EditorConfigChanged(_) => write!(f, "EditorConfigChanged(...)"),
             Update::EditorStatus(status) => write!(f, "EditorStatus({status:?})"),
             Update::Redraw => write!(f, "Redraw"),
