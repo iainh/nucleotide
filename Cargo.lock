@@ -130,14 +130,15 @@ dependencies = [
 
 [[package]]
 name = "ahash"
-version = "0.8.12"
+version = "0.8.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a15f179cd60c4584b8a8c596927aadc462e27f2ca70c04e0071964a73ba7a75"
+checksum = "0fca89247609239eeb6915e6991111866b92d7b31025e69302bbf430cc4d2c38"
 dependencies = [
  "cfg-if",
  "const-random",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
+ "serde",
  "version_check",
  "zerocopy",
 ]
@@ -1208,21 +1209,20 @@ checksum = "be95d4a884358a21a199689323c29e9256b4a1b315e22f183d155422041d3a9a"
 
 [[package]]
 name = "const-random"
-version = "0.1.18"
+version = "0.1.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "87e00182fe74b066627d63b85fd550ac2998d4b0bd86bfed477a0ae4c7c71359"
+checksum = "d38d4bb3e79c716fd0330d8da84171b0135e59e01076e99f22b75a64c56e952c"
 dependencies = [
  "const-random-macro",
 ]
 
 [[package]]
 name = "const-random-macro"
-version = "0.1.16"
+version = "0.1.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f9d839f2a20b0aee515dc581a6172f2321f96cab76c1a38a4c584a194955390e"
+checksum = "d66bb491e9fc48cb3fed9d57df886880a751d540d645ebc86b6d9d35b8fa8457"
 dependencies = [
- "getrandom 0.2.17",
- "once_cell",
+ "getrandom 0.4.3",
  "tiny-keccak",
 ]
 
@@ -5650,7 +5650,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide"
-version = "0.18.0"
+version = "0.18.1"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -5715,7 +5715,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-appearance"
-version = "0.18.0"
+version = "0.18.1"
 dependencies = [
  "ashpd",
  "futures-executor",
@@ -5729,7 +5729,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-core"
-version = "0.18.0"
+version = "0.18.1"
 dependencies = [
  "anyhow",
  "gpui",
@@ -5747,7 +5747,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-editor"
-version = "0.18.0"
+version = "0.18.1"
 dependencies = [
  "arc-swap",
  "criterion",
@@ -5779,7 +5779,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-events"
-version = "0.18.0"
+version = "0.18.1"
 dependencies = [
  "helix-core",
  "helix-lsp",
@@ -5793,7 +5793,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-logging"
-version = "0.18.0"
+version = "0.18.1"
 dependencies = [
  "anyhow",
  "dirs 7.0.0",
@@ -5808,7 +5808,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-lsp"
-version = "0.18.0"
+version = "0.18.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -5829,7 +5829,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-lsp-proxy"
-version = "0.18.0"
+version = "0.18.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -5841,7 +5841,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-process"
-version = "0.18.0"
+version = "0.18.1"
 dependencies = [
  "libc",
  "tempfile",
@@ -5867,7 +5867,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-remote"
-version = "0.18.0"
+version = "0.18.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5895,7 +5895,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-terminal"
-version = "0.18.0"
+version = "0.18.1"
 dependencies = [
  "anyhow",
  "libghostty-vt",
@@ -5906,7 +5906,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-terminal-panel"
-version = "0.18.0"
+version = "0.18.1"
 dependencies = [
  "gpui",
  "nucleotide-events",
@@ -5916,7 +5916,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-terminal-view"
-version = "0.18.0"
+version = "0.18.1"
 dependencies = [
  "gpui",
  "nucleotide-events",
@@ -5928,7 +5928,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-types"
-version = "0.18.0"
+version = "0.18.1"
 dependencies = [
  "gpui",
  "helix-core",
@@ -5938,7 +5938,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-ui"
-version = "0.18.0"
+version = "0.18.1"
 dependencies = [
  "anyhow",
  "gpui",
@@ -5982,7 +5982,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-workspace"
-version = "0.18.0"
+version = "0.18.1"
 dependencies = [
  "async-trait",
  "futures",
@@ -6629,9 +6629,9 @@ dependencies = [
 
 [[package]]
 name = "pathfinder_simd"
-version = "0.5.6"
+version = "0.5.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4500030c302e4af1d423f36f3b958d1aecb6c04184356ed5a833bf6b60435777"
+checksum = "866282e66a5609f51217181eecb81cf4f2bf78c79d41b662f9cf711e0fcb60ff"
 dependencies = [
  "rustc_version",
 ]
