@@ -1183,3 +1183,108 @@ fn review_hunk_menu_stages_and_discards_one_hunk(cx: &mut gpui::TestAppContext) 
     // The staged hunk stays staged.
     assert_eq!(git(root.path(), &["show", ":file.txt"]), kept);
 }
+
+#[gpui::test]
+fn changes_list_moves_stages_and_opens_from_the_keyboard(cx: &mut gpui::TestAppContext) {
+    let _runtime = TEST_RUNTIME.enter();
+    let root = repository();
+    // Enough files that the list scrolls; row n lists new-n.txt.
+    for index in 0..40 {
+        fs::write(root.path().join(format!("new-{index:02}.txt")), "new\n").unwrap();
+    }
+    let (core, _, cx) = new_test_workspace(cx, &root.path().join("file.txt"));
+    core.update(cx, |_, cx| cx.emit(crate::Update::ShowCommit));
+    wait_for(&core, cx, |cx| {
+        cx.debug_bounds("changes-row-0").is_some() && cx.debug_bounds("commit-shown-0").is_some()
+    });
+    assert!(
+        cx.debug_bounds("changes-row-35").is_none(),
+        "row 35 starts out of view"
+    );
+
+    // A click focuses the list; the arrow keys then move the shown file.
+    click_line(cx, "changes-row-0");
+    cx.simulate_keystrokes("down down");
+    wait_for(&core, cx, |cx| cx.debug_bounds("commit-shown-2").is_some());
+    assert!(cx.debug_bounds("commit-shown-0").is_none());
+
+    // Space stages the selected file, and again unstages it.
+    cx.simulate_keystrokes("space");
+    wait_for(&core, cx, |_| {
+        git(root.path(), &["diff", "--cached", "--name-only"]).trim() == "new-02.txt"
+    });
+    cx.simulate_keystrokes("space");
+    wait_for(&core, cx, |_| {
+        git(root.path(), &["diff", "--cached", "--name-only"])
+            .trim()
+            .is_empty()
+    });
+
+    // The selection scrolls into view as it moves past the bottom.
+    for _ in 0..33 {
+        cx.simulate_keystrokes("down");
+    }
+    wait_for(&core, cx, |cx| cx.debug_bounds("commit-shown-35").is_some());
+    let row = cx
+        .debug_bounds("changes-row-35")
+        .expect("selected row in view");
+    assert!(
+        cx.debug_bounds("changes-row-0").is_none(),
+        "the list scrolled away from its first row"
+    );
+    assert!(row.bottom() <= cx.update(|window, _| window.viewport_size().height));
+    cx.simulate_keystrokes("k");
+    wait_for(&core, cx, |cx| cx.debug_bounds("commit-shown-34").is_some());
+
+    // Enter opens the selected file in the editor.
+    cx.simulate_keystrokes("enter");
+    wait_for(&core, cx, |cx| {
+        core.read_with(cx, |core, _| {
+            core.editor
+                .documents()
+                .any(|doc| doc.path().is_some_and(|path| path.ends_with("new-34.txt")))
+        })
+    });
+}
+
+#[gpui::test]
+fn history_list_moves_and_shows_commits_from_the_keyboard(cx: &mut gpui::TestAppContext) {
+    let _runtime = TEST_RUNTIME.enter();
+    let root = repository();
+    for index in 0..30 {
+        fs::write(root.path().join("file.txt"), format!("version {index}\n")).unwrap();
+        git(
+            root.path(),
+            &["commit", "-qam", &format!("version {index}")],
+        );
+    }
+    let ids: Vec<String> = git(root.path(), &["log", "--format=%h", "--abbrev=7"])
+        .lines()
+        .map(str::to_owned)
+        .collect();
+    let (core, _, cx) = new_test_workspace(cx, &root.path().join("file.txt"));
+    click_line(cx, "sidebar-history");
+    wait_for(&core, cx, |cx| cx.debug_bounds("history-row-0").is_some());
+    click_line(cx, "history-row-0");
+    // Debug selectors are static strings.
+    let shown_selector = |n: usize| -> &'static str { format!("history-shown-{}", ids[n]).leak() };
+    wait_for(&core, cx, |cx| cx.debug_bounds(shown_selector(0)).is_some());
+
+    // Arrows move the selection without loading each commit; Enter shows it.
+    cx.simulate_keystrokes("down j down");
+    pump(&core, cx);
+    assert!(cx.debug_bounds(shown_selector(0)).is_some());
+    cx.simulate_keystrokes("enter");
+    wait_for(&core, cx, |cx| cx.debug_bounds(shown_selector(3)).is_some());
+
+    // Far down the list, the selected row has scrolled into view.
+    for _ in 0..24 {
+        cx.simulate_keystrokes("down");
+    }
+    cx.simulate_keystrokes("k enter");
+    wait_for(&core, cx, |cx| {
+        cx.debug_bounds(shown_selector(26)).is_some()
+    });
+    assert!(cx.debug_bounds("history-row-26").is_some());
+    assert!(cx.debug_bounds("history-row-0").is_none());
+}

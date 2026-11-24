@@ -11,6 +11,7 @@ mod view;
 
 use super::*;
 pub(crate) use menu::ReviewMenuIntent;
+use nucleotide_ui::scrollbar::{ListScrollHandle, Scrollbar};
 use nucleotide_vcs::repository::{
     CommitMessageContext, FileVersions, GitRepository, UpstreamState,
 };
@@ -40,9 +41,14 @@ pub(super) struct CommitReview {
     pending: Option<PendingStage>,
     error: Option<String>,
     collapsed: HashSet<PathBuf>,
-    scroll: Option<gpui::ListState>,
+    scroll: Option<Scrolled<ListScrollHandle>>,
     refresh_again: bool,
     focus: Option<FocusHandle>,
+    /// The Changes list, which holds focus while it is navigated with keys.
+    changes_focus: Option<FocusHandle>,
+    changes_scroll: Scrolled<gpui::UniformListScrollHandle>,
+    /// The error banner, which scrolls when Git explains at length.
+    error_scroll: Scrolled<gpui::ScrollHandle>,
     control_focus: HashMap<String, FocusHandle>,
     controls: Vec<(FocusHandle, Arc<ReviewFile>, StageChange)>,
     collapse_prefix: bool,
@@ -87,7 +93,7 @@ pub(super) struct CommitReview {
     /// `VcsService` read a new status, so the next reload can use it instead of its own.
     service_status: bool,
     /// Horizontal scroll of each diff's columns, shared by all its list items.
-    scrolls: HashMap<String, [gpui::ScrollHandle; 2]>,
+    scrolls: HashMap<String, [Scrolled<gpui::ScrollHandle>; 2]>,
     /// The list item holding each working-tree hunk of the shown file.
     hunk_items: Vec<usize>,
     /// The shown file's diff list, a view of its own so other edits don't redraw it.
@@ -100,6 +106,39 @@ pub(super) struct CommitReview {
     menu_popup: Option<(Entity<PopupMenu>, Subscription)>,
     /// Changes to discard once confirmed and no other Git work runs.
     discard: Option<menu::Discard>,
+}
+
+/// A scroll position with the scroll bar that shows and drives it. The bar's
+/// hover and drag state must outlive a frame, so both are kept together.
+#[derive(Clone)]
+pub(super) struct Scrolled<H> {
+    pub(super) handle: H,
+    pub(super) bar: ScrollbarState,
+}
+
+impl<H: nucleotide_ui::scrollbar::ScrollableHandle + Clone + Default> Default for Scrolled<H> {
+    fn default() -> Self {
+        let handle = H::default();
+        Self {
+            bar: ScrollbarState::new(handle.clone()),
+            handle,
+        }
+    }
+}
+
+impl Scrolled<ListScrollHandle> {
+    pub(super) fn list() -> Self {
+        let handle = ListScrollHandle(gpui::ListState::new(
+            0,
+            gpui::ListAlignment::Top,
+            // Measure well past the viewport so each wheel step lands on laid-out items.
+            px(1000.0),
+        ));
+        Self {
+            bar: ScrollbarState::new(handle.clone()),
+            handle,
+        }
+    }
 }
 
 impl CommitReview {
@@ -342,6 +381,33 @@ enum StageChange {
 }
 
 impl StageChange {
+    /// What activating this change's checkbox does, such as "Stage line 42".
+    fn label(&self, file: &ReviewFile) -> String {
+        let verb = |stage: bool| if stage { "Stage" } else { "Unstage" };
+        match *self {
+            Self::File(stage) => format!("{} {}", verb(stage), file.entry.relative_path.display()),
+            Self::Hunk(index, stage) => match file
+                .content
+                .as_ref()
+                .ok()
+                .and_then(|c| c.changes.hunks().get(index).cloned())
+            {
+                Some(hunk) => format!("{} hunk at line {}", verb(stage), hunk.after.start + 1),
+                None => format!("{} hunk", verb(stage)),
+            },
+            Self::Line {
+                removal: false,
+                line,
+                staged,
+            } => format!("{} line {}", verb(staged), line + 1),
+            Self::Line {
+                removal: true,
+                line,
+                staged,
+            } => format!("{} removed line {}", verb(staged), line + 1),
+        }
+    }
+
     /// The selection after this line or hunk change, or `None` for a file
     /// change or a file that cannot be staged line by line.
     fn select(&self, content: &FileContent) -> Option<Selection> {
@@ -880,7 +946,7 @@ impl Workspace {
                 self.review_item_of(file, change),
                 &self.commit_review.scroll,
             ) {
-                scroll.scroll_to_reveal_item(item);
+                scroll.handle.0.scroll_to_reveal_item(item);
             }
             window.focus(&focus.clone(), cx);
         } else {
@@ -963,20 +1029,22 @@ impl Workspace {
     }
 
     pub(super) fn open_commit_tab(&mut self, cx: &mut Context<Self>) {
-        self.show_commit_tab(cx);
+        self.show_commit_tab(true, cx);
         self.refresh_commit_review(cx);
     }
 
-    /// Activates the Commit tab, opening it when needed, without reloading the review.
-    fn show_commit_tab(&mut self, cx: &mut Context<Self>) {
+    /// Activates the Commit tab, opening it when needed, without reloading the
+    /// review. With `focus` it takes keyboard focus; otherwise focus stays
+    /// where it is, such as in the sidebar list being navigated.
+    fn show_commit_tab(&mut self, focus: bool, cx: &mut Context<Self>) {
         self.commit_review.sidebar = Sidebar::Changes;
         self.commit_review.history.in_tab = false;
-        self.activate_commit_tab(cx);
+        self.activate_commit_tab(focus, cx);
     }
 
     /// Activates the Commit tab, opening it when needed, for whichever of the
     /// review or a history commit it shows.
-    fn activate_commit_tab(&mut self, cx: &mut Context<Self>) {
+    fn activate_commit_tab(&mut self, focus: bool, cx: &mut Context<Self>) {
         self.commit_review
             .focus
             .get_or_insert_with(|| cx.focus_handle());
@@ -989,7 +1057,9 @@ impl Workspace {
         self.project_panes(cx);
         self.update_document_views(cx);
         self.invalidate_tab_bar_documents();
-        self.defer_focus_editor(cx);
+        if focus {
+            self.defer_focus_editor(cx);
+        }
         cx.notify();
     }
 

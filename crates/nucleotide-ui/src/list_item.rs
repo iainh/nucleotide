@@ -8,8 +8,8 @@ use crate::{
 };
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    AnyElement, App, ElementId, Hsla, InteractiveElement, IntoElement, ParentElement, RenderOnce,
-    SharedString, StatefulInteractiveElement, Styled, TextOverflow, Window, div,
+    AnyElement, App, AppContext, ElementId, Hsla, InteractiveElement, IntoElement, ParentElement,
+    RenderOnce, SharedString, StatefulInteractiveElement, Styled, TextOverflow, Window, div,
 };
 use smallvec::SmallVec;
 
@@ -170,11 +170,14 @@ pub struct ListItem {
     end_slot: Option<AnyElement>,
     overflow: TextOverflow,
     tooltip: Option<SharedString>,
+    tooltip_detail: Option<SharedString>,
     class_names: Vec<SharedString>,
     focusable: bool,
     background: Option<Hsla>,
     text_color: Option<Hsla>,
     hover_background: Option<Hsla>,
+    padding_y: Option<gpui::Pixels>,
+    stretch_start_slot: bool,
 }
 
 impl ListItem {
@@ -193,11 +196,14 @@ impl ListItem {
             end_slot: None,
             overflow: TextOverflow::Truncate("…".into()),
             tooltip: None,
+            tooltip_detail: None,
             class_names: Vec::new(),
             focusable: true,
             background: None,
             text_color: None,
             hover_background: None,
+            padding_y: None,
+            stretch_start_slot: false,
         }
     }
 
@@ -292,6 +298,21 @@ impl ListItem {
         self
     }
 
+    /// Override the spacing's vertical padding, such as zero for rows whose
+    /// start slot draws to their edges, like a graph that joins up with the next row.
+    pub fn padding_y(mut self, padding_y: gpui::Pixels) -> Self {
+        self.padding_y = Some(padding_y);
+        self
+    }
+
+    /// Let the start slot fill the row's height, border included, such as a graph that
+    /// joins up with the next row whatever height the row's text gives it. Its child
+    /// should grow with `flex_1`.
+    pub fn stretch_start_slot(mut self) -> Self {
+        self.stretch_start_slot = true;
+        self
+    }
+
     /// Override the standard hover background without installing a second GPUI hover block.
     pub fn hover_background(mut self, hover_background: Hsla) -> Self {
         self.hover_background = Some(hover_background);
@@ -353,6 +374,12 @@ impl ListItem {
     /// Set tooltip text
     pub fn tooltip(mut self, tooltip: impl Into<SharedString>) -> Self {
         self.tooltip = Some(tooltip.into());
+        self
+    }
+
+    /// A secondary line under the tooltip text, such as an id or a date.
+    pub fn tooltip_detail(mut self, detail: impl Into<SharedString>) -> Self {
+        self.tooltip_detail = Some(detail.into());
         self
     }
 }
@@ -479,7 +506,7 @@ impl RenderOnce for ListItem {
             .flex_row()
             .items_center()
             .w_full()
-            .py(computed_style.padding_y)
+            .py(self.padding_y.unwrap_or(computed_style.padding_y))
             .px(computed_style.padding_x)
             .text_overflow(self.overflow)
             .bg(background)
@@ -528,6 +555,20 @@ impl RenderOnce for ListItem {
             base = base.cursor_pointer();
         }
 
+        if let Some(tooltip) = self.tooltip {
+            let detail = self.tooltip_detail;
+            base = base.tooltip(move |_, cx| {
+                cx.new(|_| {
+                    let tooltip = crate::TextTooltip::new(tooltip.clone());
+                    match detail.clone() {
+                        Some(detail) => tooltip.detail(detail),
+                        None => tooltip,
+                    }
+                })
+                .into()
+            });
+        }
+
         // Apply event listeners - this allows GPUI listener pattern integration
         if !self.disabled && !self.loading {
             for listener in self.event_listeners {
@@ -548,7 +589,19 @@ impl RenderOnce for ListItem {
 
         // Build content with slots
         if let Some(start_slot) = self.start_slot {
-            base = base.child(div().mr(slot_gap).flex_shrink_0().child(start_slot));
+            base = base.child(
+                div()
+                    .mr(slot_gap)
+                    .flex_shrink_0()
+                    // Over the row's transparent border too, so it meets the next row.
+                    .when(self.stretch_start_slot, |slot| {
+                        slot.self_stretch()
+                            .my(-computed_style.border_width)
+                            .flex()
+                            .flex_col()
+                    })
+                    .child(start_slot),
+            );
         }
 
         // Main content area
@@ -556,6 +609,7 @@ impl RenderOnce for ListItem {
             div()
                 .flex()
                 .flex_1()
+                .min_w_0()
                 .overflow_hidden()
                 .children(self.children),
         );

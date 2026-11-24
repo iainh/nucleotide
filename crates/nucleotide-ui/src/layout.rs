@@ -370,6 +370,7 @@ pub struct Toolbar {
     id: ElementId,
     label: Option<SharedString>,
     compact: bool,
+    wrap: bool,
     height: Option<Pixels>,
     border_color: Option<Hsla>,
     children: Vec<AnyElement>,
@@ -381,6 +382,7 @@ impl Toolbar {
             id: id.into(),
             label: None,
             compact: false,
+            wrap: false,
             height: None,
             border_color: None,
             children: Vec::new(),
@@ -394,6 +396,13 @@ impl Toolbar {
 
     pub fn compact(mut self, compact: bool) -> Self {
         self.compact = compact;
+        self
+    }
+
+    /// Wrap controls onto further rows when the toolbar is too narrow for
+    /// them, growing past its height instead of clipping them.
+    pub fn wrap(mut self, wrap: bool) -> Self {
+        self.wrap = wrap;
         self
     }
 
@@ -432,7 +441,13 @@ impl RenderOnce for Toolbar {
             .flex_row()
             .items_center()
             .gap(tokens.sizes.space_2)
-            .h(height)
+            .when(!self.wrap, |this| this.h(height))
+            .when(self.wrap, |this| {
+                this.flex_wrap()
+                    .flex_shrink_0()
+                    .min_h(height)
+                    .py(tokens.sizes.space_1)
+            })
             .min_w(px(0.0))
             .px(tokens.sizes.space_3)
             .bg(tokens.chrome.surface)

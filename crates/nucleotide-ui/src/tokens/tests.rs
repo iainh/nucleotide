@@ -646,6 +646,7 @@ mod titlebar_contrast_tests {
         assert_eq!(tokens.sizes.statusbar_lsp_width_medium, gpui::px(112.0));
         assert_eq!(tokens.sizes.statusbar_lsp_width_compact, gpui::px(36.0));
         assert_eq!(tokens.sizes.statusbar_utility_width, gpui::px(64.0));
+        assert_eq!(tokens.sizes.statusbar_vcs_ref_max_width, gpui::px(200.0));
     }
 }
 

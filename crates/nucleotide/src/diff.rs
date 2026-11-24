@@ -40,6 +40,8 @@ pub(crate) struct DiffStyle {
     pub text_secondary: Hsla,
     pub added: Hsla,
     pub removed: Hsla,
+    /// Width of the column holding each changed line's + or − sign.
+    pub sign_width: Pixels,
 }
 
 pub(crate) struct DiffLine {
@@ -47,6 +49,7 @@ pub(crate) struct DiffLine {
     text: String,
     changed: Option<Range<usize>>,
     color: Hsla,
+    sign_width: Pixels,
 }
 
 pub(crate) fn diff_lines(removed: &[String], added: &[String], style: &DiffStyle) -> Vec<DiffLine> {
@@ -69,12 +72,14 @@ pub(crate) fn diff_lines(removed: &[String], added: &[String], style: &DiffStyle
         text: text.clone(),
         changed: changed(index, true),
         color: style.removed,
+        sign_width: style.sign_width,
     });
     let added_lines = added.iter().enumerate().map(|(index, text)| DiffLine {
         sign: '+',
         text: text.clone(),
         changed: changed(index, false),
         color: style.added,
+        sign_width: style.sign_width,
     });
     removed_lines.chain(added_lines).collect()
 }
@@ -101,7 +106,7 @@ pub(crate) fn render_diff_line(line: DiffLine, line_height: Pixels) -> impl Into
         .child(
             div()
                 .flex_none()
-                .w(px(24.0))
+                .w(line.sign_width)
                 .text_center()
                 .text_color(line.color)
                 .child(line.sign.to_string()),

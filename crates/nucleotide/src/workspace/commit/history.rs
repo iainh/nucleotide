@@ -7,8 +7,9 @@ use super::*;
 use crate::diff::DiffStyle;
 use gpui::{Hsla, PathBuilder, canvas, size};
 use nucleotide_types::VcsStatus;
-use nucleotide_ui::StateViewTone;
 use nucleotide_ui::VcsStatusStyle;
+use nucleotide_ui::scrollbar::{ListScrollHandle, Scrollbar};
+use nucleotide_ui::{ListItem, ListItemSpacing, ListItemVariant, NavigableList, StateViewTone};
 use nucleotide_vcs::VcsServiceHandle;
 use nucleotide_vcs::history::{
     CommitChanges, CommitRef, CommitSummary, FileChangeKind, GraphRow, Half, HistoryPages, RefKind,
@@ -56,11 +57,17 @@ pub(in crate::workspace) struct History {
     generation: u64,
     /// The repository changed while the list was hidden.
     stale: bool,
-    scroll: gpui::UniformListScrollHandle,
+    scroll: Scrolled<gpui::UniformListScrollHandle>,
+    /// The list, which holds focus while it is navigated with keys.
+    pub(in crate::workspace) focus: Option<FocusHandle>,
+    /// The row the keyboard or a click selected last.
+    cursor: Option<usize>,
     selected: Option<String>,
     shown: Option<Result<Arc<ShownCommit>, String>>,
     collapsed: HashSet<PathBuf>,
-    list: Option<gpui::ListState>,
+    list: Option<Scrolled<ListScrollHandle>>,
+    /// The commit message body, which scrolls when it is long.
+    body_scroll: Scrolled<gpui::ScrollHandle>,
     /// The commit and items the diff list was last laid out for.
     laid_out: Option<(String, Vec<HistoryItem>)>,
 }
@@ -164,6 +171,20 @@ fn now() -> i64 {
 fn short_id(id: &str) -> &str {
     &id[..id.len().min(7)]
 }
+
+/// A commit's local date and time, such as "2026-11-24 14:05".
+fn commit_date(time: i64) -> String {
+    chrono::DateTime::from_timestamp(time, 0)
+        .map(|date| {
+            date.with_timezone(&chrono::Local)
+                .format("%Y-%m-%d %H:%M")
+                .to_string()
+        })
+        .unwrap_or_default()
+}
+
+/// Keys of the History list, shown in its rows' tooltips.
+const HISTORY_KEYS: &str = "↑↓ select · Enter shows the commit";
 
 impl Workspace {
     /// Shows the History list, loading it when needed.
@@ -318,12 +339,19 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Shows commit `index` of the list in the Commit tab.
+    /// Moves the list's selection to row `index` without loading its commit.
+    fn move_history_cursor(&mut self, index: usize, cx: &mut Context<Self>) {
+        self.commit_review.history.cursor = Some(index);
+        cx.notify();
+    }
+
+    /// Shows commit `index` of the list in the Commit tab. Focus stays in the list.
     fn select_history_commit(&mut self, index: usize, cx: &mut Context<Self>) {
         let Some(commit) = self.commit_review.history.commits.get(index).cloned() else {
             return;
         };
         let history = &mut self.commit_review.history;
+        history.cursor = Some(index);
         history.in_tab = true;
         if history.selected.as_ref() != Some(&commit.id) {
             history.selected = Some(commit.id.clone());
@@ -368,7 +396,7 @@ impl Workspace {
         }
         // The history view has no message editor to type into.
         self.pane_host.commit_message_focused = false;
-        self.activate_commit_tab(cx);
+        self.activate_commit_tab(false, cx);
     }
 
     fn lane_colors(cx: &App) -> [Hsla; 6] {
@@ -433,10 +461,11 @@ impl Workspace {
         let tokens = cx.global::<nucleotide_ui::Theme>().tokens;
         let history = &self.commit_review.history;
         let (commit, row) = (&history.commits[index], history.rows[index].clone());
-        let selected = history.in_tab && history.selected.as_ref() == Some(&commit.id);
+        let selected = history.cursor == Some(index);
         let colors = Self::lane_colors(cx);
         let lane_width = tokens.sizes.space_5;
         let graph_width = lane_width * history.lanes.clamp(1, MAX_LANES) as f32;
+        let row_height = Self::history_row_height(cx);
         let stroke = tokens.sizes.space_1;
         let dot = tokens.sizes.space_3;
         let ring = tokens.chrome.file_tree_background;
@@ -492,36 +521,35 @@ impl Workspace {
         } else {
             (file_tree.item_text, file_tree.item_text_secondary)
         };
-        let hover = if selected {
-            file_tree.item_background_selected_hover
-        } else {
-            file_tree.item_background_hover
-        };
-        div()
-            .id(("history-row", index))
-            .when(cfg!(test), |view| {
-                view.debug_selector(move || format!("history-row-{index}"))
+        let item = ListItem::new(("history-row", index))
+            .variant(ListItemVariant::Ghost)
+            .spacing(ListItemSpacing::Compact)
+            // The graph runs from the top of the row to the bottom to join its neighbours.
+            .padding_y(tokens.sizes.space_0)
+            .stretch_start_slot()
+            .background(if selected {
+                file_tree.item_background_selected
+            } else {
+                gpui::transparent_black()
             })
-            .h(Self::history_row_height(cx))
-            .w_full()
-            .min_w_0()
-            .overflow_hidden()
-            .flex()
-            .items_center()
-            .px(tokens.sizes.space_2)
-            .gap(tokens.sizes.space_2)
-            .rounded(tokens.sizes.radius_md)
-            .when(selected, |row| row.bg(file_tree.item_background_selected))
-            .hover(move |row| row.bg(hover))
-            .cursor_pointer()
-            .on_click(cx.listener(move |this, _: &gpui::ClickEvent, _, cx| {
-                this.select_history_commit(index, cx)
-            }))
-            .child(
+            .hover_background(if selected {
+                file_tree.item_background_selected_hover
+            } else {
+                file_tree.item_background_hover
+            })
+            .text_color(text)
+            .tooltip(commit.subject.clone())
+            .tooltip_detail(format!(
+                "{} · {} · {}\n{HISTORY_KEYS}",
+                short_id(&commit.id),
+                commit_date(commit.time),
+                commit.author
+            ))
+            .start_slot(
                 div()
                     .w(graph_width)
-                    .h_full()
-                    .flex_none()
+                    .flex_1()
+                    .min_h(row_height)
                     .overflow_hidden()
                     .child(graph),
             )
@@ -539,7 +567,6 @@ impl Workspace {
                             .overflow_hidden()
                             .whitespace_nowrap()
                             .text_ellipsis()
-                            .text_color(text)
                             .child(commit.subject.clone()),
                     )
                     .child(
@@ -560,10 +587,13 @@ impl Workspace {
                                     .text_ellipsis()
                                     .child(commit.author.clone()),
                             )
+                            // The full date is in the tooltip, so a narrow sidebar truncates this.
                             .child(
                                 div()
-                                    .flex_none()
+                                    .min_w_0()
+                                    .overflow_hidden()
                                     .whitespace_nowrap()
+                                    .text_ellipsis()
                                     .child(relative_time(now, commit.time)),
                             )
                             // Pills clip at the edge rather than hiding the author.
@@ -585,6 +615,17 @@ impl Workspace {
                             }),
                     ),
             )
+            .with_listener({
+                let listener = cx.listener(move |this, _: &gpui::ClickEvent, _, cx| {
+                    this.select_history_commit(index, cx)
+                });
+                move |row| row.on_click(listener)
+            });
+        div()
+            .when(cfg!(test), |view| {
+                view.debug_selector(move || format!("history-row-{index}"))
+            })
+            .child(item)
             .into_any_element()
     }
 
@@ -625,6 +666,10 @@ impl Workspace {
         } else {
             tokens.file_tree_tokens().inactive_window(&tokens.chrome)
         };
+        self.commit_review
+            .history
+            .focus
+            .get_or_insert_with(|| cx.focus_handle());
         let history = &self.commit_review.history;
         let count = history.commits.len();
         let header = div()
@@ -668,6 +713,9 @@ impl Workspace {
                 .into_any_element()
         } else {
             let now = now();
+            let focus = history.focus.clone().unwrap_or_else(|| cx.focus_handle());
+            let scroll = history.scroll.clone();
+            let cursor = history.cursor;
             let list = gpui::uniform_list(
                 "history-list",
                 count,
@@ -687,12 +735,26 @@ impl Workspace {
                         .collect::<Vec<_>>()
                 }),
             )
-            .track_scroll(&history.scroll)
+            .track_scroll(&scroll.handle)
             .with_horizontal_sizing_behavior(gpui::ListHorizontalSizingBehavior::FitList)
-            .w_full()
-            .flex_1()
-            .min_h_0()
+            .size_full()
             .px(tokens.sizes.space_1);
+            let workspace = cx.entity().downgrade();
+            let (select, open) = (workspace.clone(), workspace);
+            let list = NavigableList::new("history-navigation", &focus, count)
+                .selected(cursor)
+                .track_scroll(&scroll.handle)
+                .on_select(move |index, _, cx| {
+                    let _ = select.update(cx, |this, cx| this.move_history_cursor(index, cx));
+                })
+                .on_confirm(move |index, _, cx| {
+                    let _ = open.update(cx, |this, cx| this.select_history_commit(index, cx));
+                })
+                .relative()
+                .flex_1()
+                .min_h_0()
+                .child(list)
+                .child(Scrollbar::vertical_overlay(scroll.bar));
             div()
                 .flex_1()
                 .min_h_0()
@@ -871,7 +933,12 @@ impl Workspace {
                 }
             }
             HistoryItem::Unified(index) => match &shown.files[*index].diff {
-                Ok(diff) => self.render_unified_staged(*index, &diff.changes, style, cx),
+                Ok(diff) => self.render_unified_staged(
+                    format!("history-unified-{index}"),
+                    &diff.changes,
+                    style,
+                    cx,
+                ),
                 Err(_) => div().into_any_element(),
             },
         }
@@ -893,6 +960,7 @@ impl Workspace {
             text_secondary: tokens.editor.text_secondary,
             added: tokens.editor.success,
             removed: tokens.editor.error,
+            sign_width: tokens.sizes.space_7,
         };
         let root = div()
             .id("history-commit")
@@ -932,11 +1000,23 @@ impl Workspace {
             .filter_map(|f| f.diff.as_ref().ok())
             .fold((0, 0), |(a, r), d| (a + d.added, r + d.removed));
         let items = self.history_items(&shown);
-        let history = &mut self.commit_review.history;
-        let list = history
+        // Long lines scroll sideways under a bar for the diff at the top of the view.
+        let top = self
+            .commit_review
+            .history
             .list
-            .get_or_insert_with(|| gpui::ListState::new(0, gpui::ListAlignment::Top, px(1000.0)))
-            .clone();
+            .as_ref()
+            .map_or(0, |list| list.handle.0.logical_scroll_top().item_ix);
+        let sideways = items.iter().skip(top).find_map(|item| match item {
+            HistoryItem::Split(index, _) => Some((format!("history-{index}"), true)),
+            HistoryItem::Unified(index) => Some((format!("history-unified-{index}"), false)),
+            _ => None,
+        });
+        let sideways = sideways.map(|(id, split)| self.diff_scrollbars(&id, split, cx));
+        let history = &mut self.commit_review.history;
+        let scrolled = history.list.get_or_insert_with(Scrolled::list).clone();
+        let body_scroll = history.body_scroll.clone();
+        let list = scrolled.handle.0.clone();
         let layout = Some((commit.id.clone(), items.clone()));
         if history.laid_out != layout {
             if history
@@ -997,12 +1077,14 @@ impl Workspace {
                 .p(tokens.sizes.space_3)
                 .border_b_1()
                 .border_color(style.border)
-                .child(
+                .child({
+                    let shown = format!("history-shown-{}", short_id(&commit.id));
                     div()
+                        .when(cfg!(test), |view| view.debug_selector(move || shown))
                         .text_size(tokens.sizes.text_lg)
                         .font_weight(FontWeight::SEMIBOLD)
-                        .child(commit.subject.clone()),
-                )
+                        .child(commit.subject.clone())
+                })
                 .child(
                     div()
                         .flex()
@@ -1022,13 +1104,19 @@ impl Workspace {
                 .when(!shown.body.is_empty(), |header| {
                     header.child(
                         div()
-                            .id("history-commit-body")
-                            .max_h(tokens.sizes.space_10 * 2.0)
-                            .overflow_y_scroll()
-                            .font_family(style.font_family.clone())
-                            .text_color(style.text_secondary)
-                            .whitespace_normal()
-                            .child(shown.body.clone()),
+                            .relative()
+                            .child(
+                                div()
+                                    .id("history-commit-body")
+                                    .max_h(tokens.sizes.space_10 * 2.0)
+                                    .overflow_y_scroll()
+                                    .track_scroll(&body_scroll.handle)
+                                    .font_family(style.font_family.clone())
+                                    .text_color(style.text_secondary)
+                                    .whitespace_normal()
+                                    .child(shown.body.clone()),
+                            )
+                            .child(Scrollbar::vertical_overlay(body_scroll.bar)),
                     )
                 })
                 .child(
@@ -1091,7 +1179,19 @@ impl Workspace {
                 .flex()
                 .flex_col()
                 .p(tokens.sizes.space_3)
-                .when(!shown.files.is_empty(), |view| view.child(diff_list))
+                .when(!shown.files.is_empty(), |view| {
+                    view.child(
+                        div()
+                            .relative()
+                            .flex_1()
+                            .min_h_0()
+                            .flex()
+                            .flex_col()
+                            .child(diff_list)
+                            .child(Scrollbar::vertical_overlay(scrolled.bar))
+                            .children(sideways),
+                    )
+                })
                 .when(shown.files.is_empty(), |view| {
                     view.child(StateView::new("history-commit-empty", "No file changes"))
                 }),
@@ -1130,6 +1230,7 @@ impl LoadedPage {
 
 impl History {
     fn clear(&mut self) {
+        self.cursor = None;
         self.commits.clear();
         self.rows.clear();
         self.pages = HistoryPages::default();

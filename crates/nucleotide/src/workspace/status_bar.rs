@@ -556,7 +556,7 @@ impl Workspace {
             .aria_label(tooltip_label)
             .content(
                 div()
-                    .max_w(px(200.0))
+                    .max_w(sizes.statusbar_vcs_ref_max_width)
                     .flex()
                     .items_center()
                     .gap(sizes.space_1)

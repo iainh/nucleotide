@@ -3,8 +3,8 @@
 use super::*;
 use nucleotide_types::VcsStatus;
 use nucleotide_ui::{
-    Checkbox, CheckboxSize, ListItem, ListItemSpacing, ListItemVariant, StateViewTone, VcsIcon,
-    VcsStatusStyle,
+    Checkbox, CheckboxSize, ListItem, ListItemSpacing, ListItemVariant, NavigableList,
+    StateViewTone, VcsIcon, VcsStatusStyle,
 };
 
 /// How a file changed, preferring what the index records over the working tree.
@@ -32,11 +32,78 @@ fn change_kind(entry: &GitStatusEntry) -> VcsStatus {
 /// Sidebar width from which every list in the switch shows its label.
 const SIDEBAR_SWITCH_LABELS_WIDTH: f32 = 300.0;
 
+/// Keys of the Changes list, shown in its rows' tooltips.
+const CHANGES_KEYS: &str = "↑↓ select · Space stages · Enter opens the file";
+
 impl Workspace {
-    /// Shows a changed file's diff in the Commit tab, opening the tab when needed.
-    fn select_review_file(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        self.commit_review.selected = Some(path);
-        self.show_commit_tab(cx);
+    /// Shows changed file `index` in the Commit tab, opening the tab when
+    /// needed. Focus stays in the Changes list.
+    fn select_review_file(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(file) = self
+            .commit_review
+            .snapshot
+            .as_ref()
+            .and_then(|s| s.files.get(index))
+        else {
+            return;
+        };
+        self.commit_review.selected = Some(file.entry.relative_path.clone());
+        self.show_commit_tab(false, cx);
+    }
+
+    /// Stages changed file `index`, or unstages it when it is fully staged.
+    fn toggle_review_file(&mut self, index: usize, cx: &mut Context<Self>) {
+        // Clicks queue behind a stage; only a commit or push locks them.
+        if self.commit_review.operation.is_some() {
+            return;
+        }
+        let Some(file) = self
+            .commit_review
+            .snapshot
+            .as_ref()
+            .and_then(|s| s.files.get(index).cloned())
+        else {
+            return;
+        };
+        let change = StageChange::File(file.state() != SelectionState::Staged);
+        self.stage_review_files(vec![(file, change)], cx);
+    }
+
+    /// Opens changed file `index` in the editor at its first change.
+    fn open_review_file(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(snapshot) = &self.commit_review.snapshot else {
+            return;
+        };
+        let Some(file) = snapshot.files.get(index) else {
+            return;
+        };
+        if change_kind(&file.entry) == VcsStatus::Deleted {
+            return;
+        }
+        let line = file
+            .content
+            .as_ref()
+            .ok()
+            .and_then(|c| c.changes.hunks().first().map(|hunk| hunk.after.start))
+            .unwrap_or(0);
+        let path = snapshot.repository.root().join(&file.entry.relative_path);
+        self.open_file_at(&path, Position::new(line as usize, 0), cx);
+    }
+
+    /// Moves keyboard focus to the list the sidebar shows.
+    pub(in crate::workspace) fn focus_sidebar_list(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let focus = match self.commit_review.sidebar {
+            Sidebar::Files => return,
+            Sidebar::Changes => &mut self.commit_review.changes_focus,
+            Sidebar::History => &mut self.commit_review.history.focus,
+        };
+        let focus = focus.get_or_insert_with(|| cx.focus_handle()).clone();
+        // Opening the Commit tab focuses it after this effect cycle; follow it.
+        cx.defer_in(window, move |_, window, cx| window.focus(&focus, cx));
     }
 
     /// The Files | Changes | History switch, shown in the status bar row under the sidebar.
@@ -56,36 +123,14 @@ impl Workspace {
             .read(cx)
             .status_entries()
             .len();
-        let (pill_bg, pill_fg) = if let Some(c) = tokens.chrome.contrast {
-            (c.highlight, c.highlight_text)
-        } else {
-            (tokens.editor.vcs_modified, tokens.editor.background)
-        };
-        // A pill after the Changes label, hidden when nothing has changed.
-        let pill = (count > 0).then(|| {
-            div()
-                .when(cfg!(test), |view| {
-                    view.debug_selector(|| "sidebar-changes-count".into())
-                })
-                .flex_none()
-                .min_w(tokens.sizes.space_6)
-                .px(tokens.sizes.space_3)
-                .py(px(1.0))
-                .flex()
-                .justify_center()
-                .rounded(tokens.sizes.radius_full)
-                .bg(pill_bg)
-                .text_color(pill_fg)
-                .text_size(tokens.sizes.text_xs)
-                .font_weight(FontWeight::SEMIBOLD)
-                .line_height(relative(1.2))
-                .child(if count > 99 {
-                    "99+".to_string()
-                } else {
-                    count.to_string()
-                })
+        let badge = (count > 0).then(|| {
+            if count > 99 {
+                "99+".to_string()
+            } else {
+                count.to_string()
+            }
         });
-        let mut pill = Some(pill);
+        let mut badge = Some(badge);
         div()
             .flex()
             .h_full()
@@ -114,8 +159,8 @@ impl Workspace {
                     ),
                 ]
                 .map(|(id, label, icon, sidebar)| {
-                    let pill = if sidebar == Sidebar::Changes {
-                        pill.take().flatten()
+                    let badge = if sidebar == Sidebar::Changes {
+                        badge.take().flatten()
                     } else {
                         None
                     };
@@ -132,39 +177,26 @@ impl Workspace {
                                 .size(ButtonSize::Small)
                                 .tooltip(label)
                                 .aria_label(label)
-                                .when_some(pill, |button, pill| {
-                                    // Custom content replaces the icon slot, so repeat it here.
-                                    button.content(
-                                        div()
-                                            .flex()
-                                            .items_center()
-                                            .gap(tokens.sizes.space_2)
-                                            .child(
-                                                nucleotide_ui::icon()
-                                                    .path(icon)
-                                                    .size(px(
-                                                        nucleotide_ui::tokens::STANDARD_ICON_SIZE,
-                                                    ))
-                                                    .flex_none(),
-                                            )
-                                            .when(!shown_label.is_empty(), |content| {
-                                                content.child(shown_label)
-                                            })
-                                            .child(pill),
-                                    )
+                                .when_some(badge, |button, badge| {
+                                    button
+                                        .badge(badge)
+                                        .aria_label(format!("{label}, {count} changed"))
                                 })
                                 .variant(if current == sidebar {
                                     ButtonVariant::Secondary
                                 } else {
                                     ButtonVariant::Ghost
                                 })
-                                .on_click(cx.listener(move |this, _, _, cx| match sidebar {
-                                    Sidebar::Changes => this.open_commit_tab(cx),
-                                    Sidebar::History => this.show_history_sidebar(cx),
-                                    Sidebar::Files => {
-                                        this.commit_review.sidebar = Sidebar::Files;
-                                        cx.notify();
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    match sidebar {
+                                        Sidebar::Changes => this.open_commit_tab(cx),
+                                        Sidebar::History => this.show_history_sidebar(cx),
+                                        Sidebar::Files => {
+                                            this.commit_review.sidebar = Sidebar::Files;
+                                            cx.notify();
+                                        }
                                     }
+                                    this.focus_sidebar_list(window, cx);
                                 })),
                         )
                 }),
@@ -173,7 +205,7 @@ impl Workspace {
     }
 
     pub(in crate::workspace) fn render_changes_sidebar(
-        &self,
+        &mut self,
         _window: &Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
@@ -229,8 +261,15 @@ impl Workspace {
             .compact(true)
         });
         // Only the rows in view are built, so thousands of changes cost no more than a screenful.
+        let focus = self
+            .commit_review
+            .changes_focus
+            .get_or_insert_with(|| cx.focus_handle())
+            .clone();
+        let scroll = self.commit_review.changes_scroll.clone();
+        let selected = self.selected_review_file().map(|(index, _)| index);
         let list = (count > 0).then(|| {
-            gpui::uniform_list(
+            let rows = gpui::uniform_list(
                 "changes-list",
                 count,
                 cx.processor(move |this, range: std::ops::Range<usize>, window, cx| {
@@ -263,8 +302,28 @@ impl Workspace {
                         .collect()
                 }),
             )
+            .track_scroll(&scroll.handle)
             .with_horizontal_sizing_behavior(gpui::ListHorizontalSizingBehavior::FitList)
-            .size_full()
+            .size_full();
+            let workspace = cx.entity().downgrade();
+            let (select, toggle, open) = (workspace.clone(), workspace.clone(), workspace);
+            NavigableList::new("changes-navigation", &focus, count)
+                .selected(selected)
+                .track_scroll(&scroll.handle)
+                .on_select(move |index, _, cx| {
+                    let _ = select.update(cx, |this, cx| this.select_review_file(index, cx));
+                })
+                .on_toggle(move |index, _, cx| {
+                    let _ = toggle.update(cx, |this, cx| this.toggle_review_file(index, cx));
+                })
+                .on_confirm(move |index, _, cx| {
+                    let _ = open.update(cx, |this, cx| this.open_review_file(index, cx));
+                })
+                .relative()
+                .flex_1()
+                .min_h_0()
+                .child(rows)
+                .child(Scrollbar::vertical_overlay(scroll.bar))
         });
         div()
             .id("changes-sidebar")
@@ -309,6 +368,15 @@ impl Workspace {
             })
             .child(
                 Checkbox::new(SharedString::from(format!("changes-stage-{index}")), "")
+                    .aria_label(format!(
+                        "{} {}",
+                        if state == SelectionState::Staged {
+                            "Unstage"
+                        } else {
+                            "Stage"
+                        },
+                        path.display()
+                    ))
                     .size(CheckboxSize::Small)
                     .checked(state == SelectionState::Staged)
                     .indeterminate(state == SelectionState::Partial)
@@ -341,6 +409,7 @@ impl Workspace {
             })
             .text_color(text)
             .tooltip(path.display().to_string())
+            .tooltip_detail(CHANGES_KEYS)
             .start_slot(checkbox)
             .child(
                 div()
@@ -350,7 +419,7 @@ impl Workspace {
                     .min_w_0()
                     .child(
                         VcsIcon::from_path(&path, false)
-                            .size(16.0)
+                            .size(nucleotide_ui::tokens::SMALL_ICON_SIZE)
                             .text_color(if is_selected {
                                 file_tree.icon_color_selected
                             } else {
@@ -359,10 +428,20 @@ impl Workspace {
                             .render_with_theme(cx.global::<nucleotide_ui::Theme>())
                             .flex_none(),
                     )
-                    .child(div().flex_none().whitespace_nowrap().child(name))
+                    // The name keeps its width until the directory has given up all of its own.
                     .child(
                         div()
                             .min_w_0()
+                            .flex_shrink(1.0)
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .child(name),
+                    )
+                    .child(
+                        div()
+                            .min_w_0()
+                            .flex_shrink(1000.0)
                             .overflow_hidden()
                             .whitespace_nowrap()
                             .text_ellipsis()
@@ -383,7 +462,7 @@ impl Workspace {
             )
             .with_listener({
                 let listener = cx.listener(move |this, _: &gpui::ClickEvent, _, cx| {
-                    this.select_review_file(path.clone(), cx)
+                    this.select_review_file(index, cx)
                 });
                 move |row| row.on_click(listener)
             });

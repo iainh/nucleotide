@@ -122,7 +122,9 @@ pub use markdown::{
 };
 pub use menu::{MenuCheckSide, PopupMenu, PopupMenuItem, PopupMenuSurface};
 pub use modal_layer::{DismissDecision, ModalLayer, ModalOpenedEvent, ModalView};
-pub use navigable::{NAVIGABLE_CONTEXT, Navigable, NavigableEntry};
+pub use navigable::{
+    NAVIGABLE_CONTEXT, NAVIGABLE_LIST_CONTEXT, Navigable, NavigableEntry, NavigableList,
+};
 pub use overlay_surface::{OVERLAY_SURFACE_CONTEXT, OverlaySurface};
 pub use picker::Picker;
 pub use progress_indicator::IndeterminateProgressIndicator;

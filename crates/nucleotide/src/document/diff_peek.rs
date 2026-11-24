@@ -3,14 +3,12 @@
 
 use std::ops::Range;
 
-use gpui::prelude::FluentBuilder;
 use gpui::{
     AnyElement, App, Entity, FontWeight, InteractiveElement, IntoElement, ParentElement, Pixels,
     ScrollHandle, SharedString, StatefulInteractiveElement, Styled, div,
 };
 use helix_core::{Tendril, Transaction};
 use helix_view::{Document, DocumentId, ViewId, view::ReservedRows};
-use nucleotide_types::scrollbar::SCROLLBAR_THICKNESS;
 use nucleotide_ui::scrollbar::{Scrollbar, ScrollbarState};
 use nucleotide_ui::{Button, ButtonSize, ButtonVariant};
 
@@ -286,20 +284,7 @@ pub(super) fn render_diff_peek(
                         .map(|line| render_diff_line(line, line_height)),
                 ),
         )
-        .when_some(
-            Scrollbar::vertical(peek.scrollbar_state.clone()),
-            |container, scrollbar| {
-                container.child(
-                    div()
-                        .absolute()
-                        .top_0()
-                        .right_0()
-                        .bottom_0()
-                        .w(SCROLLBAR_THICKNESS)
-                        .child(scrollbar),
-                )
-            },
-        );
+        .child(Scrollbar::vertical_overlay(peek.scrollbar_state.clone()));
 
     div()
         .id(id("panel"))

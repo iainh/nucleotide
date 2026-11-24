@@ -28,6 +28,7 @@ pub struct StateView {
     tone: StateViewTone,
     loading: bool,
     compact: bool,
+    banner: bool,
 }
 
 impl StateView {
@@ -41,6 +42,7 @@ impl StateView {
             tone: StateViewTone::Neutral,
             loading: false,
             compact: false,
+            banner: false,
         }
     }
 
@@ -73,6 +75,13 @@ impl StateView {
         self.compact = compact;
         self
     }
+
+    /// A full-width strip tinted by the tone, with the icon and text in a
+    /// row, for a state that sits above other content rather than replacing it.
+    pub fn banner(mut self, banner: bool) -> Self {
+        self.banner = banner;
+        self
+    }
 }
 
 impl RenderOnce for StateView {
@@ -84,7 +93,53 @@ impl RenderOnce for StateView {
             StateViewTone::Warning => tokens.editor.warning,
             StateViewTone::Error => tokens.editor.error,
         };
-        let icon_size = if self.compact { 16.0 } else { 20.0 };
+        let icon_size = if self.compact || self.banner {
+            crate::tokens::SMALL_ICON_SIZE
+        } else {
+            crate::tokens::STANDARD_ICON_SIZE
+        };
+
+        if self.banner {
+            return div()
+                .id(self.id)
+                .flex()
+                .items_start()
+                .gap(tokens.sizes.space_2)
+                .w_full()
+                .px(tokens.sizes.space_3)
+                .py(tokens.sizes.space_2)
+                .bg(accent.opacity(0.12))
+                .text_size(tokens.sizes.text_sm)
+                .when_some(self.icon_path, |view, icon_path| {
+                    view.child(
+                        svg()
+                            .path(icon_path)
+                            .size(px(icon_size))
+                            .flex_shrink_0()
+                            .text_color(accent),
+                    )
+                })
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap(tokens.sizes.space_1)
+                        .child(div().text_color(accent).child(self.title))
+                        .when_some(self.detail, |view, detail| {
+                            view.child(
+                                div()
+                                    .text_size(tokens.sizes.text_xs)
+                                    .text_color(tokens.chrome.text_chrome_secondary)
+                                    .child(detail),
+                            )
+                        }),
+                )
+                .when_some(self.action, |view, action| {
+                    view.child(div().flex_none().child(action))
+                });
+        }
 
         div()
             .id(self.id.clone())

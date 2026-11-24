@@ -272,6 +272,8 @@ pub struct SizeTokens {
     pub statusbar_lsp_width_medium: Pixels,
     pub statusbar_lsp_width_compact: Pixels,
     pub statusbar_utility_width: Pixels,
+    /// The widest the branch button in the status bar grows before its name truncates.
+    pub statusbar_vcs_ref_max_width: Pixels,
 }
 
 impl SizeTokens {
@@ -321,6 +323,7 @@ impl SizeTokens {
             statusbar_lsp_width_medium: px(112.0),
             statusbar_lsp_width_compact: px(36.0),
             statusbar_utility_width: chrome_metrics.row_height * 2.0,
+            statusbar_vcs_ref_max_width: px(200.0),
         }
     }
 

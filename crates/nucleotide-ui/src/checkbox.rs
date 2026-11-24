@@ -5,9 +5,9 @@ use crate::icon as svg;
 use crate::tokens::CheckboxTokens;
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    App, ClickEvent, ElementId, FocusHandle, InteractiveElement, IntoElement, MouseButton,
-    ParentElement, Pixels, RenderOnce, SharedString, StatefulInteractiveElement, Styled, Window,
-    div, relative,
+    App, AppContext, ClickEvent, ElementId, FocusHandle, InteractiveElement, IntoElement,
+    MouseButton, ParentElement, Pixels, RenderOnce, SharedString, StatefulInteractiveElement,
+    Styled, Window, div, relative,
 };
 use std::sync::Arc;
 
@@ -63,6 +63,9 @@ pub struct Checkbox {
     size: CheckboxSize,
     focus_handle: Option<FocusHandle>,
     on_change: Option<CheckboxChangeHandler>,
+    tooltip: Option<SharedString>,
+    tooltip_detail: Option<SharedString>,
+    aria_label: Option<SharedString>,
 }
 
 impl Checkbox {
@@ -76,7 +79,41 @@ impl Checkbox {
             size: CheckboxSize::default(),
             focus_handle: None,
             on_change: None,
+            tooltip: None,
+            tooltip_detail: None,
+            aria_label: None,
         }
+    }
+
+    /// Text shown when the pointer rests on the checkbox.
+    pub fn tooltip(mut self, tooltip: impl Into<SharedString>) -> Self {
+        self.tooltip = Some(tooltip.into());
+        self
+    }
+
+    /// A second, quieter tooltip line, such as the keys that do the same thing.
+    pub fn tooltip_detail(mut self, detail: impl Into<SharedString>) -> Self {
+        self.tooltip_detail = Some(detail.into());
+        self
+    }
+
+    /// The name assistive technology announces, for a checkbox without a
+    /// visible label or whose label alone is ambiguous.
+    pub fn aria_label(mut self, label: impl Into<SharedString>) -> Self {
+        self.aria_label = Some(label.into());
+        self
+    }
+
+    /// The name assistive technology announces: the accessible label, else
+    /// the visible label, else none.
+    pub fn accessible_label(&self) -> Option<&SharedString> {
+        self.aria_label
+            .as_ref()
+            .or(Some(&self.label).filter(|label| !label.is_empty()))
+    }
+
+    pub fn tooltip_text(&self) -> Option<&SharedString> {
+        self.tooltip.as_ref()
     }
 
     pub fn checked(mut self, checked: bool) -> Self {
@@ -209,8 +246,31 @@ impl RenderOnce for Checkbox {
             icon.into_any_element()
         };
 
+        let accessible_label = self.accessible_label().cloned();
         let mut element = div()
             .id(self.id)
+            .role(gpui::Role::CheckBox)
+            .aria_toggled(if self.indeterminate {
+                gpui::Toggled::Mixed
+            } else if self.checked {
+                gpui::Toggled::True
+            } else {
+                gpui::Toggled::False
+            })
+            .when_some(accessible_label, |element, label| element.aria_label(label))
+            .when_some(self.tooltip, |element, tooltip| {
+                let detail = self.tooltip_detail;
+                element.tooltip(move |_, cx| {
+                    cx.new(|_| {
+                        let tooltip = crate::TextTooltip::new(tooltip.clone());
+                        match detail.clone() {
+                            Some(detail) => tooltip.detail(detail),
+                            None => tooltip,
+                        }
+                    })
+                    .into()
+                })
+            })
             .flex()
             .flex_row()
             .items_center()
@@ -294,6 +354,68 @@ mod tests {
         assert_eq!(checkbox.size, CheckboxSize::Small);
         assert_eq!(checkbox.icon_path(), "icons/square-check-big.svg");
         assert!(!checkbox.toggled_checked());
+    }
+
+    #[test]
+    fn unlabelled_checkbox_takes_its_accessible_name_from_aria_label() {
+        let line = Checkbox::new("stage-line-42", "")
+            .aria_label("Stage line 42")
+            .tooltip("Stage line 42");
+        assert_eq!(
+            line.accessible_label().map(|l| l.as_ref()),
+            Some("Stage line 42")
+        );
+        assert_eq!(
+            line.tooltip_text().map(|t| t.as_ref()),
+            Some("Stage line 42")
+        );
+
+        // A visible label names the checkbox unless an accessible label overrides it.
+        let amend = Checkbox::new("amend", "Amend");
+        assert_eq!(amend.accessible_label().map(|l| l.as_ref()), Some("Amend"));
+        assert_eq!(amend.tooltip_text(), None);
+        let file = Checkbox::new("file", "src/lib.rs").aria_label("Stage src/lib.rs");
+        assert_eq!(
+            file.accessible_label().map(|l| l.as_ref()),
+            Some("Stage src/lib.rs")
+        );
+        assert_eq!(Checkbox::new("bare", "").accessible_label(), None);
+    }
+
+    #[gpui::test]
+    fn hovering_a_checkbox_shows_its_tooltip(cx: &mut gpui::TestAppContext) {
+        use gpui::{Context, Modifiers, Render, VisualTestContext};
+
+        struct Harness;
+        impl Render for Harness {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().size_full().child(
+                    Checkbox::new("stage-line", "")
+                        .tooltip("Stage line 42")
+                        .aria_label("Stage line 42"),
+                )
+            }
+        }
+
+        cx.update(|cx| cx.set_global(crate::Theme::from_tokens(crate::DesignTokens::dark())));
+        let (_, cx) = cx.add_window_view(|_, _| Harness);
+        let tooltip_shown = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                window.refresh();
+                window.draw(cx).clear();
+            });
+            cx.debug_bounds("text-tooltip").is_some()
+        };
+        assert!(!tooltip_shown(cx));
+        cx.simulate_mouse_move(
+            gpui::point(gpui::px(8.0), gpui::px(8.0)),
+            None,
+            Modifiers::none(),
+        );
+        cx.executor()
+            .advance_clock(std::time::Duration::from_secs(1));
+        cx.run_until_parked();
+        assert!(tooltip_shown(cx));
     }
 
     #[test]

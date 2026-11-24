@@ -222,6 +222,8 @@ pub mod menu {
             SelectRight,
             Confirm,
             Cancel,
+            // Space on a list row: stage, check or otherwise flip the selected entry.
+            ToggleSelected,
             // Windows/Linux: F10 or a solo Alt tap moves keyboard focus to the in-window menu bar.
             ActivateMenuBar,
             // The solo Alt tap, kept apart because Windows activation simulates one.

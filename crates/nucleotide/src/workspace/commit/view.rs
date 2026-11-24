@@ -2,7 +2,8 @@ use super::split::{DiffPart, SplitDiff, SplitLayout, split_parts, unified_parts,
 use super::*;
 use crate::diff::{DiffStyle, diff_lines, render_diff_line};
 use gpui::WeakEntity;
-use nucleotide_ui::{Checkbox, CheckboxSize};
+use nucleotide_ui::scrollbar::Scrollbar;
+use nucleotide_ui::{Checkbox, CheckboxSize, StateViewTone, StatusBar, Toolbar};
 
 pub(super) const MAX_VISIBLE_LINES: usize = 400;
 
@@ -11,6 +12,26 @@ fn button(id: impl Into<gpui::ElementId>, label: impl Into<SharedString>) -> But
         .variant(ButtonVariant::Ghost)
         .size(ButtonSize::Small)
 }
+
+/// A keystroke as this platform labels it, such as `⌘↩` or `Ctrl+Enter`.
+fn shortcut(modifiers: gpui::Modifiers, key: &str) -> String {
+    use nucleotide_ui::key_format::{KeyPlatform, format_keystroke};
+    format_keystroke(&modifiers, key, KeyPlatform::current())
+}
+
+/// The commit shortcut's modifiers: Command on macOS, Control elsewhere.
+fn primary(alt: bool) -> gpui::Modifiers {
+    gpui::Modifiers {
+        platform: cfg!(target_os = "macos"),
+        control: !cfg!(target_os = "macos"),
+        alt,
+        ..Default::default()
+    }
+}
+
+/// The review's keys, shown in the tooltips of its staging checkboxes.
+pub(super) const REVIEW_KEYS: &str =
+    "Space stages · Enter opens in the editor\nj/k next/previous · [ ] other file · z a folds";
 
 /// Diff rows use the editor's line height, which is also set as the text line
 /// height so that word highlights fill exactly one row. Rows are never shorter
@@ -94,6 +115,7 @@ fn diff_style(cx: &App) -> DiffStyle {
         text_secondary: tokens.editor.text_secondary,
         added: tokens.editor.success,
         removed: tokens.editor.error,
+        sign_width: tokens.sizes.space_7,
     }
 }
 
@@ -466,7 +488,11 @@ impl Workspace {
         let workspace = cx.entity().downgrade();
         let id = change.control_id(index);
         let focus = self.commit_review.control_focus[&id].clone();
+        let name = change.label(&file);
         Checkbox::new(SharedString::from(id), label)
+            .aria_label(name.clone())
+            .tooltip(name)
+            .tooltip_detail(REVIEW_KEYS)
             .focus_handle(focus.clone())
             .size(CheckboxSize::Small)
             .checked(state == SelectionState::Staged)
@@ -607,6 +633,188 @@ impl Workspace {
         }
         let all_files = files.clone();
         let unstage_files = files.clone();
+        let error_scroll = self.commit_review.error_scroll.clone();
+        let header = Toolbar::new("commit-header")
+            .wrap(true)
+            .label("Commit review")
+            .child(
+                div()
+                    .min_w_0()
+                    .text_size(tokens.sizes.text_sm)
+                    .text_color(style.text_secondary)
+                    .child(branch),
+            )
+            .child(
+                button("commit-refresh", "Refresh")
+                    .icon("icons/refresh.svg")
+                    .tooltip("Refresh")
+                    .tooltip_detail("r")
+                    .disabled(locked)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.commit_review.error = None;
+                        this.refresh_commit_review(cx);
+                    })),
+            )
+            .child(
+                button("commit-stage-all", "Stage all")
+                    .icon("icons/plus.svg")
+                    .disabled(locked || files.is_empty())
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.stage_review_files(
+                            all_files
+                                .iter()
+                                .map(|f| (f.clone(), StageChange::File(true)))
+                                .collect(),
+                            cx,
+                        );
+                    })),
+            )
+            .child(
+                button("commit-unstage-all", "Unstage all")
+                    .icon("icons/minus.svg")
+                    .disabled(locked || staged_count == 0)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.stage_review_files(
+                            unstage_files
+                                .iter()
+                                .filter(|f| f.state() != SelectionState::Unstaged)
+                                .map(|f| (f.clone(), StageChange::File(false)))
+                                .collect(),
+                            cx,
+                        );
+                    })),
+            )
+            .children(
+                [
+                    (
+                        "commit-layout-split",
+                        "Side by side",
+                        "icons/diff-split.svg",
+                        false,
+                    ),
+                    (
+                        "commit-layout-unified",
+                        "Unified",
+                        "icons/diff-unified.svg",
+                        true,
+                    ),
+                ]
+                .map(|(id, label, icon, unified)| {
+                    div()
+                        .when(cfg!(test), |view| view.debug_selector(|| id.into()))
+                        .child(
+                            button(id, label)
+                                .icon(icon)
+                                .variant(if self.commit_review.unified == unified {
+                                    ButtonVariant::Secondary
+                                } else {
+                                    ButtonVariant::Ghost
+                                })
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.commit_review.unified = unified;
+                                    cx.notify();
+                                })),
+                        )
+                }),
+            );
+        let footer = StatusBar::new("commit-footer")
+            .h(tokens.sizes.space_10)
+            .px(tokens.sizes.space_3)
+            .gap(tokens.sizes.space_3)
+            .content(
+                div()
+                    .h_full()
+                    .flex()
+                    .items_center()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .child(format!(
+                        "{staged_count} of {} files staged · Staging saves affected buffers",
+                        files.len()
+                    )),
+            )
+            .trailing(
+                div()
+                    .h_full()
+                    .flex()
+                    .items_center()
+                    .gap(tokens.sizes.space_3)
+                    .child(
+                        Checkbox::new("commit-amend", "Amend")
+                            .size(CheckboxSize::Small)
+                            .tooltip("Amend the last commit")
+                            .tooltip_detail(shortcut(
+                                gpui::Modifiers {
+                                    alt: true,
+                                    ..Default::default()
+                                },
+                                "a",
+                            ))
+                            .checked(amending)
+                            .disabled(!can_amend)
+                            .on_change({
+                                let workspace = cx.entity().downgrade();
+                                move |_, _, cx| {
+                                    let _ = workspace
+                                        .update(cx, |this, cx| this.toggle_commit_amend(cx));
+                                }
+                            }),
+                    )
+                    .child(
+                        div()
+                            .when(cfg!(test), |view| {
+                                view.debug_selector(|| "commit-submit".into())
+                            })
+                            .child(
+                                Button::new(
+                                    "commit-submit",
+                                    if amending { "Amend Commit" } else { "Commit" },
+                                )
+                                .icon("icons/git-commit.svg")
+                                .tooltip(if amending { "Amend Commit" } else { "Commit" })
+                                .tooltip_detail(shortcut(primary(false), "enter"))
+                                .disabled(!can_commit)
+                                .size(ButtonSize::Small)
+                                .on_click(
+                                    cx.listener(|this, _, _, cx| this.submit_commit(false, cx)),
+                                ),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .when(cfg!(test), |view| {
+                                view.debug_selector(|| "commit-push".into())
+                            })
+                            .child(
+                                Button::new("commit-push", "Commit and Push")
+                                    .icon("icons/git-push.svg")
+                                    .tooltip("Commit and Push")
+                                    .tooltip_detail(shortcut(primary(true), "enter"))
+                                    .disabled(!can_commit)
+                                    .size(ButtonSize::Small)
+                                    .on_click(
+                                        cx.listener(|this, _, _, cx| this.submit_commit(true, cx)),
+                                    ),
+                            ),
+                    )
+                    .when(can_push, |footer| {
+                        footer.child(
+                            div()
+                                .when(cfg!(test), |view| {
+                                    view.debug_selector(|| "commit-push-only".into())
+                                })
+                                .child(
+                                    button("commit-push-only", "Push")
+                                        .icon("icons/git-push.svg")
+                                        .on_click(
+                                            cx.listener(|this, _, _, cx| this.push_commit(cx)),
+                                        ),
+                                ),
+                        )
+                    }),
+            );
         div()
             .id("commit-review")
             .when_some(self.commit_review.focus.as_ref(), |view, focus| {
@@ -622,109 +830,32 @@ impl Workspace {
             .bg(tokens.editor.background)
             .text_color(style.text)
             .text_size(tokens.sizes.text_sm)
-            .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .items_center()
-                    .gap(tokens.sizes.space_3)
-                    .p(tokens.sizes.space_3)
-                    .border_b_1()
-                    .border_color(style.border)
-                    .child(
-                        div()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("Commit review"),
-                    )
-                    .child(div().text_color(style.text_secondary).child(branch))
-                    .child(
-                        button("commit-refresh", "Refresh")
-                            .icon("icons/refresh.svg")
-                            .disabled(locked)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.commit_review.error = None;
-                                this.refresh_commit_review(cx);
-                            })),
-                    )
-                    .child(
-                        button("commit-stage-all", "Stage all")
-                            .icon("icons/plus.svg")
-                            .disabled(locked || files.is_empty())
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.stage_review_files(
-                                    all_files
-                                        .iter()
-                                        .map(|f| (f.clone(), StageChange::File(true)))
-                                        .collect(),
-                                    cx,
-                                );
-                            })),
-                    )
-                    .child(
-                        button("commit-unstage-all", "Unstage all")
-                            .icon("icons/minus.svg")
-                            .disabled(locked || staged_count == 0)
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.stage_review_files(
-                                    unstage_files
-                                        .iter()
-                                        .filter(|f| f.state() != SelectionState::Unstaged)
-                                        .map(|f| (f.clone(), StageChange::File(false)))
-                                        .collect(),
-                                    cx,
-                                );
-                            })),
-                    )
-                    .children(
-                        [
-                            (
-                                "commit-layout-split",
-                                "Side by side",
-                                "icons/diff-split.svg",
-                                false,
-                            ),
-                            (
-                                "commit-layout-unified",
-                                "Unified",
-                                "icons/diff-unified.svg",
-                                true,
-                            ),
-                        ]
-                        .map(|(id, label, icon, unified)| {
-                            div()
-                                .when(cfg!(test), |view| view.debug_selector(|| id.into()))
-                                .child(
-                                    button(id, label)
-                                        .icon(icon)
-                                        .variant(if self.commit_review.unified == unified {
-                                            ButtonVariant::Secondary
-                                        } else {
-                                            ButtonVariant::Ghost
-                                        })
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            this.commit_review.unified = unified;
-                                            cx.notify();
-                                        })),
-                                )
-                        }),
-                    ),
-            )
+            .child(header)
             .child(self.render_commit_message(cx))
             .child(self.render_commit_message_divider(cx))
             .when_some(error, |view, error| {
+                // Git can explain at length; the banner scrolls rather than push the diff away.
                 view.child(
                     div()
-                        .id("commit-error")
                         .when(cfg!(test), |view| {
                             view.debug_selector(|| "commit-error".into())
                         })
-                        .max_h(tokens.sizes.space_8 * 3.0)
-                        .overflow_y_scroll()
+                        .relative()
                         .flex_shrink_0()
-                        .p(tokens.sizes.space_3)
-                        .bg(tokens.editor.error.opacity(0.12))
-                        .text_color(tokens.editor.error)
-                        .child(error),
+                        .child(
+                            div()
+                                .id("commit-error")
+                                .max_h(tokens.sizes.space_8 * 3.0)
+                                .overflow_y_scroll()
+                                .track_scroll(&error_scroll.handle)
+                                .child(
+                                    StateView::new("commit-error-banner", error)
+                                        .banner(true)
+                                        .tone(StateViewTone::Error)
+                                        .icon("icons/triangle-alert.svg"),
+                                ),
+                        )
+                        .child(Scrollbar::vertical_overlay(error_scroll.bar)),
                 )
             })
             // A stage or the refresh after it would otherwise shift the diff on every click.
@@ -749,81 +880,7 @@ impl Workspace {
                 },
             )
             .child(list)
-            .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .items_center()
-                    .gap(tokens.sizes.space_3)
-                    .p(tokens.sizes.space_3)
-                    .border_t_1()
-                    .border_color(style.border)
-                    .flex_shrink_0()
-                    .child(format!(
-                        "{staged_count} of {} files staged · Staging saves affected buffers",
-                        files.len()
-                    ))
-                    .child(
-                        Checkbox::new("commit-amend", "Amend")
-                            .checked(amending)
-                            .disabled(!can_amend)
-                            .on_change({
-                                let workspace = cx.entity().downgrade();
-                                move |_, _, cx| {
-                                    let _ = workspace
-                                        .update(cx, |this, cx| this.toggle_commit_amend(cx));
-                                }
-                            }),
-                    )
-                    .child(
-                        div()
-                            .when(cfg!(test), |view| {
-                                view.debug_selector(|| "commit-submit".into())
-                            })
-                            .child(
-                                Button::new(
-                                    "commit-submit",
-                                    if amending { "Amend Commit" } else { "Commit" },
-                                )
-                                .icon("icons/git-commit.svg")
-                                .disabled(!can_commit)
-                                .size(ButtonSize::Small)
-                                .on_click(
-                                    cx.listener(|this, _, _, cx| this.submit_commit(false, cx)),
-                                ),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .when(cfg!(test), |view| {
-                                view.debug_selector(|| "commit-push".into())
-                            })
-                            .child(
-                                Button::new("commit-push", "Commit and Push")
-                                    .icon("icons/git-push.svg")
-                                    .disabled(!can_commit)
-                                    .size(ButtonSize::Small)
-                                    .on_click(
-                                        cx.listener(|this, _, _, cx| this.submit_commit(true, cx)),
-                                    ),
-                            ),
-                    )
-                    .when(can_push, |footer| {
-                        footer.child(
-                            div()
-                                .when(cfg!(test), |view| {
-                                    view.debug_selector(|| "commit-push-only".into())
-                                })
-                                .child(
-                                    button("commit-push-only", "Push")
-                                        .icon("icons/git-push.svg")
-                                        .on_click(
-                                            cx.listener(|this, _, _, cx| this.push_commit(cx)),
-                                        ),
-                                ),
-                        )
-                    }),
-            )
+            .child(footer)
             .into_any_element()
     }
 
@@ -884,12 +941,8 @@ impl Workspace {
         let shown_path = shown.as_ref().map(|(_, f)| f.entry.relative_path.clone());
         let new_file = self.commit_review.shown != shown_path;
         self.commit_review.shown = shown_path;
-        let scroll = self
-            .commit_review
-            .scroll
-            // The list can only scroll as far as it has measured, so measure
-            // well past the viewport for each wheel step to land on laid-out items.
-            .get_or_insert_with(|| gpui::ListState::new(0, gpui::ListAlignment::Top, px(1000.0)));
+        let scrolled = self.commit_review.scroll.get_or_insert_with(Scrolled::list);
+        let (scroll, bar) = (scrolled.handle.0.clone(), scrolled.bar.clone());
         let count = scroll.item_count();
         let row = row_height(cx);
         let measured = previous
@@ -911,10 +964,25 @@ impl Workspace {
             scroll.remeasure();
         }
         let last = items.len().saturating_sub(1);
+        // Long lines scroll sideways under a bar for the diff at the top of the view.
+        let top = scroll.logical_scroll_top().item_ix;
+        let sideways = shown.as_ref().and_then(|(index, file)| {
+            items.iter().skip(top).find_map(|item| match item {
+                ReviewItem::Split(kind, _) => {
+                    Some((Self::split_diff(*index, file, *kind)?.id, true))
+                }
+                ReviewItem::Unified(_) => Some((format!("commit-diff-{index}"), false)),
+                ReviewItem::UnifiedStaged(kind) => {
+                    Some((Self::staged_diff_id(*index, *kind), false))
+                }
+                _ => None,
+            })
+        });
+        let sideways = sideways.map(|(id, split)| self.diff_scrollbars(&id, split, cx));
         self.commit_review.laid_out = layout.clone().map(|layout| (layout, row));
         let workspace = cx.entity();
         let list_style = style.clone();
-        gpui::list(scroll.clone(), move |item, _, cx| {
+        let list = gpui::list(scroll.clone(), move |item, _, cx| {
             let (Some((index, file)), Some(layout)) = (shown.clone(), layout.clone()) else {
                 return div().into_any_element();
             };
@@ -962,8 +1030,22 @@ impl Workspace {
                     .into_any_element()
             })
         })
-        .size_full()
-        .into_any_element()
+        .size_full();
+        div()
+            .relative()
+            .size_full()
+            .child(list)
+            .child(Scrollbar::vertical_overlay(bar))
+            .children(sideways)
+            .into_any_element()
+    }
+
+    /// The id of a read-only unified diff, which names its sideways scroll.
+    fn staged_diff_id(index: usize, kind: DiffKind) -> String {
+        match kind {
+            DiffKind::Preview => format!("commit-preview-{index}"),
+            _ => format!("commit-staged-{index}"),
+        }
     }
 
     fn render_review_header(
@@ -1011,6 +1093,12 @@ impl Workspace {
                         } else {
                             "Collapse file diff"
                         })
+                        .tooltip(if collapsed {
+                            "Expand file diff"
+                        } else {
+                            "Collapse file diff"
+                        })
+                        .tooltip_detail("z a")
                         .on_click(cx.listener(move |this, _, _, cx| {
                             if !this.commit_review.collapsed.remove(&path) {
                                 this.commit_review.collapsed.insert(path.clone());
@@ -1098,7 +1186,12 @@ impl Workspace {
                     _ => None,
                 };
                 match changes {
-                    Some(changes) => self.render_unified_staged(index, changes, style, cx),
+                    Some(changes) => self.render_unified_staged(
+                        Self::staged_diff_id(index, *kind),
+                        changes,
+                        style,
+                        cx,
+                    ),
                     None => div().into_any_element(),
                 }
             }
@@ -1109,15 +1202,17 @@ impl Workspace {
 impl Workspace {
     pub(super) fn render_unified_staged(
         &mut self,
-        index: usize,
+        id: String,
         staged: &FileChanges,
         style: &DiffStyle,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let row_height = row_height(cx);
+        let [scroll, _] = self.diff_scroll(&id);
         let mut preview = div()
-            .id(SharedString::from(format!("commit-staged-{index}")))
+            .id(SharedString::from(id))
             .overflow_x_scroll()
+            .track_scroll(&scroll)
             .font_family(style.font_family.clone())
             .text_size(style.font_size)
             .line_height(row_height);
@@ -1193,7 +1288,7 @@ impl Workspace {
         // Fixed gutters keep code aligned between context and changed rows.
         let checkbox_width = tokens.sizes.space_7;
         let mut body =
-            body.child(div().w(checkbox_width + tokens.sizes.space_9 + px(24.0) + width));
+            body.child(div().w(checkbox_width + tokens.sizes.space_9 + style.sign_width + width));
         body.style().restrict_scroll_to_axis = Some(true);
         let line_number = |line: u32| {
             div()
@@ -1212,7 +1307,7 @@ impl Workspace {
                 .child(div().w(checkbox_width).flex_none())
                 .child(line_number(line))
                 // Matches the sign column of changed rows.
-                .child(div().w(px(24.0)).flex_none())
+                .child(div().w(style.sign_width).flex_none())
                 .child(
                     div()
                         .whitespace_nowrap()

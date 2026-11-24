@@ -1342,6 +1342,7 @@ impl Render for DocumentView {
                     text_secondary: tokens.editor.text_secondary,
                     added: diff_color("diff.plus", tokens.editor.success),
                     removed: diff_color("diff.minus", tokens.editor.error),
+                    sign_width: ui_tokens.sizes.space_7,
                 };
                 let peek_view = cx.entity();
                 editor_content =

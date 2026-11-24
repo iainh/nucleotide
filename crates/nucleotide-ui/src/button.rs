@@ -311,13 +311,40 @@ impl TextTooltip {
     }
 }
 
+/// The widest a tooltip grows before its text wraps.
+const TOOLTIP_MAX_WIDTH: f32 = 420.0;
+
 impl Render for TextTooltip {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let tokens = cx.theme().tokens;
         let tooltip_tokens = tokens.tooltip_tokens();
+        // GPUI lays tooltips out at their min-content size, where wrapped text
+        // measures shorter than it paints. A definite width wraps it once, at
+        // its own width or the maximum, so the box holds every line.
+        let text_width = |text: &str, size: Pixels| {
+            let style = window.text_style();
+            text.lines()
+                .map(|line| {
+                    window
+                        .text_system()
+                        .layout_line(line, size, &[style.to_run(line.len())], None)
+                        .width
+                })
+                .fold(Pixels::ZERO, Pixels::max)
+        };
+        let content = text_width(&self.text, tokens.sizes.text_sm).max(
+            self.detail.as_ref().map_or(Pixels::ZERO, |detail| {
+                text_width(detail, tokens.sizes.text_xs)
+            }),
+        );
+        // Padding and border on both sides, and a pixel against rounding.
+        let width = (content + tokens.sizes.space_2 * 2.0 + px(3.0)).min(px(TOOLTIP_MAX_WIDTH));
 
         let body = div()
-            .max_w(px(420.0))
+            .when(cfg!(test), |body| {
+                body.debug_selector(|| "text-tooltip".into())
+            })
+            .w(width)
             .px(tokens.sizes.space_2)
             .py(tokens.sizes.space_1)
             .rounded(tokens.sizes.radius_sm)
@@ -365,6 +392,8 @@ pub struct Button {
     icon_position: IconPosition,
     on_click: Option<ButtonClickHandler>,
     tooltip: Option<SharedString>,
+    tooltip_detail: Option<SharedString>,
+    badge: Option<SharedString>,
     activate_on_mouse_down: bool,
     focus_handle: Option<FocusHandle>,
     width: Option<Pixels>,
@@ -397,6 +426,8 @@ impl Button {
             icon_position: IconPosition::Start,
             on_click: None,
             tooltip: None,
+            tooltip_detail: None,
+            badge: None,
             activate_on_mouse_down: false,
             focus_handle: None,
             width: None,
@@ -421,6 +452,8 @@ impl Button {
             icon_position: IconPosition::Start,
             on_click: None,
             tooltip: None,
+            tooltip_detail: None,
+            badge: None,
             activate_on_mouse_down: false,
             focus_handle: None,
             width: None,
@@ -518,6 +551,18 @@ impl Button {
     }
 
     /// Provide a screen-reader label independent of visible button content.
+    /// A second, quieter tooltip line, such as the keys that do the same thing.
+    pub fn tooltip_detail(mut self, detail: impl Into<SharedString>) -> Self {
+        self.tooltip_detail = Some(detail.into());
+        self
+    }
+
+    /// A count or short status in a pill after the label.
+    pub fn badge(mut self, badge: impl Into<SharedString>) -> Self {
+        self.badge = Some(badge.into());
+        self
+    }
+
     pub fn aria_label(mut self, label: impl Into<SharedString>) -> Self {
         self.aria_label = Some(label.into());
         self
@@ -927,6 +972,7 @@ impl RenderOnce for Button {
         let icon_only = self.label.is_empty()
             && self.slots.is_empty()
             && !has_custom_content
+            && self.badge.is_none()
             && self.icon_path.is_some();
         let inset_shadow = theme.tokens.chrome.inset_shadow;
         let variant = self.variant;
@@ -1162,8 +1208,44 @@ impl RenderOnce for Button {
             }
         }
 
+        if let Some(badge) = self.badge {
+            let tokens = &theme.tokens;
+            let (background, text) = tokens
+                .chrome
+                .contrast
+                .map_or((tokens.chrome.primary, tokens.editor.background), |c| {
+                    (c.highlight, c.highlight_text)
+                });
+            button = button.child(
+                div()
+                    .flex_none()
+                    .min_w(tokens.sizes.space_6)
+                    .px(tokens.sizes.space_2)
+                    .py(tokens.sizes.space_0)
+                    .flex()
+                    .justify_center()
+                    .rounded(tokens.sizes.radius_full)
+                    .bg(background)
+                    .text_color(text)
+                    .text_size(tokens.sizes.text_xs)
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .line_height(relative(1.4))
+                    .child(badge),
+            );
+        }
+
+        let detail = self.tooltip_detail;
         button.when_some(self.tooltip, |button, tooltip| {
-            button.tooltip(move |_window, cx| cx.new(|_| TextTooltip::new(tooltip.clone())).into())
+            button.tooltip(move |_window, cx| {
+                cx.new(|_| {
+                    let tooltip = TextTooltip::new(tooltip.clone());
+                    match detail.clone() {
+                        Some(detail) => tooltip.detail(detail),
+                        None => tooltip,
+                    }
+                })
+                .into()
+            })
         })
     }
 }

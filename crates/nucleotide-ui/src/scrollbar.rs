@@ -7,8 +7,8 @@ use gpui::prelude::{
     FluentBuilder, InteractiveElement, ParentElement, StatefulInteractiveElement, Styled,
 };
 use gpui::{
-    Along, App, Axis, Bounds, Div, IntoElement, IsZero, MouseButton, Pixels, Point, RenderOnce,
-    ScrollHandle, Size, UniformListScrollHandle, Window, div, px,
+    Along, App, Axis, Bounds, Div, IntoElement, IsZero, ListState, MouseButton, Pixels, Point,
+    RenderOnce, ScrollHandle, Size, UniformListScrollHandle, Window, div, px,
 };
 use nucleotide_types::scrollbar::{
     SCROLLBAR_ALPHA_DRAGGING, SCROLLBAR_ALPHA_INACTIVE, SCROLLBAR_ALPHA_THUMB_HOVER,
@@ -119,6 +119,44 @@ impl ScrollableHandle for UniformListScrollHandle {
     }
 }
 
+/// A variable-height [`gpui::list`] as a scrollable handle. The list measures
+/// rows as they come into view, so its content height is an estimate that
+/// stays fixed while the thumb is dragged.
+#[derive(Clone)]
+pub struct ListScrollHandle(pub ListState);
+
+impl Debug for ListScrollHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ListScrollHandle")
+    }
+}
+
+impl ScrollableHandle for ListScrollHandle {
+    fn max_offset(&self) -> Size<Pixels> {
+        self.0.max_offset_for_scrollbar().into()
+    }
+
+    fn set_offset(&self, point: Point<Pixels>) {
+        self.0.set_offset_from_scrollbar(point);
+    }
+
+    fn offset(&self) -> Point<Pixels> {
+        self.0.scroll_px_offset_for_scrollbar()
+    }
+
+    fn viewport(&self) -> Bounds<Pixels> {
+        self.0.viewport_bounds()
+    }
+
+    fn drag_started(&self) {
+        self.0.scrollbar_drag_started();
+    }
+
+    fn drag_ended(&self) {
+        self.0.scrollbar_drag_ended();
+    }
+}
+
 /// Scrollbar state that should be persisted across frames
 #[derive(Clone, Debug)]
 pub struct ScrollbarState {
@@ -199,6 +237,12 @@ impl ScrollbarState {
         };
 
         (target_width, target_alpha)
+    }
+
+    /// Whether the content is longer than its viewport along `axis`.
+    pub fn overflows(&self, axis: Axis) -> bool {
+        let scroll = &self.scroll_handle;
+        !scroll.max_offset().along(axis).is_zero() && !scroll.viewport().size.along(axis).is_zero()
     }
 
     fn thumb_for_track(&self, axis: Axis, track_length: Pixels) -> Option<ScrollbarThumb> {
@@ -314,6 +358,36 @@ impl Scrollbar {
         // if scrolling isn't required.
         Some(Self { state, axis })
     }
+
+    /// A vertical scroll bar over the right edge of its `relative` parent,
+    /// drawn only while the content overflows.
+    pub fn vertical_overlay(state: ScrollbarState) -> Div {
+        div()
+            .absolute()
+            .top_0()
+            .right_0()
+            .bottom_0()
+            .w(SCROLLBAR_THICKNESS)
+            .child(Self {
+                state,
+                axis: Axis::Vertical,
+            })
+    }
+
+    /// A horizontal scroll bar over the bottom edge of its `relative` parent,
+    /// drawn only while the content overflows.
+    pub fn horizontal_overlay(state: ScrollbarState) -> Div {
+        div()
+            .absolute()
+            .left_0()
+            .right_0()
+            .bottom_0()
+            .h(SCROLLBAR_THICKNESS)
+            .child(Self {
+                state,
+                axis: Axis::Horizontal,
+            })
+    }
 }
 
 impl RenderOnce for Scrollbar {
@@ -344,9 +418,26 @@ impl RenderOnce for Scrollbar {
             .map(|bounds| bounds.size.along(self.axis))
             .unwrap_or_else(|| self.state.scroll_handle().viewport().size.along(self.axis))
             .max(px(0.0));
+        // Content is laid out after this renders. When that changes whether it
+        // overflows, draw again so the bar appears or goes away with it.
+        let overflowed = self.state.overflows(self.axis);
+        let recheck = {
+            let state = self.state.clone();
+            let axis = self.axis;
+            gpui::canvas(
+                move |_, window, _| {
+                    if state.overflows(axis) != overflowed {
+                        window.request_animation_frame();
+                    }
+                },
+                |_, _, _, _| {},
+            )
+            .absolute()
+            .size_0()
+        };
         let Some(thumb) = self.state.thumb_for_track(self.axis, track_len) else {
             self.state.set_track_bounds(None);
-            return empty_scrollbar_track(self.axis);
+            return empty_scrollbar_track(self.axis).child(recheck);
         };
         let visual = style.visual(thumb, track_len, self.state.is_expanded());
         let state = self.state.clone();
@@ -664,6 +755,7 @@ impl RenderOnce for Scrollbar {
                 }
             })
             .child(track)
+            .child(recheck)
     }
 }
 

@@ -6,6 +6,7 @@ use crate::diff::DiffStyle;
 use gpui::{App, HighlightStyle, Hsla, PathBuilder, StyledText, canvas, point, size};
 use helix_core::syntax::{Highlight, Loader};
 use imara_diff::{Algorithm, Diff, InternedInput};
+use nucleotide_types::scrollbar::SCROLLBAR_THICKNESS;
 use nucleotide_ui::theme_manager::HelixThemedContext;
 use nucleotide_vcs::staging::StagingHunk;
 use std::cell::OnceCell;
@@ -452,7 +453,58 @@ impl Workspace {
             .scrolls
             .entry(id.to_string())
             .or_default()
-            .clone()
+            .each_ref()
+            .map(|scrolled| scrolled.handle.clone())
+    }
+
+    /// Horizontal scroll bars along the bottom of a diff list for diff `id`:
+    /// one under each column of a side-by-side diff, or one across a unified
+    /// one. Each shows only while its column clips long lines.
+    pub(super) fn diff_scrollbars(&mut self, id: &str, split: bool, cx: &App) -> gpui::AnyElement {
+        let [old, new] = self
+            .commit_review
+            .scrolls
+            .entry(id.to_string())
+            .or_default()
+            .each_ref()
+            .map(|scrolled| scrolled.bar.clone());
+        let bars = div()
+            .absolute()
+            .left_0()
+            .right_0()
+            .bottom_0()
+            .h(SCROLLBAR_THICKNESS)
+            .flex();
+        if !split {
+            return bars
+                .child(
+                    div()
+                        .relative()
+                        .size_full()
+                        .child(Scrollbar::horizontal_overlay(old)),
+                )
+                .into_any_element();
+        }
+        let tokens = cx.global::<nucleotide_ui::Theme>().tokens;
+        let column = |share: f32, bar| {
+            div()
+                .relative()
+                .h_full()
+                .flex_basis(gpui::relative(0.0))
+                .flex_grow(share)
+                .min_w_0()
+                .child(Scrollbar::horizontal_overlay(bar))
+        };
+        let split = self.commit_review.split.unwrap_or(0.5);
+        bars.child(column(split, old))
+            // The gutters and ribbon between the columns, as render_split_part lays them out.
+            .child(
+                div()
+                    .flex_none()
+                    .w((tokens.sizes.space_7 + tokens.sizes.space_9) * 2.0 + tokens.sizes.space_9),
+            )
+            .child(column(1.0 - split, new))
+            .into_any_element()
     }
 
     /// The pixel widths of `columns` in the diff font, padded like code rows.
