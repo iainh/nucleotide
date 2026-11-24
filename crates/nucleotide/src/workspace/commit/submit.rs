@@ -304,6 +304,8 @@ impl Workspace {
         self.commit_review.operation = None;
         let status = match &result {
             Ok(message) => {
+                // A push moves remote branches without moving HEAD.
+                self.history_changed(cx);
                 // Replace the previous failure in Helix too, or the next
                 // editor event republishes it after a successful retry.
                 self.core

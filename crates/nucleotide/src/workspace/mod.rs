@@ -9724,6 +9724,7 @@ impl Workspace {
                 ..
             } => {
                 self.invalidate_tab_bar_documents();
+                self.history_head_changed(cx);
                 debug!(
                     root_path = %root_path.display(),
                     current_head,

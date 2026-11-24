@@ -7,9 +7,11 @@ use super::*;
 use crate::diff::DiffStyle;
 use gpui::{Hsla, PathBuilder, canvas, size};
 use nucleotide_types::VcsStatus;
+use nucleotide_ui::StateViewTone;
 use nucleotide_ui::VcsStatusStyle;
+use nucleotide_vcs::VcsServiceHandle;
 use nucleotide_vcs::history::{
-    CommitChanges, CommitGraph, CommitRef, CommitSummary, FileChangeKind, GraphRow, Half, RefKind,
+    CommitChanges, CommitRef, CommitSummary, FileChangeKind, GraphRow, Half, HistoryPages, RefKind,
 };
 
 /// The status a commit gave a file, in the vocabulary the other VCS panels use.
@@ -24,7 +26,9 @@ fn commit_file_status(kind: FileChangeKind) -> VcsStatus {
     }
 }
 
-/// Commits read per page. Later pages load as the list nears its end.
+/// Commits read first, enough to fill the list without waiting for more.
+const FIRST_PAGE: usize = 250;
+/// Commits read per later page, which load as the list nears its end.
 const PAGE: usize = 2000;
 /// Rows left below the viewport when the next page starts loading.
 const PREFETCH: usize = 300;
@@ -37,13 +41,16 @@ pub(in crate::workspace) struct History {
     pub(in crate::workspace) in_tab: bool,
     /// The commits paging starts from; `None` until the first page loads.
     tips: Option<Vec<String>>,
+    /// HEAD and its branch when the list last reloaded.
+    head: Option<(Option<String>, Option<String>)>,
     commits: Vec<CommitSummary>,
     rows: Vec<GraphRow>,
-    graph: CommitGraph,
+    pages: HistoryPages,
     /// The most lanes any loaded row uses.
     lanes: usize,
     loading: bool,
     complete: bool,
+    /// Why the last load failed. Pages stop loading until Retry.
     error: Option<String>,
     /// Discards pages and reloads requested before the last reload.
     generation: u64,
@@ -178,14 +185,32 @@ impl Workspace {
         }
     }
 
+    /// Git status changed or HEAD moved. Status changes with most edits, so
+    /// the list reloads only when HEAD or its branch moved since it last did.
+    pub(in crate::workspace) fn history_head_changed(&mut self, cx: &mut Context<Self>) {
+        if self.commit_review.history.head != Some(Self::vcs_head(cx)) {
+            self.history_changed(cx);
+        }
+    }
+
+    fn vcs_head(cx: &App) -> (Option<String>, Option<String>) {
+        let service = cx.global::<VcsServiceHandle>().service().read(cx);
+        (
+            service.repository_head().map(str::to_owned),
+            service.repository_ref().map(str::to_owned),
+        )
+    }
+
     /// Reads the refs and, when they moved or `force` is set, the first page.
     fn reload_history(&mut self, force: bool, cx: &mut Context<Self>) {
+        let head = Self::vcs_head(cx);
         let core = self.core.read(cx);
         let Some(directory) = core.project_directory.clone() else {
             return;
         };
         let backend = core.workspace_backend.clone();
         let history = &mut self.commit_review.history;
+        history.head = Some(head);
         history.generation += 1;
         history.loading = true;
         let generation = history.generation;
@@ -203,7 +228,8 @@ impl Workspace {
                         if previous.as_ref() == Some(&tips) {
                             return Ok(None);
                         }
-                        let page = repository.log(&tips, 0, PAGE).await?;
+                        let pages = HistoryPages::new(tips.clone());
+                        let page = LoadedPage::read(&repository, pages, FIRST_PAGE).await?;
                         Ok::<_, String>(Some((tips, page)))
                     })
                 })
@@ -219,17 +245,12 @@ impl Workspace {
                     Ok(Some((tips, page))) => {
                         history.error = None;
                         history.tips = Some(tips);
-                        history.commits.clear();
-                        history.rows.clear();
-                        history.graph = CommitGraph::default();
-                        history.lanes = 0;
-                        history.complete = false;
+                        history.clear();
                         history.add_page(page);
                     }
                     Err(error) => {
                         history.tips = Some(Vec::new());
-                        history.commits.clear();
-                        history.rows.clear();
+                        history.clear();
                         history.error = Some(error);
                     }
                 }
@@ -239,13 +260,12 @@ impl Workspace {
         .detach();
     }
 
-    /// Loads the page after the commits already listed.
+    /// Loads the page after the commits already listed. After a failure it
+    /// waits for Retry, since the list asks for the page on every layout.
     fn load_history_page(&mut self, cx: &mut Context<Self>) {
-        let history = &mut self.commit_review.history;
-        let Some(tips) = history.tips.clone() else {
-            return;
-        };
-        if history.loading || history.complete {
+        let history = &self.commit_review.history;
+        if history.tips.is_none() || history.loading || history.complete || history.error.is_some()
+        {
             return;
         }
         let core = self.core.read(cx);
@@ -256,7 +276,7 @@ impl Workspace {
         let history = &mut self.commit_review.history;
         history.loading = true;
         let generation = history.generation;
-        let skip = history.commits.len();
+        let pages = history.pages.clone();
         let handle = self.handle.clone();
         cx.spawn(async move |this, cx| {
             let result = cx
@@ -266,7 +286,7 @@ impl Workspace {
                         let repository = GitRepository::discover(backend, &directory)
                             .await?
                             .ok_or("This workspace is not a Git repository")?;
-                        repository.log(&tips, skip, PAGE).await
+                        LoadedPage::read(&repository, pages, PAGE).await
                     })
                 })
                 .await;
@@ -284,6 +304,18 @@ impl Workspace {
             });
         })
         .detach();
+    }
+
+    /// Repeats the load that failed.
+    fn retry_history(&mut self, cx: &mut Context<Self>) {
+        let history = &mut self.commit_review.history;
+        history.error = None;
+        if history.commits.is_empty() {
+            self.reload_history(true, cx);
+        } else {
+            self.load_history_page(cx);
+        }
+        cx.notify();
     }
 
     /// Shows commit `index` of the list in the Commit tab.
@@ -556,6 +588,27 @@ impl Workspace {
             .into_any_element()
     }
 
+    /// Why the first page, or with `more` a later page, failed to load.
+    fn render_history_error(error: String, more: bool, cx: &mut Context<Self>) -> StateView {
+        let title = if more {
+            "Cannot load more history"
+        } else {
+            "Cannot load history"
+        };
+        StateView::new("history-sidebar-error", title)
+            .detail(error)
+            .icon("icons/triangle-alert.svg")
+            .tone(StateViewTone::Error)
+            .compact(true)
+            .action(
+                Button::new("history-retry", "Retry")
+                    .icon("icons/refresh.svg")
+                    .variant(ButtonVariant::Secondary)
+                    .size(ButtonSize::Small)
+                    .on_click(cx.listener(|this, _, _, cx| this.retry_history(cx))),
+            )
+    }
+
     fn history_row_height(cx: &App) -> Pixels {
         let sizes = cx.global::<nucleotide_ui::Theme>().tokens.sizes;
         sizes.space_9 + sizes.space_2
@@ -600,13 +653,14 @@ impl Workspace {
                     .aria_label("Reload history")
                     .on_click(cx.listener(|this, _, _, cx| this.reload_history(true, cx))),
             );
-        let body = if count == 0 {
-            let (title, loading) = match &history.error {
-                Some(error) => (error.clone(), false),
-                None if history.loading || history.tips.is_none() => {
-                    ("Loading history…".to_string(), true)
-                }
-                None => ("No commits yet".to_string(), false),
+        let body = if let (0, Some(error)) = (count, &history.error) {
+            Self::render_history_error(error.clone(), false, cx).into_any_element()
+        } else if count == 0 {
+            let loading = history.loading || history.tips.is_none();
+            let title = if loading {
+                "Loading history…"
+            } else {
+                "No commits yet"
             };
             StateView::new("history-sidebar-empty", title)
                 .loading(loading)
@@ -646,13 +700,7 @@ impl Workspace {
                 .flex_col()
                 .child(list)
                 .when_some(history.error.clone(), |view, error| {
-                    view.child(
-                        div()
-                            .p(tokens.sizes.space_2)
-                            .text_size(tokens.sizes.text_xs)
-                            .text_color(tokens.editor.error)
-                            .child(error),
-                    )
+                    view.child(Self::render_history_error(error, true, cx))
                 })
                 .into_any_element()
         };
@@ -1050,15 +1098,53 @@ impl Workspace {
     }
 }
 
+/// A page of commits, read and laid out off the UI thread.
+struct LoadedPage {
+    /// The history listed so far, including this page.
+    pages: HistoryPages,
+    commits: Vec<CommitSummary>,
+    rows: Vec<GraphRow>,
+    complete: bool,
+}
+
+impl LoadedPage {
+    async fn read(
+        repository: &GitRepository,
+        mut pages: HistoryPages,
+        limit: usize,
+    ) -> Result<Self, String> {
+        let commits = repository.log(&pages.starts(), limit).await?;
+        let rows = pages.add(&commits);
+        // A short page lists everything that was left.
+        let complete = commits.len() < limit || pages.starts().is_empty();
+        Ok(Self {
+            pages,
+            commits,
+            rows,
+            complete,
+        })
+    }
+}
+
 impl History {
-    fn add_page(&mut self, page: Vec<CommitSummary>) {
-        self.complete = page.len() < PAGE;
-        for commit in &page {
-            let row = self.graph.add(commit);
-            self.lanes = self.lanes.max(row.lanes);
-            self.rows.push(row);
-        }
-        self.commits.extend(page);
+    fn clear(&mut self) {
+        self.commits.clear();
+        self.rows.clear();
+        self.pages = HistoryPages::default();
+        self.lanes = 0;
+        self.complete = false;
+    }
+
+    fn add_page(&mut self, page: LoadedPage) {
+        self.pages = page.pages;
+        self.complete = page.complete;
+        self.lanes = page
+            .rows
+            .iter()
+            .map(|row| row.lanes)
+            .fold(self.lanes, usize::max);
+        self.rows.extend(page.rows);
+        self.commits.extend(page.commits);
     }
 }
 

@@ -1122,8 +1122,8 @@ impl Workspace {
     /// Reloads when git status no longer matches the review. Our own stage
     /// changes the status too, and its reload has usually already read it.
     pub(super) fn commit_status_changed(&mut self, cx: &mut Context<Self>) {
-        // A commit changes the status as well as the history.
-        self.history_changed(cx);
+        // A commit changes the status as well as HEAD.
+        self.history_head_changed(cx);
         if self.commit_review.busy {
             self.commit_review.status_changed = true;
         } else if !self.review_matches_status(cx) {

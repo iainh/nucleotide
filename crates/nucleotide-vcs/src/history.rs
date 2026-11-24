@@ -76,20 +76,22 @@ pub struct CommitChanges {
 }
 
 impl GitRepository {
-    /// The commits the history starts from: HEAD and every branch, remote
-    /// branch and tag. Paging from fixed tips keeps later pages consistent
-    /// with earlier ones while refs move. Empty when there are no commits.
+    /// The commits the history starts from: HEAD and the commit of every
+    /// branch, remote branch and tag. Paging from fixed tips keeps later pages
+    /// consistent with earlier ones while refs move. Empty when there are no
+    /// commits.
     pub async fn history_tips(&self) -> Result<Vec<String>, String> {
         let mut tips: Vec<String> = self
             .optional_line(&["rev-parse", "--verify", "--quiet", "HEAD"])
             .await?
             .into_iter()
             .collect();
+        // An annotated tag names a tag object; `*` peels it to what it tags.
         let output = self
             .run_process(
                 &[
                     "for-each-ref",
-                    "--format=%(objectname)",
+                    "--format=%(objecttype) %(objectname) %(*objecttype) %(*objectname)",
                     "refs/heads",
                     "refs/remotes",
                     "refs/tags",
@@ -103,26 +105,25 @@ impl GitRepository {
             return Err(command_error("for-each-ref", &output));
         }
         for line in String::from_utf8_lossy(&output.stdout).lines() {
-            if !line.is_empty() && !tips.iter().any(|tip| tip == line) {
-                tips.push(line.to_string());
+            // Tags of trees and blobs have no history.
+            let commit = match line.split_whitespace().collect::<Vec<_>>()[..] {
+                ["commit", commit, ..] | [_, _, "commit", commit] => commit,
+                _ => continue,
+            };
+            if !tips.iter().any(|tip| tip == commit) {
+                tips.push(commit.to_string());
             }
         }
         Ok(tips)
     }
 
-    /// Up to `limit` commits reachable from `tips` after skipping `skip`, newest
-    /// first. Date order never lists a parent before its children, which the
-    /// graph layout relies on.
-    pub async fn log(
-        &self,
-        tips: &[String],
-        skip: usize,
-        limit: usize,
-    ) -> Result<Vec<CommitSummary>, String> {
-        if tips.is_empty() || limit == 0 {
+    /// Up to `limit` commits reachable from `starts`, newest first. Date order
+    /// never lists a parent before its children, which the graph layout relies
+    /// on. `HistoryPages::starts` names where each page begins.
+    pub async fn log(&self, starts: &[String], limit: usize) -> Result<Vec<CommitSummary>, String> {
+        if starts.is_empty() || limit == 0 {
             return Ok(Vec::new());
         }
-        let skip = format!("--skip={skip}");
         let limit = format!("--max-count={limit}");
         let args = [
             "log",
@@ -130,11 +131,10 @@ impl GitRepository {
             "--decorate=full",
             "--no-color",
             "--format=%H%x1f%P%x1f%aN%x1f%at%x1f%D%x1f%s%x1e",
-            &skip,
             &limit,
             "--stdin",
         ];
-        let mut stdin = tips.join("\n").into_bytes();
+        let mut stdin = starts.join("\n").into_bytes();
         stdin.push(b'\n');
         let output = self
             .run_process(&args, stdin, READ_TIMEOUT_MS, LIST_OUTPUT_LIMIT)
@@ -591,6 +591,46 @@ impl CommitGraph {
     }
 }
 
+/// The history listed so far: its graph and where the next page starts. Each
+/// page starts from the parents the listed commits lead to and the tips not
+/// yet listed, so git does not walk the listed commits again.
+#[derive(Default, Clone)]
+pub struct HistoryPages {
+    graph: CommitGraph,
+    /// Tips not yet listed.
+    tips: Vec<String>,
+}
+
+impl HistoryPages {
+    pub fn new(tips: Vec<String>) -> Self {
+        Self {
+            graph: CommitGraph::default(),
+            tips,
+        }
+    }
+
+    /// The commits the next page is read from; empty once every commit is
+    /// listed. Every commit not yet listed is reachable from them, and no
+    /// listed commit is, because the listed commits came children first.
+    pub fn starts(&self) -> Vec<String> {
+        let mut seen = std::collections::HashSet::new();
+        let lanes = self.graph.lanes.iter().flatten().map(|lane| &lane.commit);
+        lanes
+            .chain(&self.tips)
+            .filter(|commit| seen.insert(commit.as_str()))
+            .cloned()
+            .collect()
+    }
+
+    /// Lays out a page `GitRepository::log` read from `starts`.
+    pub fn add(&mut self, page: &[CommitSummary]) -> Vec<GraphRow> {
+        let listed: std::collections::HashSet<&str> =
+            page.iter().map(|commit| commit.id.as_str()).collect();
+        self.tips.retain(|tip| !listed.contains(tip.as_str()));
+        page.iter().map(|commit| self.graph.add(commit)).collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -704,7 +744,7 @@ mod tests {
             .unwrap();
         let tips = repo.history_tips().await.unwrap();
         assert_eq!(tips.len(), 2, "HEAD and main coincide: {tips:?}");
-        let all = repo.log(&tips, 0, 10).await.unwrap();
+        let all = repo.log(&tips, 10).await.unwrap();
         assert_eq!(
             all.iter().map(|c| c.subject.as_str()).collect::<Vec<_>>(),
             ["edit and rename", "first"]
@@ -714,8 +754,6 @@ mod tests {
         let refs: Vec<_> = all[0].refs.iter().map(|r| r.name.as_str()).collect();
         assert_eq!(refs, ["feature", "v1"]);
         assert!(all[1].refs[0].current && all[1].refs[0].name == "main");
-        // Pages continue where the previous one stopped.
-        assert_eq!(repo.log(&tips, 1, 10).await.unwrap(), all[1..]);
 
         let changes = repo.commit_changes(&feature).await.unwrap();
         assert_eq!(changes.body, "The body.");
@@ -754,6 +792,88 @@ mod tests {
                 .all(|f| f.kind == FileChangeKind::Added
                     && f.contents.as_ref().unwrap()[0].is_none())
         );
+    }
+
+    #[tokio::test]
+    async fn pages_list_every_commit_once_and_children_first() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        git(root, &["init", "-q", "-b", "main"]);
+        git(root, &["config", "user.name", "History Test"]);
+        git(root, &["config", "user.email", "history@example.com"]);
+        git(root, &["config", "commit.gpgsign", "false"]);
+        let commit = |subject: &str, time: u32| {
+            let date = format!("@{time} +0000");
+            let output = nucleotide_process::command("git")
+                .args(["commit", "-q", "--allow-empty", "-m", subject])
+                .env("GIT_AUTHOR_DATE", &date)
+                .env("GIT_COMMITTER_DATE", &date)
+                .current_dir(root)
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+        };
+        // main: base, a1, a2, a merge of feature, then a commit dated before
+        // its parent. feature and stale fork from main; side has its own root.
+        // Annotated tags name tag objects, which pages must peel to commits.
+        commit("base", 100);
+        git(root, &["tag", "-a", "-m", "old", "old"]);
+        git(root, &["tag", "-a", "-m", "tree", "tree", "HEAD^{tree}"]);
+        commit("a1", 200);
+        git(root, &["checkout", "-q", "-b", "stale"]);
+        commit("st1", 210);
+        git(root, &["checkout", "-q", "-b", "feature", "old"]);
+        commit("f1", 150);
+        commit("f2", 300);
+        git(root, &["checkout", "-q", "main"]);
+        commit("a2", 250);
+        git(root, &["merge", "-q", "--no-ff", "-m", "merge", "feature"]);
+        commit("skewed", 50);
+        git(root, &["checkout", "-q", "--orphan", "side"]);
+        commit("s1", 120);
+        commit("s2", 500);
+        git(root, &["checkout", "-q", "main"]);
+        let repo = GitRepository::discover(nucleotide_workspace::local_workspace_backend(), root)
+            .await
+            .unwrap()
+            .unwrap();
+        let tips = repo.history_tips().await.unwrap();
+        let mut expected: Vec<_> = repo
+            .log(&tips, 100)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|c| c.id)
+            .collect();
+        assert_eq!(expected.len(), 10);
+        expected.sort();
+        for limit in 1..=3 {
+            let mut pages = HistoryPages::new(tips.clone());
+            let mut listed: Vec<CommitSummary> = Vec::new();
+            loop {
+                let starts = pages.starts();
+                if starts.is_empty() {
+                    break;
+                }
+                let page = repo.log(&starts, limit).await.unwrap();
+                assert!(!page.is_empty(), "pages stopped early at {}", listed.len());
+                assert!(listed.len() < expected.len(), "pages repeat commits");
+                pages.add(&page);
+                listed.extend(page);
+            }
+            for (index, commit) in listed.iter().enumerate() {
+                assert!(
+                    listed[..index]
+                        .iter()
+                        .all(|earlier| !commit.parents.contains(&earlier.id)),
+                    "{} listed after its parent with pages of {limit}",
+                    commit.subject
+                );
+            }
+            let mut ids: Vec<_> = listed.into_iter().map(|c| c.id).collect();
+            ids.sort();
+            assert_eq!(ids, expected, "pages of {limit}");
+        }
     }
 
     #[test]

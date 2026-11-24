@@ -81,5 +81,4 @@ mod tests {
         assert!(VcsStatus::Conflicted.needs_attention());
         assert!(!VcsStatus::Clean.needs_attention());
     }
-
 }
