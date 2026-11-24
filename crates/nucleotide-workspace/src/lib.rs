@@ -3904,6 +3904,9 @@ fn wait_for_process(
 
     let timeout = Duration::from_millis(timeout_ms);
     let started = Instant::now();
+    // Most processes exit within a few milliseconds, so poll quickly at first
+    // and back off to 10 ms for long-running ones.
+    let mut delay = Duration::from_micros(50);
     loop {
         if let Some(status) = child.try_wait().map_err(|source| WorkspaceError::Io {
             operation: "poll process",
@@ -3926,7 +3929,8 @@ fn wait_for_process(
         }
 
         let remaining = timeout.saturating_sub(elapsed);
-        std::thread::sleep(remaining.min(Duration::from_millis(10)));
+        std::thread::sleep(remaining.min(delay));
+        delay = (delay * 2).min(Duration::from_millis(10));
     }
 }
 
