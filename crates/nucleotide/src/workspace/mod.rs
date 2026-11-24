@@ -3870,12 +3870,25 @@ impl Workspace {
         })
         .detach();
         let mut status_revision = vcs_service.read(cx).status_revision();
+        // The status bar shows a status failure or truncation until a refresh clears it.
+        let mut vcs_problem = (None, None);
         cx.observe(&vcs_service, move |workspace, service, cx| {
-            let revision = service.read(cx).status_revision();
+            let service = service.read(cx);
+            let (revision, problem) = (
+                service.status_revision(),
+                (
+                    service.status_error().map(str::to_owned),
+                    service.status_limit_reached(),
+                ),
+            );
             if revision != status_revision {
                 status_revision = revision;
                 workspace.commit_status_changed(cx);
                 // The sidebar's Changes button shows the changed-file count.
+                cx.notify();
+            }
+            if problem != vcs_problem {
+                vcs_problem = problem;
                 cx.notify();
             }
         })

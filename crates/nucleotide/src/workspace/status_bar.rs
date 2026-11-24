@@ -92,6 +92,8 @@ struct StatusBarModel {
     position_text: String,
     document_metadata: Option<StatusBarDocumentMetadata>,
     vcs_ref: Option<String>,
+    /// Why Git status failed, or that it reached its limit, until a refresh clears it.
+    vcs_problem: Option<(String, StatusBarNotificationSeverity)>,
     lsp: Option<LspStatusSummary>,
     notification: Option<StatusBarNotification>,
     background_activity: Option<String>,
@@ -447,6 +449,25 @@ impl Workspace {
                     })
                 })
                 .flatten(),
+            vcs_problem: cx
+                .has_global::<VcsServiceHandle>()
+                .then(|| {
+                    let service = cx.global::<VcsServiceHandle>().service().read(cx);
+                    service
+                        .status_error()
+                        .map(|error| (error.to_owned(), StatusBarNotificationSeverity::Error))
+                        .or_else(|| {
+                            service.status_limit_reached().map(|limit| {
+                                (
+                                    format!(
+                                        "More than {limit} changed files. Badges and the Changes list show only the first {limit}."
+                                    ),
+                                    StatusBarNotificationSeverity::Warning,
+                                )
+                            })
+                        })
+                })
+                .flatten(),
             lsp: self.compute_statusbar_lsp_summary(cx, has_lsp_state, preferred_server_id),
             notification: self.notifications.read(cx).status_bar_notification(),
             background_activity: self
@@ -555,6 +576,48 @@ impl Workspace {
                             .text_ellipsis()
                             .child(label),
                     ),
+            )
+            .on_click(cx.listener(|this, _, _, cx| this.open_commit_tab(cx)))
+            .into_any_element()
+    }
+
+    /// A Git status failure or truncation, which leaves badges and the branch stale or partial.
+    fn statusbar_vcs_problem_item(
+        &self,
+        message: &str,
+        severity: StatusBarNotificationSeverity,
+        density: StatusBarDensity,
+        status_bar_tokens: &nucleotide_ui::tokens::StatusBarTokens,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let sizes = cx.theme().tokens.sizes;
+        let (label, color) = match severity {
+            StatusBarNotificationSeverity::Error => ("Git failed", status_bar_tokens.error),
+            _ => ("Changes truncated", status_bar_tokens.warning),
+        };
+        Button::new("statusbar-vcs-problem", "")
+            .variant(ButtonVariant::Ghost)
+            .size(ButtonSize::ExtraSmall)
+            // Git's advice spans blank lines; a tooltip has little height above the status bar.
+            .tooltip(message.split_whitespace().collect::<Vec<_>>().join(" "))
+            .aria_label(format!("{label}: {message}"))
+            .content(
+                div()
+                    .when(cfg!(test), |view| {
+                        view.debug_selector(|| "statusbar-vcs-problem".into())
+                    })
+                    .flex()
+                    .items_center()
+                    .gap(sizes.space_1)
+                    .whitespace_nowrap()
+                    .text_color(color)
+                    .child(
+                        svg()
+                            .path(statusbar_notification_icon(severity))
+                            .size(sizes.text_sm)
+                            .flex_shrink_0(),
+                    )
+                    .when(density == StatusBarDensity::Wide, |item| item.child(label)),
             )
             .on_click(cx.listener(|this, _, _, cx| this.open_commit_tab(cx)))
             .into_any_element()
@@ -862,6 +925,18 @@ impl Workspace {
                     content.child(self.statusbar_vcs_item(vcs_ref, status_bar_tokens, cx))
                 })
             })
+            .when_some(
+                model.vcs_problem.as_ref(),
+                |content, (message, severity)| {
+                    content.child(self.statusbar_vcs_problem_item(
+                        message,
+                        *severity,
+                        model.density,
+                        status_bar_tokens,
+                        cx,
+                    ))
+                },
+            )
             .child(
                 div()
                     .flex_1()

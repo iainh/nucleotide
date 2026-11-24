@@ -74,6 +74,10 @@ pub struct VcsService {
     status_entries: Vec<GitStatusEntry>,
     /// Monotonic revision for presentation caches that consume status data.
     status_revision: u64,
+    /// Why the last status refresh failed, until one succeeds.
+    status_error: Option<String>,
+    /// Whether the last status listed only the first `config.max_files` changes.
+    status_truncated: bool,
     /// Configuration
     config: VcsConfig,
     /// Last time VCS status was checked
@@ -98,6 +102,8 @@ impl VcsService {
             status_cache: HashMap::new(),
             status_entries: Vec::new(),
             status_revision: 0,
+            status_error: None,
+            status_truncated: false,
             config,
             last_check: None,
             status_refresh_in_flight: false,
@@ -183,6 +189,8 @@ impl VcsService {
             self.status_revision = self.status_revision.wrapping_add(1);
         }
         self.status_entries.clear();
+        self.status_error = None;
+        self.status_truncated = false;
         self.last_check = None;
         self.status_refresh_in_flight = false;
         self.status_refresh_pending = false;
@@ -229,6 +237,16 @@ impl VcsService {
 
     pub fn status_revision(&self) -> u64 {
         self.status_revision
+    }
+
+    /// Why the last status refresh failed, cleared when one succeeds.
+    pub fn status_error(&self) -> Option<&str> {
+        self.status_error.as_deref()
+    }
+
+    /// The status limit, when the last status reached it and lists only that many changes.
+    pub fn status_limit_reached(&self) -> Option<usize> {
+        self.status_truncated.then_some(self.config.max_files)
     }
 
     pub fn repository_head(&self) -> Option<&str> {
@@ -362,15 +380,22 @@ impl VcsService {
                             service.update_repository_state(refresh.head, refresh.display_ref, cx);
                             service.update_status_cache(refresh.status, cx);
                             service.update_status_entries(refresh.entries, cx);
+                            if service.status_error.take().is_some()
+                                || service.status_truncated != refresh.truncated
+                            {
+                                service.status_truncated = refresh.truncated;
+                                cx.notify();
+                            }
                         }
                         Err(error) => {
                             error!(error = %error, "VCS: Failed to get async git status");
-                            service.emit_vcs_event(
-                                VcsEvent::Error {
-                                    message: format!("Git status failed: {}", error),
-                                },
-                                cx,
-                            );
+                            let message = error;
+                            // Each refresh retries; only a new failure is news.
+                            if service.status_error.as_ref() != Some(&message) {
+                                service.status_error = Some(message.clone());
+                                cx.notify();
+                                service.emit_vcs_event(VcsEvent::Error { message }, cx);
+                            }
                         }
                     }
 
@@ -481,6 +506,7 @@ impl VcsService {
 struct GitRefreshResult {
     status: HashMap<PathBuf, VcsStatus>,
     entries: Vec<GitStatusEntry>,
+    truncated: bool,
     head: Option<String>,
     display_ref: Option<String>,
 }
@@ -494,8 +520,11 @@ async fn run_git_refresh_with_backend(
         .git_head(root_path)
         .await
         .map_err(|error| format!("Workspace git head failed: {error}"))?;
-    let GitStatusResult { root, entries, .. } =
-        run_git_status_with_backend(backend, root_path, max_files).await?;
+    let GitStatusResult {
+        root,
+        entries,
+        truncated,
+    } = run_git_status_with_backend(backend, root_path, max_files).await?;
     let status = entries
         .iter()
         .map(|entry| {
@@ -509,6 +538,7 @@ async fn run_git_refresh_with_backend(
     Ok(GitRefreshResult {
         status,
         entries,
+        truncated,
         head: head.head,
         display_ref: head.display_ref,
     })
@@ -651,7 +681,9 @@ impl gpui::Global for VcsServiceHandle {}
 mod tests {
     use super::*;
     use nucleotide_workspace::*;
+    use std::cell::RefCell;
     use std::collections::VecDeque;
+    use std::rc::Rc;
     use std::sync::{Arc, Mutex};
     use tokio::sync::oneshot;
 
@@ -917,6 +949,76 @@ mod tests {
                 );
             });
         }
+    }
+
+    #[gpui::test]
+    fn status_failure_and_truncation_last_until_a_refresh_clears_them(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let temp = test_repository();
+        std::fs::write(temp.path().join("a.txt"), "a\n").unwrap();
+        std::fs::write(temp.path().join("b.txt"), "b\n").unwrap();
+        let backend = GatedBackend::new(cx);
+        let (first, first_gate) = oneshot::channel();
+        let (second, second_gate) = oneshot::channel();
+        backend
+            .status_gates
+            .lock()
+            .unwrap()
+            .extend([first_gate, second_gate]);
+        let service = cx.new(|_| {
+            let mut service = VcsService::new(VcsConfig {
+                max_files: 1,
+                ..VcsConfig::default()
+            });
+            service.set_workspace_backend(Arc::new(backend));
+            service
+        });
+        let errors = Rc::new(RefCell::new(0));
+        cx.update(|cx| {
+            let errors = errors.clone();
+            cx.subscribe(&service, move |_, event, _| {
+                if matches!(event, VcsEvent::Error { .. }) {
+                    *errors.borrow_mut() += 1;
+                }
+            })
+            .detach();
+        });
+        service.update(cx, |service, cx| {
+            service.start_monitoring(temp.path().to_path_buf(), cx)
+        });
+        first.send(true).unwrap();
+        cx.run_until_parked();
+        // Failing again with the same error is not news.
+        service.update(cx, |service, cx| service.refresh_now(cx));
+        second.send(true).unwrap();
+        cx.run_until_parked();
+        service.read_with(cx, |service, _| {
+            assert!(
+                service
+                    .status_error()
+                    .is_some_and(|error| error.contains("injected status failure")),
+                "{:?}",
+                service.status_error()
+            );
+            assert_eq!(service.status_limit_reached(), None);
+        });
+        assert_eq!(*errors.borrow(), 1);
+
+        service.update(cx, |service, cx| service.refresh_now(cx));
+        cx.run_until_parked();
+        service.read_with(cx, |service, _| {
+            assert_eq!(service.status_error(), None);
+            assert_eq!(service.status_limit_reached(), Some(1));
+            assert_eq!(service.status_entries().len(), 1);
+        });
+
+        std::fs::remove_file(temp.path().join("b.txt")).unwrap();
+        service.update(cx, |service, cx| service.refresh_now(cx));
+        cx.run_until_parked();
+        service.read_with(cx, |service, _| {
+            assert_eq!(service.status_limit_reached(), None)
+        });
     }
 
     #[gpui::test(iterations = 10)]

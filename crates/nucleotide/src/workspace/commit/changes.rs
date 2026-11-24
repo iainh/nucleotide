@@ -2,7 +2,9 @@
 //! file shows its diff in the Commit tab.
 use super::*;
 use nucleotide_types::VcsStatus;
-use nucleotide_ui::{Checkbox, CheckboxSize, ListItem, ListItemSpacing, ListItemVariant, VcsIcon};
+use nucleotide_ui::{
+    Checkbox, CheckboxSize, ListItem, ListItemSpacing, ListItemVariant, StateViewTone, VcsIcon,
+};
 
 /// How a file changed, preferring what the index records over the working tree.
 fn change_kind(entry: &GitStatusEntry) -> (VcsStatus, &'static str) {
@@ -179,8 +181,40 @@ impl Workspace {
             .snapshot
             .as_ref()
             .map_or(0, |s| s.files.len());
+        let failed = self
+            .commit_review
+            .error
+            .clone()
+            .filter(|_| self.commit_review.snapshot.is_none());
         let empty = (count == 0).then(|| {
             let loading = self.commit_review.snapshot.is_none();
+            if let Some(error) = failed {
+                return StateView::new("changes-sidebar-error", "Cannot load changes")
+                    .detail(error)
+                    .icon("icons/triangle-alert.svg")
+                    .tone(StateViewTone::Error)
+                    .action(
+                        div()
+                            .when(cfg!(test), |view| {
+                                view.debug_selector(|| "changes-sidebar-retry".into())
+                            })
+                            .child(
+                                Button::new("changes-sidebar-retry", "Retry")
+                                    .icon("icons/refresh.svg")
+                                    .variant(ButtonVariant::Secondary)
+                                    .size(ButtonSize::Small)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.commit_review.error = None;
+                                        this.refresh_commit_review(cx);
+                                        // File badges and the branch read the same failing Git.
+                                        let service =
+                                            cx.global::<VcsServiceHandle>().service().clone();
+                                        service.update(cx, |service, cx| service.refresh_now(cx));
+                                    })),
+                            ),
+                    )
+                    .compact(true);
+            }
             StateView::new(
                 "changes-sidebar-empty",
                 if loading {

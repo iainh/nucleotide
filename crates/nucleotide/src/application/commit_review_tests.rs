@@ -590,6 +590,24 @@ fn changes_sidebar_selects_the_shown_file_and_stages_whole_files(cx: &mut gpui::
 }
 
 #[gpui::test]
+fn changes_sidebar_shows_why_changes_cannot_load_and_retries(cx: &mut gpui::TestAppContext) {
+    let _runtime = TEST_RUNTIME.enter();
+    let root = tempfile::tempdir_in(helix_stdx::path::normalize(std::env::temp_dir())).unwrap();
+    fs::write(root.path().join("file.txt"), "alpha\n").unwrap();
+    let (core, _, cx) = new_test_workspace(cx, &root.path().join("file.txt"));
+    core.update(cx, |_, cx| cx.emit(crate::Update::ShowCommit));
+    // Not a repository: an error with Retry, not "Loading changes…" forever.
+    wait_for(&core, cx, |cx| {
+        cx.debug_bounds("changes-sidebar-retry").is_some()
+    });
+
+    git(root.path(), &["init", "-q"]);
+    click_line(cx, "changes-sidebar-retry");
+    wait_for(&core, cx, |cx| cx.debug_bounds("changes-row-0").is_some());
+    assert!(cx.debug_bounds("changes-sidebar-retry").is_none());
+}
+
+#[gpui::test]
 fn commit_review_save_failure_leaves_index_untouched(cx: &mut gpui::TestAppContext) {
     let _runtime = TEST_RUNTIME.enter();
     let root = repository();

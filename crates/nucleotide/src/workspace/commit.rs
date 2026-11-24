@@ -74,6 +74,8 @@ pub(super) struct CommitReview {
     reuse_context: bool,
     /// Git status changed while a reload ran, so it may already be stale.
     status_changed: bool,
+    /// The last reload raced another Git process and is being read again.
+    raced: bool,
     /// The review is not on screen and reloads when it next shows.
     stale: bool,
     /// Waits for edits to pause before reloading.
@@ -543,6 +545,9 @@ struct Previous {
     context: Option<ReviewContext>,
 }
 
+/// Another Git process moved HEAD or the index while a review was read.
+const RACED: &str = "HEAD or index changed while loading. Refresh to review the new changes.";
+
 type ReviewContext = (
     Option<String>,
     Result<CommitMessageContext, String>,
@@ -627,9 +632,7 @@ async fn load_review(
             .head
             != head.head
     {
-        return Err(
-            "HEAD or index changed while loading. Refresh to review the new changes.".into(),
-        );
+        return Err(RACED.into());
     }
     Ok(ReviewSnapshot {
         repository,
@@ -1026,7 +1029,16 @@ impl Workspace {
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.commit_review.busy = false;
+                let raced = std::mem::take(&mut this.commit_review.raced);
                 match result {
+                    // Keep showing the review read before and read once more.
+                    Err(error) if error == RACED && !raced => {
+                        this.commit_review.raced = true;
+                        this.commit_review.refresh_again = true;
+                    }
+                    Err(error) if error == RACED && this.commit_review.snapshot.is_some() => {
+                        this.commit_review.error = Some(error);
+                    }
                     Ok(snapshot) => {
                         if this.core.read(cx).project_directory.as_ref()
                             != Some(&snapshot.directory)
