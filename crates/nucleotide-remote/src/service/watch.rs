@@ -453,6 +453,13 @@ impl V5WatchSubscription {
         if self.roots.is_empty() {
             return;
         }
+        // Opening or reading a path changes nothing. Linux reports these, and the client's
+        // `git status` opens every directory, so passing them on made each refresh start another.
+        if let notify::EventKind::Access(kind) = event.kind
+            && kind != notify::event::AccessKind::Close(notify::event::AccessMode::Write)
+        {
+            return;
+        }
 
         if v5_notify_event_is_rename(&event)
             && event.paths.len() >= 2

@@ -397,6 +397,19 @@ fn v5_watch_registry_native_events_emit_batches_for_nearest_root() {
         temp.path(),
     );
 
+    // Reads, such as `git status` opening directories, are not changes.
+    for read in [
+        notify::event::AccessKind::Open(notify::event::AccessMode::Any),
+        notify::event::AccessKind::Read,
+        notify::event::AccessKind::Close(notify::event::AccessMode::Read),
+    ] {
+        let event = notify::Event::new(notify::EventKind::Access(read))
+            .add_path(temp.path().join("src"))
+            .add_path(temp.path().join("src/main.rs"));
+        watches
+            .record_native_event(watch_id, Ok(event), temp.path())
+            .unwrap();
+    }
     let event = notify::Event::new(notify::EventKind::Create(notify::event::CreateKind::File))
         .add_path(temp.path().join("src/lib.rs"));
     watches
@@ -410,6 +423,8 @@ fn v5_watch_registry_native_events_emit_batches_for_nearest_root() {
     assert_eq!(*event_stream_id, 2);
     assert_eq!(batch.watch_id, watch_id);
     assert_eq!(batch.sequence, 1);
+    assert_eq!(batch.events.len(), 1);
+    assert_eq!(batch.directory_generations.len(), 1);
     assert_eq!(batch.directory_generations[0].path, "src");
     assert_eq!(batch.events[0].path, "src/lib.rs");
     assert_eq!(
