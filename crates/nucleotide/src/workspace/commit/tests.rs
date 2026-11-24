@@ -195,3 +195,60 @@ async fn deletions_and_renames_keep_whole_file_staging_with_a_read_only_diff() {
         }]
     );
 }
+
+#[test]
+fn review_matches_status_in_git_order() {
+    let entry = |path: &str, index_status, working_tree_status| GitStatusEntry {
+        relative_path: path.into(),
+        original_relative_path: None,
+        index_status,
+        working_tree_status,
+    };
+    let file = |entry: GitStatusEntry, unsaved| {
+        Arc::new(ReviewFile {
+            entry,
+            unsaved,
+            content: Err(String::new()),
+            preview: None,
+            shown: None,
+        })
+    };
+    let modified = entry("src/x", Status::Unmodified, Status::Modified);
+    let nested = entry("a/b", Status::Untracked, Status::Untracked);
+    let sibling = entry("a-b", Status::Untracked, Status::Untracked);
+    let notes = entry("notes", Status::Unmodified, Status::Modified);
+    // The review sorts by path components, so `a/b` comes before `a-b`.
+    let files = [
+        file(nested.clone(), false),
+        file(sibling.clone(), false),
+        file(notes.clone(), true),
+        file(modified.clone(), false),
+    ];
+    // Git lists untracked files last, and orders `a-b` before `a/b` by bytes.
+    let status = [modified.clone(), sibling.clone(), nested.clone()];
+    assert!(files_match_status(&files, &status));
+
+    // A file changed only in an unsaved buffer must still be unsaved.
+    let saved = [
+        file(nested.clone(), false),
+        file(sibling.clone(), false),
+        file(notes.clone(), false),
+        file(modified.clone(), false),
+    ];
+    assert!(!files_match_status(&saved, &status));
+    // A newly staged file, and a file the review does not list, both differ.
+    let staged = [
+        modified.clone(),
+        sibling.clone(),
+        entry("a/b", Status::Added, Status::Unmodified),
+    ];
+    assert!(!files_match_status(&files, &staged));
+    let extra = [
+        modified.clone(),
+        entry("zz", Status::Untracked, Status::Untracked),
+        sibling,
+        nested,
+    ];
+    assert!(!files_match_status(&files, &extra));
+    assert!(!files_match_status(&files[..2], &status));
+}

@@ -169,143 +169,17 @@ impl Workspace {
     }
 
     pub(in crate::workspace) fn render_changes_sidebar(
-        &mut self,
-        window: &Window,
+        &self,
+        _window: &Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        if self.commit_review.stale {
-            self.refresh_commit_review(cx);
-        }
         let tokens = cx.global::<nucleotide_ui::Theme>().tokens;
-        let file_tree = if window.is_window_active() {
-            tokens.file_tree_tokens()
-        } else {
-            tokens.file_tree_tokens().inactive_window(&tokens.chrome)
-        };
-        let files = self
+        let count = self
             .commit_review
             .snapshot
             .as_ref()
-            .map(|s| s.files.clone())
-            .unwrap_or_default();
-        let selected = self.selected_review_file().map(|(index, _)| index);
-        // Clicks queue behind a stage; only a commit or push locks them.
-        let locked = self.commit_review.operation.is_some();
-        let mut rows = Vec::with_capacity(files.len());
-        for (index, file) in files.iter().enumerate() {
-            let path = file.entry.relative_path.clone();
-            let (status, letter) = change_kind(&file.entry);
-            let is_selected = selected == Some(index);
-            let name = path.file_name().map_or_else(
-                || path.display().to_string(),
-                |n| n.to_string_lossy().into(),
-            );
-            let directory = path
-                .parent()
-                .map(|p| p.display().to_string())
-                .unwrap_or_default();
-            let state = file.state();
-            let stage_file = file.clone();
-            let workspace = cx.entity().downgrade();
-            let checkbox = div()
-                .when(cfg!(test), |view| {
-                    view.debug_selector(move || format!("changes-stage-{index}"))
-                })
-                .child(
-                    Checkbox::new(SharedString::from(format!("changes-stage-{index}")), "")
-                        .size(CheckboxSize::Small)
-                        .checked(state == SelectionState::Staged)
-                        .indeterminate(state == SelectionState::Partial)
-                        .disabled(locked)
-                        .on_change(move |_, _, cx| {
-                            let change =
-                                StageChange::File(stage_file.state() != SelectionState::Staged);
-                            let _ = workspace.update(cx, |workspace, cx| {
-                                workspace.stage_review_files(vec![(stage_file.clone(), change)], cx)
-                            });
-                        }),
-                );
-            let (text, secondary) = if is_selected {
-                (file_tree.item_text_selected, file_tree.item_text_selected)
-            } else {
-                (file_tree.item_text, file_tree.item_text_secondary)
-            };
-            let status_color = match status {
-                VcsStatus::Added | VcsStatus::Untracked => tokens.editor.vcs_added,
-                VcsStatus::Deleted => tokens.editor.vcs_deleted,
-                VcsStatus::Modified | VcsStatus::Renamed => tokens.editor.vcs_modified,
-                _ => tokens.editor.error,
-            };
-            let row = ListItem::new(SharedString::from(format!("changes-row-{index}")))
-                .variant(ListItemVariant::Ghost)
-                .spacing(ListItemSpacing::Compact)
-                .background(if is_selected {
-                    file_tree.item_background_selected
-                } else {
-                    gpui::transparent_black()
-                })
-                .hover_background(if is_selected {
-                    file_tree.item_background_selected_hover
-                } else {
-                    file_tree.item_background_hover
-                })
-                .text_color(text)
-                .tooltip(path.display().to_string())
-                .start_slot(checkbox)
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(tokens.sizes.space_2)
-                        .min_w_0()
-                        .child(
-                            VcsIcon::from_path(&path, false)
-                                .size(16.0)
-                                .text_color(if is_selected {
-                                    file_tree.icon_color_selected
-                                } else {
-                                    file_tree.icon_color
-                                })
-                                .render_with_theme(cx.global::<nucleotide_ui::Theme>())
-                                .flex_none(),
-                        )
-                        .child(div().flex_none().whitespace_nowrap().child(name))
-                        .child(
-                            div()
-                                .min_w_0()
-                                .overflow_hidden()
-                                .whitespace_nowrap()
-                                .text_ellipsis()
-                                .text_color(secondary)
-                                .child(directory),
-                        ),
-                )
-                .end_slot(
-                    div()
-                        .w(tokens.sizes.space_5)
-                        .text_center()
-                        .text_color(if is_selected { text } else { status_color })
-                        .child(letter),
-                )
-                .with_listener({
-                    let listener = cx.listener(move |this, _: &gpui::ClickEvent, _, cx| {
-                        this.select_review_file(path.clone(), cx)
-                    });
-                    move |row| row.on_click(listener)
-                });
-            rows.push(
-                div()
-                    .when(cfg!(test), |view| {
-                        view.debug_selector(move || format!("changes-row-{index}"))
-                    })
-                    .on_mouse_down(
-                        MouseButton::Right,
-                        self.review_menu_listener(file, None, cx),
-                    )
-                    .child(row),
-            );
-        }
-        let empty = files.is_empty().then(|| {
+            .map_or(0, |s| s.files.len());
+        let empty = (count == 0).then(|| {
             let loading = self.commit_review.snapshot.is_none();
             StateView::new(
                 "changes-sidebar-empty",
@@ -318,15 +192,176 @@ impl Workspace {
             .loading(loading)
             .compact(true)
         });
+        // Only the rows in view are built, so thousands of changes cost no more than a screenful.
+        let list = (count > 0).then(|| {
+            gpui::uniform_list(
+                "changes-list",
+                count,
+                cx.processor(move |this, range: std::ops::Range<usize>, window, cx| {
+                    let file_tree = if window.is_window_active() {
+                        tokens.file_tree_tokens()
+                    } else {
+                        tokens.file_tree_tokens().inactive_window(&tokens.chrome)
+                    };
+                    let Some(snapshot) = &this.commit_review.snapshot else {
+                        return Vec::new();
+                    };
+                    let files = snapshot
+                        .files
+                        .get(range.clone())
+                        .unwrap_or_default()
+                        .to_vec();
+                    let selected = this.selected_review_file().map(|(index, _)| index);
+                    files
+                        .iter()
+                        .zip(range)
+                        .map(|(file, index)| {
+                            this.render_changes_row(
+                                index,
+                                file,
+                                selected == Some(index),
+                                &file_tree,
+                                cx,
+                            )
+                        })
+                        .collect()
+                }),
+            )
+            .with_horizontal_sizing_behavior(gpui::ListHorizontalSizingBehavior::FitList)
+            .size_full()
+        });
         div()
             .id("changes-sidebar")
             .flex_1()
             .min_h_0()
-            .overflow_y_scroll()
+            .flex()
+            .flex_col()
             .text_size(tokens.sizes.text_md)
             .px(tokens.sizes.space_1)
-            .children(rows)
+            .children(list)
             .children(empty)
+            .into_any_element()
+    }
+
+    fn render_changes_row(
+        &self,
+        index: usize,
+        file: &Arc<ReviewFile>,
+        is_selected: bool,
+        file_tree: &nucleotide_ui::tokens::FileTreeTokens,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let tokens = cx.global::<nucleotide_ui::Theme>().tokens;
+        // Clicks queue behind a stage; only a commit or push locks them.
+        let locked = self.commit_review.operation.is_some();
+        let path = file.entry.relative_path.clone();
+        let (status, letter) = change_kind(&file.entry);
+        let name = path.file_name().map_or_else(
+            || path.display().to_string(),
+            |n| n.to_string_lossy().into(),
+        );
+        let directory = path
+            .parent()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default();
+        let state = file.state();
+        let stage_file = file.clone();
+        let workspace = cx.entity().downgrade();
+        let checkbox = div()
+            .when(cfg!(test), |view| {
+                view.debug_selector(move || format!("changes-stage-{index}"))
+            })
+            .child(
+                Checkbox::new(SharedString::from(format!("changes-stage-{index}")), "")
+                    .size(CheckboxSize::Small)
+                    .checked(state == SelectionState::Staged)
+                    .indeterminate(state == SelectionState::Partial)
+                    .disabled(locked)
+                    .on_change(move |_, _, cx| {
+                        let change =
+                            StageChange::File(stage_file.state() != SelectionState::Staged);
+                        let _ = workspace.update(cx, |workspace, cx| {
+                            workspace.stage_review_files(vec![(stage_file.clone(), change)], cx)
+                        });
+                    }),
+            );
+        let (text, secondary) = if is_selected {
+            (file_tree.item_text_selected, file_tree.item_text_selected)
+        } else {
+            (file_tree.item_text, file_tree.item_text_secondary)
+        };
+        let status_color = match status {
+            VcsStatus::Added | VcsStatus::Untracked => tokens.editor.vcs_added,
+            VcsStatus::Deleted => tokens.editor.vcs_deleted,
+            VcsStatus::Modified | VcsStatus::Renamed => tokens.editor.vcs_modified,
+            _ => tokens.editor.error,
+        };
+        let row = ListItem::new(SharedString::from(format!("changes-row-{index}")))
+            .variant(ListItemVariant::Ghost)
+            .spacing(ListItemSpacing::Compact)
+            .background(if is_selected {
+                file_tree.item_background_selected
+            } else {
+                gpui::transparent_black()
+            })
+            .hover_background(if is_selected {
+                file_tree.item_background_selected_hover
+            } else {
+                file_tree.item_background_hover
+            })
+            .text_color(text)
+            .tooltip(path.display().to_string())
+            .start_slot(checkbox)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(tokens.sizes.space_2)
+                    .min_w_0()
+                    .child(
+                        VcsIcon::from_path(&path, false)
+                            .size(16.0)
+                            .text_color(if is_selected {
+                                file_tree.icon_color_selected
+                            } else {
+                                file_tree.icon_color
+                            })
+                            .render_with_theme(cx.global::<nucleotide_ui::Theme>())
+                            .flex_none(),
+                    )
+                    .child(div().flex_none().whitespace_nowrap().child(name))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .text_color(secondary)
+                            .child(directory),
+                    ),
+            )
+            .end_slot(
+                div()
+                    .w(tokens.sizes.space_5)
+                    .text_center()
+                    .text_color(if is_selected { text } else { status_color })
+                    .child(letter),
+            )
+            .with_listener({
+                let listener = cx.listener(move |this, _: &gpui::ClickEvent, _, cx| {
+                    this.select_review_file(path.clone(), cx)
+                });
+                move |row| row.on_click(listener)
+            });
+        div()
+            .when(cfg!(test), |view| {
+                view.debug_selector(move || format!("changes-row-{index}"))
+            })
+            .on_mouse_down(
+                MouseButton::Right,
+                self.review_menu_listener(file, None, cx),
+            )
+            .child(row)
             .into_any_element()
     }
 }

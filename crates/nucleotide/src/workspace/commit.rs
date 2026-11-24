@@ -143,6 +143,36 @@ fn target_state(staged: bool) -> SelectionState {
     }
 }
 
+/// Whether the review lists exactly the files git status reports. The review
+/// also lists files changed only in unsaved buffers. The review's files are
+/// sorted by path; git status is not, as it lists untracked files last and
+/// orders paths by bytes, so its entries are sorted here and both are merged.
+fn files_match_status(files: &[Arc<ReviewFile>], entries: &[GitStatusEntry]) -> bool {
+    let mut entries: Vec<_> = entries.iter().collect();
+    entries.sort_unstable_by(|a, b| a.relative_path.cmp(&b.relative_path));
+    let mut entries = entries.into_iter().peekable();
+    for file in files {
+        match entries.peek() {
+            Some(entry) if entry.relative_path < file.entry.relative_path => return false,
+            Some(entry) if entry.relative_path == file.entry.relative_path => {
+                if **entry != file.entry {
+                    return false;
+                }
+                entries.next();
+            }
+            _ => {
+                let unsaved_only = file.unsaved
+                    && file.entry.index_status == Status::Unmodified
+                    && file.entry.working_tree_status == Status::Modified;
+                if !unsaved_only {
+                    return false;
+                }
+            }
+        }
+    }
+    entries.next().is_none()
+}
+
 struct CommitDraft {
     document: DocumentId,
     before_amend: Option<String>,
@@ -1094,20 +1124,9 @@ impl Workspace {
             return false;
         };
         let service = cx.global::<VcsServiceHandle>().service().read(cx);
-        let entries = service.status_entries();
-        // The review also lists files changed only in unsaved buffers.
-        let listed = |entry: &GitStatusEntry| entries.contains(entry);
         service.repository_head() == snapshot.head.as_deref()
             && service.repository_ref().unwrap_or("No commits yet") == snapshot.branch
-            && entries
-                .iter()
-                .all(|entry| snapshot.files.iter().any(|file| &file.entry == entry))
-            && snapshot.files.iter().all(|file| {
-                listed(&file.entry)
-                    || (file.unsaved
-                        && file.entry.index_status == Status::Unmodified
-                        && file.entry.working_tree_status == Status::Modified)
-            })
+            && files_match_status(&snapshot.files, service.status_entries())
     }
 
     /// Shows each change at once and stages it, after the operation in
