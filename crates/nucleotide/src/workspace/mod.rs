@@ -9755,7 +9755,7 @@ impl Workspace {
             } => {
                 self.handle_document_changed(*doc_id, line_change, cx);
                 if !self.core.read(cx).editor.is_hosted_auxiliary(*doc_id) {
-                    self.refresh_commit_review_soon(cx);
+                    self.commit_document_edited(*doc_id, cx);
                 }
             }
             DocumentEvent::Opened { doc_id, .. } => {

@@ -253,3 +253,55 @@ fn review_matches_status_in_git_order() {
     assert!(!files_match_status(&files, &extra));
     assert!(!files_match_status(&files[..2], &status));
 }
+
+#[tokio::test]
+async fn buffers_and_service_status_decide_which_files_are_listed() {
+    let root = fixture();
+    for name in ["a", "b"] {
+        std::fs::write(root.path().join(name), format!("{name}\n")).unwrap();
+    }
+    git(root.path(), &["add", "."]);
+    git(root.path(), &["commit", "-qm", "more"]);
+    std::fs::write(root.path().join("b"), "b on disk\n").unwrap();
+    let head = git(root.path(), &["rev-parse", "HEAD"]).trim().to_string();
+    let buffers = HashMap::from([
+        (root.path().join("a"), Rope::from("a in buffer\n")),
+        // Not in HEAD and not on disk, so not a change to commit.
+        (root.path().join("c"), Rope::from("c\n")),
+    ]);
+    let listed = |status: Option<(Option<String>, Vec<GitStatusEntry>)>| {
+        let buffers = buffers.clone();
+        let root = root.path().to_path_buf();
+        async move {
+            let snapshot = load_review(
+                local_workspace_backend(),
+                root,
+                buffers,
+                None,
+                Previous {
+                    status,
+                    ..Previous::default()
+                },
+            )
+            .await
+            .unwrap();
+            snapshot
+                .files
+                .iter()
+                .map(|f| {
+                    let worktree = f.content.as_ref().unwrap().worktree.clone();
+                    (f.entry.relative_path.clone(), f.unsaved, worktree)
+                })
+                .collect::<Vec<_>>()
+        }
+    };
+    let a = (PathBuf::from("a"), true, b"a in buffer\n".to_vec());
+    let b = (PathBuf::from("b"), false, b"b on disk\n".to_vec());
+    // A status read at another HEAD is ignored, so `git status` finds `b`.
+    assert_eq!(
+        listed(Some((Some("0".repeat(40)), Vec::new()))).await,
+        [a.clone(), b]
+    );
+    // A status read at this HEAD is used as is.
+    assert_eq!(listed(Some((Some(head), Vec::new()))).await, [a]);
+}

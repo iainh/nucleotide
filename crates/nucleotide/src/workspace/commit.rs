@@ -80,6 +80,12 @@ pub(super) struct CommitReview {
     stale: bool,
     /// Waits for edits to pause before reloading.
     debounce: Option<gpui::Task<()>>,
+    /// Documents edited since the last reload, rebuilt alone when the debounce ends.
+    edited: HashSet<DocumentId>,
+    /// The debounced reload must reload every file, such as after a save.
+    reload_all: bool,
+    /// `VcsService` read a new status, so the next reload can use it instead of its own.
+    service_status: bool,
     /// Horizontal scroll of each diff's columns, shared by all its list items.
     scrolls: HashMap<String, [gpui::ScrollHandle; 2]>,
     /// The list item holding each working-tree hunk of the shown file.
@@ -439,6 +445,15 @@ async fn load_contents(
         Ok(versions) => versions.into_iter(),
         Err(error) => vec![Err(error); paths.len()].into_iter(),
     };
+    let previous: HashMap<&Path, &FileContent> = previous
+        .iter()
+        .filter_map(|file| {
+            Some((
+                file.entry.relative_path.as_path(),
+                file.content.as_ref().ok()?,
+            ))
+        })
+        .collect();
     let mut contents = Vec::new();
     for entry in entries {
         if whole_file(entry) {
@@ -448,10 +463,7 @@ async fn load_contents(
             continue;
         }
         let versions = versions.next().expect("one version per path");
-        let previous = previous
-            .iter()
-            .find(|file| file.entry.relative_path == entry.relative_path)
-            .and_then(|file| file.content.as_ref().ok());
+        let previous = previous.get(entry.relative_path.as_path()).copied();
         let buffer = buffers.get(&repository.root().join(&entry.relative_path));
         contents.push(
             load_content(
@@ -489,6 +501,19 @@ async fn load_content(
         Some(bytes) => bytes.clone(),
         None => read_worktree(backend, &repository.root().join(path)).await?,
     };
+    build_content(path, head, index, worktree, loader, previous)
+}
+
+/// Diffs and highlights a file's HEAD, index and working-tree text. Highlights
+/// are reused from `previous` where the text is unchanged.
+fn build_content(
+    path: &Path,
+    head: Option<Vec<u8>>,
+    index: Option<Vec<u8>>,
+    worktree: Vec<u8>,
+    loader: Option<&helix_core::syntax::Loader>,
+    previous: Option<&FileContent>,
+) -> Result<FileContent, String> {
     if !supports_line_staging(&[
         head.as_deref().unwrap_or_default(),
         index.as_deref().unwrap_or_default(),
@@ -544,12 +569,16 @@ async fn load_content(
     })
 }
 
-/// What a reload can reuse from the review it replaces.
+/// What a reload can reuse from the review it replaces, and from `VcsService`.
 #[derive(Default)]
 struct Previous {
     files: Vec<Arc<ReviewFile>>,
     /// HEAD with its message defaults and upstream, reused while HEAD is unchanged.
     context: Option<ReviewContext>,
+    repository: Option<GitRepository>,
+    /// `VcsService`'s HEAD and status entries, used instead of running
+    /// `git status` while HEAD is unchanged.
+    status: Option<(Option<String>, Vec<GitStatusEntry>)>,
 }
 
 /// Another Git process moved HEAD or the index while a review was read.
@@ -564,13 +593,20 @@ type ReviewContext = (
 async fn load_review(
     backend: WorkspaceBackendHandle,
     directory: PathBuf,
-    buffers: HashMap<PathBuf, Vec<u8>>,
+    buffers: HashMap<PathBuf, Rope>,
     loader: Option<Arc<helix_core::syntax::Loader>>,
     previous: Previous,
 ) -> Result<ReviewSnapshot, String> {
-    let repository = GitRepository::discover(backend.clone(), &directory)
-        .await?
-        .ok_or("This workspace is not a Git repository")?;
+    let buffers: HashMap<_, _> = buffers
+        .into_iter()
+        .map(|(path, text)| (path, text.to_string().into_bytes()))
+        .collect();
+    let repository = match previous.repository {
+        Some(repository) => repository,
+        None => GitRepository::discover(backend.clone(), &directory)
+            .await?
+            .ok_or("This workspace is not a Git repository")?,
+    };
     let head = backend
         .git_head(repository.root())
         .await
@@ -585,39 +621,55 @@ async fn load_review(
             repository.upstream_state().await,
         ),
     };
-    let mut status = backend
-        .git_status(repository.root(), GitStatusOptions::default())
-        .await
-        .map_err(|e| e.to_string())?;
+    let limit = GitStatusOptions::default().limit;
+    let (mut entries, truncated) = match previous.status {
+        // A full list may have been cut short; only `git status` says so.
+        Some((service_head, entries)) if service_head == head.head && entries.len() < limit => {
+            (entries, false)
+        }
+        _ => {
+            let status = backend
+                .git_status(repository.root(), GitStatusOptions::default())
+                .await
+                .map_err(|e| e.to_string())?;
+            (status.entries, status.truncated)
+        }
+    };
     // A tracked file can be clean on disk but modified only in an open buffer.
-    for path in buffers.keys() {
-        if let Ok(relative) = path.strip_prefix(repository.root())
-            && !status.entries.iter().any(|e| e.relative_path == relative)
-            && repository.read_head(relative).await?.is_some()
-        {
-            status.entries.push(GitStatusEntry {
-                relative_path: relative.into(),
-                original_relative_path: None,
-                index_status: Status::Unmodified,
-                working_tree_status: Status::Modified,
-            });
+    let listed: HashSet<&Path> = entries.iter().map(|e| e.relative_path.as_path()).collect();
+    let unlisted: Vec<PathBuf> = buffers
+        .keys()
+        .filter_map(|path| path.strip_prefix(repository.root()).ok())
+        .filter(|relative| !listed.contains(relative))
+        .map(Path::to_path_buf)
+        .collect();
+    if !unlisted.is_empty() {
+        let paths: Vec<_> = unlisted.iter().map(PathBuf::as_path).collect();
+        let versions = repository.read_versions(&paths).await?;
+        for (relative, versions) in unlisted.into_iter().zip(versions) {
+            if versions.is_ok_and(|v| v.head.is_some()) {
+                entries.push(GitStatusEntry {
+                    relative_path: relative,
+                    original_relative_path: None,
+                    index_status: Status::Unmodified,
+                    working_tree_status: Status::Modified,
+                });
+            }
         }
     }
-    status
-        .entries
-        .sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
-    let entries: Vec<_> = status.entries.iter().collect();
+    entries.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+    let entry_refs: Vec<_> = entries.iter().collect();
     let contents = load_contents(
         &repository,
         &backend,
-        &entries,
+        &entry_refs,
         &buffers,
         loader.as_deref(),
         &previous.files,
     )
     .await;
     let mut files = Vec::new();
-    for (entry, content) in status.entries.into_iter().zip(contents) {
+    for (entry, content) in entries.into_iter().zip(contents) {
         let unsaved = buffers.contains_key(&repository.root().join(&entry.relative_path));
         let preview = match content {
             Ok(_) => None,
@@ -649,7 +701,7 @@ async fn load_review(
         head: head.head,
         branch: head.display_ref.unwrap_or_else(|| "No commits yet".into()),
         files,
-        truncated: status.truncated,
+        truncated,
         index_signature,
         message_context,
         upstream,
@@ -957,12 +1009,8 @@ impl Workspace {
         cx.notify();
     }
 
-    pub(super) fn refresh_commit_review(&mut self, cx: &mut Context<Self>) {
-        let Some(pane) = self.commit_tab_pane() else {
-            return;
-        };
-        self.commit_review.debounce = None;
-        // A hidden review reloads when it next shows instead of on every change.
+    /// Whether the review is on screen, in the Commit tab or the Changes sidebar.
+    fn commit_review_shown(&self, pane: PaneId) -> bool {
         let in_tab = !self.commit_review.history.in_tab
             && self
                 .pane_host
@@ -970,8 +1018,21 @@ impl Workspace {
                 .pane(pane)
                 .and_then(|p| p.active_tab())
                 == Some(TabId::Commit);
-        if self.commit_review.sidebar != Sidebar::Changes && !in_tab {
+        self.commit_review.sidebar == Sidebar::Changes || in_tab
+    }
+
+    pub(super) fn refresh_commit_review(&mut self, cx: &mut Context<Self>) {
+        let Some(pane) = self.commit_tab_pane() else {
+            return;
+        };
+        self.commit_review.debounce = None;
+        self.commit_review.edited.clear();
+        self.commit_review.reload_all = false;
+        // A hidden review reloads when it next shows instead of on every change.
+        if !self.commit_review_shown(pane) {
             self.commit_review.stale = true;
+            // The service's status may be out of date by then.
+            self.commit_review.service_status = false;
             return;
         }
         self.commit_review.stale = false;
@@ -985,17 +1046,13 @@ impl Workspace {
         };
         let backend = core.workspace_backend.clone();
         let loader = Some(core.editor.syn_loader.load_full());
+        // Rope clones share their text; it is copied out on the background executor.
         let buffers = core
             .editor
             .documents
             .values()
             .filter(|doc| doc.is_modified())
-            .filter_map(|doc| {
-                Some((
-                    doc.path()?.to_path_buf(),
-                    doc.text().to_string().into_bytes(),
-                ))
-            })
+            .filter_map(|doc| Some((doc.path()?.to_path_buf(), doc.text().clone())))
             .collect();
         if self
             .commit_review
@@ -1012,7 +1069,21 @@ impl Workspace {
         }
         self.commit_review.busy = true;
         let reuse_context = std::mem::take(&mut self.commit_review.reuse_context);
-        let previous = self
+        // After a stage, save or focus the service may not have read the status yet.
+        let status = std::mem::take(&mut self.commit_review.service_status)
+            .then(|| {
+                let service = cx.global::<VcsServiceHandle>().service().read(cx);
+                (service.is_monitoring() && service.root_path() == Some(directory.as_path())).then(
+                    || {
+                        (
+                            service.repository_head().map(str::to_owned),
+                            service.status_entries().to_vec(),
+                        )
+                    },
+                )
+            })
+            .flatten();
+        let mut previous = self
             .commit_review
             .snapshot
             .as_ref()
@@ -1025,8 +1096,11 @@ impl Workspace {
                         snapshot.upstream.clone(),
                     )
                 }),
+                repository: Some(snapshot.repository.clone()),
+                status: None,
             })
             .unwrap_or_default();
+        previous.status = status;
         let handle = self.handle.clone();
         cx.spawn(async move |this, cx| {
             let result = cx
@@ -1113,8 +1187,19 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Reloads after edits once they pause, rather than on every keystroke.
-    pub(super) fn refresh_commit_review_soon(&mut self, cx: &mut Context<Self>) {
+    /// Reloads every file once edits pause, as after a save.
+    fn refresh_commit_review_soon(&mut self, cx: &mut Context<Self>) {
+        self.commit_review.reload_all = true;
+        self.debounce_commit_review(cx);
+    }
+
+    /// Rebuilds an edited document's diff once edits pause, rather than on every keystroke.
+    pub(super) fn commit_document_edited(&mut self, doc: DocumentId, cx: &mut Context<Self>) {
+        self.commit_review.edited.insert(doc);
+        self.debounce_commit_review(cx);
+    }
+
+    fn debounce_commit_review(&mut self, cx: &mut Context<Self>) {
         if self.commit_tab_pane().is_none() {
             return;
         }
@@ -1123,8 +1208,122 @@ impl Workspace {
             cx.background_executor()
                 .timer(std::time::Duration::from_millis(250))
                 .await;
-            let _ = this.update(cx, |this, cx| this.refresh_commit_review(cx));
+            let _ = this.update(cx, |this, cx| this.refresh_edited_review(cx));
         }));
+    }
+
+    /// Rebuilds the edited files from their buffers with the HEAD and index
+    /// text the review already holds, without running git. Edits that can
+    /// change which files are listed reload the whole review instead.
+    fn refresh_edited_review(&mut self, cx: &mut Context<Self>) {
+        self.commit_review.debounce = None;
+        if self.commit_review.busy {
+            // Its result may predate these edits; try again once it lands.
+            self.debounce_commit_review(cx);
+            return;
+        }
+        let core = self.core.read(cx);
+        let review = &self.commit_review;
+        let shown = self
+            .commit_tab_pane()
+            .is_some_and(|pane| self.commit_review_shown(pane));
+        let snapshot = review.snapshot.as_ref().filter(|snapshot| {
+            shown
+                && !review.reload_all
+                && review.queued.is_empty()
+                && core.project_directory.as_ref() == Some(&snapshot.directory)
+        });
+        let edits = snapshot.and_then(|snapshot| {
+            let mut edits = Vec::new();
+            for &id in &review.edited {
+                let doc = core.editor.document(id)?;
+                let Some(relative) = doc
+                    .path()
+                    .and_then(|path| path.strip_prefix(snapshot.repository.root()).ok())
+                else {
+                    continue;
+                };
+                let modified = doc.is_modified();
+                let file = snapshot
+                    .files
+                    .iter()
+                    .find(|f| f.entry.relative_path == relative);
+                match file {
+                    // A file changed on disk is listed already; this one is unchanged.
+                    None if !modified => {}
+                    // A saved or reverted buffer may leave the list, and a new one join it.
+                    Some(file) if file.content.is_ok() && (modified || !file.unsaved) => {
+                        edits.push((file.clone(), doc.text().clone(), modified));
+                    }
+                    _ => return None,
+                }
+            }
+            Some(edits)
+        });
+        let Some(edits) = edits else {
+            self.refresh_commit_review(cx);
+            return;
+        };
+        let loader = core.editor.syn_loader.load_full();
+        self.commit_review.edited.clear();
+        if edits.is_empty() {
+            return;
+        }
+        self.commit_review.busy = true;
+        cx.spawn(async move |this, cx| {
+            let rebuilt: Vec<_> = cx
+                .background_executor()
+                .spawn(async move {
+                    edits
+                        .into_iter()
+                        .map(|(file, text, modified)| {
+                            let previous = file.content.as_ref().expect("checked above");
+                            let content = build_content(
+                                &file.entry.relative_path,
+                                previous.head.clone(),
+                                previous.index.clone(),
+                                text.to_string().into_bytes(),
+                                Some(&loader),
+                                Some(previous),
+                            );
+                            let new = Arc::new(ReviewFile {
+                                entry: file.entry.clone(),
+                                unsaved: modified,
+                                content,
+                                preview: None,
+                                shown: None,
+                                state: Default::default(),
+                            });
+                            (file, new)
+                        })
+                        .collect()
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.commit_review.busy = false;
+                if let Some(snapshot) = &mut this.commit_review.snapshot {
+                    for (old, new) in rebuilt {
+                        // Nothing replaced the file meanwhile: busy kept reloads and stages out.
+                        if let Some(file) = snapshot.files.iter_mut().find(|f| Arc::ptr_eq(f, &old))
+                        {
+                            *file = new;
+                        }
+                    }
+                }
+                if std::mem::take(&mut this.commit_review.status_changed)
+                    && !this.review_matches_status(cx)
+                {
+                    this.commit_review.refresh_again = true;
+                }
+                if std::mem::take(&mut this.commit_review.refresh_again) {
+                    this.refresh_commit_review(cx);
+                }
+                this.stage_queued(cx);
+                this.start_discard(cx);
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// Reloads when git status no longer matches the review. Our own stage
@@ -1135,6 +1334,8 @@ impl Workspace {
         if self.commit_review.busy {
             self.commit_review.status_changed = true;
         } else if !self.review_matches_status(cx) {
+            // The service just read it, so the reload need not run `git status` again.
+            self.commit_review.service_status = true;
             self.refresh_commit_review(cx);
         }
     }
@@ -1296,7 +1497,8 @@ impl Workspace {
             pending.saves.remove(&id);
             self.apply_pending_stage(cx);
         } else {
-            self.refresh_commit_review(cx);
+            // Saving many buffers at once reloads once.
+            self.refresh_commit_review_soon(cx);
         }
     }
 
