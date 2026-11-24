@@ -3287,8 +3287,8 @@ impl Application {
                 DiffResetWorkspaceReconcile {
                     doc_id,
                     view_id,
-                    path: path.clone(),
-                    expected_text: text.clone(),
+                    path,
+                    expected_text: text,
                     workspace_backend,
                 },
                 handle.clone(),
@@ -3296,15 +3296,6 @@ impl Application {
             );
             false
         };
-
-        let vcs_service = cx
-            .try_global::<nucleotide_vcs::VcsServiceHandle>()
-            .map(|handle| handle.service().clone());
-        if let Some(vcs_service) = vcs_service {
-            vcs_service.update(cx, |service, cx| {
-                service.update_file_diff(&path, text, cx);
-            });
-        }
 
         if modified_reset {
             cx.emit(crate::Update::Redraw);

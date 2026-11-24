@@ -1,21 +1,16 @@
 // ABOUTME: Centralized VCS service for monitoring git status across the application
 // ABOUTME: Provides events and queries for file modification status in version control
 
-use gpui::{App, AppContext, Context, Entity, EventEmitter, Task};
-use helix_core::Rope;
-use helix_vcs::DiffProviderRegistry;
-use imara_diff::{Algorithm, Diff, Hunk, IndentHeuristic, IndentLevel, InternedInput, Interner};
+use gpui::{App, AppContext, Context, Entity, EventEmitter};
 use nucleotide_logging::{debug, error, info};
-use nucleotide_types::{DiffChangeType, DiffHunkInfo, VcsStatus};
+use nucleotide_types::VcsStatus;
 use nucleotide_workspace::{
-    FileKind, GitStatusEntry, GitStatusKind, GitStatusOptions, GitStatusResult, ProcessSpec,
-    ReadOptions, WorkspaceBackendHandle, WorkspaceIdentity, absolutize_workspace_path,
-    local_workspace_backend,
+    GitStatusEntry, GitStatusKind, GitStatusOptions, GitStatusResult, WorkspaceBackendHandle,
+    absolutize_workspace_path, local_workspace_backend,
 };
-use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 /// Events broadcast by the VCS service
 #[derive(Debug, Clone)]
@@ -24,15 +19,6 @@ pub enum VcsEvent {
     StatusUpdated {
         /// Map of file paths to their VCS status
         changes: HashMap<PathBuf, VcsStatus>,
-    },
-    /// VCS diff hunks have been updated for a file
-    DiffHunksUpdated {
-        /// Path to the file that changed
-        file_path: PathBuf,
-        /// Diff hunks for the file
-        hunks: Vec<DiffHunkInfo>,
-        /// Git revision used as the diff base, if known.
-        diff_base_revision: Option<String>,
     },
     /// VCS service has started monitoring a repository
     RepositoryStarted {
@@ -47,54 +33,6 @@ pub enum VcsEvent {
     },
     /// VCS service encountered an error
     Error { message: String },
-}
-
-/// Convert Helix Hunk to DiffHunkInfo
-fn hunk_to_diff_info(hunk: &Hunk) -> DiffHunkInfo {
-    let change_type = if hunk.is_pure_insertion() {
-        DiffChangeType::Addition
-    } else if hunk.is_pure_removal() {
-        DiffChangeType::Deletion
-    } else {
-        DiffChangeType::Modification
-    };
-
-    DiffHunkInfo {
-        after_start: hunk.after.start,
-        after_end: hunk.after.end,
-        before_start: hunk.before.start,
-        before_end: hunk.before.end,
-        change_type,
-    }
-}
-
-/// Compute a completed snapshot using the same line diff and heuristic as Helix.
-fn compute_diff_hunks(diff_base_bytes: &[u8], file_content: &Rope) -> Vec<DiffHunkInfo> {
-    // Preserve Helix's size limits before interning either rope.
-    const MAX_DIFF_LINES: usize = 64 * u16::MAX as usize;
-    const MAX_DIFF_BYTES: usize = MAX_DIFF_LINES * 128;
-    let diff_base = Rope::from_str(&String::from_utf8_lossy(diff_base_bytes));
-    if diff_base.len_lines() > MAX_DIFF_LINES
-        || file_content.len_lines() > MAX_DIFF_LINES
-        || diff_base.len_bytes() > MAX_DIFF_BYTES
-        || file_content.len_bytes() > MAX_DIFF_BYTES
-    {
-        return Vec::new();
-    }
-
-    let mut input = InternedInput {
-        before: Vec::with_capacity(diff_base.len_lines()),
-        after: Vec::with_capacity(file_content.len_lines()),
-        interner: Interner::new(diff_base.len_lines() + file_content.len_lines()),
-    };
-    input.update_before(diff_base.lines());
-    input.update_after(file_content.lines());
-    let mut diff = Diff::compute(Algorithm::Histogram, &input);
-    diff.postprocess_with_heuristic(
-        &input,
-        IndentHeuristic::new(|token| IndentLevel::for_ascii_line(input.interner[token].bytes(), 4)),
-    );
-    diff.hunks().map(|hunk| hunk_to_diff_info(&hunk)).collect()
 }
 
 /// Configuration for the VCS service
@@ -118,38 +56,6 @@ impl Default for VcsConfig {
     }
 }
 
-/// Cache performance statistics
-#[derive(Debug, Clone, Default)]
-pub struct CacheStats {
-    /// Number of cache hits
-    pub hits: u64,
-    /// Number of cache misses
-    pub misses: u64,
-    /// Number of stale cache entries accessed
-    pub stale_hits: u64,
-    /// Number of cache invalidations performed
-    pub invalidations: u64,
-}
-
-impl CacheStats {
-    /// Calculate cache hit ratio as a percentage
-    pub fn hit_ratio(&self) -> f64 {
-        if self.hits + self.misses == 0 {
-            0.0
-        } else {
-            (self.hits as f64) / ((self.hits + self.misses) as f64) * 100.0
-        }
-    }
-
-    /// Reset all statistics
-    pub fn reset(&mut self) {
-        self.hits = 0;
-        self.misses = 0;
-        self.stale_hits = 0;
-        self.invalidations = 0;
-    }
-}
-
 /// Central VCS service that monitors git status and broadcasts changes
 pub struct VcsService {
     /// Root path of the repository being monitored
@@ -168,16 +74,6 @@ pub struct VcsService {
     status_entries: Vec<GitStatusEntry>,
     /// Monotonic revision for presentation caches that consume status data.
     status_revision: u64,
-    /// Timestamp of last cache update for each path
-    cache_timestamps: HashMap<PathBuf, Instant>,
-    /// Diff provider registry for getting diff base files
-    diff_provider: DiffProviderRegistry,
-    /// Pending diff updates; replacing a task cancels an older update for that file.
-    diff_tasks: HashMap<PathBuf, Task<()>>,
-    /// Cached diff hunks for files
-    diff_hunks_cache: HashMap<PathBuf, Vec<DiffHunkInfo>>,
-    /// Access order for bounded diff metadata caches
-    diff_access_order: VecDeque<PathBuf>,
     /// Configuration
     config: VcsConfig,
     /// Last time VCS status was checked
@@ -186,23 +82,9 @@ pub struct VcsService {
     status_refresh_in_flight: bool,
     /// Coalesces requests received during a refresh into one follow-up refresh.
     status_refresh_pending: bool,
-    /// Cache TTL for individual entries
-    cache_ttl: Duration,
     /// Whether monitoring is currently active
     is_monitoring: bool,
-    /// Cache hit/miss statistics for performance monitoring (interior mutability)
-    cache_stats: RefCell<CacheStats>,
-    /// Last time cache was cleaned of stale entries
-    last_cache_cleanup: Option<Instant>,
-    /// Interval for automatic cache cleanup
-    cache_cleanup_interval: Duration,
-    /// Maximum cache size before forcing cleanup
-    max_cache_size: usize,
 }
-
-const DIFF_CACHE_CAPACITY: usize = 128;
-const DIFF_METADATA_READ_LIMIT_BYTES: u64 = 4 * 1024 * 1024;
-const DIFF_METADATA_COMMAND_TIMEOUT_MS: u64 = 10_000;
 
 impl VcsService {
     /// Create a new VCS service
@@ -216,21 +98,11 @@ impl VcsService {
             status_cache: HashMap::new(),
             status_entries: Vec::new(),
             status_revision: 0,
-            cache_timestamps: HashMap::new(),
-            diff_provider: DiffProviderRegistry::default(),
-            diff_tasks: HashMap::new(),
-            diff_hunks_cache: HashMap::new(),
-            diff_access_order: VecDeque::new(),
             config,
             last_check: None,
             status_refresh_in_flight: false,
             status_refresh_pending: false,
-            cache_ttl: Duration::from_secs(5), // 5 second cache TTL
             is_monitoring: false,
-            cache_stats: RefCell::new(CacheStats::default()),
-            last_cache_cleanup: None,
-            cache_cleanup_interval: Duration::from_secs(30), // Clean every 30 seconds
-            max_cache_size: 5000,                            // Maximum 5000 cached entries
         }
     }
 
@@ -311,9 +183,6 @@ impl VcsService {
             self.status_revision = self.status_revision.wrapping_add(1);
         }
         self.status_entries.clear();
-        self.diff_tasks.clear();
-        self.diff_hunks_cache.clear();
-        self.diff_access_order.clear();
         self.last_check = None;
         self.status_refresh_in_flight = false;
         self.status_refresh_pending = false;
@@ -370,80 +239,6 @@ impl VcsService {
         self.repository_ref.as_deref()
     }
 
-    /// Get diff hunks for a specific file
-    pub fn get_diff_hunks(&self, path: &Path) -> Option<&[DiffHunkInfo]> {
-        let abs_path = self.absolute_path(path)?;
-
-        self.diff_hunks_cache.get(&abs_path).map(|v| v.as_slice())
-    }
-
-    /// Read the diff base and compute hunks without blocking the UI thread.
-    pub fn update_file_diff(
-        &mut self,
-        file_path: &Path,
-        file_content: Rope,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(abs_path) = self.absolute_path(file_path) else {
-            debug!("Cannot update file diff without root path");
-            return;
-        };
-
-        let workspace_backend = self.workspace_backend.clone();
-        let diff_provider = self.diff_provider.clone();
-        let monitoring_generation = self.monitoring_generation;
-        let task_path = abs_path.clone();
-
-        let task = cx.spawn(async move |this, cx| {
-            let path = abs_path.clone();
-            let diff_result = cx
-                .background_executor()
-                .spawn(async move {
-                    let base =
-                        if matches!(workspace_backend.identity(), WorkspaceIdentity::Remote(_)) {
-                            read_git_diff_base_from_workspace(workspace_backend, &path).await?
-                        } else {
-                            diff_provider.get_diff_base(&path, true)
-                        };
-                    Ok::<_, String>(base.map(|bytes| compute_diff_hunks(&bytes, &file_content)))
-                })
-                .await;
-
-            if let Some(this) = this.upgrade() {
-                this.update(cx, |service, cx| {
-                    if service.monitoring_generation != monitoring_generation {
-                        return;
-                    }
-
-                    service.diff_tasks.remove(&abs_path);
-                    match diff_result {
-                        Ok(Some(hunks)) => {
-                            service.insert_file_diff(abs_path.clone(), hunks.clone());
-                            service.emit_vcs_event(
-                                VcsEvent::DiffHunksUpdated {
-                                    file_path: abs_path,
-                                    hunks,
-                                    diff_base_revision: service.repository_head.clone(),
-                                },
-                                cx,
-                            );
-                        }
-                        Ok(None) => service.clear_file_diff(&abs_path, cx),
-                        Err(error) => {
-                            debug!(
-                                file_path = %abs_path.display(),
-                                error = %error,
-                                "VCS: Could not load diff base"
-                            );
-                            service.clear_file_diff(&abs_path, cx);
-                        }
-                    }
-                });
-            }
-        });
-        self.diff_tasks.insert(task_path, task);
-    }
-
     /// Refresh VCS state after debounced filesystem watcher events.
     pub fn refresh_after_file_system_changes(
         &mut self,
@@ -460,327 +255,19 @@ impl VcsService {
             return;
         };
 
-        let mut seen = HashSet::new();
-        let affected_paths: Vec<PathBuf> = changed_paths
+        let change_count = changed_paths
             .iter()
             .filter_map(|path| self.absolute_path(path))
             .filter(|path| path.starts_with(&root_path))
-            .filter(|path| seen.insert(path.clone()))
-            .collect();
+            .count();
 
-        if affected_paths.is_empty() {
+        if change_count == 0 {
             debug!("VCS: No filesystem changes within monitored root");
             return;
         }
 
-        debug!(
-            change_count = affected_paths.len(),
-            "VCS: Refreshing after filesystem changes"
-        );
+        debug!(change_count, "VCS: Refreshing after filesystem changes");
         self.refresh_status_async(cx);
-
-        for path in affected_paths {
-            self.refresh_diff_metadata_from_workspace(&path, cx);
-        }
-    }
-
-    fn refresh_diff_metadata_from_workspace(&mut self, abs_path: &Path, cx: &mut Context<Self>) {
-        let path = abs_path.to_path_buf();
-        let workspace_backend = self.workspace_backend.clone();
-        let monitoring_generation = self.monitoring_generation;
-
-        cx.spawn(async move |this, cx| {
-            let path_for_read = path.clone();
-            let read_result = cx
-                .background_executor()
-                .spawn(async move {
-                    read_diff_text_from_workspace(workspace_backend, &path_for_read).await
-                })
-                .await;
-
-            if let Some(this) = this.upgrade() {
-                this.update(cx, |service, cx| {
-                    let still_monitored = service
-                        .root_path
-                        .as_ref()
-                        .is_some_and(|root_path| path.starts_with(root_path))
-                        && service.is_monitoring;
-
-                    if !still_monitored || service.monitoring_generation != monitoring_generation {
-                        debug!(
-                            file_path = %path.display(),
-                            "VCS: Ignoring stale diff metadata refresh"
-                        );
-                        return;
-                    }
-
-                    match read_result {
-                        Ok(Some(content)) => {
-                            service.update_file_diff(&path, Rope::from_str(&content), cx);
-                        }
-                        Ok(None) => {
-                            service.clear_file_diff(&path, cx);
-                        }
-                        Err(error) => {
-                            debug!(
-                                file_path = %path.display(),
-                                error = %error,
-                                "VCS: Could not refresh diff metadata from workspace"
-                            );
-                            service.clear_file_diff(&path, cx);
-                        }
-                    }
-                });
-            }
-        })
-        .detach();
-    }
-
-    fn clear_file_diff(&mut self, abs_path: &Path, cx: &mut Context<Self>) {
-        self.diff_tasks.remove(abs_path);
-        self.diff_access_order.retain(|path| path != abs_path);
-        if self.diff_hunks_cache.remove(abs_path).is_some() {
-            self.emit_vcs_event(
-                VcsEvent::DiffHunksUpdated {
-                    file_path: abs_path.to_path_buf(),
-                    hunks: Vec::new(),
-                    diff_base_revision: self.repository_head.clone(),
-                },
-                cx,
-            );
-        }
-    }
-
-    fn insert_file_diff(&mut self, abs_path: PathBuf, hunks: Vec<DiffHunkInfo>) {
-        self.diff_hunks_cache.insert(abs_path.clone(), hunks);
-        self.touch_diff_cache_entry(&abs_path);
-        self.evict_diff_cache_to_capacity();
-    }
-
-    fn touch_diff_cache_entry(&mut self, abs_path: &Path) {
-        self.diff_access_order.retain(|path| path != abs_path);
-        self.diff_access_order.push_back(abs_path.to_path_buf());
-    }
-
-    fn evict_diff_cache_to_capacity(&mut self) {
-        while self.diff_hunks_cache.len() > DIFF_CACHE_CAPACITY {
-            let Some(evicted) = self.diff_access_order.pop_front() else {
-                break;
-            };
-            self.diff_hunks_cache.remove(&evicted);
-        }
-    }
-
-    /// Get VCS status with automatic cache refresh if stale
-    pub fn get_status_cached(&self, path: &Path) -> Option<VcsStatus> {
-        let abs_path = self.absolute_path(path)?;
-
-        // Check if cache entry exists and is still fresh
-        if let Some(timestamp) = self.cache_timestamps.get(&abs_path) {
-            if timestamp.elapsed() < self.cache_ttl {
-                // Fresh cache hit - update statistics
-                if let Ok(mut stats) = self.cache_stats.try_borrow_mut() {
-                    stats.hits += 1;
-                }
-                return self.status_cache.get(&abs_path).copied();
-            } else {
-                // Stale cache hit - update statistics
-                if let Ok(mut stats) = self.cache_stats.try_borrow_mut() {
-                    stats.stale_hits += 1;
-                }
-            }
-        } else {
-            // Cache miss - update statistics
-            if let Ok(mut stats) = self.cache_stats.try_borrow_mut() {
-                stats.misses += 1;
-            }
-        }
-
-        // Fallback to regular get_status if cache is stale or missing
-        self.status_cache.get(&abs_path).copied()
-    }
-
-    /// Bulk update cache for multiple paths (efficient for pickers)
-    pub fn update_cache_bulk(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
-        debug!(path_count = paths.len(), "Bulk updating VCS cache");
-
-        // For now, trigger a full refresh if we have many paths to check
-        // In a more sophisticated implementation, we could run git status
-        // specifically for these paths
-        if paths.len() > 10 && self.root_path.is_some() {
-            self.refresh_status_async(cx);
-        }
-    }
-
-    /// Get VCS status for multiple paths at once (bulk operation)
-    pub fn get_status_bulk(&self, paths: &[PathBuf]) -> Vec<(PathBuf, Option<VcsStatus>)> {
-        let mut results = Vec::with_capacity(paths.len());
-
-        for path in paths {
-            let abs_path = if path.is_absolute() {
-                path.clone()
-            } else if let Some(ref root) = self.root_path {
-                root.join(path)
-            } else {
-                results.push((path.clone(), None));
-                continue;
-            };
-
-            // Check cache with statistics tracking
-            let status = if let Some(timestamp) = self.cache_timestamps.get(&abs_path) {
-                if timestamp.elapsed() < self.cache_ttl {
-                    // Fresh cache hit
-                    if let Ok(mut stats) = self.cache_stats.try_borrow_mut() {
-                        stats.hits += 1;
-                    }
-                    self.status_cache.get(&abs_path).copied()
-                } else {
-                    // Stale cache hit
-                    if let Ok(mut stats) = self.cache_stats.try_borrow_mut() {
-                        stats.stale_hits += 1;
-                    }
-                    self.status_cache.get(&abs_path).copied()
-                }
-            } else {
-                // Cache miss
-                if let Ok(mut stats) = self.cache_stats.try_borrow_mut() {
-                    stats.misses += 1;
-                }
-                None
-            };
-
-            results.push((path.clone(), status));
-        }
-
-        debug!(
-            requested_count = paths.len(),
-            results_count = results.len(),
-            "Bulk VCS status lookup completed"
-        );
-
-        results
-    }
-
-    /// Populate cache for picker items efficiently
-    pub fn populate_picker_cache(
-        &mut self,
-        picker_paths: &[PathBuf],
-        cx: &mut Context<Self>,
-    ) -> Vec<(PathBuf, Option<VcsStatus>)> {
-        debug!(
-            picker_path_count = picker_paths.len(),
-            "Populating picker cache"
-        );
-
-        // Check how many paths are missing from cache
-        let missing_count = picker_paths
-            .iter()
-            .filter(|path| {
-                let abs_path = if path.is_absolute() {
-                    (*path).clone()
-                } else if let Some(ref root) = self.root_path {
-                    root.join(path)
-                } else {
-                    return true; // No root path, consider missing
-                };
-
-                !self.is_cache_fresh(&abs_path)
-            })
-            .count();
-
-        // If more than 25% of paths are missing/stale, do a full refresh first
-        if missing_count > picker_paths.len() / 4 && self.root_path.is_some() {
-            info!(
-                missing_count,
-                total_count = picker_paths.len(),
-                "High cache miss ratio, performing full refresh before picker population"
-            );
-            self.refresh_status_async(cx);
-        }
-
-        // Now return the bulk results
-        self.get_status_bulk(picker_paths)
-    }
-
-    /// Check if cache entry is fresh
-    fn is_cache_fresh(&self, path: &Path) -> bool {
-        if let Some(timestamp) = self.cache_timestamps.get(path) {
-            timestamp.elapsed() < self.cache_ttl
-        } else {
-            false
-        }
-    }
-
-    /// Clear stale cache entries
-    pub fn clear_stale_cache(&mut self) {
-        let now = Instant::now();
-        let stale_paths: Vec<PathBuf> = self
-            .cache_timestamps
-            .iter()
-            .filter(|(_, timestamp)| now.duration_since(**timestamp) > self.cache_ttl)
-            .map(|(path, _)| path.clone())
-            .collect();
-
-        let stale_count = stale_paths.len();
-        for path in stale_paths {
-            self.status_cache.remove(&path);
-            self.cache_timestamps.remove(&path);
-        }
-
-        if stale_count > 0 {
-            self.status_revision = self.status_revision.wrapping_add(1);
-            if let Ok(mut stats) = self.cache_stats.try_borrow_mut() {
-                stats.invalidations += stale_count as u64;
-            }
-            debug!(stale_count, "Cleared stale cache entries");
-        }
-
-        self.last_cache_cleanup = Some(now);
-    }
-
-    /// Get cache statistics for performance monitoring
-    pub fn get_cache_stats(&self) -> CacheStats {
-        self.cache_stats.borrow().clone()
-    }
-
-    /// Reset cache statistics
-    pub fn reset_cache_stats(&self) {
-        if let Ok(mut stats) = self.cache_stats.try_borrow_mut() {
-            stats.reset();
-        }
-    }
-
-    /// Get cache size information
-    pub fn get_cache_info(&self) -> (usize, usize, f64) {
-        let cache_size = self.status_cache.len();
-        let stats = self.cache_stats.borrow();
-        let hit_ratio = stats.hit_ratio();
-        (cache_size, self.max_cache_size, hit_ratio)
-    }
-
-    /// Perform automatic cache maintenance
-    pub fn maintain_cache(&mut self) {
-        let now = Instant::now();
-
-        // Check if it's time for automatic cleanup
-        let should_cleanup = match self.last_cache_cleanup {
-            Some(last) => now.duration_since(last) >= self.cache_cleanup_interval,
-            None => true, // First cleanup
-        };
-
-        // Force cleanup if cache is too large
-        let force_cleanup = self.status_cache.len() > self.max_cache_size;
-
-        if should_cleanup || force_cleanup {
-            if force_cleanup {
-                debug!(
-                    current_size = self.status_cache.len(),
-                    max_size = self.max_cache_size,
-                    "Cache size exceeded maximum, forcing cleanup"
-                );
-            }
-            self.clear_stale_cache();
-        }
     }
 
     /// Force refresh of VCS status with rate limiting
@@ -836,7 +323,6 @@ impl VcsService {
             return;
         }
 
-        self.maintain_cache();
         self.status_refresh_in_flight = true;
         let max_files = self.config.max_files;
         let refresh_root_path = root_path.clone();
@@ -964,28 +450,9 @@ impl VcsService {
             }
         }
 
-        // Update cache and timestamps
-        let now = Instant::now();
         self.status_cache = new_status;
         if !changes.is_empty() {
             self.status_revision = self.status_revision.wrapping_add(1);
-        }
-
-        // Update timestamps for all paths in the new status
-        for path in self.status_cache.keys() {
-            self.cache_timestamps.insert(path.clone(), now);
-        }
-
-        // Remove timestamps for paths no longer in cache
-        let paths_to_remove: Vec<PathBuf> = self
-            .cache_timestamps
-            .keys()
-            .filter(|path| !self.status_cache.contains_key(*path))
-            .cloned()
-            .collect();
-
-        for path in paths_to_remove {
-            self.cache_timestamps.remove(&path);
         }
 
         // Emit changes if any
@@ -1016,104 +483,6 @@ struct GitRefreshResult {
     entries: Vec<GitStatusEntry>,
     head: Option<String>,
     display_ref: Option<String>,
-}
-
-async fn read_diff_text_from_workspace(
-    backend: WorkspaceBackendHandle,
-    path: &Path,
-) -> Result<Option<String>, String> {
-    let stat = backend
-        .stat(path)
-        .await
-        .map_err(|error| format!("Workspace stat failed: {error}"))?;
-    if stat.kind != FileKind::File {
-        return Ok(None);
-    }
-
-    let read = backend
-        .read_file(
-            path,
-            ReadOptions {
-                max_bytes: Some(DIFF_METADATA_READ_LIMIT_BYTES),
-            },
-        )
-        .await
-        .map_err(|error| format!("Workspace file read failed: {error}"))?;
-
-    if read.truncated {
-        return Ok(None);
-    }
-
-    String::from_utf8(read.bytes)
-        .map(Some)
-        .map_err(|error| format!("Workspace file is not valid UTF-8: {error}"))
-}
-
-async fn read_git_diff_base_from_workspace(
-    backend: WorkspaceBackendHandle,
-    path: &Path,
-) -> Result<Option<Vec<u8>>, String> {
-    let Some(parent) = path.parent() else {
-        return Ok(None);
-    };
-    let Some(file_name) = path.file_name() else {
-        return Ok(None);
-    };
-
-    let ls_files = backend
-        .run_process(ProcessSpec {
-            program: "git".to_string(),
-            args: vec![
-                "ls-files".to_string(),
-                "-z".to_string(),
-                "--full-name".to_string(),
-                "--".to_string(),
-                file_name.to_string_lossy().into_owned(),
-            ],
-            cwd: parent.to_path_buf(),
-            env: BTreeMap::new(),
-            clear_env: false,
-            inherit_project_environment: false,
-            stdin: Vec::new(),
-            max_output_bytes: Some(DIFF_METADATA_READ_LIMIT_BYTES as usize),
-            timeout_ms: Some(DIFF_METADATA_COMMAND_TIMEOUT_MS),
-        })
-        .await
-        .map_err(|error| format!("Workspace git ls-files failed: {error}"))?;
-
-    if !ls_files.success || ls_files.timed_out || ls_files.stdout_truncated {
-        return Ok(None);
-    }
-
-    let relative_path = ls_files
-        .stdout
-        .split(|byte| *byte == 0)
-        .find(|entry| !entry.is_empty());
-    let Some(relative_path) = relative_path else {
-        return Ok(None);
-    };
-    let relative_path = String::from_utf8_lossy(relative_path);
-
-    let show = backend
-        .run_process(ProcessSpec {
-            program: "git".to_string(),
-            args: vec!["show".to_string(), format!("HEAD:{relative_path}")],
-            cwd: parent.to_path_buf(),
-            env: BTreeMap::new(),
-            clear_env: false,
-            inherit_project_environment: false,
-            stdin: Vec::new(),
-            max_output_bytes: Some(DIFF_METADATA_READ_LIMIT_BYTES as usize),
-            timeout_ms: Some(DIFF_METADATA_COMMAND_TIMEOUT_MS),
-        })
-        .await
-        .map_err(|error| format!("Workspace git show failed: {error}"))?;
-
-    if show.success && !show.timed_out && !show.stdout_truncated {
-        Ok(Some(show.stdout))
-    } else {
-        Ok(None)
-    }
 }
 
 async fn run_git_refresh_with_backend(
@@ -1264,82 +633,6 @@ impl VcsServiceHandle {
         });
     }
 
-    /// Get VCS status with caching (preferred method for all components)
-    pub fn get_status_cached(&self, path: &Path, cx: &App) -> Option<VcsStatus> {
-        self.service.read(cx).get_status_cached(path)
-    }
-
-    /// Bulk update cache for multiple paths (efficient for pickers)
-    pub fn update_cache_bulk(&self, paths: &[PathBuf], cx: &mut App) {
-        self.service.update(cx, |service, cx| {
-            service.update_cache_bulk(paths, cx);
-        });
-    }
-
-    /// Clear stale cache entries
-    pub fn clear_stale_cache(&self, cx: &mut App) {
-        self.service.update(cx, |service, _cx| {
-            service.clear_stale_cache();
-        });
-    }
-
-    /// Get cache statistics for performance monitoring
-    pub fn get_cache_stats(&self, cx: &App) -> CacheStats {
-        self.service.read(cx).get_cache_stats()
-    }
-
-    /// Reset cache statistics
-    pub fn reset_cache_stats(&self, cx: &App) {
-        self.service.read(cx).reset_cache_stats()
-    }
-
-    /// Get cache size and hit ratio information
-    pub fn get_cache_info(&self, cx: &App) -> (usize, usize, f64) {
-        self.service.read(cx).get_cache_info()
-    }
-
-    /// Perform manual cache maintenance
-    pub fn maintain_cache(&self, cx: &mut App) {
-        self.service.update(cx, |service, _cx| {
-            service.maintain_cache();
-        });
-    }
-
-    /// Get VCS status for multiple paths at once (bulk operation)
-    pub fn get_status_bulk(
-        &self,
-        paths: &[PathBuf],
-        cx: &App,
-    ) -> Vec<(PathBuf, Option<VcsStatus>)> {
-        self.service.read(cx).get_status_bulk(paths)
-    }
-
-    /// Populate cache for picker items efficiently
-    pub fn populate_picker_cache(
-        &self,
-        picker_paths: &[PathBuf],
-        cx: &mut App,
-    ) -> Vec<(PathBuf, Option<VcsStatus>)> {
-        self.service.update(cx, |service, cx| {
-            service.populate_picker_cache(picker_paths, cx)
-        })
-    }
-
-    /// Get diff hunks for a file
-    pub fn get_diff_hunks(&self, path: &Path, cx: &App) -> Option<Vec<DiffHunkInfo>> {
-        self.service
-            .read(cx)
-            .get_diff_hunks(path)
-            .map(|s| s.to_vec())
-    }
-
-    /// Update file diff hunks
-    pub fn update_file_diff(&self, file_path: &Path, file_content: helix_core::Rope, cx: &mut App) {
-        self.service.update(cx, |service, cx| {
-            service.update_file_diff(file_path, file_content, cx);
-        });
-    }
-
     /// Subscribe to VCS events
     pub fn subscribe<T>(&self, _subscriber: &Entity<T>, cx: &mut App) -> gpui::Subscription
     where
@@ -1358,6 +651,7 @@ impl gpui::Global for VcsServiceHandle {}
 mod tests {
     use super::*;
     use nucleotide_workspace::*;
+    use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
     use tokio::sync::oneshot;
 
@@ -1366,7 +660,6 @@ mod tests {
         inner: WorkspaceBackendHandle,
         executor: gpui::BackgroundExecutor,
         status_gates: Mutex<VecDeque<oneshot::Receiver<bool>>>,
-        diff_gates: Mutex<VecDeque<oneshot::Receiver<()>>>,
     }
 
     impl GatedBackend {
@@ -1375,7 +668,6 @@ mod tests {
                 inner: local_workspace_backend(),
                 executor: cx.executor(),
                 status_gates: Mutex::default(),
-                diff_gates: Mutex::default(),
             }
         }
     }
@@ -1414,34 +706,18 @@ mod tests {
             snapshot
         }
 
-        async fn run_process(
-            &self,
-            spec: ProcessSpec,
-        ) -> nucleotide_workspace::Result<ProcessOutput> {
-            assert!(!self.executor.is_main_thread());
-            let is_show = spec.args.first().is_some_and(|arg| arg == "show");
-            let output = self.inner.run_process(spec).await;
-            if is_show {
-                let gate = self.diff_gates.lock().unwrap().pop_front();
-                if let Some(gate) = gate {
-                    let _ = gate.await;
-                }
-            }
-            output
+        async fn run_process(&self, _: ProcessSpec) -> nucleotide_workspace::Result<ProcessOutput> {
+            unimplemented!()
         }
-
-        async fn stat(&self, path: &Path) -> nucleotide_workspace::Result<FileStat> {
-            assert!(!self.executor.is_main_thread());
-            self.inner.stat(path).await
+        async fn stat(&self, _: &Path) -> nucleotide_workspace::Result<FileStat> {
+            unimplemented!()
         }
-
         async fn read_file(
             &self,
-            path: &Path,
-            options: ReadOptions,
+            _: &Path,
+            _: ReadOptions,
         ) -> nucleotide_workspace::Result<FileRead> {
-            assert!(!self.executor.is_main_thread());
-            self.inner.read_file(path, options).await
+            unimplemented!()
         }
 
         async fn list_dir(&self, _: &Path) -> nucleotide_workspace::Result<DirectoryListing> {
@@ -1526,16 +802,6 @@ mod tests {
         git(temp.path(), &["add", "."]);
         git(temp.path(), &["commit", "-m", "initial"]);
         temp
-    }
-
-    fn test_diff_path(index: usize) -> PathBuf {
-        std::env::temp_dir().join(format!("repo/file-{index}.rs"))
-    }
-
-    fn insert_test_diff(service: &mut VcsService, index: usize) -> PathBuf {
-        let path = test_diff_path(index);
-        service.insert_file_diff(path.clone(), Vec::new());
-        path
     }
 
     #[gpui::test]
@@ -1692,129 +958,6 @@ mod tests {
         });
     }
 
-    #[gpui::test]
-    fn local_diff_publishes_completed_hunks_asynchronously(cx: &mut gpui::TestAppContext) {
-        let temp = test_repository();
-        let file = temp.path().join("file.txt");
-        let service = cx.new(|_| VcsService::new(VcsConfig::default()));
-        for (content, before, after, change_type) in [
-            (
-                "first\nchanged\nthird\n",
-                1..2,
-                1..2,
-                DiffChangeType::Modification,
-            ),
-            (
-                "first\nsecond\nextra\nthird\n",
-                2..2,
-                2..3,
-                DiffChangeType::Addition,
-            ),
-            ("first\nthird\n", 1..2, 1..1, DiffChangeType::Deletion),
-        ] {
-            let previous = service.read_with(cx, |service, _| {
-                service.get_diff_hunks(&file).map(<[_]>::to_vec)
-            });
-            service.update(cx, |service, cx| {
-                service.update_file_diff(&file, Rope::from_str(content), cx);
-                assert_eq!(service.get_diff_hunks(&file), previous.as_deref());
-            });
-            cx.run_until_parked();
-            service.read_with(cx, |service, _| {
-                assert_eq!(
-                    service.get_diff_hunks(&file),
-                    Some(
-                        [DiffHunkInfo {
-                            before_start: before.start,
-                            before_end: before.end,
-                            after_start: after.start,
-                            after_end: after.end,
-                            change_type,
-                        }]
-                        .as_slice()
-                    )
-                );
-            });
-        }
-        // The latest buffer wins even when two updates are queued before either starts.
-        service.update(cx, |service, cx| {
-            service.update_file_diff(&file, Rope::from_str("outdated\n"), cx);
-            service.update_file_diff(&file, Rope::from_str("first\nsecond\nthird\n"), cx);
-        });
-        cx.run_until_parked();
-        service.read_with(cx, |service, _| {
-            assert_eq!(service.get_diff_hunks(&file), Some([].as_slice()))
-        });
-        git(temp.path(), &["rm", "file.txt"]);
-        git(temp.path(), &["commit", "-m", "remove base"]);
-        service.update(cx, |service, cx| {
-            service.update_file_diff(&file, Rope::from_str("new\n"), cx)
-        });
-        cx.run_until_parked();
-        service.read_with(cx, |service, _| {
-            assert_eq!(service.get_diff_hunks(&file), None)
-        });
-    }
-
-    #[gpui::test(iterations = 10)]
-    fn remote_diff_does_not_overwrite_newer_buffer_with_late_result(cx: &mut gpui::TestAppContext) {
-        let temp = test_repository();
-        let file = temp.path().join("file.txt");
-        let backend = Arc::new(GatedBackend::new(cx));
-        let (release, gate) = oneshot::channel();
-        backend.diff_gates.lock().unwrap().push_back(gate);
-        let service = cx.new(|_| {
-            let mut service = VcsService::new(VcsConfig::default());
-            service.set_workspace_backend(backend.clone());
-            service
-        });
-        service.update(cx, |service, cx| {
-            service.start_monitoring(temp.path().to_path_buf(), cx);
-            service.update_file_diff(&file, Rope::from_str("outdated\n"), cx);
-        });
-        cx.run_until_parked();
-        service.read_with(cx, |service, _| {
-            assert_eq!(service.get_diff_hunks(&file), None)
-        });
-        service.update(cx, |service, cx| {
-            service.update_file_diff(&file, Rope::from_str("first\nthird\n"), cx)
-        });
-        cx.run_until_parked();
-        let _ = release.send(());
-        cx.run_until_parked();
-        service.read_with(cx, |service, _| {
-            assert_eq!(
-                service.get_diff_hunks(&file),
-                Some(
-                    [DiffHunkInfo {
-                        before_start: 1,
-                        before_end: 2,
-                        after_start: 1,
-                        after_end: 1,
-                        change_type: DiffChangeType::Deletion,
-                    }]
-                    .as_slice()
-                )
-            )
-        });
-        let (release, gate) = oneshot::channel();
-        backend.diff_gates.lock().unwrap().push_back(gate);
-        service.update(cx, |service, cx| {
-            service.update_file_diff(&file, Rope::from_str("stale after stop\n"), cx);
-        });
-        cx.run_until_parked();
-        service.update(cx, |service, cx| {
-            service.stop_monitoring();
-            service.start_monitoring(temp.path().to_path_buf(), cx);
-            service.update_file_diff(&file, Rope::from_str("first\nsecond\nthird\n"), cx);
-        });
-        let _ = release.send(());
-        cx.run_until_parked();
-        service.read_with(cx, |service, _| {
-            assert_eq!(service.get_diff_hunks(&file), Some([].as_slice()))
-        });
-    }
-
     #[test]
     fn git_error_recognizes_not_repository_message() {
         assert!(git_error_is_not_repository(
@@ -1831,28 +974,6 @@ mod tests {
             .unwrap();
 
         assert!(status.entries.is_empty());
-    }
-
-    #[tokio::test]
-    async fn diff_metadata_read_uses_backend_for_display_paths() {
-        let temp = tempfile::tempdir().unwrap();
-        let native_root = temp.path().to_path_buf();
-        let native_src = native_root.join("src");
-        std::fs::create_dir_all(&native_src).unwrap();
-        std::fs::write(native_src.join("lib.rs"), "remote text\n").unwrap();
-
-        let display_root = PathBuf::from("/__nucleotide_remote_virtual__/project");
-        let display_file = display_root.join("src/lib.rs");
-        let backend = path_mapped_workspace_backend(
-            local_workspace_backend(),
-            WorkspacePathMapping::new(display_root, native_root),
-        );
-
-        let text = read_diff_text_from_workspace(backend, &display_file)
-            .await
-            .unwrap();
-
-        assert_eq!(text.as_deref(), Some("remote text\n"));
     }
 
     #[test]
@@ -1882,23 +1003,6 @@ mod tests {
 
         service.stop_monitoring();
         assert_eq!(service.status_revision(), 1);
-    }
-
-    #[tokio::test]
-    async fn diff_metadata_read_skips_large_backend_files() {
-        let temp = tempfile::tempdir().unwrap();
-        let file = temp.path().join("large.rs");
-        std::fs::write(
-            &file,
-            vec![b'a'; DIFF_METADATA_READ_LIMIT_BYTES as usize + 1],
-        )
-        .unwrap();
-
-        let text = read_diff_text_from_workspace(local_workspace_backend(), &file)
-            .await
-            .unwrap();
-
-        assert!(text.is_none());
     }
 
     #[test]
@@ -1938,37 +1042,5 @@ mod tests {
             )),
             VcsStatus::Conflicted
         );
-    }
-
-    #[test]
-    fn diff_cache_stays_within_capacity() {
-        let mut service = VcsService::new(VcsConfig::default());
-
-        for index in 0..(DIFF_CACHE_CAPACITY + 10) {
-            insert_test_diff(&mut service, index);
-        }
-
-        assert_eq!(service.diff_hunks_cache.len(), DIFF_CACHE_CAPACITY);
-        assert!(service.get_diff_hunks(&test_diff_path(0)).is_none());
-        assert!(
-            service
-                .get_diff_hunks(&test_diff_path(DIFF_CACHE_CAPACITY + 9))
-                .is_some()
-        );
-    }
-
-    #[test]
-    fn diff_cache_keeps_refreshed_entries() {
-        let mut service = VcsService::new(VcsConfig::default());
-
-        for index in 0..DIFF_CACHE_CAPACITY {
-            insert_test_diff(&mut service, index);
-        }
-        insert_test_diff(&mut service, 0);
-        insert_test_diff(&mut service, DIFF_CACHE_CAPACITY);
-
-        assert!(service.get_diff_hunks(&test_diff_path(0)).is_some());
-        assert!(service.get_diff_hunks(&test_diff_path(1)).is_none());
-        assert_eq!(service.diff_hunks_cache.len(), DIFF_CACHE_CAPACITY);
     }
 }

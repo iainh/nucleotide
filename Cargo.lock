@@ -5971,8 +5971,6 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "gpui",
- "helix-core",
- "helix-vcs",
  "imara-diff",
  "nucleotide-logging",
  "nucleotide-process",

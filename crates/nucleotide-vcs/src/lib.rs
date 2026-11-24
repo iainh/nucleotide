@@ -7,7 +7,7 @@ pub mod staging;
 pub mod vcs_service;
 
 // Re-export main types for easy access
-pub use vcs_service::{CacheStats, VcsConfig, VcsEvent, VcsService, VcsServiceHandle};
+pub use vcs_service::{VcsConfig, VcsEvent, VcsService, VcsServiceHandle};
 
 // Re-export VCS types from nucleotide-types
-pub use nucleotide_types::{DiffChangeType, DiffHunkInfo, VcsStatus};
+pub use nucleotide_types::VcsStatus;

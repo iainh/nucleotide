@@ -16,4 +16,4 @@ pub use config::{FontConfig, FontWeight};
 pub use editor_types::{EditorStatus, Severity};
 pub use font_config::{EditorFontConfig, Font, FontSettings, FontStyle, UiFontConfig};
 pub use project_config::{ProjectMarker, ProjectMarkersConfig, RootStrategy};
-pub use vcs::{DiffChangeType, DiffHunkInfo, VcsStatus};
+pub use vcs::VcsStatus;

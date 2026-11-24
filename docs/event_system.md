@@ -86,11 +86,9 @@ ignored entries; the tree owns ignore-rule filtering.
 `VcsService` emits component-local `VcsEvent` notifications. Status refreshes
 use the workspace backend, defaulting to the local backend. Requests received
 during a refresh coalesce into one follow-up refresh, including after errors.
-Diff base reads and hunk computation run on the background executor for local
-and remote files. `DiffHunksUpdated` publishes completed hunk snapshots; the
-service caches at most 128 snapshots without retaining document ropes.
-Newer diff requests replace older requests for the same file, and stopping
-monitoring invalidates outstanding results.
+Each refresh replaces the status cache with the new `git status` result, and
+stopping monitoring invalidates outstanding results. The service does not
+compute diff hunks: the gutter and diff peek use Helix's `diff_handle()`.
 
 ## Bridge lifetime
 

@@ -8852,7 +8852,7 @@ impl Workspace {
                 // Update documents with VCS status using cached method
                 for doc_info in &mut documents {
                     if let Some(ref path) = doc_info.path {
-                        let status = cx.global::<VcsServiceHandle>().get_status_cached(path, cx);
+                        let status = cx.global::<VcsServiceHandle>().get_status(path, cx);
                         debug!(file = %path.display(), vcs_status = ?status, "VCS status for tab");
                         doc_info.git_status = status;
                     }
@@ -9689,13 +9689,6 @@ impl Workspace {
                         tree_cx.notify();
                     });
                 }
-                cx.notify();
-            }
-            VcsEvent::DiffHunksUpdated { file_path, .. } => {
-                debug!(
-                    file_path = %file_path.display(),
-                    "Workspace: VCS diff metadata updated"
-                );
                 cx.notify();
             }
             VcsEvent::RepositoryStarted { root_path, .. } => {

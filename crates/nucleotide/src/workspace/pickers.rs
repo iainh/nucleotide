@@ -150,7 +150,7 @@ fn emit_file_picker_from_items(
         let mut vcs_status_count = 0;
         for item in &mut items {
             if let Some(ref file_path) = item.file_path {
-                item.vcs_status = vcs_service.get_status_cached(file_path, cx);
+                item.vcs_status = vcs_service.get_status(file_path, cx);
                 if item.vcs_status.is_some() {
                     vcs_status_count += 1;
                 }
