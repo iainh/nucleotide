@@ -1005,7 +1005,19 @@ impl Workspace {
                         {
                             this.commit_review.refresh_again = true;
                         } else {
+                            // Collapse large files when they first appear; after
+                            // that, the user's expand or collapse stands.
+                            let shown: HashSet<_> = this
+                                .commit_review
+                                .snapshot
+                                .iter()
+                                .flat_map(|s| &s.files)
+                                .map(|f| &f.entry.relative_path)
+                                .collect();
                             for file in &snapshot.files {
+                                if shown.contains(&file.entry.relative_path) {
+                                    continue;
+                                }
                                 if file.content.as_ref().is_ok_and(|c| {
                                     c.changes
                                         .hunks()

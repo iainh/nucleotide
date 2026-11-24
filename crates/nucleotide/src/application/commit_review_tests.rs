@@ -450,6 +450,37 @@ fn long_diffs_scroll_to_their_last_change_in_both_layouts(cx: &mut gpui::TestApp
 }
 
 #[gpui::test]
+fn expanded_large_file_stays_expanded_after_staging_a_line(cx: &mut gpui::TestAppContext) {
+    let _runtime = TEST_RUNTIME.enter();
+    let root = repository();
+    let path = root.path().join("file.txt");
+    let lines = |prefix: &str| -> String { (0..300).map(|i| format!("{prefix} {i}\n")).collect() };
+    fs::write(&path, lines("line")).unwrap();
+    git(root.path(), &["commit", "-qam", "long"]);
+    // 600 changed lines, over the preview limit, so the file starts collapsed.
+    fs::write(&path, lines("changed")).unwrap();
+    let (core, _, cx) = new_test_workspace(cx, &path);
+    core.update(cx, |_, cx| cx.emit(crate::Update::ShowCommit));
+    wait_for(&core, cx, |cx| cx.debug_bounds("commit-shown-0").is_some());
+    assert!(cx.debug_bounds("commit-row-0-false-0").is_none());
+
+    cx.simulate_keystrokes("z a");
+    wait_for(&core, cx, |cx| {
+        cx.debug_bounds("commit-row-0-false-0").is_some()
+    });
+    click_line(cx, "commit-row-0-false-0");
+    wait_for(&core, cx, |_| {
+        git(root.path(), &["diff", "--cached", "--numstat"]) == "1\t0\tfile.txt\n"
+    });
+    // Let the reload that follows the stage land.
+    for _ in 0..20 {
+        pump(&core, cx);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(cx.debug_bounds("commit-row-0-false-0").is_some());
+}
+
+#[gpui::test]
 fn commit_review_shows_one_file_and_brackets_move_between_files(cx: &mut gpui::TestAppContext) {
     let _runtime = TEST_RUNTIME.enter();
     let root = repository();
