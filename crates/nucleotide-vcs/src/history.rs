@@ -167,6 +167,8 @@ impl GitRepository {
             "-r",
             "-z",
             "-M",
+            // Report copies too, so History can label them apart from additions.
+            "-C",
             "--raw",
             "--no-abbrev",
             "--no-commit-id",
@@ -685,8 +687,10 @@ mod tests {
         git(root, &["add", "."]);
         git(root, &["commit", "-q", "-m", "first"]);
         git(root, &["checkout", "-q", "-b", "feature"]);
+        std::fs::copy(root.join("a.txt"), root.join("copy.txt")).unwrap();
         std::fs::write(root.join("a.txt"), "one\n2\n").unwrap();
         git(root, &["mv", "old.txt", "new.txt"]);
+        git(root, &["add", "copy.txt"]);
         git(
             root,
             &["commit", "-q", "-am", "edit and rename\n\nThe body."],
@@ -724,6 +728,11 @@ mod tests {
             files,
             [
                 ("a.txt", FileChangeKind::Modified, None),
+                (
+                    "copy.txt",
+                    FileChangeKind::Copied,
+                    Some(PathBuf::from("a.txt"))
+                ),
                 (
                     "new.txt",
                     FileChangeKind::Renamed,

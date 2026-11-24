@@ -17,6 +17,8 @@ pub enum VcsStatus {
     Deleted,
     /// File has been renamed in VCS
     Renamed,
+    /// File was created as a copy of another tracked file
+    Copied,
     /// File has conflicts from merge
     Conflicted,
     /// Unknown VCS status
@@ -28,7 +30,12 @@ impl VcsStatus {
     pub fn is_modified(&self) -> bool {
         matches!(
             self,
-            Self::Modified | Self::Added | Self::Deleted | Self::Renamed | Self::Conflicted
+            Self::Modified
+                | Self::Added
+                | Self::Deleted
+                | Self::Renamed
+                | Self::Copied
+                | Self::Conflicted
         )
     }
 
@@ -42,20 +49,6 @@ impl VcsStatus {
         matches!(self, Self::Conflicted | Self::Unknown)
     }
 
-    /// Returns a single-character symbol representing this status
-    pub fn symbol(&self) -> char {
-        match self {
-            Self::Untracked => '?',
-            Self::Clean => ' ',
-            Self::Modified => 'M',
-            Self::Added => 'A',
-            Self::Deleted => 'D',
-            Self::Renamed => 'R',
-            Self::Conflicted => 'C',
-            Self::Unknown => '!',
-        }
-    }
-
     /// Returns a human-readable description of this status
     pub fn description(&self) -> &'static str {
         match self {
@@ -65,6 +58,7 @@ impl VcsStatus {
             Self::Added => "Added",
             Self::Deleted => "Deleted",
             Self::Renamed => "Renamed",
+            Self::Copied => "Copied",
             Self::Conflicted => "Conflicted",
             Self::Unknown => "Unknown",
         }
@@ -88,12 +82,4 @@ mod tests {
         assert!(!VcsStatus::Clean.needs_attention());
     }
 
-    #[test]
-    fn test_vcs_status_symbols() {
-        assert_eq!(VcsStatus::Modified.symbol(), 'M');
-        assert_eq!(VcsStatus::Added.symbol(), 'A');
-        assert_eq!(VcsStatus::Deleted.symbol(), 'D');
-        assert_eq!(VcsStatus::Untracked.symbol(), '?');
-        assert_eq!(VcsStatus::Clean.symbol(), ' ');
-    }
 }

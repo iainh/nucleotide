@@ -4,13 +4,14 @@ use super::*;
 use nucleotide_types::VcsStatus;
 use nucleotide_ui::{
     Checkbox, CheckboxSize, ListItem, ListItemSpacing, ListItemVariant, StateViewTone, VcsIcon,
+    VcsStatusStyle,
 };
 
 /// How a file changed, preferring what the index records over the working tree.
-fn change_kind(entry: &GitStatusEntry) -> (VcsStatus, &'static str) {
+fn change_kind(entry: &GitStatusEntry) -> VcsStatus {
     let (index, worktree) = (entry.index_status, entry.working_tree_status);
     if index == Status::Conflicted || worktree == Status::Conflicted {
-        return (VcsStatus::Conflicted, "C");
+        return VcsStatus::Conflicted;
     }
     let status = match index {
         Status::Added | Status::Deleted | Status::Renamed | Status::Copied => index,
@@ -18,12 +19,13 @@ fn change_kind(entry: &GitStatusEntry) -> (VcsStatus, &'static str) {
         _ => index,
     };
     match status {
-        Status::Untracked => (VcsStatus::Untracked, "U"),
-        Status::Added | Status::Copied => (VcsStatus::Added, "A"),
-        Status::Deleted => (VcsStatus::Deleted, "D"),
-        Status::Renamed => (VcsStatus::Renamed, "R"),
-        Status::Modified | Status::TypeChanged => (VcsStatus::Modified, "M"),
-        _ => (VcsStatus::Unknown, "?"),
+        Status::Untracked => VcsStatus::Untracked,
+        Status::Added => VcsStatus::Added,
+        Status::Copied => VcsStatus::Copied,
+        Status::Deleted => VcsStatus::Deleted,
+        Status::Renamed => VcsStatus::Renamed,
+        Status::Modified | Status::TypeChanged => VcsStatus::Modified,
+        _ => VcsStatus::Unknown,
     }
 }
 
@@ -289,7 +291,7 @@ impl Workspace {
         // Clicks queue behind a stage; only a commit or push locks them.
         let locked = self.commit_review.operation.is_some();
         let path = file.entry.relative_path.clone();
-        let (status, letter) = change_kind(&file.entry);
+        let status = change_kind(&file.entry);
         let name = path.file_name().map_or_else(
             || path.display().to_string(),
             |n| n.to_string_lossy().into(),
@@ -323,12 +325,6 @@ impl Workspace {
             (file_tree.item_text_selected, file_tree.item_text_selected)
         } else {
             (file_tree.item_text, file_tree.item_text_secondary)
-        };
-        let status_color = match status {
-            VcsStatus::Added | VcsStatus::Untracked => tokens.editor.vcs_added,
-            VcsStatus::Deleted => tokens.editor.vcs_deleted,
-            VcsStatus::Modified | VcsStatus::Renamed => tokens.editor.vcs_modified,
-            _ => tokens.editor.error,
         };
         let row = ListItem::new(SharedString::from(format!("changes-row-{index}")))
             .variant(ListItemVariant::Ghost)
@@ -378,8 +374,12 @@ impl Workspace {
                 div()
                     .w(tokens.sizes.space_5)
                     .text_center()
-                    .text_color(if is_selected { text } else { status_color })
-                    .child(letter),
+                    .text_color(if is_selected {
+                        text
+                    } else {
+                        status.color(&tokens)
+                    })
+                    .child(status.label()),
             )
             .with_listener({
                 let listener = cx.listener(move |this, _: &gpui::ClickEvent, _, cx| {
@@ -415,27 +415,27 @@ mod change_tests {
 
     #[test]
     fn change_kind_prefers_what_the_index_records() {
+        let kind = |index, worktree| change_kind(&entry(index, worktree));
         // A file added to the index and edited since is still a new file.
-        assert_eq!(change_kind(&entry(Status::Added, Status::Modified)).1, "A");
+        assert_eq!(kind(Status::Added, Status::Modified), VcsStatus::Added);
         assert_eq!(
-            change_kind(&entry(Status::Unmodified, Status::Deleted)).1,
-            "D"
+            kind(Status::Unmodified, Status::Deleted),
+            VcsStatus::Deleted
+        );
+        assert_eq!(kind(Status::Modified, Status::Deleted), VcsStatus::Deleted);
+        assert_eq!(
+            kind(Status::Untracked, Status::Untracked),
+            VcsStatus::Untracked
         );
         assert_eq!(
-            change_kind(&entry(Status::Modified, Status::Deleted)).1,
-            "D"
+            kind(Status::Modified, Status::Unmodified),
+            VcsStatus::Modified
         );
+        assert_eq!(kind(Status::Renamed, Status::Modified), VcsStatus::Renamed);
+        assert_eq!(kind(Status::Copied, Status::Unmodified), VcsStatus::Copied);
         assert_eq!(
-            change_kind(&entry(Status::Untracked, Status::Untracked)).1,
-            "U"
-        );
-        assert_eq!(
-            change_kind(&entry(Status::Modified, Status::Unmodified)).1,
-            "M"
-        );
-        assert_eq!(
-            change_kind(&entry(Status::Renamed, Status::Modified)).1,
-            "R"
+            kind(Status::Modified, Status::Conflicted),
+            VcsStatus::Conflicted
         );
     }
 }

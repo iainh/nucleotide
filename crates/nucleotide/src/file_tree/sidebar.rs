@@ -11,7 +11,7 @@ use gpui::{
 };
 use nucleotide_types::VcsStatus;
 use nucleotide_ui::tokens::FileTreeTokens;
-use nucleotide_ui::{TextTooltip, Theme, ThemedContext as _, VcsIcon};
+use nucleotide_ui::{TextTooltip, Theme, ThemedContext as _, VcsIcon, VcsStatusStyle};
 
 use crate::file_tree::{
     FileKind, FileTreeDisplayDensity, FileTreeEntry, entry::FileTreeFlattenedSegment,
@@ -656,13 +656,10 @@ fn row_text_color(
         file_tree_tokens.item_text_selected
     } else if let Some(status) = git_status_for_display(row) {
         match status {
-            VcsStatus::Deleted => theme.tokens.editor.vcs_deleted,
+            // A folder holding a deletion still exists, so its name stays neutral.
+            VcsStatus::Deleted if !row.is_directory() => theme.tokens.editor.vcs_deleted,
             VcsStatus::Conflicted | VcsStatus::Unknown => theme.tokens.editor.error,
-            VcsStatus::Untracked
-            | VcsStatus::Modified
-            | VcsStatus::Added
-            | VcsStatus::Renamed
-            | VcsStatus::Clean => file_tree_tokens.item_text,
+            _ => file_tree_tokens.item_text,
         }
     } else if row.is_ignored {
         file_tree_tokens.item_text_secondary
@@ -708,7 +705,11 @@ fn render_git_status_lane(
         div()
             .id(("file-tree-status", row.id))
             .debug_selector(move || format!("file-tree-status-{}", row.id))
-            .aria_label(format!("Version control: {status:?}"))
+            .aria_label(if row.is_directory() {
+                format!("Contains changes: {}", status.description())
+            } else {
+                format!("Version control: {}", status.description())
+            })
             .ml_auto()
             .w(width)
             .flex_shrink_0()
@@ -724,9 +725,9 @@ fn render_git_status_lane(
                     .text_size(theme.tokens.sizes.text_xs)
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .when(theme.tokens.chrome.contrast.is_none(), |label| {
-                        label.text_color(git_status_color(status, theme))
+                        label.text_color(status.color(&theme.tokens))
                     })
-                    .child(git_status_label(status)),
+                    .child(git_status_badge(row, status)),
             )
             .into_any_element(),
     )
@@ -741,26 +742,13 @@ fn should_render_git_status(status: VcsStatus) -> bool {
     !matches!(status, VcsStatus::Clean)
 }
 
-fn git_status_label(status: VcsStatus) -> &'static str {
-    match status {
-        VcsStatus::Untracked => "?",
-        VcsStatus::Clean => "",
-        VcsStatus::Modified => "M",
-        VcsStatus::Added => "A",
-        VcsStatus::Deleted => "D",
-        VcsStatus::Renamed => "R",
-        VcsStatus::Conflicted => "C",
-        VcsStatus::Unknown => "!",
-    }
-}
-
-fn git_status_color(status: VcsStatus, theme: &Theme) -> gpui::Hsla {
-    match status {
-        VcsStatus::Modified | VcsStatus::Renamed => theme.tokens.editor.vcs_modified,
-        VcsStatus::Added | VcsStatus::Untracked => theme.tokens.editor.vcs_added,
-        VcsStatus::Deleted => theme.tokens.editor.vcs_deleted,
-        VcsStatus::Conflicted | VcsStatus::Unknown => theme.tokens.editor.error,
-        VcsStatus::Clean => theme.tokens.file_tree_tokens().item_text,
+/// A file shows its status letter. A folder shows a dot in the colour of the
+/// most important change inside it, since it has no status of its own.
+fn git_status_badge(row: &ProjectTreeRow, status: VcsStatus) -> &'static str {
+    if row.is_directory() {
+        "●"
+    } else {
+        status.label()
     }
 }
 
@@ -881,46 +869,24 @@ mod tests {
     }
 
     #[test]
-    fn git_status_labels_use_compact_tree_style_text() {
+    fn git_status_badges_letter_files_and_dot_folders() {
         assert!(!should_render_git_status(VcsStatus::Clean));
         assert!(should_render_git_status(VcsStatus::Modified));
-        assert_eq!(git_status_label(VcsStatus::Modified), "M");
-        assert_eq!(git_status_label(VcsStatus::Added), "A");
-        assert_eq!(git_status_label(VcsStatus::Deleted), "D");
-        assert_eq!(git_status_label(VcsStatus::Renamed), "R");
-        assert_eq!(git_status_label(VcsStatus::Untracked), "?");
-        assert_eq!(git_status_label(VcsStatus::Conflicted), "C");
-        assert_eq!(git_status_label(VcsStatus::Unknown), "!");
-    }
 
-    #[test]
-    fn git_status_colors_use_vcs_design_tokens() {
-        let theme = Theme::from_tokens(nucleotide_ui::DesignTokens::dark());
+        let file = FileTreeEntry::new_file(
+            FileTreeEntryId(1),
+            PathBuf::from("/workspace/src/main.rs"),
+            1,
+            None,
+        );
+        let file = ProjectTreeRow::from_entry(&file, false, None);
+        assert_eq!(git_status_badge(&file, VcsStatus::Untracked), "?");
+        assert_eq!(git_status_badge(&file, VcsStatus::Conflicted), "U");
 
-        assert_eq!(
-            git_status_color(VcsStatus::Modified, &theme),
-            theme.tokens.editor.vcs_modified
-        );
-        assert_eq!(
-            git_status_color(VcsStatus::Added, &theme),
-            theme.tokens.editor.vcs_added
-        );
-        assert_eq!(
-            git_status_color(VcsStatus::Deleted, &theme),
-            theme.tokens.editor.vcs_deleted
-        );
-        assert_eq!(
-            git_status_color(VcsStatus::Renamed, &theme),
-            theme.tokens.editor.vcs_modified
-        );
-        assert_eq!(
-            git_status_color(VcsStatus::Conflicted, &theme),
-            theme.tokens.editor.error
-        );
-        assert_eq!(
-            git_status_color(VcsStatus::Untracked, &theme),
-            theme.tokens.editor.vcs_added
-        );
+        let folder =
+            FileTreeEntry::new_directory(FileTreeEntryId(2), PathBuf::from("/workspace/src"), None);
+        let folder = ProjectTreeRow::from_entry(&folder, false, None);
+        assert_eq!(git_status_badge(&folder, VcsStatus::Conflicted), "●");
     }
 
     #[test]
@@ -959,6 +925,23 @@ mod tests {
         deleted.vcs_status = Some(VcsStatus::Conflicted);
         assert_eq!(
             row_text_color(&deleted, &theme, file_tree_tokens),
+            theme.tokens.editor.error
+        );
+
+        // A folder that holds a deletion still exists; a conflict inside still warns.
+        let folder = FileTreeEntry::new_directory(
+            FileTreeEntryId(5),
+            PathBuf::from("/workspace/docs"),
+            None,
+        );
+        let mut folder = ProjectTreeRow::from_entry(&folder, false, Some(VcsStatus::Deleted));
+        assert_eq!(
+            row_text_color(&folder, &theme, file_tree_tokens),
+            file_tree_tokens.item_text
+        );
+        folder.vcs_status = Some(VcsStatus::Conflicted);
+        assert_eq!(
+            row_text_color(&folder, &theme, file_tree_tokens),
             theme.tokens.editor.error
         );
     }

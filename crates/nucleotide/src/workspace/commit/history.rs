@@ -6,9 +6,23 @@ use super::view::MAX_VISIBLE_LINES;
 use super::*;
 use crate::diff::DiffStyle;
 use gpui::{Hsla, PathBuilder, canvas, size};
+use nucleotide_types::VcsStatus;
+use nucleotide_ui::VcsStatusStyle;
 use nucleotide_vcs::history::{
     CommitChanges, CommitGraph, CommitRef, CommitSummary, FileChangeKind, GraphRow, Half, RefKind,
 };
+
+/// The status a commit gave a file, in the vocabulary the other VCS panels use.
+fn commit_file_status(kind: FileChangeKind) -> VcsStatus {
+    match kind {
+        FileChangeKind::Added => VcsStatus::Added,
+        FileChangeKind::Deleted => VcsStatus::Deleted,
+        FileChangeKind::Renamed => VcsStatus::Renamed,
+        FileChangeKind::Copied => VcsStatus::Copied,
+        FileChangeKind::Modified | FileChangeKind::TypeChanged => VcsStatus::Modified,
+        FileChangeKind::Other => VcsStatus::Unknown,
+    }
+}
 
 /// Commits read per page. Later pages load as the list nears its end.
 const PAGE: usize = 2000;
@@ -666,7 +680,12 @@ impl Workspace {
                 Err(reason) => items.push(HistoryItem::Note(index, reason.clone().into())),
                 Ok(diff) if diff.changes.hunks().is_empty() => items.push(HistoryItem::Note(
                     index,
-                    "No text changes (mode change or empty file)".into(),
+                    match file.kind {
+                        FileChangeKind::Copied => "Copied without text changes",
+                        FileChangeKind::Renamed => "Renamed without text changes",
+                        _ => "No text changes (mode change or empty file)",
+                    }
+                    .into(),
                 )),
                 Ok(_) if unified => items.push(HistoryItem::Unified(index)),
                 Ok(diff) => items.extend(
@@ -701,14 +720,7 @@ impl Workspace {
         let tokens = cx.global::<nucleotide_ui::Theme>().tokens;
         let path = file.path.clone();
         let collapsed = self.commit_review.history.collapsed.contains(&path);
-        let (letter, color) = match file.kind {
-            FileChangeKind::Added => ("A", tokens.editor.vcs_added),
-            FileChangeKind::Deleted => ("D", tokens.editor.vcs_deleted),
-            FileChangeKind::Renamed => ("R", tokens.editor.vcs_modified),
-            FileChangeKind::Copied => ("C", tokens.editor.vcs_added),
-            FileChangeKind::TypeChanged => ("T", tokens.editor.vcs_modified),
-            FileChangeKind::Modified | FileChangeKind::Other => ("M", tokens.editor.vcs_modified),
-        };
+        let status = commit_file_status(file.kind);
         div()
             .flex()
             .items_center()
@@ -742,8 +754,8 @@ impl Workspace {
             .child(
                 div()
                     .w(tokens.sizes.space_4)
-                    .text_color(color)
-                    .child(letter),
+                    .text_color(status.color(&tokens))
+                    .child(status.label()),
             )
             .child(
                 div()

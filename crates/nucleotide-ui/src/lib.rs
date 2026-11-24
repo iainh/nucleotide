@@ -57,6 +57,7 @@ pub mod titlebar;
 pub mod tokens;
 pub mod traits;
 pub mod vcs_icon;
+pub mod vcs_status;
 
 #[cfg(test)]
 mod integration_tests;
@@ -154,6 +155,7 @@ pub use traits::{
     Tooltipped, Validatable, ValidationState, compute_component_state,
 };
 pub use vcs_icon::{VcsIcon, VcsIconRenderer};
+pub use vcs_status::VcsStatusStyle;
 // VcsStatus is now re-exported from nucleotide-types
 
 // Export initialization and configuration types

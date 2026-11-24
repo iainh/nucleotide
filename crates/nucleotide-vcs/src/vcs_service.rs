@@ -70,6 +70,8 @@ pub struct VcsService {
     monitoring_generation: u64,
     /// Current VCS status cache
     status_cache: HashMap<PathBuf, VcsStatus>,
+    /// Status of each directory that contains changes, derived from `status_cache`.
+    directory_status: HashMap<PathBuf, VcsStatus>,
     /// Raw `git status` entries, which keep staged and unstaged changes apart.
     status_entries: Vec<GitStatusEntry>,
     /// Monotonic revision for presentation caches that consume status data.
@@ -100,6 +102,7 @@ impl VcsService {
             workspace_backend: local_workspace_backend(),
             monitoring_generation: 0,
             status_cache: HashMap::new(),
+            directory_status: HashMap::new(),
             status_entries: Vec::new(),
             status_revision: 0,
             status_error: None,
@@ -188,6 +191,7 @@ impl VcsService {
             self.status_cache.clear();
             self.status_revision = self.status_revision.wrapping_add(1);
         }
+        self.directory_status.clear();
         self.status_entries.clear();
         self.status_error = None;
         self.status_truncated = false;
@@ -203,7 +207,8 @@ impl VcsService {
             .or_else(|| path.is_absolute().then(|| path.to_path_buf()))
     }
 
-    /// Get the VCS status for a specific file
+    /// Get the VCS status for a file, or for a directory the most important
+    /// change inside it.
     pub fn get_status(&self, path: &Path) -> Option<VcsStatus> {
         // Convert to absolute path if relative
         let Some(abs_path) = self.absolute_path(path) else {
@@ -211,7 +216,11 @@ impl VcsService {
             return None;
         };
 
-        let status = self.status_cache.get(&abs_path).cloned();
+        let status = self
+            .status_cache
+            .get(&abs_path)
+            .or_else(|| self.directory_status.get(&abs_path))
+            .copied();
         debug!(
             path = %abs_path.display(),
             status = ?status,
@@ -477,6 +486,11 @@ impl VcsService {
 
         self.status_cache = new_status;
         if !changes.is_empty() {
+            self.directory_status = self
+                .root_path
+                .as_deref()
+                .map(|root| directory_status(root, &self.status_cache))
+                .unwrap_or_default();
             self.status_revision = self.status_revision.wrapping_add(1);
         }
 
@@ -581,12 +595,57 @@ fn vcs_status_from_workspace_entry(entry: &GitStatusEntry) -> VcsStatus {
         (Deleted, _) | (_, Deleted) => VcsStatus::Deleted,
         (Renamed, _) | (_, Renamed) => VcsStatus::Renamed,
         (Added, Unmodified) => VcsStatus::Added,
-        (Copied, Unmodified) => VcsStatus::Added,
+        (Copied, Unmodified) => VcsStatus::Copied,
         (Modified | TypeChanged, _) | (_, Modified | TypeChanged) => VcsStatus::Modified,
         (Unknown, _) | (_, Unknown) => VcsStatus::Unknown,
         (Unmodified, Unmodified) => VcsStatus::Clean,
         (Added | Copied, _) | (_, Added | Copied) => VcsStatus::Modified,
     }
+}
+
+/// Rank used to pick a directory's status from the changes inside it.
+fn directory_precedence(status: VcsStatus) -> u8 {
+    match status {
+        VcsStatus::Clean => 0,
+        VcsStatus::Unknown => 1,
+        VcsStatus::Untracked => 2,
+        VcsStatus::Added => 3,
+        VcsStatus::Copied => 4,
+        VcsStatus::Renamed => 5,
+        VcsStatus::Deleted => 6,
+        VcsStatus::Modified => 7,
+        VcsStatus::Conflicted => 8,
+    }
+}
+
+/// Gives every directory below `root` the highest-precedence status among
+/// the files inside it, so a collapsed folder still shows its changes.
+fn directory_status(
+    root: &Path,
+    files: &HashMap<PathBuf, VcsStatus>,
+) -> HashMap<PathBuf, VcsStatus> {
+    let mut directories: HashMap<PathBuf, VcsStatus> = HashMap::new();
+    for (path, &status) in files {
+        if status == VcsStatus::Clean {
+            continue;
+        }
+        for directory in path.ancestors().skip(1) {
+            if directory == root || !directory.starts_with(root) {
+                break;
+            }
+            match directories.get_mut(directory) {
+                // Directories above this one rank at least as high as it does, so stop.
+                Some(current) if directory_precedence(*current) >= directory_precedence(status) => {
+                    break;
+                }
+                Some(current) => *current = status,
+                None => {
+                    directories.insert(directory.to_path_buf(), status);
+                }
+            }
+        }
+    }
+    directories
 }
 
 fn git_error_is_not_repository(message: &str) -> bool {
@@ -1105,6 +1164,39 @@ mod tests {
 
         service.stop_monitoring();
         assert_eq!(service.status_revision(), 1);
+    }
+
+    #[test]
+    fn directories_take_the_most_important_change_inside_them() {
+        let files: HashMap<PathBuf, VcsStatus> = [
+            ("/repo/src/parser/token.rs", VcsStatus::Modified),
+            ("/repo/src/render/shader.rs", VcsStatus::Added),
+            ("/repo/src/render/old.rs", VcsStatus::Deleted),
+            ("/repo/src/config.rs", VcsStatus::Conflicted),
+            ("/repo/assets/icons/logo.svg", VcsStatus::Untracked),
+            ("/repo/docs/clean.md", VcsStatus::Clean),
+            ("/repo/README.md", VcsStatus::Modified),
+            ("/elsewhere/lib.rs", VcsStatus::Modified),
+        ]
+        .into_iter()
+        .map(|(path, status)| (PathBuf::from(path), status))
+        .collect();
+
+        let directories = directory_status(Path::new("/repo"), &files);
+        let status = |path: &str| directories.get(Path::new(path)).copied();
+
+        // A conflict outranks the modification and addition deeper down.
+        assert_eq!(status("/repo/src"), Some(VcsStatus::Conflicted));
+        assert_eq!(status("/repo/src/parser"), Some(VcsStatus::Modified));
+        assert_eq!(status("/repo/src/render"), Some(VcsStatus::Deleted));
+        // Every ancestor of a nested file is marked, not only its parent.
+        assert_eq!(status("/repo/assets"), Some(VcsStatus::Untracked));
+        assert_eq!(status("/repo/assets/icons"), Some(VcsStatus::Untracked));
+        // Clean files, the workspace root and paths outside it are not marked.
+        assert_eq!(status("/repo/docs"), None);
+        assert_eq!(status("/repo"), None);
+        assert_eq!(status("/elsewhere"), None);
+        assert_eq!(directories.len(), 5);
     }
 
     #[test]

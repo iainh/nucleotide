@@ -4,7 +4,7 @@
 use gpui::{Context, Hsla, IntoElement, ParentElement, Styled, div, px};
 use std::path::Path;
 
-use crate::{FileIcon, Theme, tokens::STANDARD_ICON_SIZE};
+use crate::{FileIcon, Theme, VcsStatusStyle, tokens::STANDARD_ICON_SIZE};
 use nucleotide_types::VcsStatus;
 
 fn vcs_indicator_size(container_size: f32) -> f32 {
@@ -111,13 +111,9 @@ impl VcsIcon {
         if let Some(colors) = dt.chrome.contrast {
             return self.should_show_vcs_status().then_some(colors.window_text);
         }
-        match &self.vcs_status {
-            Some(VcsStatus::Modified | VcsStatus::Renamed) => Some(dt.editor.vcs_modified),
-            Some(VcsStatus::Added | VcsStatus::Untracked) => Some(dt.editor.vcs_added),
-            Some(VcsStatus::Deleted) => Some(dt.editor.vcs_deleted),
-            Some(VcsStatus::Conflicted | VcsStatus::Unknown) => Some(dt.editor.error),
-            Some(VcsStatus::Clean) | None => None,
-        }
+        self.vcs_status
+            .filter(|_| self.should_show_vcs_status())
+            .map(|status| status.color(dt))
     }
 
     /// Render a compact, flat VCS status dot.
@@ -235,13 +231,7 @@ impl IntoElement for VcsIcon {
 
         if should_show {
             let tokens = crate::DesignTokens::dark();
-            let fallback_color = match &vcs_status {
-                Some(VcsStatus::Modified | VcsStatus::Renamed) => tokens.editor.vcs_modified,
-                Some(VcsStatus::Added | VcsStatus::Untracked) => tokens.editor.vcs_added,
-                Some(VcsStatus::Deleted) => tokens.editor.vcs_deleted,
-                Some(VcsStatus::Conflicted | VcsStatus::Unknown) => tokens.editor.error,
-                _ => tokens.editor.text_secondary,
-            };
+            let fallback_color = vcs_status.unwrap_or_default().color(&tokens);
 
             let indicator_size = vcs_indicator_size(container_size);
 
