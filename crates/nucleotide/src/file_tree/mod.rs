@@ -87,6 +87,9 @@ pub enum FileTreeEvent {
     },
     /// Request to refresh VCS status
     RefreshVcs { force: bool },
+    /// Git's HEAD, index or refs changed, such as after a commit, checkout or
+    /// fetch in a terminal. `refs` is set when a branch, tag or remote ref moved.
+    GitMetadataChanged { refs: bool },
     /// Toggle file tree visibility
     ToggleVisibility,
     /// Request that the workspace opens the file tree search prompt

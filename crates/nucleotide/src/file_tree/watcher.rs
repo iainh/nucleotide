@@ -2,7 +2,7 @@
 // ABOUTME: Monitors file system changes and emits events for tree synchronization
 
 use anyhow::{Context, Result};
-use notify::event::{ModifyKind, RenameMode};
+use notify::event::{AccessKind, AccessMode, ModifyKind, RenameMode};
 use notify::{Event, EventKind, RecursiveMode, Watcher};
 use nucleotide_logging::{debug, warn};
 use std::collections::VecDeque;
@@ -24,6 +24,93 @@ pub struct FileTreeWatcher {
     resolved_root: Option<PathBuf>,
     /// Converted paths still to deliver from a batched notify event.
     pending_events: VecDeque<FileTreeEvent>,
+    /// Where git keeps this worktree's HEAD and index, and its refs.
+    git_dirs: Option<GitDirs>,
+}
+
+struct GitDirs {
+    /// Holds HEAD and the index.
+    git_dir: PathBuf,
+    /// Holds refs and packed-refs. A linked worktree shares the main
+    /// repository's; otherwise it is `git_dir`.
+    common_dir: PathBuf,
+}
+
+impl GitDirs {
+    /// Finds the git dirs for `root`, which may be a subdirectory of the
+    /// worktree or a linked worktree.
+    fn find(root: &Path) -> Option<Self> {
+        let dot_git = root
+            .ancestors()
+            .map(|dir| dir.join(".git"))
+            .find(|path| path.exists())?;
+        // A linked worktree's `.git` is a file: `gitdir: <path>`.
+        let git_dir = if dot_git.is_dir() {
+            dot_git
+        } else {
+            let contents = std::fs::read_to_string(&dot_git).ok()?;
+            let target = contents.trim().strip_prefix("gitdir:")?.trim();
+            dot_git.parent()?.join(target)
+        };
+        let common_dir = std::fs::read_to_string(git_dir.join("commondir"))
+            .map(|dir| git_dir.join(dir.trim()))
+            .unwrap_or_else(|_| git_dir.clone());
+        // The root watch reports paths under the root as opened; watches added
+        // for directories outside it report canonical paths.
+        let normalize = |dir: PathBuf| {
+            if dir.starts_with(root) {
+                dir
+            } else {
+                std::fs::canonicalize(&dir).unwrap_or(dir)
+            }
+        };
+        Some(Self {
+            git_dir: normalize(git_dir),
+            common_dir: normalize(common_dir),
+        })
+    }
+
+    /// Whether `path` is HEAD, the index or a ref. Git writes each through a
+    /// `.lock` file renamed into place, so the rename reports the final path.
+    fn contains_metadata(&self, path: &Path) -> bool {
+        if path
+            .extension()
+            .is_some_and(|extension| extension == "lock")
+        {
+            return false;
+        }
+        let in_git_dir = path
+            .strip_prefix(&self.git_dir)
+            .is_ok_and(|relative| relative == Path::new("HEAD") || relative == Path::new("index"));
+        in_git_dir || self.contains_ref(path)
+    }
+
+    /// Whether `path` is a branch, tag or remote ref, loose or packed.
+    fn contains_ref(&self, path: &Path) -> bool {
+        path.extension().is_none_or(|extension| extension != "lock")
+            && path.strip_prefix(&self.common_dir).is_ok_and(|relative| {
+                relative.starts_with("refs") || relative == Path::new("packed-refs")
+            })
+    }
+
+    /// Watches the parts of each git dir outside `root`, such as a linked
+    /// worktree's or the repository's when `root` is a subdirectory, without
+    /// the objects under them. The root watch covers the rest.
+    fn watch_outside(&self, root: &Path, watcher: &mut notify::RecommendedWatcher) {
+        let watches = [
+            (self.git_dir.clone(), RecursiveMode::NonRecursive),
+            (self.common_dir.clone(), RecursiveMode::NonRecursive),
+            (self.common_dir.join("refs"), RecursiveMode::Recursive),
+        ];
+        for (path, mode) in watches {
+            if !path.starts_with(root)
+                && path.exists()
+                && let Err(error) = watcher.watch(&path, mode)
+            {
+                warn!(error = %error, path = ?path, "Failed to watch git metadata");
+            }
+        }
+    }
 }
 
 impl FileTreeWatcher {
@@ -46,12 +133,18 @@ impl FileTreeWatcher {
             .ok()
             .filter(|resolved| *resolved != root_path);
 
+        let git_dirs = GitDirs::find(&root_path);
+        if let Some(git_dirs) = &git_dirs {
+            git_dirs.watch_outside(&root_path, &mut watcher);
+        }
+
         Ok(Self {
             _watcher: watcher,
             event_receiver: rx,
             root_path,
             resolved_root,
             pending_events: VecDeque::new(),
+            git_dirs,
         })
     }
 
@@ -114,6 +207,27 @@ impl FileTreeWatcher {
             }
         }
 
+        // inotify reports opens and reads, including `git status` reading the
+        // worktree after each refresh; treating them as changes refreshes forever.
+        if matches!(event.kind, EventKind::Access(kind) if kind != AccessKind::Close(AccessMode::Write))
+        {
+            return Vec::new();
+        }
+
+        let git_metadata_change = self
+            .git_dirs
+            .as_ref()
+            .filter(|_| !matches!(event.kind, EventKind::Modify(ModifyKind::Metadata(_))))
+            .filter(|dirs| event.paths.iter().any(|path| dirs.contains_metadata(path)))
+            .map(|dirs| FileTreeEvent::GitMetadataChanged {
+                refs: event.paths.iter().any(|path| dirs.contains_ref(path)),
+            });
+        let mut events = self.convert_visible_paths(event);
+        events.extend(git_metadata_change);
+        events
+    }
+
+    fn convert_visible_paths(&self, event: Event) -> Vec<FileTreeEvent> {
         let visible =
             |path: &Path| path.starts_with(&self.root_path) && !self.should_hide_path(path);
 
@@ -333,6 +447,97 @@ mod tests {
                 .await
                 .is_empty()
         );
+        // Reading a file or listing a directory changes nothing.
+        for access in [
+            AccessKind::Open(AccessMode::Any),
+            AccessKind::Read,
+            AccessKind::Close(AccessMode::Read),
+        ] {
+            let event = Event::new(EventKind::Access(access))
+                .add_path(paths[0].clone())
+                .add_path(root.to_path_buf());
+            assert!(deliver(&mut watcher, event).await.is_empty(), "{access:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn git_metadata_writes_report_a_change_in_main_and_linked_worktrees() {
+        let temp_dir = TempDir::new().unwrap();
+        let main = temp_dir.path().canonicalize().unwrap().join("main");
+        let git_dir = main.join(".git");
+        let linked_git_dir = git_dir.join("worktrees/linked");
+        fs::create_dir_all(git_dir.join("refs/heads")).unwrap();
+        fs::create_dir_all(&linked_git_dir).unwrap();
+        fs::write(linked_git_dir.join("commondir"), "../..\n").unwrap();
+        let linked = temp_dir.path().join("linked");
+        fs::create_dir(&linked).unwrap();
+        fs::write(
+            linked.join(".git"),
+            format!("gitdir: {}\n", linked_git_dir.display()),
+        )
+        .unwrap();
+        let write = EventKind::Modify(ModifyKind::Data(DataChange::Content));
+        let rename = EventKind::Modify(ModifyKind::Name(RenameMode::Both));
+
+        let mut watcher = FileTreeWatcher::new(main).unwrap();
+        // `expected` is whether a change is reported, and whether refs moved.
+        for (kind, paths, expected) in [
+            (write, vec![git_dir.join("index")], Some(false)),
+            (write, vec![git_dir.join("HEAD")], Some(false)),
+            (write, vec![git_dir.join("packed-refs")], Some(true)),
+            (
+                EventKind::Create(CreateKind::File),
+                vec![git_dir.join("refs/remotes/origin/main")],
+                Some(true),
+            ),
+            (
+                rename,
+                vec![git_dir.join("index.lock"), git_dir.join("index")],
+                Some(false),
+            ),
+            (write, vec![git_dir.join("index.lock")], None),
+            (write, vec![git_dir.join("objects/ab/cdef")], None),
+            (write, vec![git_dir.join("FETCH_HEAD")], None),
+            (write, vec![git_dir.join("logs/HEAD")], None),
+            // Our own `git status` opens and reads the index.
+            (
+                EventKind::Access(AccessKind::Open(AccessMode::Any)),
+                vec![git_dir.join("index")],
+                None,
+            ),
+        ] {
+            let event = paths
+                .iter()
+                .fold(Event::new(kind), |event, path| event.add_path(path.clone()));
+            assert_eq!(
+                deliver(&mut watcher, event).await,
+                expected
+                    .map(|refs| FileTreeEvent::GitMetadataChanged { refs })
+                    .into_iter()
+                    .collect::<Vec<_>>(),
+                "{paths:?}"
+            );
+        }
+
+        // The linked worktree's HEAD and index live in its own git dir, and its
+        // branches in the main repository's.
+        let mut watcher = FileTreeWatcher::new(linked).unwrap();
+        for (path, expected) in [
+            (linked_git_dir.join("HEAD"), Some(false)),
+            (linked_git_dir.join("index"), Some(false)),
+            (git_dir.join("refs/heads/feature"), Some(true)),
+            (git_dir.join("index"), None),
+            (git_dir.join("worktrees/other/HEAD"), None),
+        ] {
+            assert_eq!(
+                deliver(&mut watcher, Event::new(write).add_path(path.clone())).await,
+                expected
+                    .map(|refs| FileTreeEvent::GitMetadataChanged { refs })
+                    .into_iter()
+                    .collect::<Vec<_>>(),
+                "{path:?}"
+            );
+        }
     }
 
     // macOS reports `/tmp/repo` events as `/private/tmp/repo`.

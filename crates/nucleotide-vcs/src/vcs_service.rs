@@ -291,9 +291,9 @@ impl VcsService {
         self.refresh_status_async(cx);
     }
 
-    /// Refresh after the app itself changed the repository, such as by
-    /// staging or committing. Unlike `force_refresh`, this is never rate
-    /// limited; changes to `.git` are not watched.
+    /// Refresh after the repository changed, such as when the app stages or
+    /// commits, or the file tree sees git's HEAD, index or refs change.
+    /// Unlike `force_refresh`, this is never rate limited.
     pub fn refresh_now(&mut self, cx: &mut Context<Self>) {
         if self.is_monitoring {
             self.refresh_status_async(cx);

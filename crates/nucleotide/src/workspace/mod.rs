@@ -9356,6 +9356,13 @@ impl Workspace {
                 }
                 cx.notify();
             }
+            // The file tree refreshes VcsService itself; a fetch moves only
+            // remote refs, so History hears about refs from here.
+            FileTreeEvent::GitMetadataChanged { refs } => {
+                if *refs {
+                    self.history_changed(cx);
+                }
+            }
             FileTreeEvent::ToggleVisibility => {
                 info!("Toggle file tree visibility requested");
                 self.show_file_tree = !self.show_file_tree;
@@ -12000,6 +12007,10 @@ impl Render for Workspace {
         if window_is_active && !self.window_was_active {
             self.update_controller
                 .update(cx, |controller, cx| controller.check_if_stale(cx));
+            // Git may have run elsewhere, such as on a remote workspace the
+            // file watcher doesn't cover.
+            let vcs_service = cx.global::<VcsServiceHandle>().service().clone();
+            vcs_service.update(cx, |service, cx| service.force_refresh(cx));
             self.refresh_commit_review(cx);
             self.refresh_system_accent(cx);
         }

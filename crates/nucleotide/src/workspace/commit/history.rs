@@ -156,7 +156,7 @@ impl Workspace {
     }
 
     /// The repository may have new commits or moved refs.
-    pub(super) fn history_changed(&mut self, cx: &mut Context<Self>) {
+    pub(in crate::workspace) fn history_changed(&mut self, cx: &mut Context<Self>) {
         if self.commit_review.sidebar == Sidebar::History {
             self.reload_history(false, cx);
         } else {

@@ -397,6 +397,9 @@ pub struct FileTreeView {
     last_fs_event_time: Option<std::time::Instant>,
     /// One task waits for the current filesystem event burst to settle.
     fs_debounce_task: Option<gpui::Task<()>>,
+    /// Whether the pending burst changed git's HEAD, index or refs, and
+    /// whether it moved refs.
+    pending_git_metadata_change: Option<bool>,
     /// Whether remote directory polling is currently active.
     remote_file_polling_active: bool,
     /// Generation of the active remote polling task.
@@ -461,6 +464,7 @@ impl FileTreeView {
             pending_fs_events: std::collections::HashMap::new(),
             last_fs_event_time: None,
             fs_debounce_task: None,
+            pending_git_metadata_change: None,
             remote_file_polling_active: false,
             remote_file_polling_generation: 0,
             remote_file_poll_idle_ticks: 0,
@@ -533,6 +537,7 @@ impl FileTreeView {
             pending_fs_events: std::collections::HashMap::new(),
             last_fs_event_time: None,
             fs_debounce_task: None,
+            pending_git_metadata_change: None,
             remote_file_polling_active: false,
             remote_file_polling_generation: 0,
             remote_file_poll_idle_ticks: 0,
@@ -2091,7 +2096,12 @@ impl FileTreeView {
 
     /// Queue a file system event for debounced processing
     fn queue_file_system_event(&mut self, event: FileTreeEvent, cx: &mut Context<Self>) {
-        if let FileTreeEvent::FileSystemChanged { path, kind } = &event {
+        if let FileTreeEvent::GitMetadataChanged { refs } = event {
+            debug!(refs, "Queuing git metadata change");
+            let pending_refs = self.pending_git_metadata_change.unwrap_or(false);
+            self.pending_git_metadata_change = Some(pending_refs || refs);
+            self.schedule_pending_events(cx);
+        } else if let FileTreeEvent::FileSystemChanged { path, kind } = &event {
             debug!(path = ?path, kind = ?kind, "Queuing file system event");
 
             // Immediate debug: check if root is expanded
@@ -2108,36 +2118,41 @@ impl FileTreeView {
             } else {
                 self.pending_fs_events.insert(path.clone(), event);
             }
-            self.last_fs_event_time = Some(cx.background_executor().now());
-
-            if self.fs_debounce_task.is_some() {
-                return;
-            }
-
-            self.fs_debounce_task = Some(cx.spawn(async move |this, cx| {
-                let mut delay = FILE_SYSTEM_DEBOUNCE_INTERVAL;
-                loop {
-                    cx.background_executor().timer(delay).await;
-
-                    let remaining = this.update(cx, |view, cx| {
-                        let elapsed = cx.background_executor().now()
-                            - view.last_fs_event_time.expect("queued filesystem event");
-                        if elapsed < FILE_SYSTEM_DEBOUNCE_INTERVAL {
-                            return Some(FILE_SYSTEM_DEBOUNCE_INTERVAL - elapsed);
-                        }
-
-                        view.fs_debounce_task = None;
-                        view.process_pending_events(cx);
-                        None
-                    });
-
-                    match remaining {
-                        Ok(Some(remaining)) => delay = remaining,
-                        _ => break,
-                    }
-                }
-            }));
+            self.schedule_pending_events(cx);
         }
+    }
+
+    /// Processes the pending events once the current burst settles.
+    fn schedule_pending_events(&mut self, cx: &mut Context<Self>) {
+        self.last_fs_event_time = Some(cx.background_executor().now());
+
+        if self.fs_debounce_task.is_some() {
+            return;
+        }
+
+        self.fs_debounce_task = Some(cx.spawn(async move |this, cx| {
+            let mut delay = FILE_SYSTEM_DEBOUNCE_INTERVAL;
+            loop {
+                cx.background_executor().timer(delay).await;
+
+                let remaining = this.update(cx, |view, cx| {
+                    let elapsed = cx.background_executor().now()
+                        - view.last_fs_event_time.expect("queued filesystem event");
+                    if elapsed < FILE_SYSTEM_DEBOUNCE_INTERVAL {
+                        return Some(FILE_SYSTEM_DEBOUNCE_INTERVAL - elapsed);
+                    }
+
+                    view.fs_debounce_task = None;
+                    view.process_pending_events(cx);
+                    None
+                });
+
+                match remaining {
+                    Ok(Some(remaining)) => delay = remaining,
+                    _ => break,
+                }
+            }
+        }));
     }
 
     /// Process pending file system events
@@ -2161,6 +2176,17 @@ impl FileTreeView {
         }
 
         self.refresh_vcs_for_file_system_changes(&vcs_changed_paths, cx);
+        if let Some(refs) = self.pending_git_metadata_change.take() {
+            // Worktree changes above already refreshed the status.
+            if vcs_changed_paths.is_empty() {
+                debug!("Git metadata changed, refreshing VCS status");
+                let vcs_handle = cx.global::<VcsServiceHandle>().service().clone();
+                vcs_handle.update(cx, |service, cx| service.refresh_now(cx));
+                self.update_entries_with_vcs_status(cx);
+            }
+            // History follows refs, which a fetch moves without changing status.
+            cx.emit(FileTreeEvent::GitMetadataChanged { refs });
+        }
         self.last_fs_event_time = None;
     }
 
