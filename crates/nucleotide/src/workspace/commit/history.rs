@@ -1,7 +1,7 @@
 //! The sidebar's History list: commits drawn as a graph, loaded a page at a
 //! time in the background. Selecting a commit shows its diff in the Commit tab
 //! with the review's side-by-side diff.
-use super::split::{DiffPart, LineHighlights, SplitDiff};
+use super::split::{DiffPart, LineHighlights, SplitDiff, split_parts};
 use super::view::MAX_VISIBLE_LINES;
 use super::*;
 use crate::diff::DiffStyle;
@@ -736,11 +736,14 @@ impl Workspace {
                     .into(),
                 )),
                 Ok(_) if unified => items.push(HistoryItem::Unified(index)),
-                Ok(diff) => items.extend(
-                    self.split_parts(&Self::history_split(index, file, diff))
-                        .into_iter()
-                        .map(|part| HistoryItem::Split(index, part)),
-                ),
+                Ok(diff) => {
+                    let split = Self::history_split(index, file, diff);
+                    items.extend(
+                        split_parts(&split, &self.split_regions(&split))
+                            .into_iter()
+                            .map(|part| HistoryItem::Split(index, part)),
+                    )
+                }
             }
         }
         items
@@ -859,12 +862,11 @@ impl Workspace {
             HistoryItem::Split(index, part) => {
                 let file = &shown.files[*index];
                 match &file.diff {
-                    Ok(diff) => self.render_split_part(
-                        Self::history_split(*index, file, diff),
-                        *part,
-                        style,
-                        cx,
-                    ),
+                    Ok(diff) => {
+                        let split = Self::history_split(*index, file, diff);
+                        let layout = self.split_layout(&split);
+                        self.render_split_part(split, &layout, *part, style, cx)
+                    }
                     Err(_) => div().into_any_element(),
                 }
             }

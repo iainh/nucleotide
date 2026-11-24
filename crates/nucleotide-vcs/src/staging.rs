@@ -146,6 +146,16 @@ impl FileChanges {
         &self.hunks
     }
 
+    /// Number of HEAD lines.
+    pub fn head_len(&self) -> u32 {
+        self.head.len()
+    }
+
+    /// Number of working-tree lines.
+    pub fn worktree_len(&self) -> u32 {
+        self.worktree.len()
+    }
+
     /// A HEAD line, including its line terminator.
     pub fn head_line(&self, line: u32) -> &[u8] {
         self.head.line(line)

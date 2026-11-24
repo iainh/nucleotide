@@ -8,6 +8,7 @@ use helix_core::syntax::{Highlight, Loader};
 use imara_diff::{Algorithm, Diff, InternedInput};
 use nucleotide_ui::theme_manager::HelixThemedContext;
 use nucleotide_vcs::staging::StagingHunk;
+use std::cell::OnceCell;
 use std::ops::Range;
 
 /// Unchanged lines shown around each change. Longer unchanged runs fold.
@@ -378,6 +379,47 @@ pub(super) struct SplitDiff<'a> {
     pub staging: Option<(usize, &'a Arc<ReviewFile>, &'a FileContent)>,
 }
 
+/// What the parts of one side-by-side diff share. The Commit review keeps it
+/// until the diff or its folds change, so parts on screen do not recompute
+/// it every frame.
+pub(super) struct SplitLayout {
+    pub regions: Vec<Region>,
+    /// Columns of the widest HEAD and newer line in any region.
+    pub widest: [u32; 2],
+    /// Word highlights of each hunk's shown lines, computed when first drawn.
+    edits: Vec<OnceCell<[LineEdits; 2]>>,
+}
+
+/// The side-by-side parts of `diff` with these `regions`, up to the line limit.
+pub(super) fn split_parts(diff: &SplitDiff, regions: &[Region]) -> Vec<DiffPart> {
+    let hunks = diff.changes.hunks();
+    let mut parts = vec![DiffPart::Titles];
+    let (mut visible, mut shown_to) = (0, 0);
+    for (index, region) in regions.iter().enumerate() {
+        if visible >= MAX_VISIBLE_LINES {
+            parts.push(DiffPart::Limited);
+            return parts;
+        }
+        parts.push(DiffPart::Region {
+            index,
+            shown_from: shown_to,
+            visible,
+        });
+        for hunk in &hunks[region.hunks.clone()] {
+            visible += hunk.before.len() + hunk.after.len();
+            if visible > MAX_VISIBLE_LINES {
+                parts.push(DiffPart::Limited);
+                return parts;
+            }
+        }
+        shown_to = region.old.end;
+    }
+    if diff.old_len > shown_to {
+        parts.push(DiffPart::Tail { from: shown_to });
+    }
+    parts
+}
+
 impl Workspace {
     pub(super) fn split_regions(&self, diff: &SplitDiff) -> Vec<Region> {
         regions(diff.changes.hunks(), diff.old_len, |line| {
@@ -387,34 +429,21 @@ impl Workspace {
         })
     }
 
-    /// The side-by-side parts of `diff`, up to the line limit.
-    pub(super) fn split_parts(&self, diff: &SplitDiff) -> Vec<DiffPart> {
-        let hunks = diff.changes.hunks();
-        let mut parts = vec![DiffPart::Titles];
-        let (mut visible, mut shown_to) = (0, 0);
-        for (index, region) in self.split_regions(diff).iter().enumerate() {
-            if visible >= MAX_VISIBLE_LINES {
-                parts.push(DiffPart::Limited);
-                return parts;
-            }
-            parts.push(DiffPart::Region {
-                index,
-                shown_from: shown_to,
-                visible,
-            });
-            for hunk in &hunks[region.hunks.clone()] {
-                visible += hunk.before.len() + hunk.after.len();
-                if visible > MAX_VISIBLE_LINES {
-                    parts.push(DiffPart::Limited);
-                    return parts;
-                }
-            }
-            shown_to = region.old.end;
+    pub(super) fn split_layout(&self, diff: &SplitDiff) -> SplitLayout {
+        let regions = self.split_regions(diff);
+        SplitLayout {
+            widest: widest(
+                diff.changes,
+                regions.iter().map(|r| (r.old.clone(), r.new.clone())),
+            ),
+            edits: diff
+                .changes
+                .hunks()
+                .iter()
+                .map(|_| OnceCell::new())
+                .collect(),
+            regions,
         }
-        if diff.old_len > shown_to {
-            parts.push(DiffPart::Tail { from: shown_to });
-        }
-        parts
     }
 
     /// The scroll handles a diff's parts share, one per column.
@@ -442,6 +471,7 @@ impl Workspace {
     pub(super) fn render_split_part(
         &mut self,
         diff: SplitDiff,
+        layout: &SplitLayout,
         part: DiffPart,
         style: &DiffStyle,
         cx: &mut Context<Self>,
@@ -498,16 +528,9 @@ impl Workspace {
         };
         let hunks = diff.changes.hunks();
         let fold_key = |line| (diff.path.to_path_buf(), diff.staged, line);
-        let regions = self.split_regions(&diff);
+        let regions = &layout.regions;
         let scroll = self.diff_scroll(&diff.id);
-        let widths = Self::columns_width(
-            widest(
-                diff.changes,
-                regions.iter().map(|r| (r.old.clone(), r.new.clone())),
-            ),
-            style,
-            cx,
-        );
+        let widths = Self::columns_width(layout.widest, style, cx);
         // Lines and hunks stay clickable while a stage runs; clicks queue behind it.
         let locked = self.commit_review.operation.is_some();
 
@@ -669,17 +692,19 @@ impl Workspace {
                         lines[1].iter().map(|&n| line_of(1, n)).collect(),
                     ];
                     // Whole-line insertions and deletions need no word highlights.
-                    let edits = if texts[0].is_empty() || texts[1].is_empty() {
-                        [
-                            vec![Vec::new(); texts[0].len()],
-                            vec![Vec::new(); texts[1].len()],
-                        ]
-                    } else {
-                        let refs = texts
-                            .each_ref()
-                            .map(|t| t.iter().map(String::as_str).collect::<Vec<_>>());
-                        word_edits(&refs[0], &refs[1])
-                    };
+                    let edits = layout.edits[hunk_index].get_or_init(|| {
+                        if texts[0].is_empty() || texts[1].is_empty() {
+                            [
+                                vec![Vec::new(); texts[0].len()],
+                                vec![Vec::new(); texts[1].len()],
+                            ]
+                        } else {
+                            let refs = texts
+                                .each_ref()
+                                .map(|t| t.iter().map(String::as_str).collect::<Vec<_>>());
+                            word_edits(&refs[0], &refs[1])
+                        }
+                    });
                     let start = [sides[0].code.len(), sides[1].code.len()];
                     for side in 0..2 {
                         if lines[side].is_empty() {

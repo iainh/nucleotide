@@ -84,8 +84,10 @@ pub(super) struct CommitReview {
     scrolls: HashMap<String, [gpui::ScrollHandle; 2]>,
     /// The list item holding each working-tree hunk of the shown file.
     hunk_items: Vec<usize>,
-    /// The items and row height the list last measured.
-    laid_out: (Vec<view::ReviewItem>, Pixels),
+    /// The shown file's diff list, a view of its own so other edits don't redraw it.
+    list: Option<Entity<view::ReviewList>>,
+    /// The shown file's layout and the row height the list last measured.
+    laid_out: Option<(std::rc::Rc<view::ReviewLayout>, Pixels)>,
     /// The right-click menu of a changed file, or of one of its hunks.
     menu: ContextMenuController,
     menu_target: Option<(Arc<ReviewFile>, Option<usize>)>,
@@ -202,6 +204,8 @@ struct ReviewFile {
     preview: Option<Preview>,
     /// The state of a queued whole-file change, shown until the index holds it.
     shown: Option<SelectionState>,
+    /// What `state` returns, computed once because it walks every changed line.
+    state: std::sync::OnceLock<SelectionState>,
 }
 
 struct Preview {
@@ -263,25 +267,27 @@ struct FileContent {
 
 impl ReviewFile {
     fn state(&self) -> SelectionState {
-        if let Some(state) = self.shown {
-            return state;
-        }
-        if let Ok(content) = &self.content
-            && let Some(selection) = &content.selection
-            && !content.changes.hunks().is_empty()
-        {
-            return content.changes.selection_state(selection);
-        }
-        if matches!(
-            self.entry.index_status,
-            Status::Unmodified | Status::Untracked
-        ) {
-            SelectionState::Unstaged
-        } else if self.entry.working_tree_status == Status::Unmodified && !self.unsaved {
-            SelectionState::Staged
-        } else {
-            SelectionState::Partial
-        }
+        *self.state.get_or_init(|| {
+            if let Some(state) = self.shown {
+                return state;
+            }
+            if let Ok(content) = &self.content
+                && let Some(selection) = &content.selection
+                && !content.changes.hunks().is_empty()
+            {
+                return content.changes.selection_state(selection);
+            }
+            if matches!(
+                self.entry.index_status,
+                Status::Unmodified | Status::Untracked
+            ) {
+                SelectionState::Unstaged
+            } else if self.entry.working_tree_status == Status::Unmodified && !self.unsaved {
+                SelectionState::Staged
+            } else {
+                SelectionState::Partial
+            }
+        })
     }
 
     /// This file as shown once `target` is staged, before the index holds it.
@@ -305,6 +311,7 @@ impl ReviewFile {
             content,
             preview: None,
             shown,
+            state: Default::default(),
         })
     }
 
@@ -622,6 +629,7 @@ async fn load_review(
             content,
             preview,
             shown: None,
+            state: Default::default(),
         }));
     }
     if repository.index_signature().await? != index_signature

@@ -30,7 +30,7 @@ pub(crate) fn expand_tabs(line: &str) -> String {
     out
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub(crate) struct DiffStyle {
     pub font_family: SharedString,
     pub font_size: Pixels,

@@ -211,6 +211,7 @@ fn review_matches_status_in_git_order() {
             content: Err(String::new()),
             preview: None,
             shown: None,
+            state: Default::default(),
         })
     };
     let modified = entry("src/x", Status::Unmodified, Status::Modified);
