@@ -16,7 +16,6 @@ use helix_core::{
 use helix_view::{
     Document, Theme, ViewId,
     graphics::{CursorKind, Style},
-    view::ViewPosition,
 };
 use nucleotide_logging::error;
 
@@ -214,7 +213,6 @@ pub struct EditorCursorPresentation {
 pub struct EditorCursorPresentationParams<'a> {
     pub document: &'a Document,
     pub view_id: ViewId,
-    pub view_position: ViewPosition,
     pub kind: CursorKind,
     pub cursor_style: Style,
     pub theme: &'a Theme,
@@ -234,7 +232,6 @@ pub fn editor_cursor_presentation(
         .cursor(text);
     let text_style_at_cursor = text_style_at_position(
         params.document,
-        params.view_position,
         params.theme,
         params.syntax_loader,
         cursor_char_idx,

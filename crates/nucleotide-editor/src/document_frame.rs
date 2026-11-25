@@ -129,7 +129,6 @@ pub fn editor_document_frame(params: EditorDocumentFrameParams<'_>) -> EditorDoc
     let cursor_presentation = editor_cursor_presentation(EditorCursorPresentationParams {
         document: params.document,
         view_id: params.view_id,
-        view_position: params.view_position,
         kind: params.cursor_kind,
         cursor_style: params.cursor_style,
         theme: params.theme,

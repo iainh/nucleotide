@@ -344,17 +344,19 @@ fn tabstop_highlights(doc: &Document, theme: &Theme) -> Option<OverlayHighlights
     Some(OverlayHighlights::Homogeneous { highlight, ranges })
 }
 
+/// The syntax style at `position`, highlighting only the line that contains it, so the cost
+/// does not grow with the distance between the viewport and the position.
 pub fn text_style_at_position(
     doc: &Document,
-    view_position: ViewPosition,
     theme: &Theme,
     syntax_loader: &helix_core::syntax::Loader,
     position: usize,
 ) -> Style {
     let text = doc.text().slice(..);
-    let (anchor, height) = syntax_highlight_window(text, view_position);
+    let line = text.char_to_line(position.min(text.len_chars()));
+    let line_start = text.line_to_char(line);
 
-    let syntax_highlighter = doc_syntax_highlights(doc, anchor, height, syntax_loader);
+    let syntax_highlighter = doc_syntax_highlights(doc, line_start, 1, syntax_loader);
 
     let default_style = theme.get("ui.text");
     let text_style = Style {
