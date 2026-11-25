@@ -617,125 +617,125 @@ impl DocumentView {
         Some(snapshot)
     }
 
-    fn runnable_tasks_by_line(&mut self, cx: &mut Context<Self>) -> BTreeMap<usize, ResolvedTask> {
+    /// Gutter run buttons for the document, discovered in the background.
+    ///
+    /// Until discovery for the current version finishes, this returns the tasks found for an
+    /// earlier version of the same document, so typing never waits on a rescan.
+    fn runnable_tasks_by_line(&mut self, cx: &mut Context<Self>) -> RunnableTasksByLine {
         let Some(snapshot) = runnable_document_snapshot(&self.core, self.view_id, cx) else {
             self.runnable_tasks_cache = None;
             self.runnable_tasks_pending = None;
-            return BTreeMap::new();
+            return RunnableTasksByLine::default();
         };
 
-        if self
+        if let Some(cache) = self
             .runnable_tasks_cache
             .as_ref()
-            .is_some_and(|cache| cache.matches_snapshot(&snapshot))
+            .filter(|cache| cache.matches_snapshot(&snapshot))
         {
-            return self
-                .runnable_tasks_cache
-                .as_ref()
-                .map(|cache| cache.tasks_by_line.clone())
-                .unwrap_or_default();
+            return cache.tasks_by_line.clone();
         }
 
-        let workspace_backend = self.core.read(cx).workspace_backend.clone();
-        if matches!(workspace_backend.identity(), WorkspaceIdentity::Remote(_)) {
-            return self.remote_runnable_tasks_by_line(snapshot, workspace_backend, cx);
-        }
-
-        let document = {
-            let core = self.core.read(cx);
-            let Some(doc) = core.editor.documents.get(&snapshot.doc_id) else {
-                self.runnable_tasks_cache = None;
-                self.runnable_tasks_pending = None;
-                return BTreeMap::new();
-            };
-
-            crate::runnables::RunnableDocument {
-                path: snapshot.path.clone(),
-                text: String::from(doc.text().slice(..)),
-                cursor_line: 0,
-                project_root: None,
-            }
-        };
-
-        let tasks_by_line = runnable_tasks_by_line_from_tasks(
-            crate::runnables::discover_local_rust_runnables(&document),
-        );
-
-        self.runnable_tasks_cache = Some(RunnableTasksCache {
-            doc_id: snapshot.doc_id,
-            version: snapshot.version,
-            path: snapshot.path,
-            tasks_by_line: tasks_by_line.clone(),
-        });
-        self.runnable_tasks_pending = None;
-
-        tasks_by_line
-    }
-
-    fn remote_runnable_tasks_by_line(
-        &mut self,
-        snapshot: RunnableDocumentSnapshot,
-        workspace_backend: WorkspaceBackendHandle,
-        cx: &mut Context<Self>,
-    ) -> BTreeMap<usize, ResolvedTask> {
+        let cached_tasks =
+            cached_runnable_tasks_for_document(self.runnable_tasks_cache.as_ref(), &snapshot);
         if self
             .runnable_tasks_pending
             .as_ref()
             .is_some_and(|pending| pending.matches_snapshot(&snapshot))
         {
-            return cached_runnable_tasks_for_document(
-                self.runnable_tasks_cache.as_ref(),
-                &snapshot,
-            );
+            return cached_tasks;
         }
 
-        let document = {
+        let (text, workspace_backend) = {
             let core = self.core.read(cx);
             let Some(doc) = core.editor.documents.get(&snapshot.doc_id) else {
                 self.runnable_tasks_cache = None;
                 self.runnable_tasks_pending = None;
-                return BTreeMap::new();
+                return RunnableTasksByLine::default();
             };
-
-            crate::runnables::RunnableDocument {
-                path: snapshot.path.clone(),
-                text: String::from(doc.text().slice(..)),
-                cursor_line: 0,
-                project_root: None,
-            }
+            // Cloning a rope is O(1); the text is flattened off the UI thread.
+            (doc.text().clone(), core.workspace_backend.clone())
+        };
+        let remote_runtime = if matches!(workspace_backend.identity(), WorkspaceIdentity::Remote(_))
+        {
+            let Ok(runtime_handle) = tokio::runtime::Handle::try_current() else {
+                self.runnable_tasks_cache = None;
+                self.runnable_tasks_pending = None;
+                return RunnableTasksByLine::default();
+            };
+            Some(runtime_handle)
+        } else {
+            None
         };
 
-        let Ok(runtime_handle) = tokio::runtime::Handle::try_current() else {
-            self.runnable_tasks_cache = None;
-            self.runnable_tasks_pending = None;
-            return BTreeMap::new();
-        };
-
+        // Rescan after edits only once typing pauses; the first scan of a document runs now.
+        let debounce = self
+            .runnable_tasks_cache
+            .as_ref()
+            .is_some_and(|cache| cache.matches_document(&snapshot));
         self.runnable_tasks_pending = Some(RunnableTasksPending {
             doc_id: snapshot.doc_id,
             version: snapshot.version,
             path: snapshot.path.clone(),
         });
-        let cached_tasks =
-            cached_runnable_tasks_for_document(self.runnable_tasks_cache.as_ref(), &snapshot);
 
         cx.spawn(async move |this, cx| {
-            let task_snapshot = snapshot.clone();
-            let tasks_by_line = match runtime_handle
-                .spawn(remote_runnable_tasks_by_line_from_backend(
-                    workspace_backend,
-                    document,
-                ))
-                .await
-            {
-                Ok(tasks) => tasks,
-                Err(error) => {
-                    nucleotide_logging::warn!(
-                        error = %error,
-                        "Remote gutter runnable discovery task failed"
-                    );
-                    BTreeMap::new()
+            let still_pending = |this: &gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                this.upgrade().is_some_and(|this| {
+                    this.read_with(cx, |view, _| {
+                        view.runnable_tasks_pending
+                            .as_ref()
+                            .is_some_and(|pending| pending.matches_snapshot(&snapshot))
+                    })
+                })
+            };
+            if debounce {
+                cx.background_executor()
+                    .timer(RUNNABLE_DISCOVERY_DEBOUNCE)
+                    .await;
+                if !still_pending(&this, cx) {
+                    return;
                 }
+            }
+
+            let path = snapshot.path.clone();
+            let document = cx
+                .background_executor()
+                .spawn(async move {
+                    crate::runnables::RunnableDocument {
+                        path,
+                        text: String::from(text.slice(..)),
+                        cursor_line: 0,
+                        project_root: None,
+                    }
+                })
+                .await;
+            let tasks_by_line = if let Some(runtime_handle) = remote_runtime {
+                match runtime_handle
+                    .spawn(remote_runnable_tasks_by_line_from_backend(
+                        workspace_backend,
+                        document,
+                    ))
+                    .await
+                {
+                    Ok(tasks) => tasks,
+                    Err(error) => {
+                        nucleotide_logging::warn!(
+                            error = %error,
+                            "Remote gutter runnable discovery task failed"
+                        );
+                        BTreeMap::new()
+                    }
+                }
+            } else {
+                // Cargo root lookup stats parent directories, so keep it off the UI thread too.
+                cx.background_executor()
+                    .spawn(async move {
+                        runnable_tasks_by_line_from_tasks(
+                            crate::runnables::discover_local_rust_runnables(&document),
+                        )
+                    })
+                    .await
             };
 
             if let Some(this) = this.upgrade() {
@@ -743,13 +743,13 @@ impl DocumentView {
                     if view
                         .runnable_tasks_pending
                         .as_ref()
-                        .is_some_and(|pending| pending.matches_snapshot(&task_snapshot))
+                        .is_some_and(|pending| pending.matches_snapshot(&snapshot))
                     {
                         view.runnable_tasks_cache = Some(RunnableTasksCache {
-                            doc_id: task_snapshot.doc_id,
-                            version: task_snapshot.version,
-                            path: task_snapshot.path,
-                            tasks_by_line,
+                            doc_id: snapshot.doc_id,
+                            version: snapshot.version,
+                            path: snapshot.path,
+                            tasks_by_line: Rc::new(tasks_by_line),
                         });
                         view.runnable_tasks_pending = None;
                         cx.notify();
@@ -1090,7 +1090,7 @@ struct RunnableTasksCache {
     doc_id: DocumentId,
     version: i32,
     path: PathBuf,
-    tasks_by_line: BTreeMap<usize, ResolvedTask>,
+    tasks_by_line: RunnableTasksByLine,
 }
 
 impl RunnableTasksCache {
@@ -1117,10 +1117,16 @@ impl RunnableTasksPending {
     }
 }
 
+/// Run tasks keyed by line, shared between renders without copying.
+type RunnableTasksByLine = Rc<BTreeMap<usize, ResolvedTask>>;
+
+/// How long typing must pause before an edited document is rescanned for run buttons.
+const RUNNABLE_DISCOVERY_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(250);
+
 fn cached_runnable_tasks_for_document(
     cache: Option<&RunnableTasksCache>,
     snapshot: &RunnableDocumentSnapshot,
-) -> BTreeMap<usize, ResolvedTask> {
+) -> RunnableTasksByLine {
     cache
         .filter(|cache| cache.matches_document(snapshot))
         .map(|cache| cache.tasks_by_line.clone())
@@ -1959,7 +1965,7 @@ mod tests {
             doc_id,
             version: 1,
             path: path.clone(),
-            tasks_by_line: BTreeMap::from([(7, task.clone())]),
+            tasks_by_line: Rc::new(BTreeMap::from([(7, task.clone())])),
         };
         let edited_snapshot = RunnableDocumentSnapshot {
             doc_id,
@@ -1968,7 +1974,7 @@ mod tests {
         };
 
         assert_eq!(
-            cached_runnable_tasks_for_document(Some(&cache), &edited_snapshot),
+            *cached_runnable_tasks_for_document(Some(&cache), &edited_snapshot),
             BTreeMap::from([(7, task)])
         );
     }
@@ -1979,7 +1985,7 @@ mod tests {
             doc_id: DocumentId::default(),
             version: 1,
             path: PathBuf::from("src/main.rs"),
-            tasks_by_line: BTreeMap::from([(7, test_task("Run Test sample", 7, &[]))]),
+            tasks_by_line: Rc::new(BTreeMap::from([(7, test_task("Run Test sample", 7, &[]))])),
         };
         let other_snapshot = RunnableDocumentSnapshot {
             doc_id: DocumentId::default(),
