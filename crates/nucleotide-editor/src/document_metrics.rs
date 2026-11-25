@@ -353,6 +353,65 @@ impl EditorDocumentMetricsCache {
     pub fn stats(&self) -> EditorDocumentMetricsCacheStats {
         self.stats
     }
+
+    /// Per-line visual rows from the latest `resolve`, when it measured this version of
+    /// `document` with this layout, so callers can find a line's visual row without
+    /// formatting the text above it.
+    pub(crate) fn line_visual_rows(
+        &self,
+        document: &Document,
+        view: &helix_view::View,
+        text_format: &TextFormat,
+    ) -> Option<EditorLineVisualRows<'_>> {
+        let cached = self.entries.first()?;
+        let text = document.text();
+        let matches = cached.key.document_id == document.id()
+            && cached.key.document_version == document.version()
+            && cached.key.text_len == text.len_chars()
+            && cached.key.reserved_rows
+                == view
+                    .reserved_rows
+                    .and_then(|reserved| reserved.active_for(document))
+            && cached.key.text_format == EditorTextFormatCacheKey::from(text_format)
+            && !cached.pending_incremental_update
+            && cached.line_metrics.len() == text.len_lines()
+            && cached.line_metrics.iter().all(Option::is_some);
+        matches.then_some(EditorLineVisualRows {
+            lines: &cached.line_metrics,
+        })
+    }
+}
+
+/// The visual rows each document line takes in one measured layout, including the virtual
+/// rows after it, so the rows of the lines before a line add up to its first visual row.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct EditorLineVisualRows<'a> {
+    lines: &'a [Option<EditorLineMetrics>],
+}
+
+impl EditorLineVisualRows<'_> {
+    fn rows(line: &Option<EditorLineMetrics>) -> usize {
+        line.map_or(1, |line| line.visual_rows)
+    }
+
+    /// The visual row where document line `line_idx` starts.
+    pub(crate) fn line_start_row(&self, line_idx: usize) -> usize {
+        self.lines.iter().take(line_idx).map(Self::rows).sum()
+    }
+
+    /// The document line containing `visual_row` and the row where that line starts.
+    /// Rows past the end belong to the last line.
+    pub(crate) fn line_at_row(&self, visual_row: usize) -> (usize, usize) {
+        let mut start_row = 0;
+        for (line_idx, line) in self.lines.iter().enumerate() {
+            let rows = Self::rows(line);
+            if visual_row < start_row + rows || line_idx + 1 == self.lines.len() {
+                return (line_idx, start_row);
+            }
+            start_row += rows;
+        }
+        (0, 0)
+    }
 }
 
 fn metrics_layout_matches(

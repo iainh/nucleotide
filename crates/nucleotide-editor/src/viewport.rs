@@ -21,7 +21,8 @@ use nucleotide_logging::{PerfTimer, trace};
 
 use crate::{
     EDITOR_MINIMUM_VIEWPORT_COLUMNS, EditorDocumentMetrics, EditorDocumentMetricsCache,
-    EditorDocumentMetricsCacheResolveParams, ScrollManager, soft_wrap_visual_position,
+    EditorDocumentMetricsCacheResolveParams, ScrollManager, document_metrics::EditorLineVisualRows,
+    soft_wrap_visual_position,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -750,12 +751,15 @@ impl EditorViewport {
             .borrow_mut()
             .record_helix_snapshot_visual_scan();
         let annotations = view.text_annotations(document, None);
-        let snapshot = helix_viewport_snapshot(
+        let metrics_cache = self.document_metrics_cache.borrow();
+        let snapshot = helix_viewport_snapshot_with_line_rows(
             document.text().slice(..),
             view_position,
             text_format,
             &annotations,
+            metrics_cache.line_visual_rows(document, view, text_format),
         );
+        drop(metrics_cache);
         self.conversion_cache
             .borrow_mut()
             .store_helix_snapshot(key, snapshot);
@@ -1091,14 +1095,17 @@ impl EditorViewport {
             .borrow_mut()
             .record_view_position_char_scan();
         let annotations = view.text_annotations(document, None);
-        let plan = view_position_plan_for_top_visual_row(
+        let metrics_cache = self.document_metrics_cache.borrow();
+        let plan = view_position_plan_for_top_visual_row_with_line_rows(
             document.text().slice(..),
             previous_view_position,
             top_visual_row,
             horizontal_offset,
             text_format,
             &annotations,
+            metrics_cache.line_visual_rows(document, view, text_format),
         );
+        drop(metrics_cache);
         self.conversion_cache
             .borrow_mut()
             .store_view_position_plan(key, plan);
@@ -1161,8 +1168,15 @@ impl EditorViewport {
         self.conversion_cache
             .borrow_mut()
             .record_cursor_visual_row_scan();
-        let visual_row =
-            document_cursor_visual_row_for_cursor(document, view, text_format, cursor_char_idx);
+        let metrics_cache = self.document_metrics_cache.borrow();
+        let visual_row = document_cursor_visual_row_for_cursor(
+            document,
+            view,
+            text_format,
+            cursor_char_idx,
+            metrics_cache.line_visual_rows(document, view, text_format),
+        );
+        drop(metrics_cache);
         self.conversion_cache
             .borrow_mut()
             .store_cursor_visual_row(key, visual_row);
@@ -1342,17 +1356,71 @@ fn helix_viewport_snapshot_for_synced_plan(
     }
 }
 
+/// The visual row of `char_idx`, counted from the start of the document.
+///
+/// With measured per-line rows, this formats only the line containing `char_idx`;
+/// otherwise it formats everything from the document start.
+fn visual_row_at_char(
+    text: RopeSlice<'_>,
+    char_idx: usize,
+    text_format: &TextFormat,
+    annotations: &TextAnnotations<'_>,
+    line_rows: Option<EditorLineVisualRows<'_>>,
+) -> usize {
+    let (block_start, block_row) = line_rows.map_or((0, 0), |line_rows| {
+        let line = text.char_to_line(char_idx.min(text.len_chars()));
+        (text.line_to_char(line), line_rows.line_start_row(line))
+    });
+    block_row
+        + visual_offset_from_block(text, block_start, char_idx, text_format, annotations)
+            .0
+            .row
+}
+
+/// The character at the start of `visual_row` and the virtual rows past it, as
+/// `char_idx_at_visual_offset` reports them from the document start.
+///
+/// With measured per-line rows, this formats only the line containing the row.
+fn char_at_visual_row(
+    text: RopeSlice<'_>,
+    visual_row: usize,
+    text_format: &TextFormat,
+    annotations: &TextAnnotations<'_>,
+    line_rows: Option<EditorLineVisualRows<'_>>,
+) -> (usize, usize) {
+    let (block_start, block_row) = line_rows.map_or((0, 0), |line_rows| {
+        let (line, start_row) = line_rows.line_at_row(visual_row);
+        (text.line_to_char(line), start_row)
+    });
+    char_idx_at_visual_offset(
+        text,
+        block_start,
+        isize::try_from(visual_row - block_row).unwrap_or(isize::MAX),
+        0,
+        text_format,
+        annotations,
+    )
+}
+
 pub fn helix_viewport_snapshot(
     text: RopeSlice<'_>,
     view_offset: ViewPosition,
     text_format: &TextFormat,
     annotations: &TextAnnotations<'_>,
 ) -> HelixViewportSnapshot {
+    helix_viewport_snapshot_with_line_rows(text, view_offset, text_format, annotations, None)
+}
+
+fn helix_viewport_snapshot_with_line_rows(
+    text: RopeSlice<'_>,
+    view_offset: ViewPosition,
+    text_format: &TextFormat,
+    annotations: &TextAnnotations<'_>,
+    line_rows: Option<EditorLineVisualRows<'_>>,
+) -> HelixViewportSnapshot {
     let anchor = view_offset.anchor.min(text.len_chars());
     let anchor_line = text.char_to_line(anchor);
-    let anchor_visual_row = visual_offset_from_block(text, 0, anchor, text_format, annotations)
-        .0
-        .row;
+    let anchor_visual_row = visual_row_at_char(text, anchor, text_format, annotations, line_rows);
     let top_visual_row = anchor_visual_row.saturating_add(view_offset.vertical_offset);
 
     HelixViewportSnapshot {
@@ -1369,14 +1437,26 @@ pub fn view_position_for_top_visual_row(
     text_format: &TextFormat,
     annotations: &TextAnnotations<'_>,
 ) -> ViewPosition {
-    let (anchor, vertical_offset) = char_idx_at_visual_offset(
+    view_position_for_top_visual_row_with_line_rows(
         text,
-        0,
-        isize::try_from(top_visual_row).unwrap_or(isize::MAX),
-        0,
+        top_visual_row,
+        horizontal_offset,
         text_format,
         annotations,
-    );
+        None,
+    )
+}
+
+fn view_position_for_top_visual_row_with_line_rows(
+    text: RopeSlice<'_>,
+    top_visual_row: usize,
+    horizontal_offset: usize,
+    text_format: &TextFormat,
+    annotations: &TextAnnotations<'_>,
+    line_rows: Option<EditorLineVisualRows<'_>>,
+) -> ViewPosition {
+    let (anchor, vertical_offset) =
+        char_at_visual_row(text, top_visual_row, text_format, annotations, line_rows);
 
     ViewPosition {
         anchor,
@@ -1397,12 +1477,33 @@ pub fn view_position_plan_for_top_visual_row(
     text_format: &TextFormat,
     annotations: &TextAnnotations<'_>,
 ) -> EditorViewportViewPositionPlan {
-    let view_position = view_position_for_top_visual_row(
+    view_position_plan_for_top_visual_row_with_line_rows(
+        text,
+        previous_view_position,
+        top_visual_row,
+        horizontal_offset,
+        text_format,
+        annotations,
+        None,
+    )
+}
+
+fn view_position_plan_for_top_visual_row_with_line_rows(
+    text: RopeSlice<'_>,
+    previous_view_position: ViewPosition,
+    top_visual_row: usize,
+    horizontal_offset: usize,
+    text_format: &TextFormat,
+    annotations: &TextAnnotations<'_>,
+    line_rows: Option<EditorLineVisualRows<'_>>,
+) -> EditorViewportViewPositionPlan {
+    let view_position = view_position_for_top_visual_row_with_line_rows(
         text,
         top_visual_row,
         horizontal_offset,
         text_format,
         annotations,
+        line_rows,
     );
 
     EditorViewportViewPositionPlan {
@@ -1434,7 +1535,7 @@ pub fn document_cursor_visual_row(
 ) -> usize {
     let text = document.text().slice(..);
     let cursor_char_idx = document.selection(view_id).primary().cursor(text);
-    document_cursor_visual_row_for_cursor(document, view, text_format, cursor_char_idx)
+    document_cursor_visual_row_for_cursor(document, view, text_format, cursor_char_idx, None)
 }
 
 fn document_cursor_visual_row_for_cursor(
@@ -1442,6 +1543,7 @@ fn document_cursor_visual_row_for_cursor(
     view: &helix_view::View,
     text_format: &TextFormat,
     cursor_char_idx: usize,
+    line_rows: Option<EditorLineVisualRows<'_>>,
 ) -> usize {
     let text = document.text().slice(..);
     let cursor_at_trailing_newline = cursor_char_idx == text.len_chars()
@@ -1459,9 +1561,7 @@ fn document_cursor_visual_row_for_cursor(
         };
     }
 
-    visual_offset_from_block(text, 0, cursor_char_idx, text_format, &annotations)
-        .0
-        .row
+    visual_row_at_char(text, cursor_char_idx, text_format, &annotations, line_rows)
 }
 
 #[cfg(test)]
@@ -2506,6 +2606,96 @@ mod tests {
 
         assert_eq!(snapshot.anchor_line, 1);
         assert!(snapshot.top_visual_row >= snapshot.anchor_line + 2);
+    }
+
+    #[test]
+    fn measured_line_rows_match_conversions_from_document_start() {
+        let text =
+            "short\na line long enough to wrap several times over\n\nwrapped again here\nend\n";
+        for soft_wrap in [false, true] {
+            let mut config = Config::default();
+            config.soft_wrap.enable = Some(soft_wrap);
+            let config = Arc::new(ArcSwap::new(Arc::new(config)));
+            let syntax_loader = Arc::new(ArcSwap::from_pointee(syntax::Loader::default()));
+            let document = Document::from(Rope::from(text), None, config, syntax_loader);
+            let mut view = View::new(DocumentId::default(), GutterConfig::default());
+            let mut document = document;
+            document.ensure_view_init(view.id);
+            // Virtual rows after line 2 check that rows inside them map the same way.
+            view.reserved_rows = Some(ReservedRows {
+                doc: document.id(),
+                doc_version: document.version(),
+                line: 2,
+                rows: 3,
+            });
+
+            let mut cache = EditorDocumentMetricsCache::default();
+            let metrics = cache.resolve(EditorDocumentMetricsCacheResolveParams {
+                document: &document,
+                view: &view,
+                theme: None,
+                bounds: Bounds::new(point(px(0.0), px(0.0)), size(px(120.0), px(400.0))),
+                gutter_columns: 0,
+                cell_width: px(8.0),
+                minimum_columns: 1,
+            });
+            let text_format = metrics.text_format.clone();
+            let line_rows = cache
+                .line_visual_rows(&document, &view, &text_format)
+                .expect("resolve measured this document");
+            let annotations = view.text_annotations(&document, None);
+            let rope = document.text().slice(..);
+            if soft_wrap {
+                assert!(
+                    metrics.visual_rows > rope.len_lines() + 3,
+                    "lines should wrap"
+                );
+            }
+
+            for char_idx in 0..=rope.len_chars() {
+                assert_eq!(
+                    visual_row_at_char(rope, char_idx, &text_format, &annotations, Some(line_rows)),
+                    visual_row_at_char(rope, char_idx, &text_format, &annotations, None),
+                    "visual row of char {char_idx}, soft wrap {soft_wrap}"
+                );
+            }
+            for row in 0..metrics.visual_rows + 3 {
+                assert_eq!(
+                    char_at_visual_row(rope, row, &text_format, &annotations, Some(line_rows)),
+                    char_at_visual_row(rope, row, &text_format, &annotations, None),
+                    "char at visual row {row}, soft wrap {soft_wrap}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn measured_line_rows_are_unavailable_after_an_edit() {
+        let (mut document, view) = test_document_and_view("one\ntwo\nthree\n");
+        let mut cache = EditorDocumentMetricsCache::default();
+        let metrics = cache.resolve(EditorDocumentMetricsCacheResolveParams {
+            document: &document,
+            view: &view,
+            theme: None,
+            bounds: Bounds::new(point(px(0.0), px(0.0)), size(px(400.0), px(400.0))),
+            gutter_columns: 0,
+            cell_width: px(8.0),
+            minimum_columns: 1,
+        });
+        assert!(
+            cache
+                .line_visual_rows(&document, &view, &metrics.text_format)
+                .is_some()
+        );
+
+        let transaction = Transaction::insert(document.text(), &Selection::point(0), "\n".into());
+        document.apply(&transaction, view.id);
+
+        assert!(
+            cache
+                .line_visual_rows(&document, &view, &metrics.text_format)
+                .is_none()
+        );
     }
 
     #[test]

@@ -3,7 +3,7 @@ use std::{fmt::Write as _, hint::black_box, sync::Arc};
 use arc_swap::ArcSwap;
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use gpui::{Bounds, Font, Hsla, black, font, point, px, size, white};
-use helix_core::{Rope, Selection, syntax};
+use helix_core::{Rope, Selection, Transaction, syntax};
 use helix_view::{
     Document, DocumentId, Theme, View, ViewId,
     document::Mode,
@@ -233,9 +233,9 @@ struct ViewportFixture {
 }
 
 impl ViewportFixture {
-    fn new(line_count: usize, line_len: usize) -> Self {
+    fn new(line_count: usize, line_len: usize, soft_wrap: bool) -> Self {
         let text = generated_document_text(line_count, line_len);
-        let (mut document, mut view, view_id) = document_for_text(&text, true);
+        let (mut document, mut view, view_id) = document_for_text(&text, soft_wrap);
         let theme = ThemeLoader::new(&[]).default_theme(true);
         let bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(480.0), px(960.0)));
         let cell_width = px(8.0);
@@ -295,6 +295,36 @@ impl ViewportFixture {
         )
     }
 
+    /// Types one character at the cursor and reveals it, as a keystroke does.
+    fn type_at_cursor(&mut self) -> nucleotide_editor::EditorViewportSurfaceUpdate {
+        let cursor = self
+            .document
+            .selection(self.view_id)
+            .primary()
+            .cursor(self.document.text().slice(..));
+        let line = self.document.text().char_to_line(cursor);
+        let transaction =
+            Transaction::insert(self.document.text(), &Selection::point(cursor), "x".into());
+        self.document.apply(&transaction, self.view_id);
+        // The app reports the edited lines to the metrics cache, as here.
+        self.viewport
+            .invalidate_document_lines(self.document.id(), line..line + 1, line..line + 1);
+
+        self.viewport.sync_surface_layout_for_view(
+            &mut self.document,
+            &mut self.view,
+            self.view_id,
+            EditorViewportSurfaceLayout::for_editor(
+                Some(&self.theme),
+                self.bounds,
+                self.cell_width,
+                self.line_height,
+                5,
+                Some(EditorCursorReveal::Scrolloff),
+            ),
+        )
+    }
+
     fn reveal_cursor_at_line(
         &mut self,
         line_idx: usize,
@@ -345,7 +375,7 @@ fn bench_soft_wrap_viewport_sync(c: &mut Criterion) {
     group.bench_function("soft_wrap_deep_scroll", |b| {
         b.iter_batched(
             || {
-                let fixture = ViewportFixture::new(LARGE_LINE_COUNT, LONG_LINE_LEN);
+                let fixture = ViewportFixture::new(LARGE_LINE_COUNT, LONG_LINE_LEN, true);
                 (fixture, LARGE_LINE_COUNT / 2)
             },
             |(mut fixture, mut row)| {
@@ -372,7 +402,7 @@ fn bench_cursor_reveal_viewport_sync(c: &mut Criterion) {
         b.iter_batched(
             || {
                 (
-                    ViewportFixture::new(LARGE_LINE_COUNT, LONG_LINE_LEN),
+                    ViewportFixture::new(LARGE_LINE_COUNT, LONG_LINE_LEN, true),
                     LARGE_LINE_COUNT / 2,
                 )
             },
@@ -389,7 +419,7 @@ fn bench_cursor_reveal_viewport_sync(c: &mut Criterion) {
         b.iter_batched(
             || {
                 (
-                    ViewportFixture::new(LARGE_LINE_COUNT, LONG_LINE_LEN),
+                    ViewportFixture::new(LARGE_LINE_COUNT, LONG_LINE_LEN, true),
                     LARGE_LINE_COUNT / 2,
                 )
             },
@@ -401,6 +431,72 @@ fn bench_cursor_reveal_viewport_sync(c: &mut Criterion) {
                         LARGE_LINE_COUNT / 2
                     };
                     black_box(fixture.reveal_cursor_at_line(line));
+                }
+            },
+            BatchSize::SmallInput,
+        );
+    });
+
+    group.finish();
+}
+
+/// Scrolling, cursor moves and typing deep in a document without soft wrap, where every
+/// conversion between visual rows and characters used to scan from the document start.
+fn bench_unwrapped_viewport_sync(c: &mut Criterion) {
+    let mut group = c.benchmark_group("unwrapped_viewport_sync");
+
+    group.bench_function("deep_scroll", |b| {
+        b.iter_batched(
+            || {
+                let fixture = ViewportFixture::new(LARGE_LINE_COUNT, LONG_LINE_LEN, false);
+                (fixture, LARGE_LINE_COUNT / 2)
+            },
+            |(mut fixture, mut row)| {
+                for _ in 0..32 {
+                    row = if row + 37 < fixture.max_target_row {
+                        row + 37
+                    } else {
+                        fixture.max_target_row / 2
+                    };
+                    black_box(fixture.sync_at_visual_row(row));
+                }
+            },
+            BatchSize::SmallInput,
+        );
+    });
+
+    group.bench_function("moving_deep_cursor", |b| {
+        b.iter_batched(
+            || {
+                (
+                    ViewportFixture::new(LARGE_LINE_COUNT, LONG_LINE_LEN, false),
+                    LARGE_LINE_COUNT / 2,
+                )
+            },
+            |(mut fixture, mut line)| {
+                for _ in 0..32 {
+                    line = if line + 1 < LARGE_LINE_COUNT {
+                        line + 1
+                    } else {
+                        LARGE_LINE_COUNT / 2
+                    };
+                    black_box(fixture.reveal_cursor_at_line(line));
+                }
+            },
+            BatchSize::SmallInput,
+        );
+    });
+
+    group.bench_function("typing_deep", |b| {
+        b.iter_batched(
+            || {
+                let mut fixture = ViewportFixture::new(LARGE_LINE_COUNT, LONG_LINE_LEN, false);
+                fixture.reveal_cursor_at_line(LARGE_LINE_COUNT - 10);
+                fixture
+            },
+            |mut fixture| {
+                for _ in 0..32 {
+                    black_box(fixture.type_at_cursor());
                 }
             },
             BatchSize::SmallInput,
@@ -433,6 +529,7 @@ criterion_group!(
     bench_frame_prep,
     bench_soft_wrap_viewport_sync,
     bench_cursor_reveal_viewport_sync,
+    bench_unwrapped_viewport_sync,
     bench_visible_highlighting
 );
 criterion_main!(benches);
