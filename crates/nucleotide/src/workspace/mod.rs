@@ -11687,9 +11687,12 @@ impl Workspace {
             }
         } // End of editor borrow scope
 
-        // Sync file tree selection with the focused document (after releasing borrow)
+        // Sync file tree selection with the focused document (after releasing borrow).
+        // This runs on every redraw, so skip it once the tree already selects the file:
+        // a reveal rebuilds the tree's parent index and scrolls the tree.
         if let Some(path) = focused_doc_path
             && let Some(file_tree) = &self.file_tree
+            && file_tree.read(cx).selected_path() != Some(&path)
         {
             file_tree.update(cx, |tree, cx| {
                 tree.sync_selection_with_file(Some(path.as_path()), cx);
