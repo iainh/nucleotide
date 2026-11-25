@@ -100,6 +100,39 @@ pub fn diagnostic_severity_by_line(document: &Document) -> DiagnosticSeverityByL
     severities
 }
 
+/// Like `diagnostic_severity_by_line`, but only for document lines in `lines`, so the cost
+/// does not grow with how many lines a diagnostic spans.
+pub fn diagnostic_severity_by_visible_line(
+    document: &Document,
+    lines: std::ops::Range<usize>,
+) -> DiagnosticSeverityByLine {
+    let text = document.text();
+    let text_len = text.len_chars();
+    let end_char = text.try_line_to_char(lines.end).unwrap_or(text_len + 1);
+    let mut severities = DiagnosticSeverityByLine::new();
+
+    for diagnostic in document.diagnostics().iter() {
+        // Diagnostics are sorted by start, so none after this one can reach the lines.
+        if diagnostic.range.start >= end_char {
+            break;
+        }
+        let Some(severity) = diagnostic.severity else {
+            continue;
+        };
+
+        let start_line = text.char_to_line(diagnostic.range.start.min(text_len));
+        let end_line = text.char_to_line(diagnostic.range.end.min(text_len));
+        for line in start_line.max(lines.start)..=end_line.min(lines.end.saturating_sub(1)) {
+            severities
+                .entry(line)
+                .and_modify(|existing| *existing = strongest_severity(*existing, severity))
+                .or_insert(severity);
+        }
+    }
+
+    severities
+}
+
 pub fn diagnostic_scrollbar_markers(
     severity_by_line: &DiagnosticSeverityByLine,
     total_lines: usize,

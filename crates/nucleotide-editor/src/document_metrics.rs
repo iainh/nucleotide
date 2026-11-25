@@ -80,6 +80,10 @@ struct CachedEditorDocumentMetrics {
     metrics: EditorDocumentMetrics,
     line_metrics: Vec<Option<EditorLineMetrics>>,
     pending_incremental_update: bool,
+    /// Lines where a diagnostic starts as of the last measure. Inline diagnostics add virtual
+    /// rows only after these lines, so a diagnostics update re-measures just them.
+    diagnostic_lines: Vec<usize>,
+    diagnostics_dirty: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -224,12 +228,27 @@ impl EditorDocumentMetricsCache {
                 std::iter::repeat_n(None, replacement_len),
             );
             cached.pending_incremental_update = true;
+            // Keep the recorded diagnostic lines on the same text after the splice.
+            for line in &mut cached.diagnostic_lines {
+                if *line >= old_end {
+                    *line = *line - (old_end - old_start) + replacement_len;
+                } else if *line >= old_start {
+                    *line = old_start;
+                }
+            }
         }
     }
 
+    /// The document's diagnostics changed: re-measure the lines where a diagnostic started
+    /// before or starts now, on the next `resolve`, instead of the whole document.
     pub fn invalidate_document_annotations(&mut self, document_id: DocumentId) {
-        self.entries
-            .retain(|cached| cached.key.document_id != document_id);
+        for cached in self
+            .entries
+            .iter_mut()
+            .filter(|cached| cached.key.document_id == document_id)
+        {
+            cached.diagnostics_dirty = true;
+        }
     }
 
     pub fn resolve(
@@ -259,11 +278,9 @@ impl EditorDocumentMetricsCache {
             text_format: EditorTextFormatCacheKey::from(&text_format),
         };
 
-        if let Some(index) = self
-            .entries
-            .iter()
-            .position(|cached| cached.key == key && !cached.pending_incremental_update)
-        {
+        if let Some(index) = self.entries.iter().position(|cached| {
+            cached.key == key && !cached.pending_incremental_update && !cached.diagnostics_dirty
+        }) {
             self.stats.hits += 1;
             trace!(
                 document_id = ?params.document.id(),
@@ -290,8 +307,14 @@ impl EditorDocumentMetricsCache {
         );
 
         let annotations = params.view.text_annotations(params.document, params.theme);
+        let diagnostics_changed = |cached: &CachedEditorDocumentMetrics| {
+            let text_unchanged = cached.key.document_version == key.document_version
+                && cached.key.text_len == key.text_len;
+            text_unchanged
+                && (cached.diagnostics_dirty || cached.key.diagnostics_hash != key.diagnostics_hash)
+        };
         if let Some(index) = self.entries.iter().position(|cached| {
-            cached.pending_incremental_update
+            (cached.pending_incremental_update || diagnostics_changed(cached))
                 && cached.line_metrics.len() == params.document.text().len_lines()
                 && metrics_layout_matches(&cached.key, &key)
         }) {
@@ -299,6 +322,14 @@ impl EditorDocumentMetricsCache {
                 .with_warn_threshold(DOCUMENT_METRICS_SCAN_WARN_THRESHOLD);
             let mut cached = self.entries.remove(index);
             let text = params.document.text().slice(..);
+            let diagnostic_lines = diagnostic_start_lines(params.document);
+            if cached.diagnostics_dirty || diagnostics_changed(&cached) {
+                for &line in cached.diagnostic_lines.iter().chain(&diagnostic_lines) {
+                    if let Some(line_metrics) = cached.line_metrics.get_mut(line) {
+                        *line_metrics = None;
+                    }
+                }
+            }
             let mut scanned_lines = 0_u64;
             for (line_idx, line_metrics) in cached.line_metrics.iter_mut().enumerate() {
                 if line_metrics.is_none() {
@@ -317,6 +348,8 @@ impl EditorDocumentMetricsCache {
             cached.key = key;
             cached.metrics = metrics.clone();
             cached.pending_incremental_update = false;
+            cached.diagnostic_lines = diagnostic_lines;
+            cached.diagnostics_dirty = false;
             self.entries.insert(0, cached);
             self.stats.incremental_updates += 1;
             self.stats.incremental_line_scans += scanned_lines;
@@ -340,6 +373,8 @@ impl EditorDocumentMetricsCache {
                 metrics: metrics.clone(),
                 line_metrics,
                 pending_incremental_update: false,
+                diagnostic_lines: diagnostic_start_lines(params.document),
+                diagnostics_dirty: false,
             },
         );
         if self.entries.len() > DOCUMENT_METRICS_CACHE_CAPACITY {
@@ -374,6 +409,7 @@ impl EditorDocumentMetricsCache {
                     .and_then(|reserved| reserved.active_for(document))
             && cached.key.text_format == EditorTextFormatCacheKey::from(text_format)
             && !cached.pending_incremental_update
+            && !cached.diagnostics_dirty
             && cached.line_metrics.len() == text.len_lines()
             && cached.line_metrics.iter().all(Option::is_some);
         matches.then_some(EditorLineVisualRows {
@@ -412,6 +448,18 @@ impl EditorLineVisualRows<'_> {
         }
         (0, 0)
     }
+}
+
+fn diagnostic_start_lines(document: &Document) -> Vec<usize> {
+    let text = document.text();
+    let mut lines = document
+        .diagnostics()
+        .iter()
+        .map(|diagnostic| text.char_to_line(diagnostic.range.start.min(text.len_chars())))
+        .collect::<Vec<_>>();
+    lines.sort_unstable();
+    lines.dedup();
+    lines
 }
 
 fn metrics_layout_matches(
@@ -952,6 +1000,88 @@ mod tests {
                 incremental_line_scans: 0,
             }
         );
+    }
+
+    #[test]
+    fn diagnostics_updates_rescan_only_diagnostic_lines() {
+        use helix_core::diagnostic::{
+            Diagnostic, DiagnosticProvider, LanguageServerId, Range as DiagnosticRange,
+        };
+        use helix_view::annotations::diagnostics::DiagnosticFilter;
+
+        let mut config = Config::default();
+        config.inline_diagnostics.other_lines = DiagnosticFilter::Enable(Severity::Hint);
+        let (mut document, mut view) =
+            test_document_with_config(config, "zero\none\ntwo\nthree\nfour\n");
+        view.area = helix_view::graphics::Rect::new(0, 0, 120, 40);
+        let bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(960.0), px(400.0)));
+        let gutter_columns = view.gutter_offset(&document);
+        let resolve = |cache: &mut EditorDocumentMetricsCache, document: &Document| {
+            cache.resolve(EditorDocumentMetricsCacheResolveParams {
+                document,
+                view: &view,
+                theme: None,
+                bounds,
+                gutter_columns,
+                cell_width: px(8.0),
+                minimum_columns: 1,
+            })
+        };
+        let diagnostic = |start: usize| Diagnostic {
+            range: DiagnosticRange {
+                start,
+                end: start + 1,
+            },
+            ends_at_word: false,
+            starts_at_word: false,
+            zero_width: false,
+            line: 0,
+            message: "something is wrong here".to_string(),
+            severity: Some(Severity::Error),
+            code: None,
+            provider: DiagnosticProvider::Lsp {
+                server_id: LanguageServerId::default(),
+                identifier: None,
+            },
+            tags: Vec::new(),
+            source: None,
+            data: None,
+        };
+        let mut cache = EditorDocumentMetricsCache::default();
+        let plain = resolve(&mut cache, &document);
+
+        // A diagnostic on line 2 adds virtual rows below it.
+        document.replace_diagnostics([diagnostic(9)], &[], None);
+        cache.invalidate_document_annotations(document.id());
+        let with_diagnostic = resolve(&mut cache, &document);
+        let full = EditorDocumentMetrics::resolve_for_view(
+            &document,
+            &view,
+            None,
+            bounds,
+            gutter_columns,
+            px(8.0),
+            1,
+        );
+        assert!(with_diagnostic.visual_rows > plain.visual_rows);
+        assert_eq!(with_diagnostic.visual_rows, full.visual_rows);
+
+        // Moving it to line 4 must also re-measure line 2, where it used to be.
+        document.replace_diagnostics([diagnostic(19)], &[], None);
+        cache.invalidate_document_annotations(document.id());
+        let moved = resolve(&mut cache, &document);
+        assert_eq!(moved.visual_rows, with_diagnostic.visual_rows);
+
+        document.replace_diagnostics([], &[], None);
+        cache.invalidate_document_annotations(document.id());
+        let cleared = resolve(&mut cache, &document);
+        assert_eq!(cleared.visual_rows, plain.visual_rows);
+
+        let stats = cache.stats();
+        assert_eq!(stats.full_visual_row_scans, 1);
+        assert_eq!(stats.incremental_updates, 3);
+        // Line 2, then lines 2 and 4, then line 4.
+        assert_eq!(stats.incremental_line_scans, 4);
     }
 
     #[test]

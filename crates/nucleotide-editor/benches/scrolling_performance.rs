@@ -3,7 +3,13 @@ use std::{fmt::Write as _, hint::black_box, sync::Arc};
 use arc_swap::ArcSwap;
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use gpui::{Bounds, Font, Hsla, black, font, point, px, size, white};
-use helix_core::{Rope, Selection, Transaction, syntax};
+use helix_core::{
+    Rope, Selection, Transaction,
+    diagnostic::{
+        Diagnostic, DiagnosticProvider, LanguageServerId, Range as DiagnosticRange, Severity,
+    },
+    syntax,
+};
 use helix_view::{
     Document, DocumentId, Theme, View, ViewId,
     document::Mode,
@@ -364,6 +370,43 @@ fn bench_frame_prep(c: &mut Criterion) {
     });
     group.bench_function("soft_wrap_large_document", |b| {
         b.iter(|| black_box(soft_wrap.frame(true, first_row)));
+    });
+
+    // A diagnostic on every fifth line, with one spanning most of the file, as a busy
+    // language server reports.
+    let mut diagnostics_fixture =
+        FrameFixture::new(LARGE_LINE_COUNT, LONG_LINE_LEN, false, 1_200.0);
+    let text = diagnostics_fixture.document.text().clone();
+    let diagnostic = |start: usize, end: usize, severity: Severity| Diagnostic {
+        range: DiagnosticRange { start, end },
+        ends_at_word: false,
+        starts_at_word: false,
+        zero_width: false,
+        line: text.char_to_line(start),
+        message: "unused variable: `value`".to_string(),
+        severity: Some(severity),
+        code: None,
+        provider: DiagnosticProvider::Lsp {
+            server_id: LanguageServerId::default(),
+            identifier: None,
+        },
+        tags: Vec::new(),
+        source: None,
+        data: None,
+    };
+    let mut diagnostics = (0..LARGE_LINE_COUNT)
+        .step_by(5)
+        .map(|line| {
+            let start = text.line_to_char(line) + 3;
+            diagnostic(start, start + 5, Severity::Warning)
+        })
+        .collect::<Vec<_>>();
+    diagnostics.push(diagnostic(10, text.len_chars() - 10, Severity::Hint));
+    diagnostics_fixture
+        .document
+        .replace_diagnostics(diagnostics, &[], None);
+    group.bench_function("unwrapped_many_diagnostics", |b| {
+        b.iter(|| black_box(diagnostics_fixture.frame(false, first_row)));
     });
 
     group.finish();

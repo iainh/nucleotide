@@ -102,6 +102,8 @@ pub struct InlineDiagnosticFramePlanParams<'a> {
     pub viewport_columns: u16,
     pub horizontal_offset: usize,
     pub tab_width: u16,
+    /// Document lines that can be on screen; only diagnostics starting on them are planned.
+    pub visible_lines: std::ops::Range<usize>,
 }
 
 pub struct InlineDiagnosticPaintParams<'a> {
@@ -182,6 +184,7 @@ pub fn inline_diagnostic_frame_plan(
         viewport_columns: params.viewport_columns,
         horizontal_offset: params.horizontal_offset,
         tab_width: params.tab_width,
+        visible_lines: params.visible_lines,
     })
 }
 
@@ -245,6 +248,7 @@ struct InlineDiagnosticFramePlanFromConfigParams<'a> {
     viewport_columns: u16,
     horizontal_offset: usize,
     tab_width: u16,
+    visible_lines: std::ops::Range<usize>,
 }
 
 fn inline_diagnostic_frame_plan_from_config(
@@ -265,7 +269,14 @@ fn inline_diagnostic_frame_plan_from_config(
     let colors = inline_diagnostic_colors(params.theme);
     let mut grouped: BTreeMap<usize, Vec<&Diagnostic>> = BTreeMap::new();
 
-    for diagnostic in params.document.diagnostics() {
+    // Diagnostics are sorted by range, so the ones starting on visible lines are contiguous.
+    let diagnostics = params.document.diagnostics();
+    let line_char = |line: usize| text.try_line_to_char(line).unwrap_or(text.len_chars() + 1);
+    let start_char = line_char(params.visible_lines.start);
+    let end_char = line_char(params.visible_lines.end);
+    let first = diagnostics.partition_point(|diagnostic| diagnostic.range.start < start_char);
+    let last = diagnostics.partition_point(|diagnostic| diagnostic.range.start < end_char);
+    for diagnostic in &diagnostics[first..last.max(first)] {
         let line = text.char_to_line(diagnostic.range.start.min(text.len_chars()));
         grouped.entry(line).or_default().push(diagnostic);
     }
@@ -746,6 +757,84 @@ mod tests {
             source: None,
             data: None,
         }
+    }
+
+    fn document_with_diagnostics(text: &str, diagnostics: Vec<Diagnostic>) -> Document {
+        use std::sync::Arc;
+
+        use arc_swap::ArcSwap;
+        use helix_core::{Rope, syntax};
+        use helix_view::editor::Config;
+
+        let mut config = Config::default();
+        config.end_of_line_diagnostics = DiagnosticFilter::Enable(Severity::Hint);
+        let config = Arc::new(ArcSwap::new(Arc::new(config)));
+        let syntax_loader = Arc::new(ArcSwap::from_pointee(syntax::Loader::default()));
+        let mut document = Document::from(Rope::from(text), None, config, syntax_loader);
+        document.replace_diagnostics(diagnostics, &[], None);
+        document
+    }
+
+    #[test]
+    fn frame_plan_covers_only_diagnostics_starting_on_visible_lines() {
+        // Ten lines of "line N\n"; each line is 7 characters.
+        let text: String = (0..10).map(|line| format!("line {line}\n")).collect();
+        let document = document_with_diagnostics(
+            &text,
+            vec![
+                diagnostic(0, 2, Severity::Error, "first"),
+                diagnostic(14, 16, Severity::Warning, "line two"),
+                diagnostic(28, 30, Severity::Error, "line four"),
+                diagnostic(63, 65, Severity::Hint, "last"),
+            ],
+        );
+        let mut document = document;
+        let view = View::new(helix_view::DocumentId::default(), Default::default());
+        document.ensure_view_init(view.id);
+        let theme = helix_view::theme::Loader::new(&[]).default_theme(true);
+
+        let plan =
+            inline_diagnostic_frame_plan_from_config(InlineDiagnosticFramePlanFromConfigParams {
+                document: &document,
+                view_id: view.id,
+                theme: &theme,
+                inline_config: InlineDiagnosticsConfig {
+                    cursor_line: DiagnosticFilter::Disable,
+                    other_lines: DiagnosticFilter::Disable,
+                    ..InlineDiagnosticsConfig::default()
+                },
+                eol_diagnostics: DiagnosticFilter::Enable(Severity::Hint),
+                viewport_columns: 80,
+                horizontal_offset: 0,
+                tab_width: 4,
+                visible_lines: 2..5,
+            });
+
+        assert_eq!(plan.lines.keys().copied().collect::<Vec<_>>(), vec![2, 4]);
+    }
+
+    #[test]
+    fn visible_severity_map_matches_full_map_on_visible_lines() {
+        let text: String = (0..10).map(|line| format!("line {line}\n")).collect();
+        let document = document_with_diagnostics(
+            &text,
+            vec![
+                // Spans lines 1 to 6, so it starts above the visible lines and covers them.
+                diagnostic(8, 45, Severity::Warning, "long"),
+                diagnostic(30, 31, Severity::Error, "line four"),
+                diagnostic(63, 64, Severity::Error, "below"),
+            ],
+        );
+
+        let visible = crate::diagnostic_severity_by_visible_line(&document, 3..6);
+        let full = crate::diagnostic_severity_by_line(&document)
+            .into_iter()
+            .filter(|(line, _)| (3..6).contains(line))
+            .collect::<BTreeMap<_, _>>();
+
+        assert_eq!(visible, full);
+        assert_eq!(visible.get(&4), Some(&Severity::Error));
+        assert_eq!(visible.get(&3), Some(&Severity::Warning));
     }
 
     #[test]

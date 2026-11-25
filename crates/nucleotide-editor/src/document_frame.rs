@@ -22,7 +22,7 @@ use crate::{
     RulerPaintPlan, SoftWrapHighlightedLineRunsBatchParams, SoftWrapRenderPlan,
     SoftWrapVisualPosition, UnwrappedHighlightedLine, UnwrappedHighlightedLinesParams,
     UnwrappedRenderPlan, UnwrappedRenderPlanParams, diagnostic_overlay_spans,
-    diagnostic_severity_by_line, document_render_snapshot, document_ruler_paint_plans,
+    diagnostic_severity_by_visible_line, document_render_snapshot, document_ruler_paint_plans,
     document_soft_wrap_render_plan, document_text_format_for_surface, editor_cursor_presentation,
     fallback_diagnostic_frame_plan, highlight::display_whitespace_for_document,
     inline_diagnostic_frame_plan, soft_wrap_highlighted_line_runs_batch, soft_wrap_visual_position,
@@ -212,6 +212,16 @@ pub fn editor_document_frame(params: EditorDocumentFrameParams<'_>) -> EditorDoc
         .collect::<Vec<_>>();
     secondary_cursor_lines.sort_unstable();
     secondary_cursor_lines.dedup();
+    // Every visible document line takes at least one row, so the lines on screen fall between
+    // the anchor's line and that line plus the visible rows; pad a little either side.
+    let visible_lines = {
+        let anchor_line = text.char_to_line(params.view_position.anchor.min(text.len_chars()));
+        let rows = params
+            .last_row_from_scroll
+            .saturating_sub(params.first_row)
+            .saturating_add(leading_virtual_rows);
+        anchor_line.saturating_sub(1)..anchor_line.saturating_add(rows).saturating_add(2)
+    };
     let inline_diagnostic_plan = inline_diagnostic_frame_plan(InlineDiagnosticFramePlanParams {
         document: params.document,
         view: params.view,
@@ -221,6 +231,7 @@ pub fn editor_document_frame(params: EditorDocumentFrameParams<'_>) -> EditorDoc
         viewport_columns: text_format.viewport_width,
         horizontal_offset: params.view_position.horizontal_offset,
         tab_width: text_format.tab_width,
+        visible_lines: visible_lines.clone(),
     });
     let fallback_diagnostic_plan =
         fallback_diagnostic_frame_plan(FallbackDiagnosticFramePlanParams {
@@ -397,7 +408,10 @@ pub fn editor_document_frame(params: EditorDocumentFrameParams<'_>) -> EditorDoc
         render_snapshot,
         cursor_presentation,
         diagnostic_overlay_spans,
-        diagnostic_severity_by_line: diagnostic_severity_by_line(params.document),
+        diagnostic_severity_by_line: diagnostic_severity_by_visible_line(
+            params.document,
+            visible_lines,
+        ),
         inline_diagnostic_plan,
         fallback_diagnostic_plan,
         reserved_rows,
