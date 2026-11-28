@@ -902,9 +902,10 @@ use project_lsp::{
     ProjectLspCoordinator, canonical_project_lsp_root, commands_to_probe_for_servers,
     configured_language_server_commands, configured_project_servers,
     detect_project_lsp_plan_with_backend, discover_project_languages_with_backend,
-    probe_available_language_server_commands, project_lsp_error_is_retryable,
-    project_lsp_plan_from_discovered_languages, project_lsp_preparation_status,
-    project_lsp_startup_status, retain_servers_with_available_commands,
+    load_remote_language_loader, probe_available_language_server_commands,
+    project_lsp_error_is_retryable, project_lsp_plan_from_discovered_languages,
+    project_lsp_preparation_status, project_lsp_startup_status,
+    retain_servers_with_available_commands,
 };
 #[cfg(test)]
 use project_lsp::{project_lsp_plan_from_names, project_marker_names};
@@ -996,6 +997,8 @@ pub struct Application {
     pub terminal_runtime: TerminalRuntimeHandle,
     pending_terminal_events: Arc<std::sync::Mutex<Vec<nucleotide_events::terminal::Event>>>,
     maintenance_wake: Option<MaintenanceWake>,
+    /// The client's language config while a remote workspace's config is installed.
+    client_language_loader: Option<Arc<syntax::Loader>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1116,6 +1119,24 @@ impl Application {
             .set_save_handler(Some(Arc::new(WorkspaceDocumentSaveHandler::new(
                 workspace_backend,
             ))));
+    }
+
+    /// Installs a remote host's language config, keeping the client's to restore later.
+    fn apply_remote_language_loader(&mut self, loader: Arc<syntax::Loader>) {
+        if self.client_language_loader.is_none() {
+            self.client_language_loader = Some(self.editor.syn_loader.load_full());
+        }
+        self.replace_language_loader(loader);
+    }
+
+    /// Swaps the language config and re-detects open documents' languages against it, so
+    /// their language servers and highlighting follow the new config.
+    fn replace_language_loader(&mut self, loader: Arc<syntax::Loader>) {
+        self.editor.syn_loader.store(loader);
+        let loader = self.editor.syn_loader.load();
+        for document in self.editor.documents.values_mut() {
+            document.detect_language(&loader);
+        }
     }
 
     pub(crate) fn set_workspace_backend_connection(
@@ -1589,14 +1610,28 @@ impl Application {
             project_lsp_preparation_status(remote_workspace, proactive_startup_enabled),
             crate::types::Severity::Info,
         );
+        if !remote_workspace && let Some(client_loader) = self.client_language_loader.take() {
+            // Leaving a remote workspace: its language config no longer applies.
+            self.replace_language_loader(client_loader);
+        }
+        // Explicit trust records hash local `.helix/` files, so remote workspaces are trusted
+        // only through the implicit trust level or trusted globs.
+        let include_remote_workspace_config = remote_workspace
+            && WorkspaceTrust::new((&self.helix_config_arc.load().editor.workspace_trust).into())
+                .query(
+                    &workspace_root,
+                    helix_loader::workspace_trust::TrustQuery::LocalConfig,
+                )
+                .is_trusted();
 
         let bridge = self.helix_lsp_bridge_handle();
         let inventory_bridge = bridge.clone();
         let workspace_backend = self.workspace_backend.clone();
         let inventory_backend = workspace_backend.clone();
-        let server_commands = configured_language_server_commands(&self.editor);
-        let inventory_server_commands = server_commands.clone();
-        let syntax_loader = self.editor.syn_loader.load_full();
+        let client_syntax_loader = self
+            .client_language_loader
+            .clone()
+            .unwrap_or_else(|| self.editor.syn_loader.load_full());
         let timeout = Duration::from_millis(self.config.gui.lsp.startup_timeout_ms);
         let runtime = handle.clone();
 
@@ -1625,6 +1660,27 @@ impl Application {
                         }
                     };
                     let (plan, environment) = tokio::join!(plan_future, environment_future);
+                    // Remote servers run on the remote host, so they use its language config.
+                    let remote_syntax_loader = if remote_workspace {
+                        Some(
+                            load_remote_language_loader(
+                                &task_root,
+                                availability_backend.clone(),
+                                environment.as_ref().ok().and_then(Option::as_ref),
+                                include_remote_workspace_config,
+                                timeout,
+                            )
+                            .await
+                            .map(Arc::new),
+                        )
+                    } else {
+                        None
+                    };
+                    let syntax_loader = match &remote_syntax_loader {
+                        Some(Ok(loader)) => loader.clone(),
+                        _ => client_syntax_loader,
+                    };
+                    let server_commands = configured_language_server_commands(&syntax_loader);
                     // Probe only the commands the planned servers need. Checking every
                     // configured language server over the remote backend delays the first
                     // server start by seconds; the language inventory probes the rest later.
@@ -1642,11 +1698,26 @@ impl Application {
                     } else {
                         Ok(None)
                     };
-                    (plan, planned_servers, environment, available_commands)
+                    (
+                        plan,
+                        planned_servers,
+                        environment,
+                        available_commands,
+                        server_commands,
+                        remote_syntax_loader,
+                    )
                 })
                 .await;
 
-            let Ok((plan, planned_servers, environment, available_commands)) = preparation else {
+            let Ok((
+                plan,
+                planned_servers,
+                environment,
+                available_commands,
+                inventory_server_commands,
+                remote_syntax_loader,
+            )) = preparation
+            else {
                 if let Some(this) = this.upgrade() {
                     this.update(cx, |app, _cx| {
                         app.project_lsp.complete_session(
@@ -1668,6 +1739,22 @@ impl Application {
                     {
                         return;
                     }
+
+                    let language_config_error = match remote_syntax_loader {
+                        Some(Ok(loader)) => {
+                            app.apply_remote_language_loader(loader);
+                            None
+                        }
+                        Some(Err(error)) => {
+                            warn!(
+                                %error,
+                                workspace_root = %workspace_root.display(),
+                                "Failed to load remote language config; using the client's"
+                            );
+                            Some(format!("Using local language config: {error}"))
+                        }
+                        None => None,
+                    };
 
                     let proactive_startup_enabled = proactive_startup_enabled
                         && app.config.gui.lsp.project_lsp_startup;
@@ -1712,6 +1799,9 @@ impl Application {
                         project_lsp_startup_status(&server_names, proactive_startup_enabled),
                         crate::types::Severity::Info,
                     );
+                    if let Some(error) = language_config_error {
+                        app.set_editor_status_feedback(cx, error, crate::types::Severity::Error);
+                    }
                     let servers_started = app.start_planned_project_servers_prepared(
                         &runtime,
                         generation,
@@ -6423,6 +6513,7 @@ pub fn init_editor(
         terminal_runtime,
         pending_terminal_events: Arc::default(),
         maintenance_wake: None,
+        client_language_loader: None,
     })
 }
 

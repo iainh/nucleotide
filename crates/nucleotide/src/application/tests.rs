@@ -1297,6 +1297,7 @@ fn new_test_application(cx: &mut gpui::TestAppContext) -> Entity<Application> {
             terminal_runtime: crate::application::TerminalRuntimeHandle::new(),
             pending_terminal_events: Arc::default(),
             maintenance_wake: None,
+            client_language_loader: None,
         };
         app.lsp_state = Some(cx.new(|_cx| nucleotide_lsp::LspState::new()));
         app

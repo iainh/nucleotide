@@ -9,7 +9,6 @@ use std::{
     time::Duration,
 };
 
-use helix_view::Editor;
 use nucleotide_events::{
     PlannedProjectLanguage, ProjectLanguageEvidence, ProjectLspCommand, ProjectLspCommandError,
     ProjectLspPlan, ProjectSessionResult,
@@ -400,10 +399,10 @@ pub(super) fn configured_project_servers(
     servers
 }
 
-pub(super) fn configured_language_server_commands(editor: &Editor) -> HashMap<String, String> {
-    editor
-        .syn_loader
-        .load()
+pub(super) fn configured_language_server_commands(
+    syntax_loader: &helix_core::syntax::Loader,
+) -> HashMap<String, String> {
+    syntax_loader
         .language_server_configs()
         .iter()
         .map(|(name, config)| (name.clone(), config.command.clone()))
@@ -539,6 +538,78 @@ pub(super) async fn probe_available_language_server_commands(
         "Probed remote language server availability"
     );
     Ok(available)
+}
+
+/// Reads the remote host's Helix `languages.toml` and, when `include_workspace_config` is set,
+/// the workspace's `.helix/languages.toml`, merged onto the built-in defaults as Helix does.
+/// Remote language servers run there, so their commands must come from the remote config.
+pub(super) async fn load_remote_language_loader(
+    workspace_root: &Path,
+    workspace_backend: WorkspaceBackendHandle,
+    environment: Option<&HashMap<String, String>>,
+    include_workspace_config: bool,
+    timeout: Duration,
+) -> Result<helix_core::syntax::Loader, String> {
+    // A NUL separates the two files: TOML documents cannot contain one.
+    let script = concat!(
+        "cat \"${XDG_CONFIG_HOME:-$HOME/.config}/helix/languages.toml\" 2>/dev/null; ",
+        "printf '\\0'; ",
+        "if [ \"$1\" = 1 ]; then cat .helix/languages.toml 2>/dev/null; fi; ",
+        "exit 0"
+    );
+    let output = workspace_backend
+        .run_process(ProcessSpec {
+            program: "sh".to_string(),
+            args: vec![
+                "-c".to_string(),
+                script.to_string(),
+                "nucleotide-language-config".to_string(),
+                if include_workspace_config { "1" } else { "0" }.to_string(),
+            ],
+            cwd: workspace_root.to_path_buf(),
+            env: environment
+                .into_iter()
+                .flatten()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect(),
+            clear_env: true,
+            inherit_project_environment: environment.is_none(),
+            stdin: Vec::new(),
+            max_output_bytes: Some(4 * 1024 * 1024),
+            timeout_ms: Some(timeout.as_millis().min(u128::from(u64::MAX)) as u64),
+        })
+        .await
+        .map_err(|error| error.to_string())?;
+
+    if !output.success || output.timed_out || output.stdout_truncated {
+        return Err(format!(
+            "reading remote languages.toml failed (status: {:?}, timed out: {}, output truncated: {})",
+            output.status_code, output.timed_out, output.stdout_truncated
+        ));
+    }
+    language_loader_from_remote_config_output(&output.stdout)
+}
+
+/// Builds a loader from the NUL-separated global and workspace `languages.toml` contents.
+pub(super) fn language_loader_from_remote_config_output(
+    output: &[u8],
+) -> Result<helix_core::syntax::Loader, String> {
+    let mut config = helix_loader::config::default_lang_config();
+    for source in output.split(|byte| *byte == 0) {
+        let source = std::str::from_utf8(source)
+            .map_err(|error| format!("remote languages.toml is not UTF-8: {error}"))?;
+        if source.trim().is_empty() {
+            continue;
+        }
+        let value = toml::from_str::<toml::Value>(source)
+            .map_err(|error| format!("failed to parse remote languages.toml: {error}"))?;
+        config = helix_loader::merge_toml_values(config, value, 3);
+    }
+    let config: helix_core::syntax::config::Configuration = config
+        .try_into()
+        .map_err(|error| format!("invalid remote language config: {error}"))?;
+    helix_core::syntax::Loader::new(config)
+        .map_err(|error| format!("failed to compile remote language config: {error}"))
 }
 
 pub(super) async fn detect_project_lsp_plan_with_backend(
@@ -704,6 +775,62 @@ mod tests {
                 .build()
                 .expect("test runtime")
         });
+
+    #[test]
+    fn remote_language_config_merges_host_then_trusted_workspace_config() {
+        let config_home = tempfile::tempdir().expect("config home");
+        let workspace = tempfile::tempdir().expect("workspace");
+        std::fs::create_dir_all(config_home.path().join("helix")).unwrap();
+        std::fs::write(
+            config_home.path().join("helix/languages.toml"),
+            "[language-server.rust-analyzer]\ncommand = \"host-rust-analyzer\"\n\
+             [language-server.gopls]\ncommand = \"host-gopls\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(workspace.path().join(".helix")).unwrap();
+        std::fs::write(
+            workspace.path().join(".helix/languages.toml"),
+            "[language-server.rust-analyzer]\ncommand = \"workspace-rust-analyzer\"\n",
+        )
+        .unwrap();
+        let environment = HashMap::from([
+            (
+                "PATH".to_string(),
+                std::env::var("PATH").unwrap_or_default(),
+            ),
+            ("HOME".to_string(), "/nonexistent".to_string()),
+            (
+                "XDG_CONFIG_HOME".to_string(),
+                config_home.path().display().to_string(),
+            ),
+        ]);
+        let load = |include_workspace_config| {
+            let commands = configured_language_server_commands(
+                &TEST_RUNTIME
+                    .block_on(load_remote_language_loader(
+                        workspace.path(),
+                        nucleotide_workspace::local_workspace_backend(),
+                        Some(&environment),
+                        include_workspace_config,
+                        Duration::from_secs(10),
+                    ))
+                    .expect("remote language config"),
+            );
+            (commands["rust-analyzer"].clone(), commands["gopls"].clone())
+        };
+
+        assert_eq!(
+            load(false),
+            ("host-rust-analyzer".to_string(), "host-gopls".to_string())
+        );
+        assert_eq!(
+            load(true),
+            (
+                "workspace-rust-analyzer".to_string(),
+                "host-gopls".to_string()
+            )
+        );
+    }
 
     #[test]
     fn project_lsp_status_messages_describe_the_current_phase() {
